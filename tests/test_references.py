@@ -59,11 +59,20 @@ class ReferenceTraceTests(unittest.TestCase):
 
     def test_a_used_reference_becomes_the_name_it_stands_for(self):
         self.assertEqual(panes(self.result, 4),
-                         [('c = b', None), ('c = 1', 'read'), ('a = 1', 'alias'), ('a = 1', 'write')])
+                         [('c = b', None), ('a = b', 'alias'), ('a = 1', 'read'), ('a = 1', 'write')])
         self.assertEqual(panes(self.result, 5)[1:3], [('int* p = &a', 'alias'), ('int* p = 84', 'addr')])
         self.assertEqual(panes(self.result, 10), [('rf = 4', None), ('s.f = 4', 'alias'), ('s.f = 4', 'write')])
         self.assertEqual(panes(self.result, 12)[1:], [('*p = 3', 'alias'), ('*84 = 3', 'read'),
                                                       ('a = 3', 'deref'), ('a = 3', 'write')])
+
+    def test_the_left_side_is_renamed_before_the_right_side_is_read(self):
+        source = 'struct A { int f; }; int b = 1; A s{2}; A& rs = s; int* p = &b; int*& rp = p; rs.f = b; *rp = s.f;'
+        result = tracing.trace(source)
+        self.assertEqual(panes(result, 5), [('rs.f = b', None), ('s.f = b', 'alias'), ('s.f = 1', 'read'),
+                                            ('s.f = 1', 'write')])
+        # Only the renaming moves ahead; the pointer on the left is still read after the right side.
+        self.assertEqual(panes(result, 6), [('*rp = s.f', None), ('*p = s.f', 'alias'), ('*p = 1', 'read'),
+                                            ('*76 = 1', 'read'), ('b = 1', 'deref'), ('b = 1', 'write')])
 
     def test_unsupported_references_never_execute(self):
         cases = {

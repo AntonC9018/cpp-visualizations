@@ -8,6 +8,7 @@ unified-format reductions; addresses are normalized deterministically near 64.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import itertools
 import json
 from pathlib import Path
 import re
@@ -582,13 +583,18 @@ def _statement(node: dict, program: str, state: dict[str, Value | None], records
         return Statement(source, span, prefix + text + suffix, (len(prefix), len(prefix) + len(text)),
                          locate(root), reductions=evaluator.reductions, declared=declared, bound=bound,
                          destination=(to_pane(name_offset), to_pane(name_offset) + len(declared)))
+    target, destination, designation = declared, None, []
+    if left is not None:
+        # A reference on the left becomes the name it stands for before the right side is read
+        # (`c = b` reads `a = b`); reading and following pointers there comes after.
+        target, destination = evaluator.lvalue(left), locate(left)
+        renamed = len(list(itertools.takewhile(lambda reduction: reduction.kind == "alias", evaluator.reductions)))
+        evaluator.reductions, designation = evaluator.reductions[:renamed], evaluator.reductions[renamed:]
     value, _ = evaluator.rvalue(root)
-    target, destination = declared, None
+    evaluator.reductions += designation
     if declared:
         destination = (to_pane(name_offset), to_pane(name_offset) + len(declared))
-    elif left is not None:
-        target, destination = evaluator.lvalue(left), locate(left)
-    elif isinstance(value, dict):
+    elif left is None and isinstance(value, dict):
         raise Unsupported("only integer and pointer output is supported")
     return Statement(source, span, prefix + text + suffix, (len(prefix), len(prefix) + len(text)),
                      locate(root), value, evaluator.reductions, target, destination, declared, pointer, record,
