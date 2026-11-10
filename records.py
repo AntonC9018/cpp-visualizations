@@ -21,9 +21,14 @@ def type_spelling(node: dict) -> str:
     return re.sub(r'^(const )?struct ', r'\1', qualified)
 
 
+def displayed(spelling: str) -> str:
+    """Clang's spelling of a type as the lessons write it: `int*`, `A**`."""
+    spelling = re.sub(r'^(const )?struct ', r'\1', spelling)
+    return re.sub(r'\s+(?=[*&])', '', spelling).removeprefix('std::')
+
+
 def displayed_type(node: dict) -> str:
-    """A type as the lessons write it: `int*`, `A**`."""
-    return re.sub(r'\s+(?=[*&])', '', type_spelling(node)).removeprefix('std::')
+    return displayed(type_spelling(node))
 
 
 def type_name(node: dict) -> str:

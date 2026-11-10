@@ -45,6 +45,8 @@ POINTER_EXAMPLES = {
         'std::cout << *px << std::endl;\nstd::cout << *py << std::endl;\n',
     'Null pointer initialization':
         'int a = 5;\nint* p{};\np = &a;\n*p = 6;\nstd::cout << a << std::endl;\n',
+    'A pointer does not fit where a pointer to a pointer is needed':
+        'struct A { int f1; int f2; };\nA a{ 1, 2 };\nA* value{ &a };\nA** p{ value };\n',
 }
 
 PAGE = '''<!doctype html>

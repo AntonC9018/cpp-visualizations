@@ -82,6 +82,9 @@ def applicable(trace: dict, snippet: str) -> None:
         raise Unsupported(f'the memory row holds at most {MAX_VARIABLES} variables')
     _storage_is_contiguous(variables)
     ops = [step['op'] for step in steps if step['op']]
+    if any(op['kind'] == 'clash' for op in ops):
+        # Types that do not fit are the point, however little memory is involved.
+        return
     writes = [step for step in steps if step['op'] and step['op']['kind'] == 'write']
     reads = [op for op in ops if op['kind'] in ('read', 'addr', 'deref', 'bind')]
     # A single initialized cell alone needs no illustration. Empty initialization is

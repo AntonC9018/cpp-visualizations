@@ -16,8 +16,8 @@ import textwrap
 import tempfile
 
 from execution import REFERENCE, Execution, execute
-from records import displayed_type, layouts, type_name, type_spelling
-from toolchain import Unsupported, run, tool
+from records import displayed, displayed_type, layouts, type_name, type_spelling
+from toolchain import IllFormed, Unsupported, run, tool
 from trace_format import (FORMAT, UNKNOWN, FormatError, scalar, struct, struct_field, field as trace_field,
                           reference as trace_reference,
                           addresses as storage_addresses, leaves, validate, whitespace_output)
@@ -141,8 +141,11 @@ def _main_ast(program: str, directory: Path) -> dict:
                   "-Xclang", "-ast-dump=json", "-Xclang", "-ast-dump-filter=main", str(path)])
     if result.returncode:
         diagnostic = next((line for line in result.stderr.splitlines() if "error:" in line), "error: ill-formed C++")
+        place = re.match(r".*?:(\d+):(\d+): error:", diagnostic)
+        lines = program.splitlines(keepends=True)
+        offset = sum(map(len, lines[:int(place[1]) - 1])) + int(place[2]) - 1 if place else None
         # Drop the temporary path, which differs between runs.
-        raise Unsupported(diagnostic[diagnostic.index("error:"):])
+        raise IllFormed(diagnostic[diagnostic.index("error:"):], offset)
     decoder, offset, selected = json.JSONDecoder(), 0, []
     try:
         while offset < len(result.stdout):
@@ -661,8 +664,66 @@ def _after(statement: Statement, state: dict[str, Value | None]) -> dict[str, Va
     return after
 
 
+_PREAMBLE = "#include <iostream>\n#include <cstdint>\nusing namespace std;\nint main() {\n"
+# Clang's ways of saying that a value of one type cannot be stored where another is needed.
+_MISMATCHES = tuple(map(re.compile, (
+    r"cannot initialize a variable of type '(?P<to>[^']+)' with an? \w+ of type '(?P<from>[^']+)'",
+    r"assigning to '(?P<to>[^']+)' from (?:incompatible type )?'(?P<from>[^']+)'",
+    r"no viable conversion from '(?P<from>[^']+)' to '(?P<to>[^']+)'")))
+
+
+@dataclass(frozen=True)
+class Mismatch:
+    """A last statement that does not compile because its value does not fit its slot.
+
+    `source` is the statement and `span` its value, for the code highlight; `pane` is the
+    statement in the lessons' notation, `slot` and `value` its two typed parts there.
+    """
+    source: str
+    span: tuple[int, int]
+    pane: str
+    slot: tuple[int, int]
+    value: tuple[int, int]
+    needed: str
+    given: str
+
+
+def _mismatch(body: str, error: IllFormed) -> tuple[str, Mismatch]:
+    """Split a body whose last statement is a type mismatch into what runs and the mismatch.
+
+    Clang reports the value, or the declared name when the value follows `=`; everything before
+    the value, up to the previous statement, is the slot.
+    Any other error, or one that is not in the last statement, stays unsupported.
+    """
+    found = next(filter(None, (pattern.search(str(error)) for pattern in _MISMATCHES)), None)
+    at = None if error.offset is None else error.offset - len(_PREAMBLE)
+    if not found or at is None or not 0 <= at < len(body):
+        raise error
+    end = body.find(";", at)
+    start = max(body.rfind(";", 0, at), body.rfind("}", 0, at)) + 1
+    if end < 0 or not re.fullmatch(r"\s*(?:return\s+0\s*;\s*)?", body[end + 1:]) or not body[:start].strip():
+        raise error
+    start += len(body[start:at]) - len(body[start:at].lstrip())
+    if not body[start:at].rstrip().endswith(("=", "{")):
+        assigned = re.match(r"\w+\s*=\s*", body[at:end])
+        if not assigned:
+            raise error
+        at += assigned.end()
+    source, mapping = _compact(body[start:end + 1])
+    braced = body[start:at].rstrip().endswith("{")
+    value_end = body[at:end].rstrip().removesuffix("}").rstrip() if braced else body[at:end].rstrip()
+    span = (mapping[at - start], mapping[at - start + len(value_end)])
+    prefix, suffix = _pane_parts(source, span, False)
+    slot = prefix.rstrip().removesuffix("=").rstrip()
+    if suffix.strip() or not slot or '"' in source or "'" in source:
+        raise error
+    text = source[slice(*span)]
+    return body[:start], Mismatch(source, span, prefix + text, (0, len(slot)), (len(prefix), len(prefix) + len(text)),
+                                  displayed(found["to"]), displayed(found["from"]))
+
+
 def _analyze(source: str, directory: Path) -> tuple[list[Statement], dict]:
-    program = "#include <iostream>\n#include <cstdint>\nusing namespace std;\nint main() {\n" + source + "\n}\n"
+    program = _PREAMBLE + source + "\n}\n"
     ast = _main_ast(program, directory)
     records = layouts(ast, directory)
     statements, state, references = [], {}, {}
@@ -944,6 +1005,14 @@ class _Renderer:
         redirected = isinstance(old, Pointer) and old.target and old != _load(after, name)
         self.add(line, pane, expr, after, op, 1.6 if redirected else 1.2)
 
+    def mismatch(self, line: int, mismatch: Mismatch, state: dict) -> None:
+        """The statement as written, then its value's type against the type its slot needs."""
+        pane = _Pane(mismatch.pane, [(mismatch.slot, mismatch.needed), (mismatch.value, mismatch.given)], mismatch.slot)
+        self.add(line, pane, mismatch.value, state)
+        op = {"kind": "clash", "span": list(mismatch.value), "destination": list(mismatch.slot),
+              "from": mismatch.given, "to": mismatch.needed}
+        self.add(line, pane, mismatch.value, state, op)
+
 
 def trace(source: str, *, runtime: bool = True) -> dict:
     """Trace a snippet into a validated unified-format trace, rejecting unsupported constructs.
@@ -951,10 +1020,15 @@ def trace(source: str, *, runtime: bool = True) -> dict:
     With `runtime=False` (probing) nothing is executed: values are the predicted ones and the
     layout is Clang's usual -O0 layout.
     """
-    body = _body(source)
+    body, mismatch = _body(source), None
     with tempfile.TemporaryDirectory(prefix="course-expression-") as temporary:
         directory = Path(temporary)
-        statements, records = _analyze(body, directory)
+        try:
+            statements, records = _analyze(body, directory)
+        except IllFormed as error:
+            # A last statement whose types do not fit is shown, not run: the rest is traced.
+            body, mismatch = _mismatch(body, error)
+            statements, records = _analyze(body, directory)
         predicted, state = [], {}
         for statement in statements:
             state = _after(statement, state)
@@ -1018,8 +1092,11 @@ def trace(source: str, *, runtime: bool = True) -> dict:
         previous = after
     if runtime and renderer.real_stdout != execution.stdout:
         raise Unsupported("runtime output disagrees with the expression trace")
-    renderer.steps[-1]["hold"] = 3
     shown = [statement for statement, _ in shown]
+    if mismatch:
+        renderer.mismatch(len(shown), mismatch, previous)
+        shown.append(mismatch)
+    renderer.steps[-1]["hold"] = 3
     result = {"format": FORMAT, "source": [statement.source for statement in shown],
               "spans": [list(statement.span) if statement.span else None for statement in shown],
               "variables": variables, "steps": renderer.steps}

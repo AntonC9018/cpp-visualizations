@@ -13,7 +13,7 @@ import re
 FORMAT = 1
 SCALAR_KINDS = ('int', 'ptr')
 STRUCT = 'struct'
-OPERATIONS = ('read', 'addr', 'deref', 'eval', 'write', 'print', 'bind', 'alias')
+OPERATIONS = ('read', 'addr', 'deref', 'eval', 'write', 'print', 'bind', 'alias', 'convert', 'clash')
 UNKNOWN = '?'
 IDENTIFIER = re.compile(r'[A-Za-z_]\w*')
 
@@ -292,12 +292,16 @@ def _operation(op, step: dict, previous: dict, storage: _Storage, where: str) ->
               'deref': {'target', 'via', 'span'}, 'eval': {'value', 'span'},
               'write': {'name', 'value', 'span', 'destination'}, 'print': {'value', 'span'},
               'bind': {'name', 'target', 'span', 'destination'},
-              'alias': {'name', 'target', 'span'}}[kind]
+              'alias': {'name', 'target', 'span'}, 'convert': {'value', 'span', 'from', 'to'},
+              'clash': {'span', 'destination', 'from', 'to'}}[kind]
     _keys(op, where, fields | {'kind'})
-    for key in fields & {'name', 'target', 'via', 'value'}:
+    for key in fields & {'name', 'target', 'via', 'value', 'from', 'to'}:
         _check(isinstance(op[key], str) and op[key], f'{where}.{key}', 'expected text')
     if kind in ('bind', 'alias'):
         _reference(op, step, previous, storage, where)
+        return
+    if kind == 'clash':
+        _clash(op, step, previous, where)
         return
     for key in ('name', 'via'):
         if key in op:
@@ -310,15 +314,39 @@ def _operation(op, step: dict, previous: dict, storage: _Storage, where: str) ->
         _check(pointee is not None and (op['target'] == pointee
                                         or op['target'].startswith(pointee + '.')),
                where, f'{op["via"]} does not point to {op["target"]}')
-    if kind in ('read', 'addr', 'deref', 'eval'):
+    if kind in ('read', 'addr', 'deref', 'eval', 'convert'):
         span = _span(op['span'], previous['pane'], where + '.span')
         replaced = _replacement(previous['pane'], step['pane'], span, where)
         expected = op['target'] if kind == 'deref' else op['value']
         _check(replaced == expected, where, f'the replacement {replaced!r} is not {expected!r}')
+        if kind == 'convert':
+            _check(_typed(previous, list(span)) == op['from'], where + '.from', 'is not the type of the converted value')
+            _check(_typed(step, [span[0], span[0] + len(replaced)]) == op['to'], where + '.to',
+                   'is not the type of the result')
     else:
         _unchanged_pane(op, step, previous, where)
     if kind in ('read', 'addr', 'write'):
         _memory(op, step, previous, storage, where)
+
+
+def _typed(step: dict, span: list[int]) -> str | None:
+    """The type of the pane's part at `span`, if it is a typed part."""
+    return next((part['type'] for part in step.get('types', []) if part['span'] == span), None)
+
+
+def _clash(op: dict, step: dict, previous: dict, where: str) -> None:
+    """A statement that does not compile: the value at `span`, of type `from`, does not fit the
+    slot at `destination`, which needs `to`. Nothing is evaluated and nothing changes."""
+    _check(step['pane'] == previous['pane'] and previous['op'] is None, where,
+           'a clash follows the statement as written and does not change the pane')
+    _, end = _span(op['destination'], step['pane'], where + '.destination')
+    start, _ = _span(op['span'], step['pane'], where + '.span')
+    _check(end <= start, where, 'the slot comes before the value')
+    _check(op['from'] != op['to'], where, 'the types must differ')
+    slot = next((part for part in step.get('types', []) if part.get('slot')), {})
+    _check(slot.get('span') == op['destination'] and slot['type'] == op['to'], where + '.destination',
+           'must be the typed slot of the statement')
+    _check(_typed(step, op['span']) == op['from'], where + '.span', 'must be a typed part of type `from`')
 
 
 def _reference(op: dict, step: dict, previous: dict, storage: _Storage, where: str) -> None:
@@ -487,6 +515,8 @@ def validate(trace) -> None:
             if step['op'] is not None:
                 _operation(step['op'], step, previous, storage, where + '.op')
             _changes(step, previous, storage, where)
+        _check(index == len(steps) - 1 or (step['op'] or {}).get('kind') != 'clash', where + '.op',
+               'nothing runs after a statement that does not compile')
         previous = step
 
 

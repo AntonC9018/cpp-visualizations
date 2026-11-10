@@ -64,6 +64,57 @@ class TypedPaneTests(unittest.TestCase):
 
 
 @unittest.skipUnless(CLANG, 'Clang is required for AST integration tests')
+class MismatchTests(unittest.TestCase):
+    """A last statement whose value does not fit its slot is shown as a clash, not run."""
+
+    def clash(self, source):
+        trace = tracing.trace(source, runtime=False)
+        written, clash = trace['steps'][-2:]
+        self.assertIsNone(written['op'])
+        self.assertEqual(written['pane'], clash['pane'])
+        self.assertEqual(clash['line'], len(trace['source']) - 1)
+        return trace, clash
+
+    def test_a_declaration_with_the_wrong_pointer_depth(self):
+        trace, clash = self.clash('struct A { int f; }; A a{ 1 }; A* value{ &a }; A** p{ value };')
+        self.assertEqual(typed(clash), ['A** p:A**!', 'value:A*'])
+        self.assertEqual((clash['op']['from'], clash['op']['to']), ('A*', 'A**'))
+        self.assertEqual(trace['source'][-1], 'A** p{ value };')
+        self.assertEqual({variable['name'] for variable in trace['variables']}, {'a', 'value'})
+        self.assertEqual(clash['memory'], trace['steps'][-3]['memory'])
+
+    def test_an_initializer_after_the_equals_sign(self):
+        _, clash = self.clash('int a = 5; int* p = a; return 0;')
+        self.assertEqual(typed(clash), ['int* p:int*!', 'a:int'])
+
+    def test_an_assignment(self):
+        _, clash = self.clash('int a = 5; int* p = &a; *p = &a;')
+        self.assertEqual(typed(clash), ['*p:int!', '&a:int*'])
+
+    def test_unrelated_structs(self):
+        _, clash = self.clash('struct A { int f; }; struct B { int f; }; A a{ 1 }; B b = a;')
+        self.assertEqual(typed(clash), ['B b:B!', 'a:A'])
+
+    def test_only_the_last_statement_may_fail(self):
+        for source in ('int a = 5; int* p = a; int b = 6;', 'int a = 5; int* p = b;', 'int* p = 5;'):
+            with self.assertRaises(tracing.Unsupported):
+                tracing.trace(source, runtime=False)
+
+    def test_a_clash_must_match_the_typed_pane(self):
+        trace, _ = self.clash('int a = 5; int* p = a;')
+        for edit in (lambda op: op.update(to='int'), lambda op: op.update(span=[0, 1]),
+                     lambda op: op.update({'from': 'int*'}), lambda op: op.update(destination=[0, 3])):
+            broken = copy.deepcopy(trace)
+            edit(broken['steps'][-1]['op'])
+            with self.assertRaises(FormatError):
+                validate(broken)
+        broken = copy.deepcopy(trace)
+        broken['steps'].append(copy.deepcopy(broken['steps'][-2]))
+        with self.assertRaises(FormatError):
+            validate(broken)
+
+
+@unittest.skipUnless(CLANG, 'Clang is required for AST integration tests')
 class TypeValidationTests(unittest.TestCase):
     def setUp(self):
         self.trace = tracing.trace('int a = 5; int b = a;', runtime=False)
