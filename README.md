@@ -53,6 +53,13 @@ value, or pointers to one. A nested struct is copied, assigned and initialized a
 struct frames, a nested struct as a frame inside its owner's, per-field colours and separate
 arc endpoints for objects and fields.
 
+A reference (`int& c = a;`, `auto&`, `const int&`, to a variable, a field, a struct, a pointer or
+what a pointer points to) is another name for storage, as the lessons put it. Binding it is one
+step; wherever its name is used afterwards, the name first becomes what it stands for
+(`c = 2` → `a = 2`). At `-O0` the compiler keeps a hidden pointer-sized slot per reference; the
+program cannot name it, so memory is drawn without it, with the variables in their real order.
+GDB checks every binding after every statement.
+
 Output prints one integer or pointer value followed only by whitespace (`' '`, `'\t'`, `'\n'`) or
 `std::endl`. A statement of whitespace alone, such as `std::cout << std::endl;`, prints it as
 spelled; flushing is not shown. A pointer prints its normalized address as 8 bytes of
@@ -65,7 +72,8 @@ respaces it, and so is a typed one (`A{ 1, 2 }`); a designated list evaluates to
 A struct value with a type of its own keeps it in the pane: a typed literal, and a struct that
 is read (`b = a` becomes `b = A{1, 2}`).
 
-Pointer arithmetic/comparison, arrays, references, casts, heap allocation,
+Pointer arithmetic/comparison, arrays, rvalue references, references bound to temporaries, casts,
+heap allocation,
 other field types, methods, inheritance, bitfields, default member initializers, empty structs,
 qualified pointers, control flow, ill-formed snippets and undefined reads or
 arithmetic are skipped with explicit reasons. Computed-address dereferences (`*(&a)`) and

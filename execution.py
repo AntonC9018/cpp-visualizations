@@ -22,6 +22,12 @@ class Cell:
     value: int | None
     object_address: int | None = None
     object_size: int | None = None
+    # A reference has no storage of its own to observe: `address` is that of what it names.
+    reference: bool = False
+
+
+# In a scope, in place of whether a value is defined: the name is a reference.
+REFERENCE = "reference"
 
 
 @dataclass(frozen=True)
@@ -40,7 +46,8 @@ int main() {
 """
 
 # Runs inside GDB. `expected[i]` lists the variables in scope after statement i and whether
-# their value is defined; undefined (uninitialized) values are never read.
+# their value is defined; undefined (uninitialized) values are never read. A reference is
+# observed as the address of what it names.
 _SCRIPT = '''import gdb, json, shlex
 expected, output, report = json.loads(EXPECTED), OUTPUT, REPORT
 records, failures, exits = [], [], []
@@ -54,6 +61,12 @@ class Checkpoint(gdb.Breakpoint):
             for name, defined in expected[position]:
                 owner, _, member = name.partition('.')
                 value = frame.read_var(owner)
+                if defined == "reference":
+                    if value.type.code != gdb.TYPE_CODE_REF:
+                        raise RuntimeError(name + " is not a reference")
+                    row[name] = {"address": int(value.referenced_value().address), "size": 0,
+                                 "pointer": False, "value": None, "reference": True}
+                    continue
                 object_address, object_size = int(value.address), int(value.type.sizeof)
                 for part in member.split('.') if member else ():
                     value = value[part]

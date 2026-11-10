@@ -83,7 +83,7 @@ def applicable(trace: dict, snippet: str) -> None:
     _storage_is_contiguous(variables)
     ops = [step['op'] for step in steps if step['op']]
     writes = [step for step in steps if step['op'] and step['op']['kind'] == 'write']
-    reads = [op for op in ops if op['kind'] in ('read', 'addr', 'deref')]
+    reads = [op for op in ops if op['kind'] in ('read', 'addr', 'deref', 'bind')]
     # A single initialized cell alone needs no illustration. Empty initialization is
     # deliberately kept: its contrast with uninitialized storage is the lesson.
     empty_init = any('{}' in line.replace(' ', '') for line in source)

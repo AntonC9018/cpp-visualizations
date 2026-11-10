@@ -13,7 +13,7 @@ import re
 FORMAT = 1
 SCALAR_KINDS = ('int', 'ptr')
 STRUCT = 'struct'
-OPERATIONS = ('read', 'addr', 'deref', 'eval', 'write', 'print')
+OPERATIONS = ('read', 'addr', 'deref', 'eval', 'write', 'print', 'bind', 'alias')
 UNKNOWN = '?'
 IDENTIFIER = re.compile(r'[A-Za-z_]\w*')
 
@@ -41,6 +41,11 @@ def struct(name: str, type_: str, address: int, size: int, fields: list[dict],
     """`size` includes any padding; `fields` come from `field()`."""
     return {'name': name, 'type': type_, 'address': address, 'size': size, 'kind': 'struct',
             'color': color, 'fields': fields}
+
+
+def reference(name: str, color: int = 0) -> dict:
+    """A reference: a name with no storage of its own, bound to storage by a `bind` step."""
+    return {'name': name, 'color': color}
 
 
 def field(name: str, offset: int, size: int = 4, kind: str = 'int', color: int = 0) -> dict:
@@ -159,12 +164,27 @@ def _fields(owner: dict, here: str) -> None:
     _check(end <= owner['size'], here, 'fields exceed the struct size')
 
 
+def _references(references, variables: list[dict], where: str) -> set[str]:
+    _check(isinstance(references, list) and references, where, 'expected a nonempty list')
+    names, taken = set(), {variable['name'] for variable in variables}
+    for index, item in enumerate(references):
+        here = f'{where}[{index}]'
+        _keys(item, here, {'name', 'color'})
+        _check(bool(IDENTIFIER.fullmatch(str(item['name']))), here, 'name is not an identifier')
+        _check(item['name'] not in names | taken, here, f'duplicate name {item["name"]!r}')
+        names.add(item['name'])
+        _natural(item['color'], here + '.color')
+    return names
+
+
 @dataclass(frozen=True)
 class _Storage:
-    """Lookups over validated variables: `cells` by leaf, `addresses` by variable or leaf."""
+    """Lookups over validated variables: `cells` by leaf, `addresses` by variable or leaf.
+    `references` are the names without storage."""
     variables: list[dict]
     cells: dict[str, dict]
     addresses: dict[str, int]
+    references: frozenset[str] = frozenset()
 
     def cells_of(self, name: str) -> list[str]:
         return cells_of(self.variables, name)
@@ -249,10 +269,15 @@ def _operation(op, step: dict, previous: dict, storage: _Storage, where: str) ->
     kind = op['kind']
     fields = {'read': {'name', 'value', 'span'}, 'addr': {'name', 'value', 'span'},
               'deref': {'target', 'via', 'span'}, 'eval': {'value', 'span'},
-              'write': {'name', 'value', 'span', 'destination'}, 'print': {'value', 'span'}}[kind]
+              'write': {'name', 'value', 'span', 'destination'}, 'print': {'value', 'span'},
+              'bind': {'name', 'target', 'span', 'destination'},
+              'alias': {'name', 'target', 'span'}}[kind]
     _keys(op, where, fields | {'kind'})
     for key in fields & {'name', 'target', 'via', 'value'}:
         _check(isinstance(op[key], str) and op[key], f'{where}.{key}', 'expected text')
+    if kind in ('bind', 'alias'):
+        _reference(op, step, previous, storage, where)
+        return
     for key in ('name', 'via'):
         if key in op:
             _check(op[key] in storage.addresses, f'{where}.{key}', f'unknown variable {op[key]!r}')
@@ -273,6 +298,31 @@ def _operation(op, step: dict, previous: dict, storage: _Storage, where: str) ->
         _unchanged_pane(op, step, previous, where)
     if kind in ('read', 'addr', 'write'):
         _memory(op, step, previous, storage, where)
+
+
+def _reference(op: dict, step: dict, previous: dict, storage: _Storage, where: str) -> None:
+    """A `bind` gives a reference its storage for good; an `alias` replaces a bound reference's
+    name in the pane by what it is bound to."""
+    kind, name, target = op['kind'], op['name'], op['target']
+    _check(name in storage.references, where + '.name', f'unknown reference {name!r}')
+    _check(target in storage.addresses, where + '.target', f'unknown variable {target!r}')
+    if kind == 'alias':
+        _check(_refs(previous).get(name) == target, where, f'{name} is not bound to {target}')
+        start, end = span = _span(op['span'], previous['pane'], where + '.span')
+        _check(previous['pane'][start:end] == name, where + '.span', 'does not cover the name')
+        replaced = _replacement(previous['pane'], step['pane'], span, where)
+        _check(replaced == target, where, f'the replacement {replaced!r} is not {target!r}')
+        return
+    _check(step['pane'] == previous['pane'], where, 'a bind does not change the pane')
+    _check(name not in _refs(previous) and _refs(step).get(name) == target, where,
+           f'{name} must become bound to {target}')
+    for key, text in (('span', target), ('destination', name)):
+        start, end = _span(op[key], step['pane'], f'{where}.{key}')
+        _check(step['pane'][start:end] == text, f'{where}.{key}', f'does not cover {text!r}')
+
+
+def _refs(step: dict) -> dict:
+    return step.get('refs', {})
 
 
 def _unchanged_pane(op: dict, step: dict, previous: dict, where: str) -> None:
@@ -307,6 +357,9 @@ def _changes(step: dict, previous: dict, storage: _Storage, where: str) -> None:
                f'{where}.targets.{name}', 'only a write changes where a pointer points')
     _check(step['stdout'] == previous['stdout'] or op.get('kind') == 'print',
            where + '.stdout', 'only a print changes the output')
+    bound = {op['name']: op['target']} if op.get('kind') == 'bind' else {}
+    _check(_refs(step) == {**_refs(previous), **bound}, where + '.refs',
+           'only a bind changes what a reference is bound to, and only once')
 
 
 def _layout(trace) -> None:
@@ -360,7 +413,7 @@ def validate(trace) -> None:
     if isinstance(trace, dict) and trace.get('kind') == 'layout':
         _layout(trace)
         return
-    _keys(trace, 'trace', {'format', 'source', 'variables', 'steps'}, {'title', 'spans', 'types'})
+    _keys(trace, 'trace', {'format', 'source', 'variables', 'steps'}, {'title', 'spans', 'types', 'references'})
     _check(trace['format'] == FORMAT, 'trace.format', f'expected {FORMAT}')
     source = trace['source']
     _check(isinstance(source, list) and source and all(isinstance(line, str) for line in source),
@@ -379,13 +432,14 @@ def validate(trace) -> None:
                'trace.types', 'expected struct names mapped to their definitions')
     variables = trace['variables']
     cells = _variables(variables, 'trace.variables')
-    storage = _Storage(variables, cells, addresses(variables))
+    references = _references(trace['references'], variables, 'trace.references') if 'references' in trace else set()
+    storage = _Storage(variables, cells, addresses(variables), frozenset(references))
     steps = trace['steps']
     _check(isinstance(steps, list) and steps, 'trace.steps', 'expected a nonempty list')
     previous = None
     for index, step in enumerate(steps):
         where = f'trace.steps[{index}]'
-        _keys(step, where, {'line', 'pane', 'values', 'targets', 'stdout', 'hold', 'op'}, {'expr'})
+        _keys(step, where, {'line', 'pane', 'values', 'targets', 'stdout', 'hold', 'op'}, {'expr', 'refs'})
         _check(type(step['line']) is int and 0 <= step['line'] < len(source), where + '.line',
                'not a source line')
         _check(isinstance(step['pane'], str), where + '.pane', 'expected text')
@@ -400,8 +454,12 @@ def validate(trace) -> None:
         _check(isinstance(step['stdout'], str), where + '.stdout', 'expected text')
         _check(type(step['hold']) in (int, float) and step['hold'] >= 0, where + '.hold',
                'expected seconds')
+        _check(isinstance(_refs(step), dict) and all(
+            name in references and target in storage.addresses for name, target in _refs(step).items()),
+            where + '.refs', 'expected references mapped to variables')
         if previous is None:
-            _check(step['op'] is None, where + '.op', 'the first step has no operation')
+            _check(step['op'] is None and not _refs(step), where + '.op',
+                   'the first step has no operation and no bound reference')
         else:
             if step['op'] is not None:
                 _operation(step['op'], step, previous, storage, where + '.op')

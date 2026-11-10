@@ -263,7 +263,7 @@ class StaticPointerTraceTests(unittest.TestCase):
             "int a{1}; int* p{&a}; int* q{&a}; int d = p - q;": "pointer arithmetic",
             "int a{1}; int* p{&a}; int d = p[0];": "ArraySubscriptExpr",
             "int a{1}; int* p{&a}; int* q{&a}; int e = p == q;": "pointer arithmetic and comparison",
-            "int a{1}; int& r = a;": "references",
+            "int a{1}; int&& r = 1;": "references",
             "int a{1}; int* p = (int*)&a;": "CStyleCastExpr",
             "int a{1}; long* p = reinterpret_cast<long*>(&a);": "pointers to int",
             "int* p = new int{1};": "CXXNewExpr",
