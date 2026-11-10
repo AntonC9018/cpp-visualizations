@@ -57,6 +57,7 @@ code {background: var(--code); padding: 0 .25em; border-radius: 4px; font-size: 
  <button id="prev" type="button" aria-label="Previous variant">◀</button>
  <span class="label" id="label"></span>
  <button id="next" type="button" aria-label="Next variant">▶</button>
+ <button id="style" type="button" title="Label style of variant B"></button>
  <button id="theme" type="button">theme</button>
 </div>
 
@@ -96,9 +97,12 @@ const VARIANTS = {
   },
 };
 
+// Label styles of variant B: coloured text, grey text, an outlined pill, the first filled pill.
+const STYLES = ['text', 'grey', 'outline', 'fill'];
 const query = new URLSearchParams(location.search);
 const state = {
-  variant: VARIANTS[query.get('variant')] ? query.get('variant') : 'A',
+  variant: VARIANTS[query.get('variant')] ? query.get('variant') : 'B',
+  style: STYLES.includes(query.get('style')) ? query.get('style') : 'text',
 };
 document.documentElement.dataset.theme = query.get('theme') || 'dark';
 
@@ -116,7 +120,7 @@ function mount() {
     const slot = details.querySelector('.slot'), old = slot.querySelector('.course-visualization');
     const index = old && old.cvPlayer ? old.cvPlayer.index : 0;
     if (old && old.cvPlayer) old.cvPlayer.pause();
-    const trace = build(scenarios[Number(details.dataset.scenario)], state.variant);
+    const trace = { ...build(scenarios[Number(details.dataset.scenario)], state.variant), labelStyle: state.style };
     slot.innerHTML = '<div class="course-visualization"><script type="application/json">'
       + JSON.stringify(trace).replace(/</g, '\\u003c') + '<\/script></div>';
     const host = slot.firstChild;
@@ -130,6 +134,8 @@ function mount() {
     + v.points.map(p => `<li>${p}</li>`).join('') + '</ul>';
   const url = new URL(location.href);
   url.searchParams.set('variant', state.variant);
+  url.searchParams.set('style', state.style);
+  document.getElementById('style').textContent = 'labels: ' + state.style;
   history.replaceState(null, '', url);
 }
 function restore(host) {
@@ -150,6 +156,10 @@ function cycle(by) {
 }
 document.getElementById('prev').onclick = () => cycle(-1);
 document.getElementById('next').onclick = () => cycle(1);
+document.getElementById('style').onclick = () => {
+  state.style = STYLES[(STYLES.indexOf(state.style) + 1) % STYLES.length];
+  mount();
+};
 document.getElementById('theme').onclick = () => {
   const root = document.documentElement;
   root.dataset.theme = root.dataset.theme === 'dark' ? 'light' : 'dark';

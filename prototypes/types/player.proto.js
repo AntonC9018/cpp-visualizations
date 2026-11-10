@@ -343,8 +343,13 @@
     return index === undefined ? c.P.muted : TYPE_COLOURS[themeName()][index % 6];
   };
   const pill = (c, cx, top, type, size, color) => {
-    const w = type.length * size * CHAR + 14, h = size + 7;
-    return rect(cx - w / 2, top, w, h, color, 'none', h / 2) + text(cx, top + size + 1, type, size, c.P.bg, 'middle');
+    const w = type.length * size * CHAR + 14, h = size + 7, style = c.m.trace.labelStyle || 'text';
+    const label = fill => text(cx, top + size + 1, type, size, fill, 'middle');
+    // PROTO: label styles for variant B. The underline keeps the colour in every one of them.
+    if (style === 'fill') return rect(cx - w / 2, top, w, h, color, 'none', h / 2) + label(c.P.bg);
+    if (style === 'outline') return rect(cx - w / 2, top, w, h, 'none', color, h / 2, 1.5) + `<g opacity="0.85">${label(color)}</g>`;
+    if (style === 'grey') return label(c.P.muted);
+    return `<g opacity="0.8">${label(color)}</g>`;
   };
   // The annotations of one step's pane, settled, with the pane text starting at (x, y).
   function typeLayer(c, step, x, y) {
