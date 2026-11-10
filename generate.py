@@ -28,10 +28,20 @@ MAX_VARIABLES = 5
 DECLARATION = re.compile(r'\s*(?:const\s+)?(?:int|auto)\b')
 
 
+def _toolchain_pin() -> tuple[Path, Path]:
+    """The flake that pins the tools: the host repository's when it has one, else this one's.
+
+    A course that mounts this repository as a submodule traces inside its own dev shell.
+    """
+    host = ROOT.parent
+    pinned_by = host if (host / 'flake.lock').is_file() else ROOT
+    return pinned_by / 'flake.nix', pinned_by / 'flake.lock'
+
+
 def revision() -> str:
     """Change whenever a trace could change: tracer sources and the pinned toolchain."""
     digest = hashlib.sha256()
-    for path in (*TRACER_SOURCES, ROOT.parent / 'flake.nix', ROOT.parent / 'flake.lock'):
+    for path in (*TRACER_SOURCES, *_toolchain_pin()):
         digest.update(path.name.encode())
         digest.update(path.read_bytes())
     return digest.hexdigest()

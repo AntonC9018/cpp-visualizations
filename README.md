@@ -1,10 +1,21 @@
-# Execution visualizations
+# Execution visualizations for C++
 
-Lessons show how C++ examples execute: code on the left, memory above an expression-evaluation
-pane on the right, values moving between them. This work belongs to [epic #50]; the integration
-design is in [#55] and [#56].
+Show how C++ examples execute: code on the left, memory above an expression-evaluation
+pane on the right, values moving between them. A compiler-backed tracer produces the traces;
+a dependency-free browser player steps through them.
+
+The templates were built for the [course] (epic [#50], integration design in [#55] and [#56])
+and are meant to be mounted as a git submodule at `visualizations/`:
+
+```sh
+git submodule add https://github.com/AntonC9018/cpp-visualizations visualizations
+```
+
+The commands below are written from this repository's root;
+from a host repository, prefix the paths with `visualizations/`.
 
 - `discover.py` finds lesson examples the tracer supports and tags them.
+  It needs a host course with [course maintenance] next to this directory.
 - `tracing.py` uses Clang AST types and ranges to emit unified integer, pointer and struct traces.
 - `records.py` validates aggregate definitions and reads field offsets, sizes and alignment
   from Clang.
@@ -17,7 +28,9 @@ design is in [#55] and [#56].
   the format.
 - `layout.py` emits the static struct-layout view from [#62], replacing its prototype.
 
-[epic #50]: https://github.com/AntonC9018/uniCourse_dataStructuresAndAlgorithms/issues/50
+[course]: https://github.com/AntonC9018/uniCourse_dataStructuresAndAlgorithms
+[course maintenance]: https://github.com/AntonC9018/course_maintenance
+[#50]: https://github.com/AntonC9018/uniCourse_dataStructuresAndAlgorithms/issues/50
 [#55]: https://github.com/AntonC9018/uniCourse_dataStructuresAndAlgorithms/issues/55
 [#56]: https://github.com/AntonC9018/uniCourse_dataStructuresAndAlgorithms/issues/56
 [#62]: https://github.com/AntonC9018/uniCourse_dataStructuresAndAlgorithms/issues/62
@@ -51,8 +64,8 @@ cell gets no visualization; empty initialization, value copies, arithmetic, assi
 output do.
 
 ```sh
-python3 visualizations/discover.py --report /tmp/visualization-inventory.json
-python3 visualizations/discover.py --apply
+python3 discover.py --report /tmp/visualization-inventory.json
+python3 discover.py --apply
 ```
 
 Discovery adds minimal tags in collapsed, localized execution-trace blocks. Course maintenance
@@ -67,12 +80,13 @@ published. Cells are ordered by address, so declaration order may differ from th
 Unchanged-value writes, such as the failed swap, remain visible writes.
 
 ```sh
-python3 visualizations/generate.py probe --source /tmp/snippet.cpp
-python3 visualizations/generate.py trace --source /tmp/snippet.cpp
+python3 generate.py probe --source /tmp/snippet.cpp
+python3 generate.py trace --source /tmp/snippet.cpp
 ```
 
 `trace` prints the unified format as deterministic JSON (sorted keys). `revision` hashes the
-tracer modules (including record layouts) and the flake lock. Maintenance keys stored traces
+tracer modules (including record layouts) and the flake that pins the tools:
+the host repository's when it has one, otherwise this repository's. Maintenance keys stored traces
 by this revision, so a toolchain or format change re-traces every example.
 
 ## Static struct layouts
@@ -90,20 +104,21 @@ highlight the whole object. Theme changes preserve focus.
 
 ## Toolchain and tests
 
-The course flake pins the tools. `nix develop .#visualizations` provides Clang with C++
+The flake pins the tools. A host repository that traces in CI keeps a flake of its own
+with the same shells, so that its lock decides when its traces are stale. `nix develop .#visualizations` provides Clang with C++
 standard headers and Python-enabled GDB, which is all tracing needs; CI uses the same shell.
 The default shell (`nix develop`) adds Node and Chromium for headless screenshots of the demo.
 `CLANGXX` and `GDB` select the tools; both shells set them.
 
 ```sh
-nix develop .#visualizations --command python3 -m unittest discover -s visualizations/tests
+nix develop .#visualizations --command python3 -m unittest discover -s tests
 ```
 
 The player's browser tests run headless Chromium through Playwright, in the default shell:
 
 ```sh
-nix develop --command npm ci --prefix visualizations
-nix develop --command npm test --prefix visualizations
+nix develop --command npm ci
+nix develop --command npm test
 ```
 
 ## Interactivity in Markdown

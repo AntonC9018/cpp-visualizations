@@ -136,8 +136,8 @@ with real tracer outputs for lesson 2 and pointer lesson examples and every fixt
 theme and language switches:
 
 ```sh
-python3 visualizations/player/fixtures.py
-nix develop --command python3 visualizations/player/demo.py
+python3 player/fixtures.py
+nix develop --command python3 player/demo.py
 ```
 
 ## Static layout variant

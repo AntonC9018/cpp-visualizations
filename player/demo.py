@@ -7,7 +7,7 @@ collapsed `<details>`, as on the
 site; the buttons in the header switch `<html data-theme>` and `lang`, as Starlight does.
 Run from the course root, inside the default shell (Clang and GDB):
   nix develop --command python3 visualizations/player/demo.py
-Then open visualizations/player/demo.html (git-ignored).
+Then open player/demo.html (git-ignored).
 """
 from html import escape
 import json
