@@ -29,13 +29,16 @@
   const MAX_SCALE = 0.6;                    // CSS pixels per unit: short traces do not blow up
   const DIM = 0.5;                          // opacity of variables the statement does not involve
   const T = { prepare: 0.55, travel: 1.1, settle: 0.6, follow: 0.9, writeHold: 0.8,
-    copyBegin: 0.15, copyTravel: 1.0, evaluate: 0.6 };
+    copyBegin: 0.15, copyTravel: 1.0, evaluate: 0.6, clash: 1.6 };
   const KEYWORDS = new Set(['int', 'std', 'cout', 'endl', 'struct', 'auto', 'const']);
   const EASE = 'calcMode="spline" keyTimes="0;1" keySplines="0.4 0 0.2 1"';
   const PALETTE = ['bg', 'panel', 'pane', 'fg', 'muted', 'grey', 'context', 'read', 'read-fill',
     'write', 'write-fill', 'deref-fill', 'highlight', 'dead-fill', 'dead-stroke', 'gap-stroke',
-    'tether'];
-  const VARIABLE_COLOURS = 5, FIELD_COLOURS = 4;
+    'tether', 'error', 'type-label'];
+  const VARIABLE_COLOURS = 5, FIELD_COLOURS = 4, TYPE_COLOURS = 6;
+  // Type labels: text sizes in the pane and under names, the room above the pane's text, the
+  // step between rows of labels under names.
+  const LABEL = { pane: 20, memory: 18, rise: 38, row: 30 };
 
   const STRINGS = {
     en: {
@@ -47,6 +50,8 @@
       eval: 'Evaluate: {value}', write: 'Store {value} in {name}', print: 'Print {value}',
       bind: '{name} becomes another name for {target}', alias: '{name} is another name for {target}',
       blank: { '\n': 'Print a newline', '\t': 'Print a tab', ' ': 'Print a space' },
+      convert: 'Convert {from} to {to}: {value}',
+      clash: 'Does not compile: {value} is {from}, {slot} needs {to}',
       error: 'This visualization could not be loaded.',
     },
     ru: {
@@ -58,6 +63,8 @@
       eval: 'Вычисление: {value}', write: 'Запись {value} в {name}', print: 'Вывод {value}',
       bind: '{name} становится ещё одним именем для {target}', alias: '{name} — другое имя для {target}',
       blank: { '\n': 'Вывод перевода строки', '\t': 'Вывод табуляции', ' ': 'Вывод пробела' },
+      convert: 'Преобразование {from} в {to}: {value}',
+      clash: 'Не компилируется: {value} имеет тип {from}, а для {slot} нужен {to}',
       error: 'Не удалось загрузить визуализацию.',
     },
   };
@@ -123,7 +130,8 @@
   const departure = op => stores(op) ? T.writeHold : op.kind === 'print' ? 0.2 : T.prepare;
   function arrival(op) {
     if (op.kind === 'deref') return T.prepare + T.follow;
-    if (op.kind === 'eval' || op.kind === 'alias') return T.evaluate;
+    if (op.kind === 'eval' || op.kind === 'alias' || op.kind === 'convert') return T.evaluate;
+    if (op.kind === 'clash') return T.clash;
     if (op.kind === 'print') return 0.9;
     return departure(op) + T.travel;
   }
@@ -172,7 +180,20 @@
       }
     }
     const top = variables.map(variable => variable.name);
-    return { trace, steps: trace.steps, source: trace.source, spans: trace.spans || [], types: trace.types || {},
+    // A type's colour follows from its name, so it is the same in every example: `int` has
+    // the first, and two types that would share one in a trace take neighbouring colours.
+    // A trace without typed panes (a hand-written one) is drawn without any labels.
+    const types = new Set(['int', ...variables.map(variable => variable.type),
+      ...trace.steps.flatMap(step => (step.types || []).map(part => part.type))].filter(Boolean));
+    const typeColours = new Map(), taken = new Set();
+    for (const type of types) {
+      let index = type === 'int' ? 0 : [...type].reduce((hash, ch) => (hash * 31 + ch.charCodeAt(0)) % 9973, 7) % TYPE_COLOURS;
+      while (taken.has(index) && taken.size < TYPE_COLOURS) index = (index + 1) % TYPE_COLOURS;
+      taken.add(index);
+      typeColours.set(type, index);
+    }
+    const typed = trace.steps.some(step => step.types);
+    return { typeColours, typed, trace, steps: trace.steps, source: trace.source, spans: trace.spans || [], types: trace.types || {},
       references: trace.references || [], leaves, groups, tops, top, rise: Math.max(0, ...groups.map(group => group.rise)) };
   }
 
@@ -285,6 +306,21 @@
     }
     return { spans, gaps, width };
   }
+  // The types under the names of top-level storage. A label takes the first row where it
+  // clears the label before it, so a narrow cell's type drops below its neighbour's.
+  function typeRows(m, box) {
+    const labels = [], edge = [];
+    for (const item of m.typed ? m.tops : []) {
+      if (!item.type) continue;
+      const at = box(item.name), cx = at.x + at.w / 2, half = typeLabelWidth(item.type, LABEL.memory) / 2;
+      let row = 0;
+      while (edge[row] !== undefined && cx - half < edge[row] + 6) row++;
+      edge[row] = cx + half;
+      labels.push({ name: item.name, type: item.type, cx, row });
+    }
+    return { labels, height: edge.length ? edge.length * LABEL.row + 6 : 0 };
+  }
+  const typeLabelWidth = (type, size) => type.length * size * CHAR + 14;
   const labelWidth = c => String(c.address).length * 16 * CHAR;
   const labelCentre = c => [c.x + 3 + labelWidth(c) / 2, c.y - 18];
   const valueCentre = c => [c.x + c.w / 2, c.y + 32];
@@ -347,8 +383,10 @@
     const structs = m.groups.length > 0;
     const room = (level >= 0 ? FRAME.top + 84 + level * 40 + 10 : (structs ? FRAME.top : 0) + 30) + g.rise * RISE.top;
     const tagged = tagRows(m, probe.box);
-    const names = (structs ? CELL + FRAME.bottom + 32 : CELL + 34) + g.rise * RISE.bottom + tagged.height;
-    const paneTop = room + names + 56, paneH = 76;
+    const typeRow = typeRows(m, probe.box), rise = m.typed ? LABEL.rise : 0;
+    const named = (structs ? CELL + FRAME.bottom + 32 : CELL + 34) + g.rise * RISE.bottom + tagged.height;
+    const names = named + typeRow.height;
+    const paneTop = room + names + 56, paneH = 76 + rise + (rise ? 6 : 0);
     const outputTop = paneTop + paneH + 60;
     const columnH = outputLines.length ? outputTop + (outputLines.length - 1) * 36 + 14 : paneTop + paneH;
 
@@ -370,7 +408,7 @@
     Object.assign(g, { width, height, code: { x: codeX, y: codeY, w: codeW, h: codeH },
       memX: columnX + 24, memY: columnY + room, pane: { x: columnX, y: columnY + paneTop, w: columnW, h: paneH },
       tx: columnX + 24, out: [columnX + 24, columnY + outputTop] });
-    g.ty = g.pane.y + 38 + 11;
+    g.ty = g.pane.y + 38 + 11 + rise;
     g.below = g.pane.y - 56;
     g.lineY = i => g.code.y + 50 + i * LINE;
     g.gaps = placed.gaps.map(([x, w]) => [g.memX + x, w]);
@@ -392,6 +430,7 @@
       || g.tags.find(t => t.name === token);
     g.field = token => g.leaves.find(l => l.group && l.label === token)
       || g.groups.find(s => s.parent && s.label === token);
+    g.typeLabels = typeRow.labels.map(l => ({ ...l, cx: l.cx + g.memX, top: g.memY + named + 8 + l.row * LABEL.row }));
     g.typeTargets = typeTargets(m, g);
     g.nameSize = labelSize([...g.groups.filter(s => !s.parent), ...g.leaves.filter(l => !l.group)], c => c.name, 26);
     g.fieldSize = labelSize(g.leaves.filter(l => l.group), c => c.label, 20);
@@ -414,6 +453,66 @@
     }
     return out;
   }
+  // Types -----------------------------------------------------------------------------------
+  // A type is a unit of measurement: one colour per type, on a label and under what it types.
+  const typeColour = (c, type) => c.P.types[c.m.typeColours.get(type)];
+  // A filled pill on the light palette, an outlined one on the dark (--cv-type-label).
+  function typeLabel(c, cx, top, type, size, color) {
+    const w = typeLabelWidth(type, size), h = size + 7;
+    const label = fill => text(cx, top + size + 1, type, size, fill, 'middle');
+    return c.P.typeLabel === 'fill' ? rect(cx - w / 2, top, w, h, color, 'none', h / 2) + label(c.P.bg)
+      : rect(cx - w / 2, top, w, h, 'none', color, h / 2, 1.5) + label(color);
+  }
+  // One label per typed part of a pane starting at x. Neighbours of one type that would
+  // collide share a label; neighbours of different types shrink until they fit.
+  function paneLabels(step, x) {
+    const labels = [];
+    for (const part of step.types || []) {
+      const cx = x + (part.span[0] + part.span[1]) / 2 * EVAL_CHAR, last = labels[labels.length - 1];
+      const label = { type: part.type, cx, from: cx, size: LABEL.pane, slot: Boolean(part.slot), start: part.span[0] };
+      const gap = () => label.cx - last.cx - 6 - (typeLabelWidth(last.type, last.size) + typeLabelWidth(label.type, label.size)) / 2;
+      if (last && gap() < 0 && last.type === label.type && !last.slot) {
+        last.cx = (last.from + cx) / 2;
+        continue;
+      }
+      while (last && gap() < 0 && label.size > 11) last.size = label.size = Math.min(last.size, label.size) - 1;
+      labels.push(label);
+    }
+    return labels;
+  }
+  const labelTop = (y, label) => y - 70 + (LABEL.pane - label.size) / 2;
+  // The types of one step's pane, settled, with the pane's text starting at (x, y).
+  function paneTypes(c, step, x, y) {
+    const { P } = c, op = step.op || {}, clash = op.kind === 'clash';
+    const labels = paneLabels(step, x), value = labels.find(label => !label.slot && label.start === (op.span || [])[0]);
+    const slot = labels.find(label => label.slot);
+    let out = '';
+    for (const part of step.types || []) {
+      out += `<path d="M ${round(x + part.span[0] * EVAL_CHAR)} ${y + 14} H ${round(x + part.span[1] * EVAL_CHAR)}" `
+        + `stroke="${typeColour(c, part.type)}" stroke-width="3" stroke-linecap="round"/>`;
+    }
+    for (const label of labels) {
+      const top = labelTop(y, label), middle = top + (label.size + 7) / 2;
+      let mark = typeLabel(c, label.cx, top, label.type, label.size, typeColour(c, label.type));
+      // A converted value's new unit pops; a unit that does not fit tries the slot and comes back.
+      if (c.animate && step === c.step && label === value && op.kind === 'convert') {
+        mark = `<g transform="translate(${round(label.cx)} ${round(middle)})"><g>${pulse(arrival(op) + 0.2)}`
+          + `<g transform="translate(${round(-label.cx)} ${round(-middle)})">${mark}</g></g></g>`;
+      }
+      if (c.animate && step === c.step && label === value && clash && slot) {
+        mark = `<g><animateMotion path="M 0 0 H ${round(slot.cx - label.cx)}" keyPoints="0;0.75;0" keyTimes="0;0.55;1" `
+          + `calcMode="linear" begin="0.35s" dur="${T.clash - 0.4}s" fill="freeze"/>${mark}</g>`;
+      }
+      out += mark;
+      if (clash && (label === value || label === slot)) {
+        const w = typeLabelWidth(label.type, label.size), h = label.size + 7;
+        out += rect(label.cx - w / 2 - 4, top - 4, w + 8, h + 8, 'none', P.error, h / 2 + 4, 2.5);
+      }
+    }
+    if (clash && value && slot) out += text((slot.cx + value.cx) / 2, y - 48, '≠', 26, P.error, 'middle');
+    return out;
+  }
+
   // pane[a, b) drawn from x; outside the evaluated span (expr) the statement is muted context.
   function paneText(c, x, y, pane, a, b, expr) {
     const member = /(\.|->)$/.test(pane.slice(0, a));
@@ -463,7 +562,8 @@
       return [x + 62 + span[0] * CODE_CHAR - 3, g.lineY(line) - 30, (span[1] - span[0]) * CODE_CHAR + 6];
     };
     const y = g.lineY(step.line), [bx, by, bw] = box(step.line);
-    let stripe = rect(x + 8, y - 32, 4, 44, op && op.kind === 'write' ? P.write : P.read, 'none', 0);
+    const failed = step.op && step.op.kind === 'clash';
+    let stripe = rect(x + 8, y - 32, 4, 44, failed ? P.error : op && op.kind === 'write' ? P.write : P.read, 'none', 0);
     let span = rect(bx, by, bw, 40, P.highlight, 'none', 6);
     if (oldLine !== null) {
       const [ox, oy, ow] = box(oldLine);
@@ -599,6 +699,10 @@
     // So does a reference: its name stands for the location it is bound to.
     if (op && op.kind === 'alias') out += `<g opacity="0">${fade(0, 1, 0.2, at - 0.15)}${outline(c, g.box(op.target), P.fg)}</g>`;
     if (op && op.kind === 'bind') out += `<g opacity="0">${fade(0, 1, 0.2)}${fade(1, 0, 0.35, at + 0.5)}${outline(c, g.box(op.target), P.fg)}</g>`;
+    for (const label of g.typeLabels) {
+      const on = g.cellsOf(label.name).some(live);
+      out += dim(c, label.name, typeLabel(c, label.cx, label.top, label.type, LABEL.memory, on ? typeColour(c, label.type) : P.deadStroke));
+    }
     return out + tags(c, at);
   }
   // A reference's tag shows once it is bound: it pops in as its name arrives, and glows
@@ -656,7 +760,18 @@
     }
     return '';
   }
+  // The pane, and over it the types of its parts: the old pane's give way to the new one's.
   function pane(c, copying) {
+    const { g, step, prev, op, animate } = c, types = shown => paneTypes(c, shown, g.tx, g.ty);
+    const out = paneBody(c, copying);
+    if (!c.m.typed || !animate) return out + (c.m.typed ? types(step) : '');
+    const appear = (at, shown) => `<g opacity="0">${fade(0, 1, 0.25, at)}${types(shown)}</g>`;
+    if (copying) return out + appear(copyBegin(c.m.steps, c.index) + T.copyTravel, step);
+    if (op && op.kind === 'clash') return out + appear(0.15, step);
+    if (!op || stores(op) || op.kind === 'print') return out + types(step);
+    return out + `<g>${fade(1, 0, 0.2, Math.max(0, arrival(op) - 0.35))}${types(prev)}</g>` + appear(arrival(op) + 0.2, step);
+  }
+  function paneBody(c, copying) {
     const { g, P, step, prev, op } = c, tx = g.tx, ty = g.ty;
     let out = rect(g.pane.x, g.pane.y, g.pane.w, g.pane.h, P.pane);
     if (copying) {
@@ -673,17 +788,18 @@
         + settledPane(c, step, 0, 0) + '</g></g>';
       return out;
     }
-    if (op && ['read', 'addr', 'deref', 'eval', 'alias'].includes(op.kind)) {
+    if (op && ['read', 'addr', 'deref', 'eval', 'alias', 'convert'].includes(op.kind)) {
       const before = prev.pane, [s, e] = op.span, length = step.pane.length - before.length + (e - s);
       const at = arrival(op), dx = (length - (e - s)) * EVAL_CHAR, sx = tx + s * EVAL_CHAR;
-      const [stroke, fill] = op.kind === 'read' || op.kind === 'addr' ? [P.read, P.readFill] : [P.fg, P.derefFill];
+      const [stroke, fill] = op.kind === 'read' || op.kind === 'addr' ? [P.read, P.readFill]
+        : op.kind === 'convert' ? [P.write, P.writeFill] : [P.fg, P.derefFill];
       out += exprBackground(c, tx, ty, step.expr, prev.expr, at + 0.1);
       out += `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.2, at - 0.1)}${markBox(sx, ty, e - s, stroke, fill)}</g>`;
       out += paneText(c, tx, ty, before, 0, s, prev.expr);
       let old = paneText(c, sx, ty, before, s, e, prev.expr);
       let fresh = paneText(c, sx, ty, step.pane, s, s + length, step.expr);
       const middle = sx + (e - s) * EVAL_CHAR / 2;
-      if (op.kind === 'eval') {
+      if (op.kind === 'eval' || op.kind === 'convert') {
         // The operands gather into the middle of their span; the result grows out of it.
         old = scaleAbout(old, middle, ty - 11, 1, 0.45, 0.15, at - 0.15);
         fresh = scaleAbout(fresh, sx + length * EVAL_CHAR / 2, ty - 11, 0.45, 1, at, 0.25);
@@ -748,6 +864,7 @@
     const { m, S, step } = c, op = step.op;
     if (!op) return format(S.copy, { line: step.line + 1, code: m.source[step.line] });
     if (op.kind === 'print' && S.blank[op.value]) return S.blank[op.value];
+    if (op.kind === 'clash') return format(S.clash, { ...op, value: step.pane.slice(...op.span), slot: step.pane.slice(...op.destination) });
     return format(S[op.kind], op);
   }
 
@@ -901,6 +1018,7 @@
       for (const name of PALETTE) P[name.replace(/-(\w)/g, (_, ch) => ch.toUpperCase())] = read(name) || '#808080';
       P.vars = Array.from({ length: VARIABLE_COLOURS }, (_, i) => read('var-' + i) || '#808080');
       P.fields = Array.from({ length: FIELD_COLOURS }, (_, i) => read('field-' + i) || '#808080');
+      P.types = Array.from({ length: TYPE_COLOURS }, (_, i) => read('type-' + i) || '#808080');
       this.P = P;
     }
 
