@@ -46,7 +46,8 @@ Nothing else is required from the page.
 
 Memory sits above an evaluation pane, right of the code (stacked on phones). Bytes are drawn to
 scale, addresses start at 64, and alignment gaps are dashed. A struct is a frame hugging its
-field cells; adjacent frames touch. Every live pointer keeps an arc above memory, in the
+field cells; adjacent frames touch. A struct field is a smaller frame inside its owner's, in
+the field's colour, with its name below its cells. Every live pointer keeps an arc above memory, in the
 pointer's colour, from its cell to the pointee. Arcs to a whole struct end on its frame; arcs
 to a field reach the field cell. Ends sharing a cell spread apart and never cross.
 
@@ -77,6 +78,7 @@ trace     = {format: 1, source: [line…], variables: [variable…], steps: [ste
 variable  = {name, address, size, kind: "int" | "ptr", color}
           | {name, address, size, kind: "struct", color, type, fields: [field…]}
 field     = {name, offset, size, kind: "int" | "ptr", color}
+          | {name, offset, size, kind: "struct", color, type, fields: [field…]}
 step      = {line, pane, values, targets, stdout, hold, op, expr?}
 span      = [start, end)  — character offsets
 ```
@@ -89,6 +91,8 @@ span      = [start, end)  — character offsets
 - `variables` are non-overlapping storage, in any order. `size` counts bytes, padding included.
   `color` indexes the palette's variable colours (fields: field colours) and wraps around.
 - A *leaf* is a cell holding a value: a scalar by name, a struct field as `variable.field`.
+  A struct field nests: its `offset` is relative to the struct that holds it, and its leaves
+  are named by path (`outer.inner.x`).
 - `line` is the zero-based source line. `pane` is the statement as currently evaluated, in the
   lessons' notation (`int b{ a };` appears as `int b = a`, `int a{};` as `int a = {}`);
   `expr` is the part of the pane that is being evaluated, the rest being muted context.

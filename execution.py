@@ -55,8 +55,8 @@ class Checkpoint(gdb.Breakpoint):
                 owner, _, member = name.partition('.')
                 value = frame.read_var(owner)
                 object_address, object_size = int(value.address), int(value.type.sizeof)
-                if member:
-                    value = value[member]
+                for part in member.split('.') if member else ():
+                    value = value[part]
                 kind = value.type.strip_typedefs().code
                 if value.address is None or kind not in (gdb.TYPE_CODE_INT, gdb.TYPE_CODE_PTR):
                     raise RuntimeError("unsupported storage for " + name)

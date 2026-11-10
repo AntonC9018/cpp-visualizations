@@ -12,6 +12,7 @@ import re
 
 FORMAT = 1
 SCALAR_KINDS = ('int', 'ptr')
+STRUCT = 'struct'
 OPERATIONS = ('read', 'addr', 'deref', 'eval', 'write', 'print')
 UNKNOWN = '?'
 IDENTIFIER = re.compile(r'[A-Za-z_]\w*')
@@ -46,34 +47,39 @@ def field(name: str, offset: int, size: int = 4, kind: str = 'int', color: int =
     return {'name': name, 'offset': offset, 'size': size, 'kind': kind, 'color': color}
 
 
-def leaves(variables: list[dict]) -> dict[str, dict]:
-    """Every cell that holds a value: scalars by name, struct fields as `variable.field`."""
-    cells = {}
+def struct_field(name: str, type_: str, offset: int, size: int, fields: list[dict],
+                 color: int = 0) -> dict:
+    """A struct nested in a struct by value; its `fields` are offset from its own start."""
+    return {'name': name, 'type': type_, 'offset': offset, 'size': size, 'kind': STRUCT,
+            'color': color, 'fields': fields}
+
+
+def _walk(variables: list[dict]):
+    """Every variable and, depth first, every field: (dotted name, address, item)."""
+    def visit(prefix: str, base: int, item: dict):
+        name = prefix + item['name']
+        address = base + item.get('offset', item.get('address', 0))
+        yield name, address, item
+        for inner in item['fields'] if item['kind'] == STRUCT else ():
+            yield from visit(name + '.', address, inner)
     for variable in variables:
-        if variable['kind'] == 'struct':
-            for item in variable['fields']:
-                cells[variable['name'] + '.' + item['name']] = item
-        else:
-            cells[variable['name']] = variable
-    return cells
+        yield from visit('', 0, variable)
+
+
+def leaves(variables: list[dict]) -> dict[str, dict]:
+    """Every cell that holds a value: scalars by name, struct fields as `variable.field`,
+    fields of nested structs as `variable.field.field`."""
+    return {name: item for name, _, item in _walk(variables) if item['kind'] != STRUCT}
 
 
 def addresses(variables: list[dict]) -> dict[str, int]:
-    """The address of every variable and every struct field (`variable.field`)."""
-    result = {}
-    for variable in variables:
-        result[variable['name']] = variable['address']
-        for item in variable['fields'] if variable['kind'] == 'struct' else ():
-            result[variable['name'] + '.' + item['name']] = variable['address'] + item['offset']
-    return result
+    """The address of every variable and of every field, nested ones included."""
+    return {name: address for name, address, _ in _walk(variables)}
 
 
 def cells_of(variables: list[dict], name: str) -> list[str]:
-    """The leaves a name covers: a struct's fields, or the leaf itself."""
-    for variable in variables:
-        if variable['name'] == name and variable['kind'] == 'struct':
-            return [name + '.' + item['name'] for item in variable['fields']]
-    return [name]
+    """The leaves a name covers: all those inside a struct, or the leaf itself."""
+    return [leaf for leaf in leaves(variables) if leaf == name or leaf.startswith(name + '.')]
 
 
 # Validation -----------------------------------------------------------------------------------
@@ -122,27 +128,35 @@ def _variables(variables, where: str) -> dict[str, dict]:
         if not struct_:
             _check(variable['kind'] in SCALAR_KINDS, here, f'kind must be one of {SCALAR_KINDS} or struct')
             continue
-        _check(isinstance(variable['type'], str) and variable['type'], here, 'type must be a name')
-        fields = variable['fields']
-        _check(isinstance(fields, list) and fields, here + '.fields', 'expected a nonempty list')
-        seen, end = set(), 0
-        for position, item in enumerate(fields):
-            spot = f'{here}.fields[{position}]'
-            _keys(item, spot, {'name', 'offset', 'size', 'kind', 'color'})
-            _check(bool(IDENTIFIER.fullmatch(str(item['name']))), spot, 'name is not an identifier')
-            _check(item['name'] not in seen, spot, f'duplicate field {item["name"]!r}')
-            seen.add(item['name'])
-            _check(item['kind'] in SCALAR_KINDS, spot, f'kind must be one of {SCALAR_KINDS}')
-            _natural(item['offset'], spot + '.offset')
-            _natural(item['size'], spot + '.size', positive=True)
-            _natural(item['color'], spot + '.color')
-            _check(item['offset'] >= end, spot, 'fields must be ordered and must not overlap')
-            end = item['offset'] + item['size']
-        _check(end <= variable['size'], here, 'fields exceed the struct size')
+        _fields(variable, here)
     ranges.sort()
     for (_, end, left), (start, _, right) in zip(ranges, ranges[1:]):
         _check(start >= end, where, f'{left!r} and {right!r} overlap')
     return leaves(variables)
+
+
+def _fields(owner: dict, here: str) -> None:
+    """A struct's fields are ordered, disjoint and inside it; a struct field nests the same way."""
+    _check(isinstance(owner['type'], str) and owner['type'], here, 'type must be a name')
+    fields = owner['fields']
+    _check(isinstance(fields, list) and fields, here + '.fields', 'expected a nonempty list')
+    seen, end = set(), 0
+    for position, item in enumerate(fields):
+        spot = f'{here}.fields[{position}]'
+        nested = isinstance(item, dict) and item.get('kind') == STRUCT
+        _keys(item, spot, {'name', 'offset', 'size', 'kind', 'color'} | ({'type', 'fields'} if nested else set()))
+        _check(bool(IDENTIFIER.fullmatch(str(item['name']))), spot, 'name is not an identifier')
+        _check(item['name'] not in seen, spot, f'duplicate field {item["name"]!r}')
+        seen.add(item['name'])
+        _check(nested or item['kind'] in SCALAR_KINDS, spot, f'kind must be one of {SCALAR_KINDS} or struct')
+        _natural(item['offset'], spot + '.offset')
+        _natural(item['size'], spot + '.size', positive=True)
+        _natural(item['color'], spot + '.color')
+        _check(item['offset'] >= end, spot, 'fields must be ordered and must not overlap')
+        end = item['offset'] + item['size']
+        if nested:
+            _fields(item, spot)
+    _check(end <= owner['size'], here, 'fields exceed the struct size')
 
 
 @dataclass(frozen=True)
@@ -179,7 +193,8 @@ _LITERAL = re.compile(r'-?\d+')
 def _stored(text: str, where: str) -> list:
     """The cell values an operation's text stands for: one per field for `{…}`, `nullptr` as 0."""
     braced = text.startswith('{') and text.endswith('}')
-    items = [item.strip() for item in text[1:-1].split(',')] if braced else [text]
+    # A nested struct's braces only group: the cells are the values in order.
+    items = [item.strip() for item in re.sub(r'[{}]', '', text).split(',')] if braced else [text]
     result = []
     for item in items:
         _check(item in ('nullptr', UNKNOWN) or bool(_LITERAL.fullmatch(item)), where,
@@ -200,7 +215,7 @@ def _memory(op: dict, step: dict, previous: dict, storage: _Storage, where: str)
     cells = storage.cells_of(name)
     values = (step if kind == 'write' else previous)['values']
     expected = [values[cell] for cell in cells]
-    shown = str(expected[0]) if len(cells) == 1 else '{' + ', '.join(map(str, expected)) + '}'
+    shown = str(expected[0]) if cells == [name] else '{' + ', '.join(map(str, expected)) + '}'
     when = 'after the write' if kind == 'write' else 'before the read'
     _check(_stored(op['value'], where) == expected, where + '.value',
            f'{name} holds {shown} {when}, not {op["value"]!r}')

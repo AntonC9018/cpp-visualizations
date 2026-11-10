@@ -46,9 +46,12 @@ to `0`. The pane follows lesson notation: `**pp` → `**72` → `*p` → `*64` �
 
 Structs support aggregate and designated initialization, uninitialized field storage, whole-object
 copies, `.` and `->`, field addresses and pointer fields. Copies are shallow: pointer fields keep
-their original targets. Fields must be `int`, pointers to `int`, or pointers to another struct in
-the snippet. Every live field is checked under GDB after every statement. The player uses the
-existing struct frames, per-field colours and separate arc endpoints for objects and fields.
+their original targets. Fields must be `int`, pointers to `int`, another struct of the snippet by
+value, or pointers to one. A nested struct is copied, assigned and initialized as a whole
+(`a.inner = { 5 };`), and its fields are reached by path (`a.inner.x`, `p->inner.x`,
+`&a.inner.x`). Every live field is checked under GDB after every statement. The player draws
+struct frames, a nested struct as a frame inside its owner's, per-field colours and separate
+arc endpoints for objects and fields.
 
 Output prints one integer or pointer value followed only by whitespace (`' '`, `'\t'`, `'\n'`) or
 `std::endl`. A statement of whitespace alone, such as `std::cout << std::endl;`, prints it as
@@ -60,7 +63,7 @@ literal or another character is rejected.
 A brace list of plain values (`A a { 1, 2 };`) is stored as spelled, with no step that only
 respaces it; a typed or designated list still evaluates to `{1, 2}`.
 
-Pointer arithmetic/comparison, arrays, references, nested struct values, casts, heap allocation,
+Pointer arithmetic/comparison, arrays, references, casts, heap allocation,
 other field types, methods, inheritance, bitfields, default member initializers, empty structs,
 qualified pointers, control flow, ill-formed snippets and undefined reads or
 arithmetic are skipped with explicit reasons. Computed-address dereferences (`*(&a)`) and

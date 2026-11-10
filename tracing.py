@@ -17,7 +17,7 @@ import tempfile
 from execution import Execution, execute
 from records import layouts, type_name, type_spelling
 from toolchain import Unsupported, run, tool
-from trace_format import (FORMAT, UNKNOWN, FormatError, scalar, struct, field as trace_field,
+from trace_format import (FORMAT, UNKNOWN, FormatError, scalar, struct, struct_field, field as trace_field,
                           addresses as storage_addresses, leaves, validate, whitespace_output)
 
 __all__ = ["Pointer", "Unsupported", "trace"]
@@ -187,6 +187,7 @@ class _Evaluator:
     def __init__(self, state, locate, records):
         self.state, self.locate, self.reductions = state, locate, []
         self.records = records
+        self.temporary = False
 
     def _reduce(self, kind: str, node: dict, **details) -> None:
         self.reductions.append(Reduction(kind, self.locate(node), **details))
@@ -236,10 +237,11 @@ class _Evaluator:
     def rvalue(self, node: dict) -> tuple[Value, str | None]:
         """The value of `node`, and the variable it was read from, if it was read."""
         kind, children = node.get("kind"), node.get("inner", [])
-        if kind == "MaterializeTemporaryExpr":
-            # Hidden stack slots can separate named locals. Probe cannot predict their
-            # allocation, so reject before either mode reaches layout or execution.
-            raise Unsupported("materialized temporaries need a separate memory-layout visualization")
+        if kind == "MaterializeTemporaryExpr" and len(children) == 1:
+            # A hidden stack slot. It lies below every local declared so far, so it only
+            # opens a gap in the drawn memory if a declaration follows: see `_analyze`.
+            self.temporary = True
+            return self.rvalue(children[0])
         if kind == "ExprWithCleanups" and len(children) == 1:
             return self.rvalue(children[0])
         if kind == "ImplicitCastExpr" and len(children) == 1:
@@ -271,21 +273,24 @@ class _Evaluator:
                 value = {}
                 for item, child in zip(record.fields, children):
                     if child.get("kind") == "ImplicitValueInitExpr":
-                        value[item["name"]] = Pointer() if item["kind"] == "ptr" else 0
+                        value[item["name"]] = _filled(item, self.records, zero=True)
                     else:
                         value[item["name"]], _ = self.rvalue(child)
+                        # A list inside a list is part of the one value: it takes no step alone.
+                        if child.get("kind") == "InitListExpr" and self.reductions[-1].value is value[item["name"]]:
+                            self.reductions.pop()
                 self._reduce("eval", node, value=value)
                 return value, None
             if kind == "CXXConstructExpr":
                 if not children:
-                    return {item["name"]: None for item in record.fields}, None
+                    return _filled(record, self.records), None
                 if len(children) == 1:
                     return self.rvalue(children[0])
             if kind in {"DeclRefExpr", "MemberExpr"} or (
                     kind == "UnaryOperator" and node.get("opcode") == "*"):
                 name = self.lvalue(node)
                 value = self._load(name)
-                if any(item is None for item in value.values()):
+                if any(item is None for item in _flatten({name: value}).values()):
                     raise Unsupported(f"reading uninitialized struct {name}")
                 self._reduce("read", node, name=name, value=value)
                 return value, name
@@ -389,6 +394,15 @@ class Statement:
     record: str | None = None
     output_suffix: str | None = None
     printed: str | None = None
+    temporary: bool = False
+
+
+def _filled(item, records, zero: bool = False):
+    """A field's (or a whole record's) value when nothing was written: unknown, or zeroed."""
+    record = item if hasattr(item, "fields") else records[item["type"]] if item["kind"] == "struct" else None
+    if record:
+        return {inner["name"]: _filled(inner, records, zero) for inner in record.fields}
+    return None if not zero else Pointer() if item["kind"] == "ptr" else 0
 
 
 def _pane_parts(source: str, span: tuple[int, int], empty_initializer: bool) -> tuple[str, str]:
@@ -483,7 +497,7 @@ def _statement(node: dict, program: str, state: dict[str, Value | None], records
             root = root["inner"][0]
         if record and root and root.get('kind') == 'CXXConstructExpr' and not root.get('inner'):
             return Statement(source, None, source.removesuffix(';'),
-                             value={item['name']: None for item in records[record].fields},
+                             value=_filled(records[record], records),
                              target=declared, declared=declared, record=record)
         if record and root and root.get('kind') == 'CXXConstructExpr' and len(root.get('inner', [])) == 1:
             root = root['inner'][0]
@@ -545,29 +559,40 @@ def _statement(node: dict, program: str, state: dict[str, Value | None], records
         raise Unsupported("only integer and pointer output is supported")
     return Statement(source, span, prefix + text + suffix, (len(prefix), len(prefix) + len(text)),
                      locate(root), value, evaluator.reductions, target, destination, declared, pointer, record,
-                     output_suffix)
+                     output_suffix, temporary=evaluator.temporary)
 
 
 def _load(state, name, missing=False):
-    owner, _, member = name.partition('.')
+    owner, *path = name.split('.')
     value = state.get(owner) if missing else state[owner]
-    return value.get(member) if member and isinstance(value, dict) else value
+    for member in path:
+        value = value[member]
+    return value
 
 
 def _flatten(state):
-    return {cell: item for name, value in state.items()
-            for cell, item in ([(name + '.' + field, item) for field, item in value.items()]
-                               if isinstance(value, dict) else [(name, value)])}
+    """Every leaf by dotted name; nested structs flatten all the way down."""
+    cells = {}
+    for name, value in state.items():
+        if isinstance(value, dict):
+            cells.update(_flatten({name + '.' + member: item for member, item in value.items()}))
+        else:
+            cells[name] = value
+    return cells
+
+
+def _stored_at(value, path: list[str], new):
+    """`value` with the member at `path` replaced; no shared structure is modified."""
+    if not path:
+        return new
+    return dict(value, **{path[0]: _stored_at(value[path[0]], path[1:], new)})
 
 
 def _after(statement: Statement, state: dict[str, Value | None]) -> dict[str, Value | None]:
     after = dict(state)
     if statement.target is not None:
-        owner, _, member = statement.target.partition('.')
-        if member:
-            after[owner] = dict(after[owner], **{member: statement.value})
-        else:
-            after[owner] = statement.value
+        owner, *path = statement.target.split('.')
+        after[owner] = _stored_at(after.get(owner), path, statement.value)
     return after
 
 
@@ -584,6 +609,9 @@ def _analyze(source: str, directory: Path) -> tuple[list[Statement], dict]:
                 continue
             raise Unsupported("only a final return 0 is supported")
         statement = _statement(node, program, state, records)
+        if statement.declared and any(earlier.temporary for earlier in statements):
+            # The temporary's hidden slot would sit between the named locals.
+            raise Unsupported("a declaration after a materialized temporary needs a separate memory-layout visualization")
         statements.append(statement)
         if len(statements) > MAX_STATEMENTS:
             raise Unsupported("too many statements")
@@ -620,7 +648,7 @@ def _observed(execution: Execution, predicted: list[dict], pointers: set[str],
         variables = [scalar(name, 0, _size(name in pointers),
                             'ptr' if name in pointers else 'int') for name in predicted[-1]]
     cells, addresses = leaves(variables), {}
-    owners = {variable['name']: variable for variable in variables}
+    owners, offsets = {variable['name']: variable for variable in variables}, storage_addresses(variables)
     for row in execution.checkpoints:
         for name, cell in row.items():
             if cell.size != cells[name]['size'] or cell.pointer != (cells[name]['kind'] == 'ptr'):
@@ -629,11 +657,16 @@ def _observed(execution: Execution, predicted: list[dict], pointers: set[str],
                 raise Unsupported('variable address changed during the trace')
             owner, _, member = name.partition('.')
             if member:
-                offset = next(f['offset'] for f in owners[owner]['fields'] if f['name'] == member)
+                offset = offsets[name] - offsets[owner]
                 base = cell.object_address
                 if (cell.object_size != owners[owner]['size'] or cell.address != base + offset
                         or addresses.setdefault(owner, base) != base):
                     raise Unsupported(f'runtime field offset of {name} disagrees with Clang')
+    # A nested struct is no cell of its own: it sits at its offset in the observed object.
+    for name, offset in offsets.items():
+        owner = name.partition('.')[0]
+        if owner in addresses:
+            addresses.setdefault(name, addresses[owner] + offset - offsets[owner])
     for row, expected in zip(execution.checkpoints, predicted):
         expected = _flatten(expected)
         if row.keys() != expected.keys():
@@ -805,11 +838,17 @@ def trace(source: str, *, runtime: bool = True) -> dict:
             alignment = record.alignment if record else size
             top = (top - size) // alignment * alignment
             if record:
-                fields = []
-                for item in record.fields:
-                    field_colors.setdefault(item['name'], len(field_colors))
-                    fields.append(trace_field(**item, color=field_colors[item['name']]))
-                variables.append(struct(name, record.name, top, size, fields, color))
+                def fields_of(record):
+                    fields = []
+                    for item in record.fields:
+                        shade = field_colors.setdefault(item['name'], len(field_colors))
+                        if item['kind'] == 'struct':
+                            fields.append(struct_field(item['name'], item['type'], item['offset'], item['size'],
+                                                       fields_of(records[item['type']]), shade))
+                        else:
+                            fields.append(trace_field(**item, color=shade))
+                    return fields
+                variables.append(struct(name, record.name, top, size, fields_of(record), color))
             else:
                 variables.append(scalar(name, top, size, 'ptr' if declaration.pointer else 'int', color))
         if runtime:
