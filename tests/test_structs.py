@@ -62,13 +62,18 @@ p->next->x=9; c=*p; (*p).x=7; std::cout << a.x;'''
         self.assertEqual(last['targets'], {'b.next': 'a', 'c.next': 'a', 'p': 'b'})
 
     def test_a_list_of_literals_is_stored_as_spelled(self):
-        result = tracing.trace('struct A { int f1; int f2; };\nA a { 1, 2 };\nA b = A{ 1, 2 };\nA c{ .f2 = 5 };')
+        result = tracing.trace('struct A { int f1; int f2; };\nA a { 1, 2 };\nA b = A{ 1, 2 };\nA c{ .f2 = 5 };\n'
+                               'A d = A{ .f1 = 3 };\nb = c;')
         steps = [(step['line'], step['pane'], (step['op'] or {}).get('kind')) for step in result['steps']]
-        # No step that only removes the spaces; a typed or designated list still evaluates.
+        # No step that only removes the spaces; a designated list still evaluates. A typed
+        # literal and a struct that is read keep their type.
         self.assertEqual(steps, [
             (0, 'A a { 1, 2 }', None), (0, 'A a { 1, 2 }', 'write'),
-            (1, 'A b = A{ 1, 2 }', None), (1, 'A b = {1, 2}', 'eval'), (1, 'A b = {1, 2}', 'write'),
-            (2, 'A c{ .f2 = 5 }', None), (2, 'A c{0, 5}', 'eval'), (2, 'A c{0, 5}', 'write')])
+            (1, 'A b = A{ 1, 2 }', None), (1, 'A b = A{ 1, 2 }', 'write'),
+            (2, 'A c{ .f2 = 5 }', None), (2, 'A c{0, 5}', 'eval'), (2, 'A c{0, 5}', 'write'),
+            (3, 'A d = A{ .f1 = 3 }', None), (3, 'A d = A{3, 0}', 'eval'), (3, 'A d = A{3, 0}', 'write'),
+            (4, 'b = c', None), (4, 'b = A{0, 5}', 'read'), (4, 'b = A{0, 5}', 'write')])
+        validate(result)
 
     def test_elided_aggregate_initialization_and_struct_double_pointer(self):
         result = tracing.trace('struct S {int x;}; S a=S{1}; S b{}; S *p=&a; '
@@ -106,7 +111,7 @@ p->next->x=9; c=*p; (*p).x=7; std::cout << a.x;'''
         validate(result)
         self.assertEqual(result['steps'][-1]['stdout'], '4')
         writes = [step['op'] for step in result['steps'] if step['line'] in (3, 4) and step['op']]
-        self.assertEqual([op['kind'] for op in writes], ['eval', 'write', 'read', 'deref', 'write'])
+        self.assertEqual([op['kind'] for op in writes], ['write', 'read', 'deref', 'write'])
         generate._storage_is_contiguous(result['variables'])
 
     def test_nested_structs_are_stored_by_value(self):
@@ -132,7 +137,7 @@ c=b.n; b.n={5, 6}; std::cout << c.g;'''
         # A copy of a nested struct reads and writes it whole.
         copy = [step['op'] for step in result['steps'] if step['line'] == 8 and step['op']]
         self.assertEqual([(op['kind'], op['name'], op['value']) for op in copy],
-                         [('read', 'b.n', '{2, 9}'), ('write', 'c', '{2, 9}')])
+                         [('read', 'b.n', 'N{2, 9}'), ('write', 'c', 'N{2, 9}')])
 
     def test_uninitialized_fields_are_tracked_independently(self):
         result = tracing.trace('struct S {int x; int *p;}; S a; a.x=3; a.p=&a.x; S b=a;')

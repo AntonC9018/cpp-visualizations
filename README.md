@@ -61,7 +61,9 @@ randomized address is checked but never published. A null pointer prints `0`. A 
 literal or another character is rejected.
 
 A brace list of plain values (`A a { 1, 2 };`) is stored as spelled, with no step that only
-respaces it; a typed or designated list still evaluates to `{1, 2}`.
+respaces it, and so is a typed one (`A{ 1, 2 }`); a designated list evaluates to its values.
+A struct value with a type of its own keeps it in the pane: a typed literal, and a struct that
+is read (`b = a` becomes `b = A{1, 2}`).
 
 Pointer arithmetic/comparison, arrays, references, casts, heap allocation,
 other field types, methods, inheritance, bitfields, default member initializers, empty structs,

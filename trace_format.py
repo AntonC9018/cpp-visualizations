@@ -191,8 +191,10 @@ _LITERAL = re.compile(r'-?\d+')
 
 
 def _stored(text: str, where: str) -> list:
-    """The cell values an operation's text stands for: one per field for `{…}`, `nullptr` as 0."""
-    braced = text.startswith('{') and text.endswith('}')
+    """The cell values an operation's text stands for: one per field for `{…}`, which may carry
+    its struct's name (`A{…}`), and `nullptr` as 0."""
+    braced = bool(re.fullmatch(r'(?:[A-Za-z_]\w*)?\{.*\}', text))
+    text = text[text.find('{'):] if braced else text
     # A nested struct's braces only group: the cells are the values in order.
     items = [item.strip() for item in re.sub(r'[{}]', '', text).split(',')] if braced else [text]
     result = []

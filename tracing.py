@@ -171,14 +171,16 @@ class Reduction:
 
     `read` replaces it with the value of `name`, `addr` with the address of `name`, `deref`
     with the name of the variable `name` (a pointer) points to, and `eval` with `value` (or
-    `spelling`, when the value is not written as a number). `span` indexes the statement's
-    original pane; inner reductions come first.
+    `spelling`, when the value is not written as a number). A struct value that has a type on
+    its own, a read or a typed literal, keeps it in front: `record` names it. `span` indexes the
+    statement's original pane; inner reductions come first.
     """
     kind: str
     span: tuple[int, int]
     name: str | None = None
     value: Value | None = None
     spelling: str | None = None
+    record: str | None = None
 
 
 class _Evaluator:
@@ -267,7 +269,10 @@ class _Evaluator:
         if record:
             if kind == "CXXFunctionalCastExpr" and len(children) == 1:
                 value, _ = self.rvalue(children[0])
-                self._reduce("eval", node, value=value)
+                # The list is the typed literal's own value: one step, with the type kept.
+                if children[0].get("kind") == "InitListExpr" and self.reductions[-1].value is value:
+                    self.reductions.pop()
+                self._reduce("eval", node, value=value, record=record.name)
                 return value, None
             if kind == "InitListExpr":
                 value = {}
@@ -292,7 +297,7 @@ class _Evaluator:
                 value = self._load(name)
                 if any(item is None for item in _flatten({name: value}).values()):
                     raise Unsupported(f"reading uninitialized struct {name}")
-                self._reduce("read", node, name=name, value=value)
+                self._reduce("read", node, name=name, value=value, record=record.name)
                 return value, name
         if kind == "IntegerLiteral":
             return _integer(int(node["value"])), None
@@ -766,7 +771,7 @@ class _Renderer:
         self.add(line, pane, expr, before if writes else after)
         for reduction in statement.reductions:
             if reduction.kind == "read":
-                text = self.show(_load(before, reduction.name))
+                text = (reduction.record or "") + self.show(_load(before, reduction.name))
                 op = {"kind": "read", "name": reduction.name, "value": text}
             elif reduction.kind == "addr":
                 text = str(self.addresses[reduction.name])
@@ -776,7 +781,7 @@ class _Renderer:
                 text = (reduction.value or _load(before, reduction.name)).target
                 op = {"kind": "deref", "target": text, "via": reduction.name}
             else:
-                text = reduction.spelling or self.show(reduction.value)
+                text = reduction.spelling or (reduction.record or "") + self.show(reduction.value)
                 op = {"kind": "eval", "value": text}
                 # A brace list of plain values is already its value, however it is spaced.
                 if isinstance(reduction.value, dict) and _spaceless(pane.read(*reduction.span)) == _spaceless(text):

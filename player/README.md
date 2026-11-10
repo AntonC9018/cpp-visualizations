@@ -124,7 +124,7 @@ a value may only change from `null` to `"?"` (a declaration).
 - Only a write changes values or targets, and only of the cells its `name` covers (all fields of
   a struct). Only a print changes `stdout`, by its value plus optional whitespace.
 - Values agree with memory. A value is an integer, `nullptr` (stored as `0`) or `"?"`; a struct
-  is `{…}` of its fields' values, in order. A read's value is what `name` held before the step,
+  is `{…}` of its fields' values, in order, optionally after its type's name (`A{…}`). A read's value is what `name` held before the step,
   a write's value what `name` holds after it, field by field, and an `addr` value is the
   address of `name`. A dereference's `target` is `via`'s target or one of its fields.
 
