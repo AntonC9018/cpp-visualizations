@@ -1,0 +1,165 @@
+<!doctype html>
+<!-- PROTOTYPE (throwaway): how should the player show the type of each subexpression, and why
+     two types do not fit? Three variants of the pane, switchable via ?variant=A|B|C. Hosted in a
+     lesson-like page on a fork of the real player (player.proto.js), with hand-written traces of
+     lab 3 and lab 4 examples (scenarios.js). Open this file directly; nothing to build. -->
+<html lang="en" data-theme="dark">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Expression types prototype</title>
+<link rel="stylesheet" href="../../player/player.css">
+<style>
+:root {color-scheme: dark; --page: #17181c; --text: #dfe3ea; --muted: #9aa1ae; --code: #23262e;
+ --line: #353945; --bar: #f2f4f8; --bar-text: #14161b}
+:root[data-theme=light] {color-scheme: light; --page: #ffffff; --text: #23262f; --muted: #5d6573;
+ --code: #f4f5f8; --line: #dde1e8; --bar: #1c1f27; --bar-text: #f2f4f8}
+* {box-sizing: border-box}
+body {margin: 0; background: var(--page); color: var(--text);
+ font: 16px/1.6 system-ui, -apple-system, 'Segoe UI', sans-serif}
+main {max-width: 52rem; margin: 0 auto; padding: 1rem 1rem 9rem}
+h1 {font-size: 1.5rem; margin: 1rem 0 .3rem}
+h2 {font-size: 1.2rem; margin: 2.4rem 0 .3rem}
+pre {background: var(--code); border: 1px solid var(--line); border-radius: 6px;
+ padding: .8rem 1rem; overflow-x: auto; font-size: .875rem; margin: .6rem 0}
+details {border-left: 3px solid var(--line); padding: .2rem 0 .2rem 1rem; margin: .6rem 0}
+summary {cursor: pointer; font-weight: 600}
+p, li {color: var(--muted)}
+p {margin: .3rem 0}
+code {background: var(--code); padding: 0 .25em; border-radius: 4px; font-size: .9em}
+#about {border: 1px solid var(--line); border-radius: 8px; padding: .7rem 1rem; margin: 1rem 0}
+#about h3 {margin: 0 0 .2rem; font-size: 1.05rem; color: var(--text)}
+#about ul {margin: .3rem 0; padding-left: 1.2rem}
+#bar {position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 10;
+ display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-radius: 999px;
+ background: var(--bar); color: var(--bar-text); box-shadow: 0 6px 24px rgb(0 0 0 / .45);
+ font-size: 14px; white-space: nowrap; max-width: calc(100vw - 16px)}
+#bar button {font: inherit; color: inherit; background: transparent; border: 1px solid transparent;
+ border-radius: 999px; padding: 3px 10px; cursor: pointer}
+#bar button:hover {border-color: currentColor}
+#bar .label {min-width: 13.5em; text-align: center; font-weight: 600}
+#bar code {background: transparent; padding: 0}
+#bar label {display: flex; align-items: center; gap: 5px; padding: 0 8px; border-left: 1px solid #8884; cursor: pointer}
+@media (max-width: 640px) { #bar {font-size: 12px} #bar .label {min-width: 0} #bar .wide {display: none} }
+.cv-type-hit {fill: transparent; pointer-events: all; cursor: help}
+.cv-type-tip {opacity: 0; pointer-events: none; transition: opacity .12s}
+.cv-type-hit:hover + .cv-type-tip {opacity: 1}
+</style>
+
+<main>
+<h1>Expression types: three ways to show them</h1>
+<p>Prototype. Lab 3 and lab 4 examples on a fork of the real player. Switch variants with the bar below or
+<kbd>[</kbd> / <kbd>]</kbd>; inside a player, <kbd>←</kbd>/<kbd>→</kbd> step as usual.</p>
+<div id="about"></div>
+<div id="sections"></div>
+</main>
+
+<div id="bar">
+ <button id="prev" type="button" aria-label="Previous variant">◀</button>
+ <span class="label" id="label"></span>
+ <button id="next" type="button" aria-label="Next variant">▶</button>
+ <button id="theme" type="button">theme</button>
+</div>
+
+<script src="scenarios.js"></script>
+<script src="player.proto.js"></script>
+<script>
+const VARIANTS = {
+  A: {
+    name: 'Type brackets',
+    claim: 'Every subexpression is bracketed under the pane with its type, all the time: the expression tree, drawn flat.',
+    points: [
+      'Tracks every subexpression, not only values: <code>static_cast&lt;double&gt;(value) / 2</code> is already <code>double</code> before anything is read.',
+      'A conversion relabels its bracket: <code>int → double</code>, in the write colour.',
+      'Mismatch: both brackets turn red around a <code>≠</code>, and one <code>*</code> is peeled off each side: <code>*p : A*  ≠  *value : A</code>.',
+      'Weak spot: the pane grows by a row per nesting level, and the brackets are busy when nothing interesting happens.',
+    ],
+  },
+  B: {
+    name: 'Units on values',
+    claim: 'A type is a unit of measurement: every value and every variable wears a pill in its type\'s colour.',
+    points: [
+      'Only leaves are labelled: names, literals, values. A compound expression gets its unit when it becomes a value.',
+      'A conversion is a change of colour (and maybe of value). Storing works when the value\'s colour matches the variable\'s, also under its name in memory.',
+      'Mismatch: the <code>A*</code> pill tries the <code>A**</code> slot and comes back; nothing else is needed to say "different kind of quantity".',
+      'Weak spot: a second colour code next to the variable colours, and it does not say <em>why</em> <code>A*</code> and <code>A**</code> differ.',
+    ],
+  },
+  C: {
+    name: 'The compiler\'s casts',
+    claim: 'The pane stays as it is. An implicit conversion becomes a step: the compiler writes the <code>static_cast</code> the lab says it supplies.',
+    points: [
+      'Types are on demand: point at anything in the pane (dotted underline) to see <code>expr : type</code>.',
+      'Matches the lab text: "the compiler supplies a conversion equivalent to <code>static_cast&lt;double&gt;(2)</code>".',
+      'Mismatch: an editor squiggle and the compiler\'s message, and in memory what <code>p</code> would find at <code>64</code> if it were allowed: the bytes of <code>A{1, 2}</code> read as an address.',
+      'Weak spot: after a conversion that keeps the digits (<code>0</code> as <code>uint8_t</code> → <code>0</code> as <code>uint32_t</code>) nothing on screen says the type changed; hover does not exist on a phone.',
+    ],
+  },
+};
+
+const query = new URLSearchParams(location.search);
+const state = {
+  variant: VARIANTS[query.get('variant')] ? query.get('variant') : 'A',
+};
+document.documentElement.dataset.theme = query.get('theme') || 'dark';
+
+const sections = document.getElementById('sections');
+const esc = s => s.replace(/[&<>]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[ch]);
+const { scenarios, build } = window.TypePrototype;
+
+sections.innerHTML = scenarios.map((s, i) => `<h2>${esc(s.title)}</h2><p>${esc(s.note).replace(/`([^`]+)`/g, '<code>$1</code>')}</p>`
+  + `<pre><code>${esc((s.types ? Object.values(s.types).join('\n') + '\n\n' : '') + s.source.join('\n'))}</code></pre>`
+  + `<details data-scenario="${i}"${i === 0 || query.get('open') === 'all' ? ' open' : ''}><summary>Execution trace</summary><div class="slot"></div></details>`).join('');
+
+// Rebuild every player for the current variant, keeping each one's place.
+function mount() {
+  for (const details of sections.querySelectorAll('details')) {
+    const slot = details.querySelector('.slot'), old = slot.querySelector('.course-visualization');
+    const index = old && old.cvPlayer ? old.cvPlayer.index : 0;
+    if (old && old.cvPlayer) old.cvPlayer.pause();
+    const trace = build(scenarios[Number(details.dataset.scenario)], state.variant);
+    slot.innerHTML = '<div class="course-visualization"><script type="application/json">'
+      + JSON.stringify(trace).replace(/</g, '\\u003c') + '<\/script></div>';
+    const host = slot.firstChild;
+    host.dataset.wantIndex = index;
+  }
+  window.CourseVisualization.scan();
+  for (const host of sections.querySelectorAll('.course-visualization')) restore(host);
+  const v = VARIANTS[state.variant];
+  document.getElementById('label').textContent = `${state.variant} (${v.name})`;
+  document.getElementById('about').innerHTML = `<h3>${state.variant}. ${v.name}</h3><p>${v.claim}</p><ul>`
+    + v.points.map(p => `<li>${p}</li>`).join('') + '</ul>';
+  const url = new URL(location.href);
+  url.searchParams.set('variant', state.variant);
+  history.replaceState(null, '', url);
+}
+function restore(host) {
+  if (host.cvPlayer && host.dataset.wantIndex) {
+    host.cvPlayer.pristine = host.dataset.wantIndex === '0';
+    host.cvPlayer.settle(Number(host.dataset.wantIndex));
+    delete host.dataset.wantIndex;
+  }
+}
+sections.addEventListener('toggle', event => {
+  if (event.target.open) queueMicrotask(() => { for (const host of event.target.querySelectorAll('.course-visualization')) restore(host); });
+}, true);
+
+function cycle(by) {
+  const keys = Object.keys(VARIANTS);
+  state.variant = keys[(keys.indexOf(state.variant) + by + keys.length) % keys.length];
+  mount();
+}
+document.getElementById('prev').onclick = () => cycle(-1);
+document.getElementById('next').onclick = () => cycle(1);
+document.getElementById('theme').onclick = () => {
+  const root = document.documentElement;
+  root.dataset.theme = root.dataset.theme === 'dark' ? 'light' : 'dark';
+};
+// [ and ] cycle variants: the arrow keys belong to the players.
+document.addEventListener('keydown', event => {
+  if (event.target.matches('input, textarea, select, [contenteditable]')) return;
+  if (event.key === '[') cycle(-1);
+  if (event.key === ']') cycle(1);
+});
+mount();
+</script>
+</html>
