@@ -103,7 +103,7 @@ const STYLES = ['auto', 'auto-outline', 'text', 'grey', 'outline', 'fill'];
 const query = new URLSearchParams(location.search);
 const state = {
   variant: VARIANTS[query.get('variant')] ? query.get('variant') : 'B',
-  style: STYLES.includes(query.get('style')) ? query.get('style') : 'auto',
+  style: STYLES.includes(query.get('style')) ? query.get('style') : 'auto-outline',
 };
 document.documentElement.dataset.theme = query.get('theme') || 'dark';
 
