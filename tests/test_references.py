@@ -44,6 +44,10 @@ class ReferenceTraceTests(unittest.TestCase):
         self.assertEqual(last['stdout'], '3')
         self.assertNotIn('c', last['values'])
 
+    def test_one_variable_and_its_reference_are_worth_showing(self):
+        source = 'int a{ 5 }; int& b{ a }; std::cout << b;'
+        generate.applicable(tracing.trace(source), source)
+
     def test_binding_resolves_the_initializer_to_storage(self):
         self.assertEqual(panes(self.result, 2), [('int& c = a', None), ('int& c = a', 'bind')])
         # A reference to a reference binds to what the first one names.

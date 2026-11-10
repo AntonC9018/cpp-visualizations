@@ -90,7 +90,8 @@ def applicable(trace: dict, snippet: str) -> None:
     assignments = [step for step in writes if not DECLARATION.match(source[step['line']])]
     if not reads and len(writes) <= 1 and not assignments:
         raise Unsupported('a lone memory cell without a copy or state change needs no visualization')
-    if len(variables) == 1 and len(writes) == 1 and not empty_init and not assignments:
+    binds = any(op['kind'] == 'bind' for op in ops)
+    if len(variables) == 1 and len(writes) == 1 and not empty_init and not assignments and not binds:
         raise Unsupported('a lone literal-initialized cell and print need no visualization')
 
 
