@@ -14,7 +14,7 @@ git submodule add https://github.com/AntonC9018/cpp-visualizations visualization
 The commands below are written from this repository's root;
 from a host repository, prefix the paths with `visualizations/`.
 
-- `discover.py` finds lesson examples the tracer supports and tags them.
+- `discover.py` lists the lesson examples the tracer supports and tags the ones chosen by hand.
   It needs a host course with [course maintenance] next to this directory.
 - `tracing.py` uses Clang AST types and ranges to emit unified integer, pointer and struct traces.
 - `records.py` validates aggregate definitions and reads field offsets, sizes and alignment
@@ -83,10 +83,14 @@ output do.
 
 ```sh
 python3 discover.py --report /tmp/visualization-inventory.json
-python3 discover.py --apply
+python3 discover.py --tag en/labs/cpp/05_struct.md:670 ru/labs/cpp/05_struct.md:674
 ```
 
-Discovery adds minimal tags in collapsed, localized execution-trace blocks. Course maintenance
+Without `--tag` discovery writes nothing: it lists the candidates. Traceable is not the same as
+worth tracing, so a person or a model reading the lesson picks the examples where watching
+memory change is the point, and leaves out those that teach something the trace does not show
+(type deduction, a compile error, naming). `--tag` then adds a minimal tag for each pick, in a
+collapsed, localized execution-trace block. Course maintenance
 traces every tag in CI inside the pinned toolchain and stores the results by content, so only
 changed examples are traced again; a tag that cannot be traced fails the build.
 
