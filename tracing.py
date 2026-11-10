@@ -505,8 +505,10 @@ def _statement(node: dict, program: str, state: dict[str, Value | None], records
         printed = _whitespace(root)
         if _strip_casts(root).get("kind") == "StringLiteral":
             raise Unsupported("string literal output is not supported")
-        if printed is None and _operand_is_pointer(root):
-            raise Unsupported("printing a pointer prints its real, randomized address")
+        # `operator<<(const void*)` prints an address: the conversion to it is not a step.
+        if (root.get("kind") == "ImplicitCastExpr" and root.get("castKind") == "BitCast"
+                and type_spelling(root) == "const void *" and len(root.get("inner", [])) == 1):
+            root = root["inner"][0]
     else:
         raise Unsupported(f"unsupported statement: {node['kind']}")
 
@@ -539,8 +541,8 @@ def _statement(node: dict, program: str, state: dict[str, Value | None], records
         destination = (to_pane(name_offset), to_pane(name_offset) + len(declared))
     elif left is not None:
         target, destination = evaluator.lvalue(left), locate(left)
-    elif not isinstance(value, int):
-        raise Unsupported("only integer output is supported")
+    elif isinstance(value, dict):
+        raise Unsupported("only integer and pointer output is supported")
     return Statement(source, span, prefix + text + suffix, (len(prefix), len(prefix) + len(text)),
                      locate(root), value, evaluator.reductions, target, destination, declared, pointer, record,
                      output_suffix)
@@ -648,6 +650,10 @@ def _observed(execution: Execution, predicted: list[dict], pointers: set[str],
 
 # Rendering --------------------------------------------------------------------------------
 
+def _spaceless(text: str) -> str:
+    return re.sub(r"\s+", "", text)
+
+
 class _Pane:
     """The pane as reductions replace parts of its original text, innermost first."""
 
@@ -684,10 +690,19 @@ class _Pane:
 class _Renderer:
     """Turns analyzed statements and their (observed) states into unified trace steps."""
 
-    def __init__(self, addresses: dict[str, int], cells=None):
+    def __init__(self, addresses: dict[str, int], cells=None, real: dict[str, int] | None = None):
         self.addresses = addresses
         self.order = sorted(cells or addresses, key=addresses.get)
         self.steps, self.stdout = [], ""
+        # What the program really prints: the same, but with the run's own addresses.
+        self.real, self.real_stdout = real or addresses, ""
+
+    def printed(self, pointer: Pointer, addresses: dict[str, int]) -> str:
+        """A pointer as `std::cout` prints it; the trace pads the normalized address to 8 bytes."""
+        if pointer.target is None:
+            return "0"
+        address = addresses[pointer.target]
+        return f"{address:#x}" if addresses is self.real and self.real is not self.addresses else f"0x{address:016x}"
 
     def show(self, value: Value) -> str:
         """A value as the pane writes it: a number, an address, or 0 for a null pointer."""
@@ -730,6 +745,9 @@ class _Renderer:
             else:
                 text = reduction.spelling or self.show(reduction.value)
                 op = {"kind": "eval", "value": text}
+                # A brace list of plain values is already its value, however it is spaced.
+                if isinstance(reduction.value, dict) and _spaceless(pane.read(*reduction.span)) == _spaceless(text):
+                    continue
             if pane.read(*reduction.span) != text:
                 op["span"] = pane.replace(*reduction.span, text)
                 self.add(line, pane, expr, before, op)
@@ -741,9 +759,18 @@ class _Renderer:
                   "span": pane.replace(*statement.result, str(statement.value))}
             self.add(line, pane, expr, before, op)
         span, text = pane.locate(*statement.result), pane.read(*statement.result)
+        real = text
         if statement.printed is not None:
-            text = statement.printed
+            real = text = statement.printed
+        elif statement.output_suffix is not None and isinstance(statement.value, Pointer):
+            # The stream formats an address in hexadecimal: one more step of the pane.
+            text, real = self.printed(statement.value, self.addresses), self.printed(statement.value, self.real)
+            if pane.read(*statement.result) != text:
+                op = {"kind": "eval", "value": text, "span": pane.replace(*statement.result, text)}
+                self.add(line, pane, expr, before, op)
+                span = pane.locate(*statement.result)
         if statement.output_suffix is not None:
+            self.real_stdout += real + statement.output_suffix
             self.stdout += text + statement.output_suffix
             self.add(line, pane, expr, after, {"kind": "print", "value": text, "span": span}, 1.2)
             return
@@ -792,6 +819,7 @@ def trace(source: str, *, runtime: bool = True) -> dict:
             addresses, states = _observed(execution, predicted, set(), variables)
         else:
             addresses, states = storage_addresses(variables), predicted
+        real = addresses
         # Shift by ABI alignment, never by a struct's total size (which need not be a power of 2).
         alignment = max([record.alignment for record in records.values()] +
                         [_size(d.pointer) for d in declarations if not d.record] + [4])
@@ -805,11 +833,11 @@ def trace(source: str, *, runtime: bool = True) -> dict:
              if not _DEFINITION.match(statement.source)]
     if not shown:
         raise Unsupported("a snippet of only struct definitions has nothing to step through")
-    renderer, previous = _Renderer(addresses, leaves(variables)), {}
+    renderer, previous = _Renderer(addresses, leaves(variables), real), {}
     for line, (statement, after) in enumerate(shown):
         renderer.statement(line, statement, previous, after)
         previous = after
-    if runtime and renderer.stdout != execution.stdout:
+    if runtime and renderer.real_stdout != execution.stdout:
         raise Unsupported("runtime output disagrees with the expression trace")
     renderer.steps[-1]["hold"] = 3
     shown = [statement for statement, _ in shown]

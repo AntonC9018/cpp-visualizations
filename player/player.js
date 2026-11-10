@@ -573,9 +573,12 @@
     out += exprBackground(c, tx, ty, step.expr);
     if (op && op.kind === 'write') {
       const at = arrival(op), [vs, ve] = op.span, [ns, ne] = op.destination;
-      out += `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.2, at + 0.15)}${markBox(tx + vs * EVAL_CHAR, ty, ve - vs, P.write, P.writeFill)}</g>`;
+      // A name written right against its value (`a{ 1 }`): both boxes give way, so they do not overlap.
+      const tight = ne === vs ? 4 : 0;
+      out += `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.2, at + 0.15)}`
+        + rect(tx + vs * EVAL_CHAR - 3 + tight, ty - 32, (ve - vs) * EVAL_CHAR + 6 - tight, 42, P.writeFill, P.write, 6, 2) + '</g>';
       out += `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.3, at + 0.4)}`
-        + rect(tx + ns * EVAL_CHAR - 3, ty - 32, (ne - ns) * EVAL_CHAR + 6, 42, 'none', P.write, 6, 2) + '</g>';
+        + rect(tx + ns * EVAL_CHAR - 3, ty - 32, (ne - ns) * EVAL_CHAR + 6 - tight, 42, 'none', P.write, 6, 2) + '</g>';
       out += paneText(c, tx, ty, step.pane, 0, step.pane.length, step.expr);
       // A muted destination takes its variable's colour while the value travels.
       if (inContext(step, op.destination)) {

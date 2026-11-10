@@ -61,6 +61,15 @@ p->next->x=9; c=*p; (*p).x=7; std::cout << a.x;'''
         self.assertEqual(last['values']['b.x'], 7)
         self.assertEqual(last['targets'], {'b.next': 'a', 'c.next': 'a', 'p': 'b'})
 
+    def test_a_list_of_literals_is_stored_as_spelled(self):
+        result = tracing.trace('struct A { int f1; int f2; };\nA a { 1, 2 };\nA b = A{ 1, 2 };\nA c{ .f2 = 5 };')
+        steps = [(step['line'], step['pane'], (step['op'] or {}).get('kind')) for step in result['steps']]
+        # No step that only removes the spaces; a typed or designated list still evaluates.
+        self.assertEqual(steps, [
+            (0, 'A a { 1, 2 }', None), (0, 'A a { 1, 2 }', 'write'),
+            (1, 'A b = A{ 1, 2 }', None), (1, 'A b = {1, 2}', 'eval'), (1, 'A b = {1, 2}', 'write'),
+            (2, 'A c{ .f2 = 5 }', None), (2, 'A c{0, 5}', 'eval'), (2, 'A c{0, 5}', 'write')])
+
     def test_elided_aggregate_initialization_and_struct_double_pointer(self):
         result = tracing.trace('struct S {int x;}; S a=S{1}; S b{}; S *p=&a; '
                                'S **pp=&p; b=**pp; p->x=9;')

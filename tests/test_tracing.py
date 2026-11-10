@@ -274,7 +274,6 @@ class StaticPointerTraceTests(unittest.TestCase):
             "int a{5}; int* p{&a}; int* q = &*p;": "address of a variable",
             "int* p{}; *p = 1;": "null pointer p",
             "int* p; *p = 1;": "uninitialized variable p",
-            "int a{5}; int* b{&a}; std::cout << b;": "randomized address",
             "int a{5}; int* b{&a}; int* c = b++;": "UnaryOperator",
             "int a{5}; int* p{&a}; *p += 1;": "CompoundAssignOperator",
             "int a{5}; std::cout << std::endl << a;": "one integer output followed only by whitespace",
@@ -369,6 +368,16 @@ class RuntimeTraceTests(unittest.TestCase):
         path = Path(__file__).parent / "fixtures" / "endl-generated.json"
         fixture = json.loads(path.read_text())
         self.assertEqual(tracing.trace("\n".join(fixture["source"])), fixture)
+
+    def test_a_printed_pointer_shows_its_normalized_address_in_hex(self):
+        result = tracing.trace("int a{5}; int* b{&a}; int* n{};\nstd::cout << b << std::endl; std::cout << n;")
+        address = addresses(result)["a"]
+        shown = f"0x{address:016x}"
+        self.assertEqual(panes(result, 3)[-3:-1], [f"std::cout << {address} << std::endl",
+                                                 f"std::cout << {shown} << std::endl"])
+        self.assertEqual(ops(result, 3)[-1], {"kind": "print", "value": shown, "span": [13, 31]})
+        # A null pointer prints as 0, with nothing to format.
+        self.assertEqual(final(result, "stdout"), shown + "\n0")
 
     def test_double_pointer_runs_as_predicted(self):
         traced, predicted = tracing.trace(DOUBLE_POINTER), tracing.trace(DOUBLE_POINTER, runtime=False)
