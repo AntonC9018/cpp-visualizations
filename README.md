@@ -14,7 +14,7 @@ git submodule add https://github.com/AntonC9018/cpp-visualizations visualization
 The commands below are written from this repository's root;
 from a host repository, prefix the paths with `visualizations/`.
 
-- `discover.py` finds lesson examples the tracer supports and tags them.
+- `discover.py` lists the lesson examples the tracer supports and tags the ones chosen by hand.
   It needs a host course with [course maintenance] next to this directory.
 - `tracing.py` uses Clang AST types and ranges to emit unified integer, pointer and struct traces.
 - `records.py` validates aggregate definitions and reads field offsets, sizes and alignment
@@ -46,16 +46,34 @@ to `0`. The pane follows lesson notation: `**pp` → `**72` → `*p` → `*64` �
 
 Structs support aggregate and designated initialization, uninitialized field storage, whole-object
 copies, `.` and `->`, field addresses and pointer fields. Copies are shallow: pointer fields keep
-their original targets. Fields must be `int`, pointers to `int`, or pointers to another struct in
-the snippet. Every live field is checked under GDB after every statement. The player uses the
-existing struct frames, per-field colours and separate arc endpoints for objects and fields.
+their original targets. Fields must be `int`, pointers to `int`, another struct of the snippet by
+value, or pointers to one. A nested struct is copied, assigned and initialized as a whole
+(`a.inner = { 5 };`), and its fields are reached by path (`a.inner.x`, `p->inner.x`,
+`&a.inner.x`). Every live field is checked under GDB after every statement. The player draws
+struct frames, a nested struct as a frame inside its owner's, per-field colours and separate
+arc endpoints for objects and fields.
 
-Output prints one integer value followed only by whitespace (`' '`, `'\t'`, `'\n'`) or
+A reference (`int& c = a;`, `auto&`, `const int&`, to a variable, a field, a struct, a pointer or
+what a pointer points to) is another name for storage, as the lessons put it. Binding it is one
+step; wherever its name is used afterwards, the name first becomes what it stands for
+(`c = 2` → `a = 2`). At `-O0` the compiler keeps a hidden pointer-sized slot per reference; the
+program cannot name it, so memory is drawn without it, with the variables in their real order.
+GDB checks every binding after every statement.
+
+Output prints one integer or pointer value followed only by whitespace (`' '`, `'\t'`, `'\n'`) or
 `std::endl`. A statement of whitespace alone, such as `std::cout << std::endl;`, prints it as
-spelled; flushing is not shown. Printing a pointer (a real, randomized address), a string
+spelled; flushing is not shown. A pointer prints its normalized address as 8 bytes of
+hexadecimal (`64` → `0x0000000000000040`), one more step of the pane; the run's real,
+randomized address is checked but never published. A null pointer prints `0`. A string
 literal or another character is rejected.
 
-Pointer arithmetic/comparison, arrays, references, nested struct values, casts, heap allocation,
+A brace list of plain values (`A a { 1, 2 };`) is stored as spelled, with no step that only
+respaces it, and so is a typed one (`A{ 1, 2 }`); a designated list evaluates to its values.
+A struct value with a type of its own keeps it in the pane: a typed literal, and a struct that
+is read (`b = a` becomes `b = A{1, 2}`).
+
+Pointer arithmetic/comparison, arrays, rvalue references, references bound to temporaries, casts,
+heap allocation,
 other field types, methods, inheritance, bitfields, default member initializers, empty structs,
 qualified pointers, control flow, ill-formed snippets and undefined reads or
 arithmetic are skipped with explicit reasons. Computed-address dereferences (`*(&a)`) and
@@ -65,10 +83,14 @@ output do.
 
 ```sh
 python3 discover.py --report /tmp/visualization-inventory.json
-python3 discover.py --apply
+python3 discover.py --tag en/labs/cpp/05_struct.md:670 ru/labs/cpp/05_struct.md:674
 ```
 
-Discovery adds minimal tags in collapsed, localized execution-trace blocks. Course maintenance
+Without `--tag` discovery writes nothing: it lists the candidates. Traceable is not the same as
+worth tracing, so a person or a model reading the lesson picks the examples where watching
+memory change is the point, and leaves out those that teach something the trace does not show
+(type deduction, a compile error, naming). `--tag` then adds a minimal tag for each pick, in a
+collapsed, localized execution-trace block. Course maintenance
 traces every tag in CI inside the pinned toolchain and stores the results by content, so only
 changed examples are traced again; a tag that cannot be traced fails the build.
 

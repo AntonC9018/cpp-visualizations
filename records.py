@@ -66,6 +66,8 @@ def layouts(ast: dict, directory: Path, *, layout_only: bool = False) -> dict[st
             qualified, canonical = type_spelling(child), canonical_type(child)
             allowed = qualified == 'int' or bool(re.fullmatch(r'int \*+', qualified))
             allowed |= any(qualified == record + ' *' for record in definitions)
+            # A struct held by value nests; C++ already requires it to be complete here.
+            allowed |= qualified in definitions and qualified != name
             if layout_only:
                 allowed = qualified in LAYOUT_SPELLINGS and canonical in BUILTIN_INTEGERS
                 allowed |= bool(re.fullmatch(r'(?:const )?[\w:]+ \*+', qualified))
@@ -94,19 +96,21 @@ def layouts(ast: dict, directory: Path, *, layout_only: bool = False) -> dict[st
             raise Unsupported(f'Clang returned an incomplete layout for {name}')
         fields = []
         for (offset, _, member), node in zip(rows, nodes):
+            nested = type_spelling(node) if not layout_only and type_spelling(node) in definitions else None
             fields.append({'name': member, 'offset': int(offset),
-                           'kind': 'ptr' if _pointer(node) else 'int'})
-            if layout_only:
+                           'kind': 'struct' if nested else 'ptr' if _pointer(node) else 'int'})
+            if layout_only or nested:
                 fields[-1]['type'] = type_spelling(node)
         records[name] = Record(name, int(sizes[1]), int(sizes[2]), fields)
-        canonicals[name] = ['void *' if _pointer(node) else canonical_type(node) for node in nodes]
+        canonicals[name] = [None if item['kind'] == 'struct' else 'void *' if _pointer(node)
+                            else canonical_type(node) for item, node in zip(fields, nodes)]
     if records.keys() != definitions.keys():
         raise Unsupported('Clang omitted a struct layout')
     # Field sizes are compiler-derived too, since the gap after a field can include padding.
     # A tiny companion translation unit evaluates sizeof for each field's canonical type:
     # builtin keywords and `void *` mean the same there as in the snippet's scope, whatever
     # the snippet's aliases shadow, and this avoids relying on the host Python ABI.
-    types = sorted({canonical for fields in canonicals.values() for canonical in fields})
+    types = sorted({canonical for fields in canonicals.values() for canonical in fields if canonical})
     probe = directory / 'sizes.cpp'
     probe.write_text(''.join(f'enum {{ __course_{i} = sizeof({value}) }};\n'
                              for i, value in enumerate(types)))
@@ -128,5 +132,6 @@ def layouts(ast: dict, directory: Path, *, layout_only: bool = False) -> dict[st
     walk(tree)
     for name, record in records.items():
         for item, canonical in zip(record.fields, canonicals[name]):
-            item['size'] = values[f'__course_{types.index(canonical)}']
+            item['size'] = (records[item['type']].size if canonical is None
+                            else values[f'__course_{types.index(canonical)}'])
     return records

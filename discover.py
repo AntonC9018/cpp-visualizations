@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Find eligible C++ examples and add minimal, localized, answer-only visualization tags."""
+"""List the C++ examples the tracer could show, and tag the ones chosen by hand.
+
+Being traceable does not make an example worth a trace: a visualization earns its place only
+where watching memory change is what the example teaches. So nothing is tagged by default;
+the inventory lists candidates, and `--tag PATH:LINE` tags the ones a reader picked.
+"""
 from __future__ import annotations
 
 import argparse
@@ -22,13 +27,14 @@ from tracing import Unsupported, trace
 SUMMARIES = {'en': 'Execution trace', 'ru': 'Выполнение по шагам'}
 
 
-def discover(repo: Path, *, apply: bool = False) -> dict:
+def discover(repo: Path, *, tag: frozenset[str] = frozenset()) -> dict:
+    """Inventory every example; tag the candidates named in `tag` as `path:line`."""
     if not (os.environ.get('CLANGXX') or shutil.which('clang++')):
         raise RuntimeError('Clang is required for discovery; put clang++ on PATH or set CLANGXX')
     config = load_config(repo)
     if config.visualizations is None:
         raise ValueError('configure visualizations in course-publishing.json first')
-    cache, selected, skipped = {}, [], []
+    cache, selected, skipped, pending, edited = {}, [], [], set(tag), {}
     for path in markdown_files(repo, config.visualizations):
         original = path.read_text()
         scanned = scan_document(original, path)
@@ -52,8 +58,10 @@ def discover(repo: Path, *, apply: bool = False) -> dict:
                 skipped.append(dict(entry, reason=reason))
                 continue
             selected.append(dict(entry, already_tagged=fence.start in tagged))
-            if fence.start in tagged:
+            chosen = f"{entry['path']}:{fence.line}"
+            if fence.start in tagged or chosen not in pending:
                 continue
+            pending.discard(chosen)
             language = next((lang.code for lang in config.languages
                              if path.is_relative_to(repo / lang.root)), 'en')
             summary = SUMMARIES.get(language, SUMMARIES['en'])
@@ -62,10 +70,15 @@ def discover(repo: Path, *, apply: bool = False) -> dict:
             insertions.append((fence.end, '\n<details>\n<summary>' + summary + '</summary>\n\n'
                                '<!-- <visualization> -->\n\n'
                                '<!-- </visualization> -->\n\n</details>\n' + after))
-        if apply and insertions:
-            for at, markup in reversed(insertions):
-                original = original[:at] + markup + original[at:]
-            path.write_text(original)
+        for at, markup in reversed(insertions):
+            original = original[:at] + markup + original[at:]
+        if insertions:
+            edited[path] = original
+    if pending:
+        # A typo or an ineligible example is an error, and then nothing is written.
+        raise ValueError('not an untagged candidate: ' + ', '.join(sorted(pending)))
+    for path, text in edited.items():
+        path.write_text(text)
     return {'selected': selected, 'skipped': skipped,
             'unique_supported_sources': sum(reason is None for reason in cache.values()),
             'skip_reasons': dict(Counter(entry['reason'] for entry in skipped))}
@@ -74,18 +87,21 @@ def discover(repo: Path, *, apply: bool = False) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--course-repo', type=Path, default=ROOT)
-    parser.add_argument('--apply', action='store_true', help='write tags; default is a read-only inventory')
+    parser.add_argument('--tag', nargs='+', default=[], metavar='PATH:LINE',
+                        help='tag these candidates, named as the inventory prints them; '
+                             'without it nothing is written')
     parser.add_argument('--report', type=Path, help='write the full eligibility inventory as JSON')
     args = parser.parse_args()
     try:
-        report = discover(args.course_repo.resolve(), apply=args.apply)
+        report = discover(args.course_repo.resolve(), tag=frozenset(args.tag))
     except (ValueError, RuntimeError, OSError) as exc:
         print(f'error: {exc}', file=sys.stderr)
         return 1
     for entry in report['selected']:
         print(f"{entry['path']}:{entry['line']}: "
-              + ('already tagged' if entry['already_tagged'] else 'eligible'))
-    print(f"{len(report['selected'])} examples; {report['unique_supported_sources']} shared assets")
+              + ('tagged' if entry['already_tagged'] or f"{entry['path']}:{entry['line']}" in args.tag
+                 else 'candidate'))
+    print(f"{len(report['selected'])} traceable examples; {report['unique_supported_sources']} shared assets")
     if args.report:
         args.report.write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
     return 0

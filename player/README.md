@@ -46,7 +46,10 @@ Nothing else is required from the page.
 
 Memory sits above an evaluation pane, right of the code (stacked on phones). Bytes are drawn to
 scale, addresses start at 64, and alignment gaps are dashed. A struct is a frame hugging its
-field cells; adjacent frames touch. Every live pointer keeps an arc above memory, in the
+field cells; adjacent frames touch. A struct field is a smaller frame inside its owner's, in
+the field's colour, with its name below its cells. A reference has no cell: once bound, its name is a rounded tag under the name of what it is
+bound to. Tags of one name stack; a field's tags sit under the field's label, inside the
+struct's frame, which grows to hold them. Every live pointer keeps an arc above memory, in the
 pointer's colour, from its cell to the pointee. Arcs to a whole struct end on its frame; arcs
 to a field reach the field cell. Ends sharing a cell spread apart and never cross.
 
@@ -73,11 +76,12 @@ red, blue), each at least 3:1 against the stage. Reads use `#2f64d6` on `#d9e5ff
 ```text
 trace     = {format: 1, source: [line…], variables: [variable…], steps: [step…],
              title?: text, spans?: [span | null per source line],
-             types?: {struct name: definition text}}
+             types?: {struct name: definition text}, references?: [{name, color}…]}
 variable  = {name, address, size, kind: "int" | "ptr", color}
           | {name, address, size, kind: "struct", color, type, fields: [field…]}
 field     = {name, offset, size, kind: "int" | "ptr", color}
-step      = {line, pane, values, targets, stdout, hold, op, expr?}
+          | {name, offset, size, kind: "struct", color, type, fields: [field…]}
+step      = {line, pane, values, targets, stdout, hold, op, expr?, refs?}
 span      = [start, end)  — character offsets
 ```
 
@@ -89,6 +93,10 @@ span      = [start, end)  — character offsets
 - `variables` are non-overlapping storage, in any order. `size` counts bytes, padding included.
   `color` indexes the palette's variable colours (fields: field colours) and wraps around.
 - A *leaf* is a cell holding a value: a scalar by name, a struct field as `variable.field`.
+  A struct field nests: its `offset` is relative to the struct that holds it, and its leaves
+  are named by path (`outer.inner.x`).
+- `references` are names without storage. `refs` maps each reference bound so far to the
+  variable or leaf it names; it only ever grows, by a `bind`.
 - `line` is the zero-based source line. `pane` is the statement as currently evaluated, in the
   lessons' notation (`int b{ a };` appears as `int b = a`, `int a{};` as `int a = {}`);
   `expr` is the part of the pane that is being evaluated, the rest being muted context.
@@ -110,6 +118,8 @@ a value may only change from `null` to `"?"` (a declaration).
 | `eval` | `value`, `span` | An operator, parentheses or `{}` at `span` reduce to `value`. |
 | `write` | `name`, `value`, `span`, `destination` | `value` (at `span`) is stored in `name`. |
 | `print` | `value`, `span` | `value` (at `span`) is appended to `stdout`. |
+| `bind` | `name`, `target`, `span`, `destination` | The reference `name` (at `destination`) is bound to `target` (at `span`). |
+| `alias` | `name`, `target`, `span` | The reference `name`, at `span`, becomes `target`, which it is bound to. |
 
 - For `read`, `addr`, `deref` and `eval`, `span` indexes the previous pane, and the new pane is
   the previous one with that span replaced by `value` (`target` for `deref`).
@@ -120,7 +130,7 @@ a value may only change from `null` to `"?"` (a declaration).
 - Only a write changes values or targets, and only of the cells its `name` covers (all fields of
   a struct). Only a print changes `stdout`, by its value plus optional whitespace.
 - Values agree with memory. A value is an integer, `nullptr` (stored as `0`) or `"?"`; a struct
-  is `{…}` of its fields' values, in order. A read's value is what `name` held before the step,
+  is `{…}` of its fields' values, in order, optionally after its type's name (`A{…}`). A read's value is what `name` held before the step,
   a write's value what `name` holds after it, field by field, and an `addr` value is the
   address of `name`. A dereference's `target` is `via`'s target or one of its fields.
 

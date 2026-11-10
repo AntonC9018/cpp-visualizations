@@ -12,7 +12,8 @@ import re
 
 FORMAT = 1
 SCALAR_KINDS = ('int', 'ptr')
-OPERATIONS = ('read', 'addr', 'deref', 'eval', 'write', 'print')
+STRUCT = 'struct'
+OPERATIONS = ('read', 'addr', 'deref', 'eval', 'write', 'print', 'bind', 'alias')
 UNKNOWN = '?'
 IDENTIFIER = re.compile(r'[A-Za-z_]\w*')
 
@@ -42,38 +43,48 @@ def struct(name: str, type_: str, address: int, size: int, fields: list[dict],
             'color': color, 'fields': fields}
 
 
+def reference(name: str, color: int = 0) -> dict:
+    """A reference: a name with no storage of its own, bound to storage by a `bind` step."""
+    return {'name': name, 'color': color}
+
+
 def field(name: str, offset: int, size: int = 4, kind: str = 'int', color: int = 0) -> dict:
     return {'name': name, 'offset': offset, 'size': size, 'kind': kind, 'color': color}
 
 
-def leaves(variables: list[dict]) -> dict[str, dict]:
-    """Every cell that holds a value: scalars by name, struct fields as `variable.field`."""
-    cells = {}
+def struct_field(name: str, type_: str, offset: int, size: int, fields: list[dict],
+                 color: int = 0) -> dict:
+    """A struct nested in a struct by value; its `fields` are offset from its own start."""
+    return {'name': name, 'type': type_, 'offset': offset, 'size': size, 'kind': STRUCT,
+            'color': color, 'fields': fields}
+
+
+def _walk(variables: list[dict]):
+    """Every variable and, depth first, every field: (dotted name, address, item)."""
+    def visit(prefix: str, base: int, item: dict):
+        name = prefix + item['name']
+        address = base + item.get('offset', item.get('address', 0))
+        yield name, address, item
+        for inner in item['fields'] if item['kind'] == STRUCT else ():
+            yield from visit(name + '.', address, inner)
     for variable in variables:
-        if variable['kind'] == 'struct':
-            for item in variable['fields']:
-                cells[variable['name'] + '.' + item['name']] = item
-        else:
-            cells[variable['name']] = variable
-    return cells
+        yield from visit('', 0, variable)
+
+
+def leaves(variables: list[dict]) -> dict[str, dict]:
+    """Every cell that holds a value: scalars by name, struct fields as `variable.field`,
+    fields of nested structs as `variable.field.field`."""
+    return {name: item for name, _, item in _walk(variables) if item['kind'] != STRUCT}
 
 
 def addresses(variables: list[dict]) -> dict[str, int]:
-    """The address of every variable and every struct field (`variable.field`)."""
-    result = {}
-    for variable in variables:
-        result[variable['name']] = variable['address']
-        for item in variable['fields'] if variable['kind'] == 'struct' else ():
-            result[variable['name'] + '.' + item['name']] = variable['address'] + item['offset']
-    return result
+    """The address of every variable and of every field, nested ones included."""
+    return {name: address for name, address, _ in _walk(variables)}
 
 
 def cells_of(variables: list[dict], name: str) -> list[str]:
-    """The leaves a name covers: a struct's fields, or the leaf itself."""
-    for variable in variables:
-        if variable['name'] == name and variable['kind'] == 'struct':
-            return [name + '.' + item['name'] for item in variable['fields']]
-    return [name]
+    """The leaves a name covers: all those inside a struct, or the leaf itself."""
+    return [leaf for leaf in leaves(variables) if leaf == name or leaf.startswith(name + '.')]
 
 
 # Validation -----------------------------------------------------------------------------------
@@ -122,35 +133,58 @@ def _variables(variables, where: str) -> dict[str, dict]:
         if not struct_:
             _check(variable['kind'] in SCALAR_KINDS, here, f'kind must be one of {SCALAR_KINDS} or struct')
             continue
-        _check(isinstance(variable['type'], str) and variable['type'], here, 'type must be a name')
-        fields = variable['fields']
-        _check(isinstance(fields, list) and fields, here + '.fields', 'expected a nonempty list')
-        seen, end = set(), 0
-        for position, item in enumerate(fields):
-            spot = f'{here}.fields[{position}]'
-            _keys(item, spot, {'name', 'offset', 'size', 'kind', 'color'})
-            _check(bool(IDENTIFIER.fullmatch(str(item['name']))), spot, 'name is not an identifier')
-            _check(item['name'] not in seen, spot, f'duplicate field {item["name"]!r}')
-            seen.add(item['name'])
-            _check(item['kind'] in SCALAR_KINDS, spot, f'kind must be one of {SCALAR_KINDS}')
-            _natural(item['offset'], spot + '.offset')
-            _natural(item['size'], spot + '.size', positive=True)
-            _natural(item['color'], spot + '.color')
-            _check(item['offset'] >= end, spot, 'fields must be ordered and must not overlap')
-            end = item['offset'] + item['size']
-        _check(end <= variable['size'], here, 'fields exceed the struct size')
+        _fields(variable, here)
     ranges.sort()
     for (_, end, left), (start, _, right) in zip(ranges, ranges[1:]):
         _check(start >= end, where, f'{left!r} and {right!r} overlap')
     return leaves(variables)
 
 
+def _fields(owner: dict, here: str) -> None:
+    """A struct's fields are ordered, disjoint and inside it; a struct field nests the same way."""
+    _check(isinstance(owner['type'], str) and owner['type'], here, 'type must be a name')
+    fields = owner['fields']
+    _check(isinstance(fields, list) and fields, here + '.fields', 'expected a nonempty list')
+    seen, end = set(), 0
+    for position, item in enumerate(fields):
+        spot = f'{here}.fields[{position}]'
+        nested = isinstance(item, dict) and item.get('kind') == STRUCT
+        _keys(item, spot, {'name', 'offset', 'size', 'kind', 'color'} | ({'type', 'fields'} if nested else set()))
+        _check(bool(IDENTIFIER.fullmatch(str(item['name']))), spot, 'name is not an identifier')
+        _check(item['name'] not in seen, spot, f'duplicate field {item["name"]!r}')
+        seen.add(item['name'])
+        _check(nested or item['kind'] in SCALAR_KINDS, spot, f'kind must be one of {SCALAR_KINDS} or struct')
+        _natural(item['offset'], spot + '.offset')
+        _natural(item['size'], spot + '.size', positive=True)
+        _natural(item['color'], spot + '.color')
+        _check(item['offset'] >= end, spot, 'fields must be ordered and must not overlap')
+        end = item['offset'] + item['size']
+        if nested:
+            _fields(item, spot)
+    _check(end <= owner['size'], here, 'fields exceed the struct size')
+
+
+def _references(references, variables: list[dict], where: str) -> set[str]:
+    _check(isinstance(references, list) and references, where, 'expected a nonempty list')
+    names, taken = set(), {variable['name'] for variable in variables}
+    for index, item in enumerate(references):
+        here = f'{where}[{index}]'
+        _keys(item, here, {'name', 'color'})
+        _check(bool(IDENTIFIER.fullmatch(str(item['name']))), here, 'name is not an identifier')
+        _check(item['name'] not in names | taken, here, f'duplicate name {item["name"]!r}')
+        names.add(item['name'])
+        _natural(item['color'], here + '.color')
+    return names
+
+
 @dataclass(frozen=True)
 class _Storage:
-    """Lookups over validated variables: `cells` by leaf, `addresses` by variable or leaf."""
+    """Lookups over validated variables: `cells` by leaf, `addresses` by variable or leaf.
+    `references` are the names without storage."""
     variables: list[dict]
     cells: dict[str, dict]
     addresses: dict[str, int]
+    references: frozenset[str] = frozenset()
 
     def cells_of(self, name: str) -> list[str]:
         return cells_of(self.variables, name)
@@ -177,9 +211,12 @@ _LITERAL = re.compile(r'-?\d+')
 
 
 def _stored(text: str, where: str) -> list:
-    """The cell values an operation's text stands for: one per field for `{…}`, `nullptr` as 0."""
-    braced = text.startswith('{') and text.endswith('}')
-    items = [item.strip() for item in text[1:-1].split(',')] if braced else [text]
+    """The cell values an operation's text stands for: one per field for `{…}`, which may carry
+    its struct's name (`A{…}`), and `nullptr` as 0."""
+    braced = bool(re.fullmatch(r'(?:[A-Za-z_]\w*)?\{.*\}', text))
+    text = text[text.find('{'):] if braced else text
+    # A nested struct's braces only group: the cells are the values in order.
+    items = [item.strip() for item in re.sub(r'[{}]', '', text).split(',')] if braced else [text]
     result = []
     for item in items:
         _check(item in ('nullptr', UNKNOWN) or bool(_LITERAL.fullmatch(item)), where,
@@ -200,7 +237,7 @@ def _memory(op: dict, step: dict, previous: dict, storage: _Storage, where: str)
     cells = storage.cells_of(name)
     values = (step if kind == 'write' else previous)['values']
     expected = [values[cell] for cell in cells]
-    shown = str(expected[0]) if len(cells) == 1 else '{' + ', '.join(map(str, expected)) + '}'
+    shown = str(expected[0]) if cells == [name] else '{' + ', '.join(map(str, expected)) + '}'
     when = 'after the write' if kind == 'write' else 'before the read'
     _check(_stored(op['value'], where) == expected, where + '.value',
            f'{name} holds {shown} {when}, not {op["value"]!r}')
@@ -232,10 +269,15 @@ def _operation(op, step: dict, previous: dict, storage: _Storage, where: str) ->
     kind = op['kind']
     fields = {'read': {'name', 'value', 'span'}, 'addr': {'name', 'value', 'span'},
               'deref': {'target', 'via', 'span'}, 'eval': {'value', 'span'},
-              'write': {'name', 'value', 'span', 'destination'}, 'print': {'value', 'span'}}[kind]
+              'write': {'name', 'value', 'span', 'destination'}, 'print': {'value', 'span'},
+              'bind': {'name', 'target', 'span', 'destination'},
+              'alias': {'name', 'target', 'span'}}[kind]
     _keys(op, where, fields | {'kind'})
     for key in fields & {'name', 'target', 'via', 'value'}:
         _check(isinstance(op[key], str) and op[key], f'{where}.{key}', 'expected text')
+    if kind in ('bind', 'alias'):
+        _reference(op, step, previous, storage, where)
+        return
     for key in ('name', 'via'):
         if key in op:
             _check(op[key] in storage.addresses, f'{where}.{key}', f'unknown variable {op[key]!r}')
@@ -256,6 +298,31 @@ def _operation(op, step: dict, previous: dict, storage: _Storage, where: str) ->
         _unchanged_pane(op, step, previous, where)
     if kind in ('read', 'addr', 'write'):
         _memory(op, step, previous, storage, where)
+
+
+def _reference(op: dict, step: dict, previous: dict, storage: _Storage, where: str) -> None:
+    """A `bind` gives a reference its storage for good; an `alias` replaces a bound reference's
+    name in the pane by what it is bound to."""
+    kind, name, target = op['kind'], op['name'], op['target']
+    _check(name in storage.references, where + '.name', f'unknown reference {name!r}')
+    _check(target in storage.addresses, where + '.target', f'unknown variable {target!r}')
+    if kind == 'alias':
+        _check(_refs(previous).get(name) == target, where, f'{name} is not bound to {target}')
+        start, end = span = _span(op['span'], previous['pane'], where + '.span')
+        _check(previous['pane'][start:end] == name, where + '.span', 'does not cover the name')
+        replaced = _replacement(previous['pane'], step['pane'], span, where)
+        _check(replaced == target, where, f'the replacement {replaced!r} is not {target!r}')
+        return
+    _check(step['pane'] == previous['pane'], where, 'a bind does not change the pane')
+    _check(name not in _refs(previous) and _refs(step).get(name) == target, where,
+           f'{name} must become bound to {target}')
+    for key, text in (('span', target), ('destination', name)):
+        start, end = _span(op[key], step['pane'], f'{where}.{key}')
+        _check(step['pane'][start:end] == text, f'{where}.{key}', f'does not cover {text!r}')
+
+
+def _refs(step: dict) -> dict:
+    return step.get('refs', {})
 
 
 def _unchanged_pane(op: dict, step: dict, previous: dict, where: str) -> None:
@@ -290,6 +357,9 @@ def _changes(step: dict, previous: dict, storage: _Storage, where: str) -> None:
                f'{where}.targets.{name}', 'only a write changes where a pointer points')
     _check(step['stdout'] == previous['stdout'] or op.get('kind') == 'print',
            where + '.stdout', 'only a print changes the output')
+    bound = {op['name']: op['target']} if op.get('kind') == 'bind' else {}
+    _check(_refs(step) == {**_refs(previous), **bound}, where + '.refs',
+           'only a bind changes what a reference is bound to, and only once')
 
 
 def _layout(trace) -> None:
@@ -343,7 +413,7 @@ def validate(trace) -> None:
     if isinstance(trace, dict) and trace.get('kind') == 'layout':
         _layout(trace)
         return
-    _keys(trace, 'trace', {'format', 'source', 'variables', 'steps'}, {'title', 'spans', 'types'})
+    _keys(trace, 'trace', {'format', 'source', 'variables', 'steps'}, {'title', 'spans', 'types', 'references'})
     _check(trace['format'] == FORMAT, 'trace.format', f'expected {FORMAT}')
     source = trace['source']
     _check(isinstance(source, list) and source and all(isinstance(line, str) for line in source),
@@ -362,13 +432,14 @@ def validate(trace) -> None:
                'trace.types', 'expected struct names mapped to their definitions')
     variables = trace['variables']
     cells = _variables(variables, 'trace.variables')
-    storage = _Storage(variables, cells, addresses(variables))
+    references = _references(trace['references'], variables, 'trace.references') if 'references' in trace else set()
+    storage = _Storage(variables, cells, addresses(variables), frozenset(references))
     steps = trace['steps']
     _check(isinstance(steps, list) and steps, 'trace.steps', 'expected a nonempty list')
     previous = None
     for index, step in enumerate(steps):
         where = f'trace.steps[{index}]'
-        _keys(step, where, {'line', 'pane', 'values', 'targets', 'stdout', 'hold', 'op'}, {'expr'})
+        _keys(step, where, {'line', 'pane', 'values', 'targets', 'stdout', 'hold', 'op'}, {'expr', 'refs'})
         _check(type(step['line']) is int and 0 <= step['line'] < len(source), where + '.line',
                'not a source line')
         _check(isinstance(step['pane'], str), where + '.pane', 'expected text')
@@ -383,8 +454,12 @@ def validate(trace) -> None:
         _check(isinstance(step['stdout'], str), where + '.stdout', 'expected text')
         _check(type(step['hold']) in (int, float) and step['hold'] >= 0, where + '.hold',
                'expected seconds')
+        _check(isinstance(_refs(step), dict) and all(
+            name in references and target in storage.addresses for name, target in _refs(step).items()),
+            where + '.refs', 'expected references mapped to variables')
         if previous is None:
-            _check(step['op'] is None, where + '.op', 'the first step has no operation')
+            _check(step['op'] is None and not _refs(step), where + '.op',
+                   'the first step has no operation and no bound reference')
         else:
             if step['op'] is not None:
                 _operation(step['op'], step, previous, storage, where + '.op')

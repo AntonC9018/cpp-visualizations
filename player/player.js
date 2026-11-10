@@ -19,6 +19,12 @@
   // Struct frames hug their cells; neighbouring frames just touch.
   const FRAME = { side: 4, top: 36, bottom: 40, stroke: 2.5 };
   const GAP = 2 * FRAME.side + FRAME.stroke;
+  // A struct holding a struct: the inner frame keeps NEST clear of its neighbours, and the
+  // outer frame rises by RISE around it, leaving room below for the inner frame's name.
+  const NEST = 10, RISE = { top: 10, bottom: 34 };
+  // A reference is a second name: a tag under the name of what it is bound to. Tags of one
+  // name stack `step` apart; those of a field sit inside the struct's frame, which grows.
+  const TAG = { top: { size: 24, step: 40 }, field: { size: 19, step: 32 } };
   const STACK_BELOW = 600;                  // CSS pixels: narrower players stack code above memory
   const MAX_SCALE = 0.6;                    // CSS pixels per unit: short traces do not blow up
   const DIM = 0.5;                          // opacity of variables the statement does not involve
@@ -39,6 +45,7 @@
       copy: 'Line {line}: {code}', read: 'Read {name}: {value}',
       addr: 'Take the address of {name}: {value}', deref: 'Follow the address in {via} to {target}',
       eval: 'Evaluate: {value}', write: 'Store {value} in {name}', print: 'Print {value}',
+      bind: '{name} becomes another name for {target}', alias: '{name} is another name for {target}',
       blank: { '\n': 'Print a newline', '\t': 'Print a tab', ' ': 'Print a space' },
       error: 'This visualization could not be loaded.',
     },
@@ -49,6 +56,7 @@
       copy: 'Строка {line}: {code}', read: 'Чтение {name}: {value}',
       addr: 'Адрес {name}: {value}', deref: 'Переход по адресу из {via} к {target}',
       eval: 'Вычисление: {value}', write: 'Запись {value} в {name}', print: 'Вывод {value}',
+      bind: '{name} становится ещё одним именем для {target}', alias: '{name} — другое имя для {target}',
       blank: { '\n': 'Вывод перевода строки', '\t': 'Вывод табуляции', ' ': 'Вывод пробела' },
       error: 'Не удалось загрузить визуализацию.',
     },
@@ -111,14 +119,15 @@
     + `<g transform="translate(${round(-x)} ${round(-y)})">${markup}</g></g></g>`;
 
   // Timing -----------------------------------------------------------------------------------
-  const departure = op => op.kind === 'write' ? T.writeHold : op.kind === 'print' ? 0.2 : T.prepare;
+  const stores = op => op.kind === 'write' || op.kind === 'bind';
+  const departure = op => stores(op) ? T.writeHold : op.kind === 'print' ? 0.2 : T.prepare;
   function arrival(op) {
     if (op.kind === 'deref') return T.prepare + T.follow;
-    if (op.kind === 'eval') return T.evaluate;
+    if (op.kind === 'eval' || op.kind === 'alias') return T.evaluate;
     if (op.kind === 'print') return 0.9;
     return departure(op) + T.travel;
   }
-  const opSeconds = op => arrival(op) + T.settle + (op.kind === 'write' ? 0.5 : 0);
+  const opSeconds = op => arrival(op) + T.settle + (stores(op) ? 0.5 : 0);
   const copies = (steps, i) => !steps[i].op && (i === 0 || steps[i - 1].line !== steps[i].line);
   const copyBegin = (steps, i) => i > 0 ? 0.3 : T.copyBegin;
   function animationSeconds(steps, i) {
@@ -132,29 +141,51 @@
   function prepare(trace) {
     if (!trace || trace.format !== 1) throw new Error('unsupported trace format ' + (trace && trace.format));
     const variables = [...trace.variables].sort((a, b) => a.address - b.address);
-    const leaves = [], groups = [];
-    for (const variable of variables) {
-      if (variable.kind !== 'struct') {
-        leaves.push({ ...variable, label: variable.name, group: null });
-        continue;
+    const leaves = [], groups = [], tops = [];
+    // A struct is a group of its fields, in address order; a struct field is a group within
+    // it. `rise` counts the levels of frames a group holds.
+    const struct = (item, name, address, variable, parent) => {
+      const group = { name, label: item.name, type: item.type, address, size: item.size, color: variable.color,
+        fieldColor: parent ? item.color : null, top: variable.name, parent, children: [], rise: 0 };
+      groups.push(group);
+      for (const field of item.fields) {
+        const at = address + field.offset, path = name + '.' + field.name;
+        if (field.kind === 'struct') {
+          const inner = struct(field, path, at, variable, name);
+          group.rise = Math.max(group.rise, inner.rise + 1);
+          group.children.push(inner);
+        } else {
+          const leaf = { name: path, label: field.name, group: variable.name, address: at, size: field.size,
+            kind: field.kind, color: variable.color, fieldColor: field.color };
+          leaves.push(leaf);
+          group.children.push(leaf);
+        }
       }
-      const fields = variable.fields.map(field => ({ name: variable.name + '.' + field.name,
-        label: field.name, group: variable.name, address: variable.address + field.offset,
-        size: field.size, kind: field.kind, color: variable.color, fieldColor: field.color }));
-      leaves.push(...fields);
-      groups.push({ name: variable.name, type: variable.type, address: variable.address,
-        size: variable.size, color: variable.color, fields: fields.map(field => field.name) });
+      group.fields = group.children.map(child => child.name);
+      return group;
+    };
+    for (const variable of variables) {
+      if (variable.kind === 'struct') tops.push(struct(variable, variable.name, variable.address, variable, null));
+      else {
+        leaves.push({ ...variable, label: variable.name, group: null });
+        tops.push(leaves[leaves.length - 1]);
+      }
     }
     const top = variables.map(variable => variable.name);
     return { trace, steps: trace.steps, source: trace.source, spans: trace.spans || [], types: trace.types || {},
-      leaves, groups, top };
+      references: trace.references || [], leaves, groups, tops, top, rise: Math.max(0, ...groups.map(group => group.rise)) };
   }
 
   // Variables the current statement involves stay bright; the rest dim to half. A pointer's
   // target joins once evaluation reaches it.
   function activeVariables(m, i) {
     const line = m.steps[i].line, active = new Set();
-    for (const token of m.source[line].match(/\b[A-Za-z_]\w*\b/g) || []) if (m.top.includes(token)) active.add(token);
+    const refs = m.steps[i].refs || {};
+    for (const token of m.source[line].match(/\b[A-Za-z_]\w*\b/g) || []) {
+      if (m.top.includes(token)) active.add(token);
+      // A bound reference on the line involves what it names as well.
+      if (refs[token]) active.add(token).add(refs[token].split('.')[0]);
+    }
     for (let j = i; j >= 0 && m.steps[j].line === line; j--) {
       for (const key of ['name', 'target', 'via']) {
         const op = m.steps[j].op;
@@ -192,14 +223,68 @@
       l.level = list.filter(o => o !== l && range(o)[0] >= a && range(o)[1] <= b).length;
       // An arc to a struct ends on its frame; an arc to a field passes through onto the field.
       const sy = l.from.y - 2, ey = g.isStruct(l.to) ? frameOf(l.to).y - 1 : l.to.y - 3;
-      const apex = g.memY - FRAME.top - 84 - l.level * 40;
+      const apex = g.memY - FRAME.top - g.rise * RISE.top - 84 - l.level * 40;
       l.d = `M ${round(l.sx)} ${sy} C ${round(l.sx)} ${apex}, ${round(l.ex)} ${apex}, ${round(l.ex)} ${ey - 9}`;
       l.head = [l.ex, ey];
     }
     return list;
   }
-  const frameOf = s => ({ x: s.x - FRAME.side, y: s.y - FRAME.top, w: s.w + 2 * FRAME.side,
-    h: s.h + FRAME.top + FRAME.bottom });
+  const frameOf = s => ({ x: s.x - FRAME.side, y: s.y - FRAME.top - s.rise * RISE.top, w: s.w + 2 * FRAME.side,
+    h: s.h + FRAME.top + FRAME.bottom + s.rise * (RISE.top + RISE.bottom) + (s.drop || 0) });
+  // The rows of reference tags under each name. A tag takes the first row where it fits
+  // beside the tags of the neighbouring names on its level. `drop` is how far a struct's
+  // frame grows to hold the tags of its fields.
+  function tagRows(m, box) {
+    const bound = m.steps[m.steps.length - 1].refs || {}, tags = [], rows = new Map(), drop = new Map();
+    for (const r of m.references) {
+      const target = bound[r.name];
+      if (!target) continue;
+      const item = box(target), style = target.includes('.') ? TAG.field : TAG.top;
+      const w = Math.max(r.name.length * style.size * CHAR + 20, style.size + 18), cx = item.x + item.w / 2;
+      const level = target.includes('.') ? target.slice(0, target.lastIndexOf('.')) : '';
+      let row = 0;
+      while (tags.some(t => t.level === level && t.row === row && Math.abs(t.cx - cx) < (t.w + w) / 2 + 6)) row++;
+      tags.push({ ...r, target, style, w, cx, level, row });
+      rows.set(target, Math.max(rows.get(target) || 0, row + 1));
+    }
+    const below = name => (rows.get(name) || 0) * (name.includes('.') ? TAG.field : TAG.top).step;
+    const sink = item => {
+      const inner = Math.max(0, ...(item.children || []).map(child => below(child.name) + sink(child)));
+      drop.set(item.name, inner);
+      return inner;
+    };
+    const height = Math.max(0, ...m.tops.map(item => sink(item) + below(item.name)));
+    return { tags, drop, height };
+  }
+  // Where storage sits along the memory row, from its left end: bytes to scale, GAP between
+  // variables, NEST on both sides of a nested frame. `gaps` are the unused bytes.
+  function placement(m, byte) {
+    const spans = new Map(), gaps = [];
+    const unused = (x, bytes) => { if (bytes > 0) gaps.push([x, bytes * byte]); return Math.max(0, bytes) * byte; };
+    const put = (item, x) => {
+      let w = item.size * byte;
+      if (item.children) {
+        let address = item.address;
+        w = 0;
+        for (const child of item.children) {
+          w += unused(x + w, child.address - address);
+          const pad = child.children ? NEST : 0;
+          w += pad + put(child, x + w + pad) + pad;
+          address = child.address + child.size;
+        }
+        w += unused(x + w, item.address + item.size - address);
+      }
+      spans.set(item.name, [x, w]);
+      return w;
+    };
+    let width = 0, address = null;
+    for (const item of m.tops) {
+      if (address !== null) width += unused(width, item.address - address) + GAP;
+      width += put(item, width);
+      address = item.address + item.size;
+    }
+    return { spans, gaps, width };
+  }
   const labelWidth = c => String(c.address).length * 16 * CHAR;
   const labelCentre = c => [c.x + 3 + labelWidth(c) / 2, c.y - 18];
   const valueCentre = c => [c.x + c.w / 2, c.y + 32];
@@ -215,7 +300,8 @@
           y: g.lineY(i) - CODE_SIZE * 0.85, w: match[1].length * CODE_CHAR, h: CODE_SIZE * 1.2 });
       }
     });
-    for (const s of g.groups) if (m.types[s.type]) targets.push({ type: s.type, ...frameOf(s) });
+    // Inner frames first: the pointer hits the innermost one.
+    for (const s of [...g.groups].reverse()) if (m.types[s.type]) targets.push({ type: s.type, ...frameOf(s) });
     return targets;
   }
 
@@ -236,11 +322,11 @@
     let codeW = Math.max(300, 62 + longest * CODE_CHAR + 30);
     const codeH = 44 + m.source.length * LINE;
     // Memory: top-level variables sit GAP apart, so frames hug their cells and just touch.
-    const starts = [...m.groups.map(s => s.address), ...m.leaves.filter(l => !l.group).map(l => l.address)]
-      .sort((a, b) => a - b);
-    g.end = Math.max(...m.leaves.map(l => l.address + l.size), ...m.groups.map(s => s.address + s.size));
-    g.byte = Math.min(MAX_BYTE, (MEMORY_WIDTH - GAP * (starts.length - 1)) / (g.end - starts[0]));
-    const memoryW = (g.end - starts[0]) * g.byte + GAP * (starts.length - 1);
+    const first = m.tops[0], last = m.tops[m.tops.length - 1];
+    const fixed = GAP * (m.tops.length - 1) + 2 * NEST * m.groups.filter(s => s.parent).length;
+    const placed = placement(m, Math.min(MAX_BYTE, (MEMORY_WIDTH - fixed) / (last.address + last.size - first.address)));
+    const memoryW = placed.width;
+    g.rise = m.rise;
     const paneChars = Math.max(...m.steps.map(step => step.pane.length));
     const finalStdout = m.steps[m.steps.length - 1].stdout;
     // A lone trailing newline adds no visible line; output of only a newline still shows one.
@@ -251,17 +337,17 @@
     if (stacked) codeW = columnW = Math.max(codeW, columnW);
 
     // The right column, from its own top: arcs, memory, names, pane, output.
-    const xOf = (memX, address) => memX + (address - starts[0]) * g.byte
-      + GAP * starts.filter(s => s > starts[0] && s <= address).length;
-    const at = (memX, memY, c) => ({ ...c, x: xOf(memX, c.address), y: memY, w: c.size * g.byte, h: CELL });
+    const at = (memX, memY, c) => ({ ...c, x: memX + placed.spans.get(c.name)[0], y: memY,
+      w: placed.spans.get(c.name)[1], h: CELL });
     // Arc room comes from the highest arc any step draws.
     const probe = { ...g, memY: 0, leaves: m.leaves.map(l => at(0, 0, l)), groups: m.groups.map(s => at(0, 0, s)) };
     probe.box = name => probe.groups.find(s => s.name === name) || probe.leaves.find(l => l.name === name);
     let level = -1;
     for (const step of m.steps) for (const l of links(probe, step)) level = Math.max(level, l.level);
     const structs = m.groups.length > 0;
-    const room = level >= 0 ? FRAME.top + 84 + level * 40 + 10 : (structs ? FRAME.top : 0) + 30;
-    const names = structs ? CELL + FRAME.bottom + 32 : CELL + 34;
+    const room = (level >= 0 ? FRAME.top + 84 + level * 40 + 10 : (structs ? FRAME.top : 0) + 30) + g.rise * RISE.top;
+    const tagged = tagRows(m, probe.box);
+    const names = (structs ? CELL + FRAME.bottom + 32 : CELL + 34) + g.rise * RISE.bottom + tagged.height;
     const paneTop = room + names + 56, paneH = 76;
     const outputTop = paneTop + paneH + 60;
     const columnH = outputLines.length ? outputTop + (outputLines.length - 1) * 36 + 14 : paneTop + paneH;
@@ -287,19 +373,27 @@
     g.ty = g.pane.y + 38 + 11;
     g.below = g.pane.y - 56;
     g.lineY = i => g.code.y + 50 + i * LINE;
-    g.xOf = address => xOf(g.memX, address);
+    g.gaps = placed.gaps.map(([x, w]) => [g.memX + x, w]);
     const colour = (list, i, count) => list[i % count];
     g.leaves = m.leaves.map(l => ({ ...at(g.memX, g.memY, l), color: colour(P.vars, l.color, VARIABLE_COLOURS),
       fieldColor: l.group ? colour(P.fields, l.fieldColor, FIELD_COLOURS) : null }));
-    g.groups = m.groups.map(s => ({ ...at(g.memX, g.memY, s), color: colour(P.vars, s.color, VARIABLE_COLOURS) }));
+    g.groups = m.groups.map(s => ({ ...at(g.memX, g.memY, s), color: colour(P.vars, s.color, VARIABLE_COLOURS),
+      fieldColor: s.parent ? colour(P.fields, s.fieldColor, FIELD_COLOURS) : null, drop: tagged.drop.get(s.name) }));
     g.box = name => g.groups.find(s => s.name === name) || g.leaves.find(l => l.name === name);
-    g.cellsOf = name => g.groups.some(s => s.name === name)
-      ? g.leaves.filter(l => l.group === name) : g.leaves.filter(l => l.name === name);
+    g.cellsOf = name => g.leaves.filter(l => l.name === name || l.name.startsWith(name + '.'));
     // Colouring of identifiers: variables keep their colour; a field takes its field's colour.
-    g.owner = token => g.groups.find(s => s.name === token) || g.leaves.find(l => !l.group && l.name === token);
-    g.field = token => g.leaves.find(l => l.group && l.label === token);
+    // A tag hangs under the name of what it is bound to: `y` is its text's baseline.
+    g.tags = tagged.tags.map(t => {
+      const item = g.box(t.target), f = g.isStruct(item) ? frameOf(item) : null;
+      const name = f ? f.y + f.h + (item.parent ? 24 : 32) : item.y + item.h + (item.group ? 28 : 34);
+      return { ...t, cx: t.cx + g.memX, y: name + (t.row + 1) * t.style.step, color: colour(P.vars, t.color, VARIABLE_COLOURS) };
+    });
+    g.owner = token => g.groups.find(s => s.name === token) || g.leaves.find(l => !l.group && l.name === token)
+      || g.tags.find(t => t.name === token);
+    g.field = token => g.leaves.find(l => l.group && l.label === token)
+      || g.groups.find(s => s.parent && s.label === token);
     g.typeTargets = typeTargets(m, g);
-    g.nameSize = labelSize([...g.groups, ...g.leaves.filter(l => !l.group)], c => c.name, 26);
+    g.nameSize = labelSize([...g.groups.filter(s => !s.parent), ...g.leaves.filter(l => !l.group)], c => c.name, 26);
     g.fieldSize = labelSize(g.leaves.filter(l => l.group), c => c.label, 20);
     return g;
   }
@@ -456,17 +550,17 @@
     const live = l => values[l.name] !== null || writing.has(l.name);
     let out = '';
     // Unused bytes (padding, gaps between variables) are dashed and unlabelled.
-    const spans = g.leaves.map(l => [l.address, l.address + l.size]).sort((a, b) => a[0] - b[0]);
-    let cursor = spans[0][0];
-    for (const [a, b] of [...spans, [g.end, g.end]]) {
-      if (a > cursor) out += `<rect x="${round(g.xOf(cursor) + 3)}" y="${g.memY + 3}" width="${round((a - cursor) * g.byte - 6)}" `
+    for (const [x, w] of g.gaps) {
+      out += `<rect x="${round(x + 3)}" y="${g.memY + 3}" width="${round(w - 6)}" `
         + `height="58" fill="none" stroke="${P.gapStroke}" stroke-dasharray="5 5"/>`;
-      cursor = Math.max(cursor, b);
     }
     for (const s of g.groups) {
-      const on = g.leaves.some(l => l.group === s.name && live(l)), f = frameOf(s);
-      out += dim(c, s.name, rect(f.x, f.y, f.w, f.h, 'none', on ? s.color : P.deadStroke, 6, FRAME.stroke)
-        + text(s.x + s.w / 2, f.y + f.h + 32, s.name, g.nameSize, on ? s.color : P.grey, 'middle'));
+      const on = g.cellsOf(s.name).some(live), f = frameOf(s);
+      // A nested struct is a field: its frame and name take the field's colour, inside the outer frame.
+      const color = on ? s.fieldColor || s.color : null;
+      out += dim(c, s.top, rect(f.x, f.y, f.w, f.h, 'none', color || P.deadStroke, 6, FRAME.stroke)
+        + (s.parent ? text(s.x + s.w / 2, f.y + f.h + 24, s.label, Math.min(g.fieldSize, 22), color || P.grey, 'middle')
+          : text(s.x + s.w / 2, f.y + f.h + 32, s.name, g.nameSize, color || P.grey, 'middle')));
     }
     if (op && op.kind === 'addr') {
       // Taking an address reads the label above storage, not the value.
@@ -502,6 +596,30 @@
     }
     // Dereference selects a location without reading it: a neutral outline.
     if (op && op.kind === 'deref') out += `<g opacity="0">${fade(0, 1, 0.2, at - 0.15)}${outline(c, g.box(op.target), P.fg)}</g>`;
+    // So does a reference: its name stands for the location it is bound to.
+    if (op && op.kind === 'alias') out += `<g opacity="0">${fade(0, 1, 0.2, at - 0.15)}${outline(c, g.box(op.target), P.fg)}</g>`;
+    if (op && op.kind === 'bind') out += `<g opacity="0">${fade(0, 1, 0.2)}${fade(1, 0, 0.35, at + 0.5)}${outline(c, g.box(op.target), P.fg)}</g>`;
+    return out + tags(c, at);
+  }
+  // A reference's tag shows once it is bound: it pops in as its name arrives, and glows
+  // while its name is being replaced by what it stands for.
+  function tags(c, at) {
+    const { g, P, step, op } = c, bound = step.refs || {};
+    let out = '';
+    for (const t of g.tags) {
+      if (!bound[t.name]) continue;
+      const h = t.style.size + 10, x = t.cx - t.w / 2, y = t.y - t.style.size + 1, middle = y + h / 2;
+      let markup = rect(x, y, t.w, h, P.panel, t.color, h / 2, 2);
+      if (op && op.kind === 'alias' && op.name === t.name) {
+        markup += `<g opacity="0">${fade(0, 0.45, 0.2)}${fade(0.45, 0, 0.5, at)}${rect(x, y, t.w, h, t.color, 'none', h / 2)}</g>`;
+      }
+      markup += text(t.cx, t.y, t.name, t.style.size, t.color, 'middle');
+      if (op && op.kind === 'bind' && op.name === t.name) {
+        markup = `<g opacity="0">${show(at)}<g transform="translate(${round(t.cx)} ${round(middle)})"><g>${pulse(at - 0.05)}`
+          + `<g transform="translate(${round(-t.cx)} ${round(-middle)})">${markup}</g></g></g></g>`;
+      }
+      out += dim(c, t.name, markup);
+    }
     return out;
   }
   function valueBox(c, value, color, path, begin, travel, end) {
@@ -530,6 +648,12 @@
       const sx = spanCentre(op.span), [ex, ey] = valueCentre(g.box(op.name));
       return valueBox(c, op.value, P.write, `M ${p(sx, ty)} C ${p(sx, below)}, ${p(ex, below)}, ${p(ex, ey)}`, begin, T.travel, at);
     }
+    if (op.kind === 'bind') {
+      // The name is what moves: it leaves the pane and becomes a tag under its variable.
+      const tag = g.tags.find(t => t.name === op.name), sx = spanCentre(op.destination);
+      const ey = tag.y - tag.style.size / 2 + 4;
+      return valueBox(c, op.name, tag.color, `M ${p(sx, ty)} C ${p(sx, ty - 70)}, ${p(tag.cx, ey + 70)}, ${p(tag.cx, ey)}`, begin, T.travel, at);
+    }
     return '';
   }
   function pane(c, copying) {
@@ -549,7 +673,7 @@
         + settledPane(c, step, 0, 0) + '</g></g>';
       return out;
     }
-    if (op && ['read', 'addr', 'deref', 'eval'].includes(op.kind)) {
+    if (op && ['read', 'addr', 'deref', 'eval', 'alias'].includes(op.kind)) {
       const before = prev.pane, [s, e] = op.span, length = step.pane.length - before.length + (e - s);
       const at = arrival(op), dx = (length - (e - s)) * EVAL_CHAR, sx = tx + s * EVAL_CHAR;
       const [stroke, fill] = op.kind === 'read' || op.kind === 'addr' ? [P.read, P.readFill] : [P.fg, P.derefFill];
@@ -573,9 +697,12 @@
     out += exprBackground(c, tx, ty, step.expr);
     if (op && op.kind === 'write') {
       const at = arrival(op), [vs, ve] = op.span, [ns, ne] = op.destination;
-      out += `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.2, at + 0.15)}${markBox(tx + vs * EVAL_CHAR, ty, ve - vs, P.write, P.writeFill)}</g>`;
+      // A name written right against its value (`a{ 1 }`): both boxes give way, so they do not overlap.
+      const tight = ne === vs ? 4 : 0;
+      out += `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.2, at + 0.15)}`
+        + rect(tx + vs * EVAL_CHAR - 3 + tight, ty - 32, (ve - vs) * EVAL_CHAR + 6 - tight, 42, P.writeFill, P.write, 6, 2) + '</g>';
       out += `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.3, at + 0.4)}`
-        + rect(tx + ns * EVAL_CHAR - 3, ty - 32, (ne - ns) * EVAL_CHAR + 6, 42, 'none', P.write, 6, 2) + '</g>';
+        + rect(tx + ns * EVAL_CHAR - 3, ty - 32, (ne - ns) * EVAL_CHAR + 6 - tight, 42, 'none', P.write, 6, 2) + '</g>';
       out += paneText(c, tx, ty, step.pane, 0, step.pane.length, step.expr);
       // A muted destination takes its variable's colour while the value travels.
       if (inContext(step, op.destination)) {
@@ -583,6 +710,13 @@
           + colored(c, tx + ns * EVAL_CHAR, ty, step.pane.slice(ns, ne)) + '</g>';
       }
       return out;
+    }
+    if (op && op.kind === 'bind') {
+      // The name is boxed as it leaves; what it binds to is only pointed at.
+      const at = arrival(op), [vs, ve] = op.span, [ns, ne] = op.destination;
+      out += `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.2, at + 0.15)}${markBox(tx + ns * EVAL_CHAR, ty, ne - ns, P.fg, P.derefFill)}</g>`;
+      out += `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.3, at + 0.4)}`
+        + rect(tx + vs * EVAL_CHAR - 3, ty - 32, (ve - vs) * EVAL_CHAR + 6, 42, 'none', P.fg, 6, 2) + '</g>';
     }
     return out + paneText(c, tx, ty, step.pane, 0, step.pane.length, step.expr);
   }

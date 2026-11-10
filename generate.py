@@ -83,14 +83,15 @@ def applicable(trace: dict, snippet: str) -> None:
     _storage_is_contiguous(variables)
     ops = [step['op'] for step in steps if step['op']]
     writes = [step for step in steps if step['op'] and step['op']['kind'] == 'write']
-    reads = [op for op in ops if op['kind'] in ('read', 'addr', 'deref')]
+    reads = [op for op in ops if op['kind'] in ('read', 'addr', 'deref', 'bind')]
     # A single initialized cell alone needs no illustration. Empty initialization is
     # deliberately kept: its contrast with uninitialized storage is the lesson.
     empty_init = any('{}' in line.replace(' ', '') for line in source)
     assignments = [step for step in writes if not DECLARATION.match(source[step['line']])]
     if not reads and len(writes) <= 1 and not assignments:
         raise Unsupported('a lone memory cell without a copy or state change needs no visualization')
-    if len(variables) == 1 and len(writes) == 1 and not empty_init and not assignments:
+    binds = any(op['kind'] == 'bind' for op in ops)
+    if len(variables) == 1 and len(writes) == 1 and not empty_init and not assignments and not binds:
         raise Unsupported('a lone literal-initialized cell and print need no visualization')
 
 
