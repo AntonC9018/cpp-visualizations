@@ -81,7 +81,7 @@ class MismatchTests(unittest.TestCase):
         self.assertEqual((clash['op']['from'], clash['op']['to']), ('A*', 'A**'))
         self.assertEqual(trace['source'][-1], 'A** p{ value };')
         self.assertEqual({variable['name'] for variable in trace['variables']}, {'a', 'value'})
-        self.assertEqual(clash['memory'], trace['steps'][-3]['memory'])
+        self.assertEqual(clash['values'], trace['steps'][-3]['values'])
 
     def test_an_initializer_after_the_equals_sign(self):
         _, clash = self.clash('int a = 5; int* p = a; return 0;')
