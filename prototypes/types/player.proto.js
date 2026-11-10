@@ -343,7 +343,9 @@
     return index === undefined ? c.P.muted : TYPE_COLOURS[themeName()][index % 6];
   };
   const pill = (c, cx, top, type, size, color) => {
-    const w = type.length * size * CHAR + 14, h = size + 7, style = c.m.trace.labelStyle || 'text';
+    const w = type.length * size * CHAR + 14, h = size + 7, chosen = c.m.trace.labelStyle || 'auto';
+    // `auto`: filled on the light theme, bare text on the dark one; `auto-outline`: outlined on dark.
+    const style = !chosen.startsWith('auto') ? chosen : themeName() === 'light' ? 'fill' : chosen === 'auto' ? 'text' : 'outline';
     const label = fill => text(cx, top + size + 1, type, size, fill, 'middle');
     // PROTO: label styles for variant B. The underline keeps the colour in every one of them.
     if (style === 'fill') return rect(cx - w / 2, top, w, h, color, 'none', h / 2) + label(c.P.bg);

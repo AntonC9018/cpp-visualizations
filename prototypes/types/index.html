@@ -97,12 +97,13 @@ const VARIANTS = {
   },
 };
 
-// Label styles of variant B: coloured text, grey text, an outlined pill, the first filled pill.
-const STYLES = ['text', 'grey', 'outline', 'fill'];
+// Label styles of variant B: coloured text, grey text, an outlined pill, the first filled pill;
+// `auto` fills on the light theme and leaves bare text on the dark one (`auto-outline`: an outline).
+const STYLES = ['auto', 'auto-outline', 'text', 'grey', 'outline', 'fill'];
 const query = new URLSearchParams(location.search);
 const state = {
   variant: VARIANTS[query.get('variant')] ? query.get('variant') : 'B',
-  style: STYLES.includes(query.get('style')) ? query.get('style') : 'text',
+  style: STYLES.includes(query.get('style')) ? query.get('style') : 'auto',
 };
 document.documentElement.dataset.theme = query.get('theme') || 'dark';
 
