@@ -21,6 +21,11 @@ def type_spelling(node: dict) -> str:
     return re.sub(r'^(const )?struct ', r'\1', qualified)
 
 
+def displayed_type(node: dict) -> str:
+    """A type as the lessons write it: `int*`, `A**`."""
+    return re.sub(r'\s+(?=[*&])', '', type_spelling(node)).removeprefix('std::')
+
+
 def type_name(node: dict) -> str:
     return type_spelling(node).removeprefix('const ')
 

@@ -16,7 +16,7 @@ import textwrap
 import tempfile
 
 from execution import REFERENCE, Execution, execute
-from records import layouts, type_name, type_spelling
+from records import displayed_type, layouts, type_name, type_spelling
 from toolchain import Unsupported, run, tool
 from trace_format import (FORMAT, UNKNOWN, FormatError, scalar, struct, struct_field, field as trace_field,
                           reference as trace_reference,
@@ -176,7 +176,7 @@ class Reduction:
     with what it is bound to (`spelling`), and `eval` with `value` (or
     `spelling`, when the value is not written as a number). A struct value that has a type on
     its own, a read or a typed literal, keeps it in front: `record` names it. `span` indexes the
-    statement's original pane; inner reductions come first.
+    statement's original pane; inner reductions come first. `type` is the type of the result.
     """
     kind: str
     span: tuple[int, int]
@@ -184,6 +184,7 @@ class Reduction:
     value: Value | None = None
     spelling: str | None = None
     record: str | None = None
+    type: str | None = None
 
 
 class _Evaluator:
@@ -195,7 +196,7 @@ class _Evaluator:
         self.temporary = False
 
     def _reduce(self, kind: str, node: dict, **details) -> None:
-        self.reductions.append(Reduction(kind, self.locate(node), **details))
+        self.reductions.append(Reduction(kind, self.locate(node), type=displayed_type(node), **details))
 
     def _load(self, name: str) -> Value:
         value = _load(self.state, name)
@@ -390,6 +391,8 @@ class Statement:
     written or printed, and `destination` the name of the written variable once reduced.
     Output is `result` followed by `output_suffix`; `printed` is set when `result` is not a
     value but whitespace output such as `std::endl`, and holds what it prints.
+    `typed` lists the pane's typed parts before any reduction, as (span, type): names and
+    literals. `slot` is the span of the declaration (`int* p`), whose type is `type`.
     """
     source: str
     span: tuple[int, int] | None
@@ -408,6 +411,9 @@ class Statement:
     temporary: bool = False
     # A reference declaration: `declared` is the reference and `bound` what it names for good.
     bound: str | None = None
+    typed: list[tuple[tuple[int, int], str]] = field(default_factory=list)
+    slot: tuple[int, int] | None = None
+    type: str | None = None
 
 
 def _filled(item, records, zero: bool = False):
@@ -416,6 +422,19 @@ def _filled(item, records, zero: bool = False):
     if record:
         return {inner["name"]: _filled(inner, records, zero) for inner in record.fields}
     return None if not zero else Pointer() if item["kind"] == "ptr" else 0
+
+
+def _typed(node: dict, locate, names) -> list[tuple[tuple[int, int], str]]:
+    """The parts of an expression that have a type before anything is evaluated: local names
+    (a field access by `.` whole) and literals. Compound expressions get theirs when reduced."""
+    kind, children = node.get("kind"), node.get("inner", [])
+    plain = node
+    while plain.get("kind") == "MemberExpr" and not plain.get("isArrow") and len(plain.get("inner", [])) == 1:
+        plain = plain["inner"][0]
+    local = plain.get("kind") == "DeclRefExpr" and plain.get("referencedDecl", {}).get("name") in names
+    if local or kind in {"IntegerLiteral", "CXXNullPtrLiteralExpr"}:
+        return [(locate(node), displayed_type(node))]
+    return [part for child in children for part in _typed(child, locate, names)]
 
 
 def _pane_parts(source: str, span: tuple[int, int], empty_initializer: bool) -> tuple[str, str]:
@@ -521,9 +540,10 @@ def _statement(node: dict, program: str, state: dict[str, Value | None], records
         while reference and root and root.get("castKind") == "NoOp" and len(root.get("inner", [])) == 1:
             root = root["inner"][0]
         if record and root and root.get('kind') == 'CXXConstructExpr' and not root.get('inner'):
-            return Statement(source, None, source.removesuffix(';'),
-                             value=_filled(records[record], records),
-                             target=declared, declared=declared, record=record)
+            pane = source.removesuffix(';')
+            return Statement(source, None, pane, value=_filled(records[record], records),
+                             target=declared, declared=declared, record=record,
+                             slot=(0, len(pane)), type=displayed_type(variable))
         if record and root and root.get('kind') == 'CXXConstructExpr' and len(root.get('inner', [])) == 1:
             root = root['inner'][0]
         empty_initializer = bool(root) and root.get("kind") == "InitListExpr" and not root.get("inner")
@@ -554,8 +574,9 @@ def _statement(node: dict, program: str, state: dict[str, Value | None], records
         raise Unsupported(f"unsupported statement: {node['kind']}")
 
     if root is None:
-        return Statement(source, None, source.removesuffix(";").rstrip(), target=declared,
-                         declared=declared, pointer=pointer)
+        pane = source.removesuffix(";").rstrip()
+        return Statement(source, None, pane, target=declared, declared=declared, pointer=pointer,
+                         slot=(0, len(pane)), type=displayed_type(variable))
     first, last = (start, _bounds(node)[1]) if whole else _bounds(root)
     span = (mapping[first - start], mapping[last - start])
     prefix, suffix = _pane_parts(source, span, empty_initializer)
@@ -576,13 +597,15 @@ def _statement(node: dict, program: str, state: dict[str, Value | None], records
         return Statement(source, span, prefix + text + suffix, (len(prefix), len(prefix) + len(text)),
                          locate(root), output_suffix=output_suffix, printed=printed)
     evaluator = _Evaluator(state, locate, records, references)
+    names = state.keys() | references.keys()
+    typed = sorted((_typed(left, locate, names) if left is not None else []) + _typed(root, locate, names))
     if reference:
         bound = evaluator.lvalue(root)
         if evaluator.temporary:
             raise Unsupported("a reference bound to a temporary is not supported")
         return Statement(source, span, prefix + text + suffix, (len(prefix), len(prefix) + len(text)),
                          locate(root), reductions=evaluator.reductions, declared=declared, bound=bound,
-                         destination=(to_pane(name_offset), to_pane(name_offset) + len(declared)))
+                         destination=(to_pane(name_offset), to_pane(name_offset) + len(declared)), typed=typed)
     target, destination, designation = declared, None, []
     if left is not None:
         # A reference on the left becomes the name it stands for before the right side is read
@@ -592,13 +615,16 @@ def _statement(node: dict, program: str, state: dict[str, Value | None], records
         evaluator.reductions, designation = evaluator.reductions[:renamed], evaluator.reductions[renamed:]
     value, _ = evaluator.rvalue(root)
     evaluator.reductions += designation
+    slot = None
     if declared:
         destination = (to_pane(name_offset), to_pane(name_offset) + len(declared))
+        slot = (0, destination[1])
     elif left is None and isinstance(value, dict):
         raise Unsupported("only integer and pointer output is supported")
     return Statement(source, span, prefix + text + suffix, (len(prefix), len(prefix) + len(text)),
                      locate(root), value, evaluator.reductions, target, destination, declared, pointer, record,
-                     output_suffix, temporary=evaluator.temporary)
+                     output_suffix, temporary=evaluator.temporary, typed=typed, slot=slot,
+                     type=displayed_type(variable) if declared else None)
 
 
 def _load(state, name, missing=False):
@@ -753,8 +779,26 @@ def _spaceless(text: str) -> str:
 class _Pane:
     """The pane as reductions replace parts of its original text, innermost first."""
 
-    def __init__(self, text: str):
+    def __init__(self, text: str, typed=(), slot=None):
         self.original, self.edits = text, []  # (start, end, text) in original coordinates
+        # The typed parts, as (start, end, type) in original coordinates; `slot` is one of them.
+        self.typed, self.slot = [(*span, type_) for span, type_ in typed], slot
+
+    @property
+    def types(self) -> list[dict]:
+        """The typed parts of the current text, in order."""
+        return [{"span": self.locate(start, end), "type": type_, **({"slot": True} if (start, end) == self.slot else {})}
+                for start, end, type_ in sorted(self.typed)]
+
+    def retype(self, start: int, end: int, type_: str | None) -> None:
+        """The original `[start, end)` is now one value of `type_`: its parts are no longer.
+        Inside a typed part (the `rs` of `rs.f`) nothing changes: the part keeps its type."""
+        if any(begin <= start and end <= finish and (begin, finish) != (start, end) for begin, finish, _ in self.typed):
+            return
+        kept = type_ or next((old for begin, finish, old in self.typed if (begin, finish) == (start, end)), None)
+        self.typed = [part for part in self.typed if not (start <= part[0] and part[1] <= end)]
+        if kept:
+            self.typed.append((start, end, kept))
 
     @property
     def text(self) -> str:
@@ -775,9 +819,11 @@ class _Pane:
         first, last = self.locate(start, end)
         return self.text[first:last]
 
-    def replace(self, start: int, end: int, new: str) -> list[int]:
-        """Replace the original `[start, end)`; returns the span it covered in the old text."""
+    def replace(self, start: int, end: int, new: str, type_: str | None = None) -> list[int]:
+        """Replace the original `[start, end)`; returns the span it covered in the old text.
+        The new text has `type_`, or keeps the type the span had as a whole."""
         span = self.locate(start, end)
+        self.retype(start, end, type_)
         self.edits = sorted([edit for edit in self.edits if not (start <= edit[0] and edit[1] <= end)]
                             + [(start, end, new)])
         return span
@@ -824,12 +870,15 @@ class _Renderer:
                 "values": values, "targets": targets}
         if expr:
             step["expr"] = pane.locate(*expr)
+        if pane.types:
+            step["types"] = pane.types
         if self.refs is not None:
             step["refs"] = dict(self.refs)
         self.steps.append(step)
 
     def statement(self, line: int, statement: Statement, before: dict, after: dict) -> None:
-        pane, expr = _Pane(statement.pane), statement.expr
+        typed = statement.typed + ([(statement.slot, statement.type)] if statement.slot else [])
+        pane, expr = _Pane(statement.pane, typed, statement.slot), statement.expr
         writes = statement.target is not None and statement.result is not None
         self.add(line, pane, expr, before if writes else after)
         for reduction in statement.reductions:
@@ -851,10 +900,14 @@ class _Renderer:
                 op = {"kind": "eval", "value": text}
                 # A brace list of plain values is already its value, however it is spaced.
                 if isinstance(reduction.value, dict) and _spaceless(pane.read(*reduction.span)) == _spaceless(text):
-                    continue
+                    text = pane.read(*reduction.span)
             if pane.read(*reduction.span) != text:
-                op["span"] = pane.replace(*reduction.span, text)
+                op["span"] = pane.replace(*reduction.span, text, reduction.type)
                 self.add(line, pane, expr, before, op)
+            else:
+                # No step of its own, but the text now reads as one value of its type.
+                pane.retype(*reduction.span, reduction.type)
+                self.steps[-1]["types"] = pane.types
         if statement.result is None:
             return
         if statement.bound:
@@ -930,7 +983,8 @@ def trace(source: str, *, runtime: bool = True) -> dict:
                     return fields
                 variables.append(struct(name, record.name, top, size, fields_of(record), color))
             else:
-                variables.append(scalar(name, top, size, 'ptr' if declaration.pointer else 'int', color))
+                variables.append(scalar(name, top, size, 'ptr' if declaration.pointer else 'int', color,
+                                    declaration.type))
         if runtime:
             scopes, bound = [], {}
             for statement, row in zip(statements, predicted):

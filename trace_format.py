@@ -32,8 +32,11 @@ def whitespace_output(spelling: str) -> str | None:
 
 # Building blocks ------------------------------------------------------------------------------
 
-def scalar(name: str, address: int, size: int = 4, kind: str = 'int', color: int = 0) -> dict:
-    return {'name': name, 'address': address, 'size': size, 'kind': kind, 'color': color}
+def scalar(name: str, address: int, size: int = 4, kind: str = 'int', color: int = 0,
+           type_: str | None = None) -> dict:
+    """`type_` is the declared type as the lessons write it (`int*`); the player labels with it."""
+    variable = {'name': name, 'address': address, 'size': size, 'kind': kind, 'color': color}
+    return {**variable, 'type': type_} if type_ else variable
 
 
 def struct(name: str, type_: str, address: int, size: int, fields: list[dict],
@@ -122,7 +125,8 @@ def _variables(variables, where: str) -> dict[str, dict]:
         here = f'{where}[{index}]'
         struct_ = isinstance(variable, dict) and variable.get('kind') == 'struct'
         common = {'name', 'address', 'size', 'kind', 'color'}
-        _keys(variable, here, common | ({'type', 'fields'} if struct_ else set()))
+        _keys(variable, here, common | ({'type', 'fields'} if struct_ else set()), {'type'})
+        _check(isinstance(variable.get('type', ''), str), here + '.type', 'expected text')
         _check(bool(IDENTIFIER.fullmatch(str(variable['name']))), here, 'name is not an identifier')
         _check(variable['name'] not in names, here, f'duplicate variable {variable["name"]!r}')
         names.add(variable['name'])
@@ -188,6 +192,23 @@ class _Storage:
 
     def cells_of(self, name: str) -> list[str]:
         return cells_of(self.variables, name)
+
+
+def _types(step: dict, where: str) -> None:
+    """Typed spans of the pane are disjoint; at most one of them is the statement's slot."""
+    types = step['types']
+    _check(isinstance(types, list) and types, where, 'expected a nonempty list')
+    end, slots = 0, 0
+    for index, item in enumerate(types):
+        here = f'{where}[{index}]'
+        _keys(item, here, {'span', 'type'}, {'slot'})
+        start, finish = _span(item['span'], step['pane'], here + '.span')
+        _check(start >= end, here + '.span', 'typed spans must be ordered and must not overlap')
+        end = finish
+        _check(isinstance(item['type'], str) and bool(item['type']), here + '.type', 'expected text')
+        _check(item.get('slot', True) is True, here + '.slot', 'expected true when present')
+        slots += 'slot' in item
+    _check(slots <= 1, where, 'a statement has one slot')
 
 
 def _value(value, where: str) -> None:
@@ -439,12 +460,14 @@ def validate(trace) -> None:
     previous = None
     for index, step in enumerate(steps):
         where = f'trace.steps[{index}]'
-        _keys(step, where, {'line', 'pane', 'values', 'targets', 'stdout', 'hold', 'op'}, {'expr', 'refs'})
+        _keys(step, where, {'line', 'pane', 'values', 'targets', 'stdout', 'hold', 'op'}, {'expr', 'refs', 'types'})
         _check(type(step['line']) is int and 0 <= step['line'] < len(source), where + '.line',
                'not a source line')
         _check(isinstance(step['pane'], str), where + '.pane', 'expected text')
         if step.get('expr') is not None:
             _span(step['expr'], step['pane'], where + '.expr', empty=True)
+        if 'types' in step:
+            _types(step, where + '.types')
         _check(isinstance(step['values'], dict) and step['values'].keys() == cells.keys(),
                where + '.values', f'expected exactly {sorted(cells)}')
         for name, value in step['values'].items():
