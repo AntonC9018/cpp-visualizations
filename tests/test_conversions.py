@@ -46,7 +46,7 @@ class IntegerTests(unittest.TestCase):
 @unittest.skipUnless(CLANG, 'Clang is required for AST integration tests')
 class ConversionTests(unittest.TestCase):
     def trace(self, source):
-        return tracing.trace(source, runtime=False)
+        return tracing.trace(source, runtime=False, types=True)
 
     def test_an_explicit_cast_is_one_step(self):
         trace = self.trace('uint32_t a{ 256 }; uint8_t b{ static_cast<uint8_t>(a) };')
@@ -127,6 +127,25 @@ class ConversionTests(unittest.TestCase):
             edit(broken['steps'][index]['op'])
             with self.assertRaises(FormatError):
                 validate(broken)
+
+
+@unittest.skipUnless(CLANG, 'Clang is required for AST integration tests')
+class UntypedConversionTests(unittest.TestCase):
+    """Without types a conversion is an evaluation: a step only when the text changes."""
+
+    def test_only_a_changed_value_is_a_step(self):
+        trace = tracing.trace('uint32_t a{ 256 }; uint8_t b{ static_cast<uint8_t>(a) }; uint32_t c{ b };',
+                              runtime=False)
+        self.assertEqual([(step['pane'], (step['op'] or {}).get('kind')) for step in trace['steps'] if step['line']], [
+            ('uint8_t b = static_cast<uint8_t>(a)', None), ('uint8_t b = static_cast<uint8_t>(256)', 'read'),
+            ('uint8_t b = 0', 'eval'), ('uint8_t b = 0', 'write'),
+            ('uint32_t c = b', None), ('uint32_t c = 0', 'read'), ('uint32_t c = 0', 'write')])
+        self.assertFalse(any('types' in step for step in trace['steps']))
+        self.assertFalse(any('type' in variable for variable in trace['variables']))
+
+    def test_a_mismatch_is_not_shown(self):
+        with self.assertRaisesRegex(Unsupported, 'cannot initialize'):
+            tracing.trace('int a = 5; int* p = a;', runtime=False)
 
 
 @unittest.skipUnless(CLANG and GDB, 'Clang and GDB are required for runtime verification')

@@ -963,8 +963,10 @@ class _Renderer:
     """Turns analyzed statements and their (observed) states into unified trace steps."""
 
     def __init__(self, addresses: dict[str, int], cells=None, real: dict[str, int] | None = None,
-                 references: bool = False):
+                 references: bool = False, types: bool = False):
         self.addresses = addresses
+        # Types are drawn only where an example asks for them: elsewhere they are noise.
+        self.types = types
         # What each reference is bound to so far; steps carry it only in a trace with references.
         self.refs = {} if references else None
         self.order = sorted(cells or addresses, key=addresses.get)
@@ -1002,7 +1004,7 @@ class _Renderer:
                 "values": values, "targets": targets}
         if expr:
             step["expr"] = pane.locate(*expr)
-        if pane.types:
+        if self.types and pane.types:
             step["types"] = pane.types
         if self.refs is not None:
             step["refs"] = dict(self.refs)
@@ -1027,7 +1029,7 @@ class _Renderer:
                 # The target is where the pointer's observed value points.
                 text = (reduction.value or _load(before, reduction.name)).target
                 op = {"kind": "deref", "target": text, "via": reduction.name}
-            elif reduction.kind == "convert":
+            elif reduction.kind == "convert" and self.types:
                 text = self.show(reduction.value)
                 op = {"kind": "convert", "value": text, "from": reduction.source, "to": reduction.type}
             else:
@@ -1036,14 +1038,16 @@ class _Renderer:
                 # A brace list of plain values is already its value, however it is spaced.
                 if isinstance(reduction.value, dict) and _spaceless(pane.read(*reduction.span)) == _spaceless(text):
                     text = pane.read(*reduction.span)
-            # A conversion is a step even when the digits stay: the type is what changes.
-            if pane.read(*reduction.span) != text or reduction.kind == "convert":
+            # A typed conversion is a step even when the digits stay: the type is what changes.
+            # Untyped, it is an evaluation like any other, seen only when the text changes.
+            if pane.read(*reduction.span) != text or op["kind"] == "convert":
                 op["span"] = pane.replace(*reduction.span, text, reduction.type)
                 self.add(line, pane, expr, before, op)
             else:
                 # No step of its own, but the text now reads as one value of its type.
                 pane.retype(*reduction.span, reduction.type)
-                self.steps[-1]["types"] = pane.types
+                if self.types:
+                    self.steps[-1]["types"] = pane.types
         if statement.result is None:
             return
         if statement.bound:
@@ -1089,11 +1093,12 @@ class _Renderer:
         self.add(line, pane, mismatch.value, state, op)
 
 
-def trace(source: str, *, runtime: bool = True) -> dict:
+def trace(source: str, *, runtime: bool = True, types: bool = False) -> dict:
     """Trace a snippet into a validated unified-format trace, rejecting unsupported constructs.
 
     With `runtime=False` (probing) nothing is executed: values are the predicted ones and the
-    layout is Clang's usual -O0 layout.
+    layout is Clang's usual -O0 layout. With `types`, the pane and memory carry types, a
+    conversion is a step of its own, and a last statement whose types do not fit is shown.
     """
     body, mismatch = _body(source), None
     with tempfile.TemporaryDirectory(prefix="course-expression-") as temporary:
@@ -1101,6 +1106,8 @@ def trace(source: str, *, runtime: bool = True) -> dict:
         try:
             statements, records = _analyze(body, directory)
         except IllFormed as error:
+            if not types:
+                raise
             # A last statement whose types do not fit is shown, not run: the rest is traced.
             body, mismatch = _mismatch(body, error)
             statements, records = _analyze(body, directory)
@@ -1133,7 +1140,7 @@ def trace(source: str, *, runtime: bool = True) -> dict:
                 variables.append(struct(name, record.name, top, size, fields_of(record), color))
             else:
                 variables.append(scalar(name, top, size, 'ptr' if declaration.pointer else 'int', color,
-                                    declaration.type))
+                                        declaration.type if types else None))
         if runtime:
             scopes, bound = [], {}
             for statement, row in zip(statements, predicted):
@@ -1161,7 +1168,7 @@ def trace(source: str, *, runtime: bool = True) -> dict:
              if not _DEFINITION.match(statement.source)]
     if not shown:
         raise Unsupported("a snippet of only struct definitions has nothing to step through")
-    renderer, previous = _Renderer(addresses, leaves(variables), real, bool(references)), {}
+    renderer, previous = _Renderer(addresses, leaves(variables), real, bool(references), types), {}
     for line, (statement, after) in enumerate(shown):
         renderer.statement(line, statement, previous, after)
         previous = after

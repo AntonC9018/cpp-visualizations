@@ -30,11 +30,8 @@ EXAMPLES = {
     'Swapping variables':
         'int a { 1 };\nint b { 2 };\na = b;\nb = a;\nstd::cout << a << std::endl;\nstd::cout << b << std::endl;\n',
 }
-# Lesson 04: `auto` deduces a pointer; copying a pointer and a value; a pointer to a pointer;
-# two pointers to one variable.
+# Lesson 04: copying a pointer and a value; a pointer to a pointer; two pointers to one variable.
 POINTER_EXAMPLES = {
-    'auto deduces a pointer type':
-        'int value{ 5 };\nauto p{ &value };\n*p = 8;\nstd::cout << value << std::endl;\n',
     'Copying a pointer and the value it points to':
         'int value{ 5 };\nint* p{ &value };\nauto copy{ p };\nauto copiedValue{ *p };\n'
         '*copy = 8;\nstd::cout << value << std::endl;\nstd::cout << copiedValue << std::endl;\n',
@@ -46,10 +43,15 @@ POINTER_EXAMPLES = {
         'std::cout << *px << std::endl;\nstd::cout << *py << std::endl;\n',
     'Null pointer initialization':
         'int a = 5;\nint* p{};\np = &a;\n*p = 6;\nstd::cout << a << std::endl;\n',
+}
+# Examples about types, traced with them shown: a deduced type, and a value that does not fit.
+TYPE_EXAMPLES = {
+    'auto deduces a pointer type':
+        'int value{ 5 };\nauto p{ &value };\n*p = 8;\nstd::cout << value << std::endl;\n',
     'A pointer does not fit where a pointer to a pointer is needed':
         'struct A { int f1; int f2; };\nA a{ 1, 2 };\nA* value{ &a };\nA** p{ value };\n',
 }
-# Lesson 03: truncation and an implicit widening; sign changes; a sign extension; promotion.
+# Lesson 03, with types shown: truncation and an implicit widening; sign changes; a sign extension; promotion.
 CONVERSION_EXAMPLES = {
     'Truncation, then an implicit widening':
         'uint32_t a{ 256 };\nuint8_t b{ static_cast<uint8_t>(a) };\nuint32_t c{ b };\nstd::cout << c << std::endl;\n',
@@ -129,7 +131,9 @@ def section(index: int, title: str, data: dict, opened: bool) -> str:
 
 
 def main() -> None:
-    traces = [(title, trace(source)) for title, source in {**EXAMPLES, **POINTER_EXAMPLES, **CONVERSION_EXAMPLES}.items()]
+    traces = [(title, trace(source)) for title, source in {**EXAMPLES, **POINTER_EXAMPLES}.items()]
+    traces += [(title, trace(source, types=True))
+               for title, source in {**TYPE_EXAMPLES, **CONVERSION_EXAMPLES}.items()]
     for path in sorted((HERE / 'fixtures').glob('*.json')):
         data = json.loads(path.read_text())
         traces.append((data.get('title', path.stem), data))

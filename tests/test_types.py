@@ -26,7 +26,7 @@ def lines(trace, line):
 @unittest.skipUnless(CLANG, 'Clang is required for AST integration tests')
 class TypedPaneTests(unittest.TestCase):
     def trace(self, source):
-        return tracing.trace(source, runtime=False)
+        return tracing.trace(source, runtime=False, types=True)
 
     def test_names_literals_and_values_carry_their_types(self):
         trace = self.trace('int a = 5; int b = a + 6; std::cout << b;')
@@ -68,7 +68,7 @@ class MismatchTests(unittest.TestCase):
     """A last statement whose value does not fit its slot is shown as a clash, not run."""
 
     def clash(self, source):
-        trace = tracing.trace(source, runtime=False)
+        trace = tracing.trace(source, runtime=False, types=True)
         written, clash = trace['steps'][-2:]
         self.assertIsNone(written['op'])
         self.assertEqual(written['pane'], clash['pane'])
@@ -98,7 +98,7 @@ class MismatchTests(unittest.TestCase):
     def test_only_the_last_statement_may_fail(self):
         for source in ('int a = 5; int* p = a; int b = 6;', 'int a = 5; int* p = b;', 'int* p = 5;'):
             with self.assertRaises(tracing.Unsupported):
-                tracing.trace(source, runtime=False)
+                tracing.trace(source, runtime=False, types=True)
 
     def test_a_clash_must_match_the_typed_pane(self):
         trace, _ = self.clash('int a = 5; int* p = a;')
@@ -117,7 +117,7 @@ class MismatchTests(unittest.TestCase):
 @unittest.skipUnless(CLANG, 'Clang is required for AST integration tests')
 class TypeValidationTests(unittest.TestCase):
     def setUp(self):
-        self.trace = tracing.trace('int a = 5; int b = a;', runtime=False)
+        self.trace = tracing.trace('int a = 5; int b = a;', runtime=False, types=True)
 
     def broken(self, edit):
         trace = copy.deepcopy(self.trace)
