@@ -11,7 +11,7 @@
  ],
  "steps": [
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 1,
    "op": null,
    "pane": "s1 = {nullptr, 1}",
@@ -51,7 +51,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 2,
    "op": null,
    "pane": "s1.pa = &s1.a",
@@ -65,7 +65,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 2,
    "op": {
     "kind": "addr",
@@ -115,7 +115,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 3,
    "op": null,
    "pane": "A s2 = s1",
@@ -131,7 +131,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 3,
    "op": {
     "kind": "read",
@@ -184,7 +184,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 4,
    "op": null,
    "pane": "*s2.pa = 2",
@@ -201,7 +201,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 4,
    "op": {
     "kind": "read",
@@ -226,7 +226,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 4,
    "op": {
     "kind": "deref",
@@ -280,7 +280,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 5,
    "op": null,
    "pane": "std::cout << s1.a << std::endl",
@@ -297,7 +297,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 5,
    "op": {
     "kind": "read",
@@ -346,7 +346,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 6,
    "op": null,
    "pane": "std::cout << s2.a << std::endl",
@@ -363,7 +363,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 6,
    "op": {
     "kind": "read",

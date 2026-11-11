@@ -14,7 +14,7 @@ Each visualization is one element; the site emits it inside a lesson's `<details
 <div class="course-visualization"><script type="application/json">TRACE_JSON</script></div>
 ```
 
-`TRACE_JSON` is the output of `generate.py trace`, with every `<` escaped as `\u003c`.
+`TRACE_JSON` is the output of `generate.mjs trace`, with every `<` escaped as `\u003c`.
 Nothing else is required from the page.
 
 ## Behaviour
@@ -70,7 +70,7 @@ red, blue), each at least 3:1 against the stage. Reads use `#2f64d6` on `#d9e5ff
 
 ## Trace format, version 1
 
-`../trace_format.py` defines the format, validates it (`validate(trace)`), builds traces by hand
+`../trace_format.mjs` defines the format, validates it (`validate(trace)`), builds traces by hand
 (`Builder`). The compiler-backed tracer emits this format directly.
 
 ```text
@@ -139,15 +139,15 @@ The double-pointer fixture shows a full reduction: `**pp = 7` → `**72 = 7` (re
 
 ## Fixtures and demo
 
-`fixtures.py` writes the manual pointer and struct traces from the approved prototypes to
-`fixtures/*.json`; the tests check they are current. `demo.py` writes `demo.html` (git-ignored)
+`fixtures.mjs` writes the manual pointer and struct traces from the approved prototypes to
+`fixtures/*.json`; the tests check they are current. `demo.mjs` writes `demo.html` (git-ignored)
 with real tracer outputs for lesson 2 and pointer lesson examples and every fixture, each in a
 `<details>`, plus
 theme and language switches:
 
 ```sh
-python3 player/fixtures.py
-nix develop --command python3 player/demo.py
+node player/fixtures.mjs
+nix develop --command node player/demo.mjs
 ```
 
 ## Static layout variant

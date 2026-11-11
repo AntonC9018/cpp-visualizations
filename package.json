@@ -3,7 +3,9 @@
   "private": true,
   "version": "1.0.0",
   "scripts": {
-    "test": "node --test \"tests/*.test.mjs\""
+    "test": "node --test \"tests/*.test.mjs\"",
+    "test:tracer": "node --test tests/generation.test.mjs tests/layout.test.mjs tests/references.test.mjs tests/structs.test.mjs tests/trace_format.test.mjs tests/tracing.test.mjs",
+    "test:player": "node --test tests/player.test.mjs"
   },
   "dependencies": {
     "playwright": "1.62.0"

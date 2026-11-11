@@ -27,7 +27,7 @@ jobs:
         uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
 
       - name: Tracer tests (Clang and GDB)
-        run: nix develop .#visualizations --command python3 -m unittest discover -s tests
+        run: nix develop .#visualizations --command npm run test:tracer
 
       # Chromium comes from the flake, so Playwright downloads no browser.
       - name: Player browser tests
@@ -35,4 +35,4 @@ jobs:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
         run: |
           nix develop --command npm ci
-          nix develop --command npm test
+          nix develop --command npm run test:player

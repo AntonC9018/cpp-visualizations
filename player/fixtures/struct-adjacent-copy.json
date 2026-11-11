@@ -10,7 +10,7 @@
  ],
  "steps": [
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 1,
    "op": null,
    "pane": "a = {1}",
@@ -46,7 +46,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 2,
    "op": null,
    "pane": "A b = a",
@@ -58,7 +58,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 2,
    "op": {
     "kind": "read",
@@ -102,7 +102,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 3,
    "op": null,
    "pane": "a.f = 2",
@@ -138,7 +138,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 4,
    "op": null,
    "pane": "std::cout << a.f << std::endl",
@@ -150,7 +150,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 4,
    "op": {
     "kind": "read",
@@ -189,7 +189,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 5,
    "op": null,
    "pane": "std::cout << b.f << std::endl",
@@ -201,7 +201,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 5,
    "op": {
     "kind": "read",
