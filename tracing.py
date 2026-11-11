@@ -1,4 +1,4 @@
-"""Compiler-backed execution traces of flat int, pointer and aggregate struct examples.
+"""Compiler-backed execution traces of flat integer, pointer and aggregate struct examples.
 
 Clang supplies syntax, types and record layouts. A strict AST whitelist predicts each
 statement's effects without executing arbitrary C++. GDB verifies every live scalar and
@@ -16,17 +16,18 @@ import textwrap
 import tempfile
 
 from execution import REFERENCE, Execution, execute
-from records import layouts, type_name, type_spelling
-from toolchain import Unsupported, run, tool
+from records import canonical_type, displayed, displayed_type, layouts, type_name, type_spelling
+from toolchain import IllFormed, Unsupported, run, tool
 from trace_format import (FORMAT, UNKNOWN, FormatError, scalar, struct, struct_field, field as trace_field,
                           reference as trace_reference,
                           addresses as storage_addresses, leaves, validate, whitespace_output)
 
 __all__ = ["Pointer", "Unsupported", "trace"]
 
-MIN_INT, MAX_INT = -(2**31), 2**31 - 1
 FIRST_ADDRESS = 64
-INT_SIZE, POINTER_SIZE = 4, 8
+POINTER_SIZE = 8
+# JSON numbers are doubles in the player: larger magnitudes would not be drawn exactly.
+MAX_EXACT = 2**53
 MAX_STATEMENTS, MAX_VARIABLES = 20, 8
 _QUOTED_OR_COMMENT = re.compile(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|//[^\n]*|/\*[\s\S]*?\*/')
 
@@ -42,18 +43,58 @@ class Pointer:
 Value = int | Pointer | dict[str, "Value | None"]
 
 
-def _integer(value: int) -> int:
-    if not MIN_INT <= value <= MAX_INT:
-        raise Unsupported("signed integer overflow is outside the timeline category")
-    return value
+@dataclass(frozen=True)
+class Integer:
+    """A builtin integer type: its bytes and whether it is signed."""
+    size: int
+    signed: bool
+
+    def wrap(self, value: int) -> int:
+        """`value` converted to this type: its low bits, as every conversion keeps them."""
+        bits = 8 * self.size
+        value %= 1 << bits
+        return value - (1 << bits) if self.signed and value >> (bits - 1) else value
+
+    def holds(self, value: int) -> bool:
+        return self.wrap(value) == value
+
+    def result(self, value: int) -> int:
+        """The result of arithmetic in this type: unsigned wraps, signed overflow is undefined."""
+        if self.signed and not self.holds(value):
+            raise Unsupported("signed integer overflow is outside the timeline category")
+        return self.wrap(value)
+
+
+# By Clang's canonical spelling, with the sizes of the pinned x86-64 toolchain; GDB checks the
+# size of every cell. `char` and `bool` are not numbers in the lessons and stay out.
+INTEGERS = {spelling: Integer(size, signed)
+            for size, names in ((1, ("signed char", "unsigned char")), (2, ("short", "unsigned short")),
+                                (4, ("int", "unsigned int")), (8, ("long", "unsigned long")),
+                                (8, ("long long", "unsigned long long")))
+            for spelling, signed in zip(names, (True, False))}
+# Clang resolves an alias only where it is the whole type, not under a pointer (`uint8_t *`).
+ALIASES = {"size_t": "unsigned long", "ptrdiff_t": "long", "intptr_t": "long", "uintptr_t": "unsigned long",
+           **{f"{prefix}int{8 * size}_t": spelling for spelling, integer in INTEGERS.items()
+              if "long long" not in spelling for prefix, size in [("" if integer.signed else "u", integer.size)]}}
+
+
+def _integer_named(spelling: str, records=()) -> Integer | None:
+    """The integer type a spelling names, unless the snippet has a struct of that name."""
+    name = spelling.removeprefix("const ").removeprefix("std::")
+    return None if name in records else INTEGERS.get(ALIASES.get(name, name))
+
+
+def _integer_type(node: dict, records=()) -> Integer | None:
+    """The integer type of an expression or declaration, behind any alias (`uint8_t`)."""
+    return _integer_named(canonical_type(node), records)
 
 
 def _depth(node: dict, records=()) -> int:
-    """How many pointer levels lie over an int or a supported struct."""
+    """How many pointer levels lie over an integer or a supported struct."""
     qualified = type_spelling(node)
-    match = re.fullmatch(r"(const )?int(?: (\*+))?", qualified)
-    if match and not (match.group(1) and match.group(2)):
-        return len(match.group(2) or "")
+    match = re.fullmatch(r"(const )?([\w: ]+?)(?: (\*+))?", canonical_type(node))
+    if match and _integer_named(match[2], records) and not (match[1] and match[3]):
+        return len(match[3] or "")
     record_type = type_name(node)
     if record_type in records:
         return 0
@@ -65,8 +106,8 @@ def _depth(node: dict, records=()) -> int:
     if "[" in qualified:
         raise Unsupported("arrays are not supported")
     if "*" in qualified:
-        raise Unsupported(f"only pointers to int are supported, not {qualified}")
-    raise Unsupported(f"only int and pointer values are supported, not {qualified or 'this type'}")
+        raise Unsupported(f"only pointers to integers are supported, not {qualified}")
+    raise Unsupported(f"only integer and pointer values are supported, not {qualified or 'this type'}")
 
 
 # Source text ------------------------------------------------------------------------------
@@ -141,8 +182,11 @@ def _main_ast(program: str, directory: Path) -> dict:
                   "-Xclang", "-ast-dump=json", "-Xclang", "-ast-dump-filter=main", str(path)])
     if result.returncode:
         diagnostic = next((line for line in result.stderr.splitlines() if "error:" in line), "error: ill-formed C++")
+        place = re.match(r".*?:(\d+):(\d+): error:", diagnostic)
+        lines = program.splitlines(keepends=True)
+        offset = sum(map(len, lines[:int(place[1]) - 1])) + int(place[2]) - 1 if place else None
         # Drop the temporary path, which differs between runs.
-        raise Unsupported(diagnostic[diagnostic.index("error:"):])
+        raise IllFormed(diagnostic[diagnostic.index("error:"):], offset)
     decoder, offset, selected = json.JSONDecoder(), 0, []
     try:
         while offset < len(result.stdout):
@@ -174,9 +218,10 @@ class Reduction:
     `read` replaces it with the value of `name`, `addr` with the address of `name`, `deref`
     with the name of the variable `name` (a pointer) points to, `alias` the reference `name`
     with what it is bound to (`spelling`), and `eval` with `value` (or
-    `spelling`, when the value is not written as a number). A struct value that has a type on
+    `spelling`, when the value is not written as a number). `convert` replaces a value of the
+    type `source` with the `value` it has in another type, even when it reads the same. A struct value that has a type on
     its own, a read or a typed literal, keeps it in front: `record` names it. `span` indexes the
-    statement's original pane; inner reductions come first.
+    statement's original pane; inner reductions come first. `type` is the type of the result.
     """
     kind: str
     span: tuple[int, int]
@@ -184,6 +229,8 @@ class Reduction:
     value: Value | None = None
     spelling: str | None = None
     record: str | None = None
+    type: str | None = None
+    source: str | None = None
 
 
 class _Evaluator:
@@ -195,7 +242,7 @@ class _Evaluator:
         self.temporary = False
 
     def _reduce(self, kind: str, node: dict, **details) -> None:
-        self.reductions.append(Reduction(kind, self.locate(node), **details))
+        self.reductions.append(Reduction(kind, self.locate(node), type=displayed_type(node), **details))
 
     def _load(self, name: str) -> Value:
         value = _load(self.state, name)
@@ -269,7 +316,16 @@ class _Evaluator:
             if cast == "NoOp":
                 return self.rvalue(children[0])
             _reject_pointer_operator(children[0])
+            if cast == "IntegralCast":
+                return self._convert(node, children[0]), None
             raise Unsupported(f"implicit {cast} conversions are outside this category")
+        if kind == "CXXStaticCastExpr" and len(children) == 1:
+            # Clang spells the conversion as implicit casts inside the written one: one step.
+            operand = children[0]
+            while (operand.get("kind") == "ImplicitCastExpr" and operand.get("castKind") in {"IntegralCast", "NoOp"}
+                   and len(operand.get("inner", [])) == 1):
+                operand = operand["inner"][0]
+            return self._convert(node, operand), None
         depth = _depth(node, self.records)
         record = self.records.get(type_name(node)) if not depth else None
         if record:
@@ -285,6 +341,9 @@ class _Evaluator:
                 for item, child in zip(record.fields, children):
                     if child.get("kind") == "ImplicitValueInitExpr":
                         value[item["name"]] = _filled(item, self.records, zero=True)
+                    elif child.get("castKind") == "IntegralCast":
+                        # The list is one typed value: a part of it has no label to change.
+                        raise Unsupported("a conversion inside a struct's braces is not supported")
                     else:
                         value[item["name"]], _ = self.rvalue(child)
                         # A list inside a list is part of the one value: it takes no step alone.
@@ -306,7 +365,7 @@ class _Evaluator:
                 self._reduce("read", node, name=name, value=value, record=record.name)
                 return value, name
         if kind == "IntegerLiteral":
-            return _integer(int(node["value"])), None
+            return int(node["value"]), None
         if kind == "InitListExpr" or kind == "CXXFunctionalCastExpr":
             return self._braces(node, depth), None
         if kind == "ParenExpr" and len(children) == 1:
@@ -319,10 +378,10 @@ class _Evaluator:
             return Pointer(name), None
         elif kind == "UnaryOperator" and node.get("opcode") in {"+", "-"} and len(children) == 1 and not depth:
             operand = self._integer_operand(children[0])
-            value = _integer(operand if node["opcode"] == "+" else -operand)
+            value = _integer_type(node).result(operand if node["opcode"] == "+" else -operand)
         elif kind == "BinaryOperator" and node.get("opcode") in {"+", "-", "*", "/", "%"} and len(children) == 2:
             _reject_pointer_operator(node)
-            value = self._arithmetic(node["opcode"], self._integer_operand(children[0]),
+            value = self._arithmetic(_integer_type(node), node["opcode"], self._integer_operand(children[0]),
                                      self._integer_operand(children[1]))
         else:
             raise Unsupported(f"unsupported expression: {kind} {node.get('opcode', '')}".rstrip())
@@ -333,6 +392,21 @@ class _Evaluator:
         value, _ = self.rvalue(node)
         if not isinstance(value, int):
             raise Unsupported("pointer arithmetic and comparison are not supported")
+        return value
+
+    def _convert(self, node: dict, operand: dict) -> int:
+        """`operand` converted to the integer type of `node`, a cast written or implied."""
+        _depth(node, self.records)
+        target = _integer_type(node)
+        if target is None or _integer_type(operand) is None:
+            raise Unsupported("only conversions between integer types are supported")
+        value = target.wrap(self._integer_operand(operand))
+        source = displayed_type(operand)
+        if source == displayed_type(node):
+            # `static_cast<int>` of an int changes nothing: the cast just goes away.
+            self._reduce("eval", node, value=value)
+        else:
+            self._reduce("convert", node, value=value, source=source)
         return value
 
     def _braces(self, node: dict, depth: int) -> Value:
@@ -352,13 +426,13 @@ class _Evaluator:
         return value
 
     @staticmethod
-    def _arithmetic(operation: str, left: int, right: int) -> int:
+    def _arithmetic(type_: Integer, operation: str, left: int, right: int) -> int:
         if operation in {"/", "%"}:
-            if right == 0 or (left == MIN_INT and right == -1):
+            quotient = right and (abs(left) // abs(right)) * (-1 if (left < 0) != (right < 0) else 1)
+            if right == 0 or not type_.holds(quotient):
                 raise Unsupported("undefined integer division")
-            quotient = (abs(left) // abs(right)) * (-1 if (left < 0) != (right < 0) else 1)
-            return _integer(quotient if operation == "/" else left - quotient * right)
-        return _integer({"+": left + right, "-": left - right, "*": left * right}[operation])
+            return quotient if operation == "/" else left - quotient * right
+        return type_.result({"+": left + right, "-": left - right, "*": left * right}[operation])
 
 
 def _strip_parentheses(node: dict) -> dict:
@@ -390,6 +464,8 @@ class Statement:
     written or printed, and `destination` the name of the written variable once reduced.
     Output is `result` followed by `output_suffix`; `printed` is set when `result` is not a
     value but whitespace output such as `std::endl`, and holds what it prints.
+    `typed` lists the pane's typed parts before any reduction, as (span, type): names and
+    literals. `slot` is the span of the declaration (`int* p`), whose type is `type`.
     """
     source: str
     span: tuple[int, int] | None
@@ -408,6 +484,11 @@ class Statement:
     temporary: bool = False
     # A reference declaration: `declared` is the reference and `bound` what it names for good.
     bound: str | None = None
+    typed: list[tuple[tuple[int, int], str]] = field(default_factory=list)
+    slot: tuple[int, int] | None = None
+    type: str | None = None
+    # The bytes a declared scalar takes.
+    size: int | None = None
 
 
 def _filled(item, records, zero: bool = False):
@@ -416,6 +497,19 @@ def _filled(item, records, zero: bool = False):
     if record:
         return {inner["name"]: _filled(inner, records, zero) for inner in record.fields}
     return None if not zero else Pointer() if item["kind"] == "ptr" else 0
+
+
+def _typed(node: dict, locate, names) -> list[tuple[tuple[int, int], str]]:
+    """The parts of an expression that have a type before anything is evaluated: local names
+    (a field access by `.` whole) and literals. Compound expressions get theirs when reduced."""
+    kind, children = node.get("kind"), node.get("inner", [])
+    plain = node
+    while plain.get("kind") == "MemberExpr" and not plain.get("isArrow") and len(plain.get("inner", [])) == 1:
+        plain = plain["inner"][0]
+    local = plain.get("kind") == "DeclRefExpr" and plain.get("referencedDecl", {}).get("name") in names
+    if local or kind in {"IntegerLiteral", "CXXNullPtrLiteralExpr"}:
+        return [(locate(node), displayed_type(node))]
+    return [part for child in children for part in _typed(child, locate, names)]
 
 
 def _pane_parts(source: str, span: tuple[int, int], empty_initializer: bool) -> tuple[str, str]:
@@ -484,7 +578,7 @@ def _statement(node: dict, program: str, state: dict[str, Value | None], records
     source, mapping = _compact(program[start:end])
     left = declared = output_suffix = printed = root = name_offset = None
     whole = pointer = empty_initializer = reference = False
-    record = None
+    record = size = None
     if node["kind"] == "DeclStmt":
         children = node.get("inner", [])
         if len(children) == 1 and children[0].get("kind") == "CXXRecordDecl":
@@ -500,9 +594,11 @@ def _statement(node: dict, program: str, state: dict[str, Value | None], records
             if spelling.endswith("&&"):
                 raise Unsupported("rvalue references are not supported")
             # A reference to anything a variable may hold.
-            _depth({"type": {"qualType": spelling[:-1].rstrip()}}, records)
+            _depth({"type": {key: text[:-1].rstrip() for key, text in variable["type"].items()}}, records)
         else:
             pointer = _depth(variable, records) > 0
+            integer = _integer_type(variable)
+            size = POINTER_SIZE if pointer else integer and integer.size
         record = type_name(variable) if not pointer and type_name(variable) in records else None
         declared = variable["name"]
         if declared.startswith("__course_") or declared in state or declared in references:
@@ -521,9 +617,10 @@ def _statement(node: dict, program: str, state: dict[str, Value | None], records
         while reference and root and root.get("castKind") == "NoOp" and len(root.get("inner", [])) == 1:
             root = root["inner"][0]
         if record and root and root.get('kind') == 'CXXConstructExpr' and not root.get('inner'):
-            return Statement(source, None, source.removesuffix(';'),
-                             value=_filled(records[record], records),
-                             target=declared, declared=declared, record=record)
+            pane = source.removesuffix(';')
+            return Statement(source, None, pane, value=_filled(records[record], records),
+                             target=declared, declared=declared, record=record,
+                             slot=(0, len(pane)), type=displayed_type(variable))
         if record and root and root.get('kind') == 'CXXConstructExpr' and len(root.get('inner', [])) == 1:
             root = root['inner'][0]
         empty_initializer = bool(root) and root.get("kind") == "InitListExpr" and not root.get("inner")
@@ -554,8 +651,9 @@ def _statement(node: dict, program: str, state: dict[str, Value | None], records
         raise Unsupported(f"unsupported statement: {node['kind']}")
 
     if root is None:
-        return Statement(source, None, source.removesuffix(";").rstrip(), target=declared,
-                         declared=declared, pointer=pointer)
+        pane = source.removesuffix(";").rstrip()
+        return Statement(source, None, pane, target=declared, declared=declared, pointer=pointer,
+                         slot=(0, len(pane)), type=displayed_type(variable), size=size)
     first, last = (start, _bounds(node)[1]) if whole else _bounds(root)
     span = (mapping[first - start], mapping[last - start])
     prefix, suffix = _pane_parts(source, span, empty_initializer)
@@ -576,13 +674,15 @@ def _statement(node: dict, program: str, state: dict[str, Value | None], records
         return Statement(source, span, prefix + text + suffix, (len(prefix), len(prefix) + len(text)),
                          locate(root), output_suffix=output_suffix, printed=printed)
     evaluator = _Evaluator(state, locate, records, references)
+    names = state.keys() | references.keys()
+    typed = sorted((_typed(left, locate, names) if left is not None else []) + _typed(root, locate, names))
     if reference:
         bound = evaluator.lvalue(root)
         if evaluator.temporary:
             raise Unsupported("a reference bound to a temporary is not supported")
         return Statement(source, span, prefix + text + suffix, (len(prefix), len(prefix) + len(text)),
                          locate(root), reductions=evaluator.reductions, declared=declared, bound=bound,
-                         destination=(to_pane(name_offset), to_pane(name_offset) + len(declared)))
+                         destination=(to_pane(name_offset), to_pane(name_offset) + len(declared)), typed=typed)
     target, destination, designation = declared, None, []
     if left is not None:
         # A reference on the left becomes the name it stands for before the right side is read
@@ -592,13 +692,18 @@ def _statement(node: dict, program: str, state: dict[str, Value | None], records
         evaluator.reductions, designation = evaluator.reductions[:renamed], evaluator.reductions[renamed:]
     value, _ = evaluator.rvalue(root)
     evaluator.reductions += designation
+    slot = None
     if declared:
         destination = (to_pane(name_offset), to_pane(name_offset) + len(declared))
+        slot = (0, destination[1])
     elif left is None and isinstance(value, dict):
         raise Unsupported("only integer and pointer output is supported")
+    elif left is None and getattr(_integer_type(root), "size", None) == 1:
+        raise Unsupported("std::cout prints a one-byte integer as a character")
     return Statement(source, span, prefix + text + suffix, (len(prefix), len(prefix) + len(text)),
                      locate(root), value, evaluator.reductions, target, destination, declared, pointer, record,
-                     output_suffix, temporary=evaluator.temporary)
+                     output_suffix, temporary=evaluator.temporary, typed=typed, slot=slot,
+                     type=displayed_type(variable) if declared else None, size=size)
 
 
 def _load(state, name, missing=False):
@@ -635,8 +740,66 @@ def _after(statement: Statement, state: dict[str, Value | None]) -> dict[str, Va
     return after
 
 
+_PREAMBLE = "#include <iostream>\n#include <cstdint>\nusing namespace std;\nint main() {\n"
+# Clang's ways of saying that a value of one type cannot be stored where another is needed.
+_MISMATCHES = tuple(map(re.compile, (
+    r"cannot initialize a variable of type '(?P<to>[^']+)' with an? \w+ of type '(?P<from>[^']+)'",
+    r"assigning to '(?P<to>[^']+)' from (?:incompatible type )?'(?P<from>[^']+)'",
+    r"no viable conversion from '(?P<from>[^']+)' to '(?P<to>[^']+)'")))
+
+
+@dataclass(frozen=True)
+class Mismatch:
+    """A last statement that does not compile because its value does not fit its slot.
+
+    `source` is the statement and `span` its value, for the code highlight; `pane` is the
+    statement in the lessons' notation, `slot` and `value` its two typed parts there.
+    """
+    source: str
+    span: tuple[int, int]
+    pane: str
+    slot: tuple[int, int]
+    value: tuple[int, int]
+    needed: str
+    given: str
+
+
+def _mismatch(body: str, error: IllFormed) -> tuple[str, Mismatch]:
+    """Split a body whose last statement is a type mismatch into what runs and the mismatch.
+
+    Clang reports the value, or the declared name when the value follows `=`; everything before
+    the value, up to the previous statement, is the slot.
+    Any other error, or one that is not in the last statement, stays unsupported.
+    """
+    found = next(filter(None, (pattern.search(str(error)) for pattern in _MISMATCHES)), None)
+    at = None if error.offset is None else error.offset - len(_PREAMBLE)
+    if not found or at is None or not 0 <= at < len(body):
+        raise error
+    end = body.find(";", at)
+    start = max(body.rfind(";", 0, at), body.rfind("}", 0, at)) + 1
+    if end < 0 or not re.fullmatch(r"\s*(?:return\s+0\s*;\s*)?", body[end + 1:]) or not body[:start].strip():
+        raise error
+    start += len(body[start:at]) - len(body[start:at].lstrip())
+    if not body[start:at].rstrip().endswith(("=", "{")):
+        assigned = re.match(r"\w+\s*=\s*", body[at:end])
+        if not assigned:
+            raise error
+        at += assigned.end()
+    source, mapping = _compact(body[start:end + 1])
+    braced = body[start:at].rstrip().endswith("{")
+    value_end = body[at:end].rstrip().removesuffix("}").rstrip() if braced else body[at:end].rstrip()
+    span = (mapping[at - start], mapping[at - start + len(value_end)])
+    prefix, suffix = _pane_parts(source, span, False)
+    slot = prefix.rstrip().removesuffix("=").rstrip()
+    if suffix.strip() or not slot or '"' in source or "'" in source:
+        raise error
+    text = source[slice(*span)]
+    return body[:start], Mismatch(source, span, prefix + text, (0, len(slot)), (len(prefix), len(prefix) + len(text)),
+                                  displayed(found["to"]), displayed(found["from"]))
+
+
 def _analyze(source: str, directory: Path) -> tuple[list[Statement], dict]:
-    program = "#include <iostream>\n#include <cstdint>\nusing namespace std;\nint main() {\n" + source + "\n}\n"
+    program = _PREAMBLE + source + "\n}\n"
     ast = _main_ast(program, directory)
     records = layouts(ast, directory)
     statements, state, references = [], {}, {}
@@ -666,10 +829,6 @@ def _analyze(source: str, directory: Path) -> tuple[list[Statement], dict]:
 
 # Memory -----------------------------------------------------------------------------------
 
-def _size(pointer: bool) -> int:
-    return POINTER_SIZE if pointer else INT_SIZE
-
-
 def _normalize(addresses: dict[str, int], sizes: dict[str, int]) -> dict[str, int]:
     """Shift real addresses so the lowest sits at 64, keeping every alignment."""
     alignment = max(sizes.values())
@@ -692,16 +851,13 @@ def _without_reference_slots(real: dict[str, int], variables: list[dict]) -> dic
     return packed
 
 
-def _observed(execution: Execution, predicted: list[dict], pointers: set[str],
-              variables: list[dict] | None = None, references: dict[str, str] | None = None):
+def _observed(execution: Execution, predicted: list[dict], variables: list[dict],
+              references: dict[str, str]):
     """Check every live leaf, including unchanged fields, against GDB after each statement.
 
     A struct and its first field can share an address. Keep the statically typed target and
     verify its address rather than trying to recover an ambiguous target from that number.
     """
-    if variables is None:
-        variables = [scalar(name, 0, _size(name in pointers),
-                            'ptr' if name in pointers else 'int') for name in predicted[-1]]
     cells, addresses = leaves(variables), {}
     owners, offsets = {variable['name']: variable for variable in variables}, storage_addresses(variables)
     # A reference is observed as the address of what it names; the rest are storage.
@@ -728,7 +884,7 @@ def _observed(execution: Execution, predicted: list[dict], pointers: set[str],
             addresses.setdefault(name, addresses[owner] + offset - offsets[owner])
     for row in bindings:
         for name, cell in row.items():
-            if cell.address != addresses.get((references or {}).get(name)):
+            if cell.address != addresses.get(references.get(name)):
                 raise Unsupported(f'runtime verification failed: the reference {name} disagrees')
     for row, expected in zip(checkpoints, predicted):
         expected = _flatten(expected)
@@ -753,8 +909,26 @@ def _spaceless(text: str) -> str:
 class _Pane:
     """The pane as reductions replace parts of its original text, innermost first."""
 
-    def __init__(self, text: str):
+    def __init__(self, text: str, typed=(), slot=None):
         self.original, self.edits = text, []  # (start, end, text) in original coordinates
+        # The typed parts, as (start, end, type) in original coordinates; `slot` is one of them.
+        self.typed, self.slot = [(*span, type_) for span, type_ in typed], slot
+
+    @property
+    def types(self) -> list[dict]:
+        """The typed parts of the current text, in order."""
+        return [{"span": self.locate(start, end), "type": type_, **({"slot": True} if (start, end) == self.slot else {})}
+                for start, end, type_ in sorted(self.typed)]
+
+    def retype(self, start: int, end: int, type_: str | None) -> None:
+        """The original `[start, end)` is now one value of `type_`: its parts are no longer.
+        Inside a typed part (the `rs` of `rs.f`) nothing changes: the part keeps its type."""
+        if any(begin <= start and end <= finish and (begin, finish) != (start, end) for begin, finish, _ in self.typed):
+            return
+        kept = type_ or next((old for begin, finish, old in self.typed if (begin, finish) == (start, end)), None)
+        self.typed = [part for part in self.typed if not (start <= part[0] and part[1] <= end)]
+        if kept:
+            self.typed.append((start, end, kept))
 
     @property
     def text(self) -> str:
@@ -775,9 +949,11 @@ class _Pane:
         first, last = self.locate(start, end)
         return self.text[first:last]
 
-    def replace(self, start: int, end: int, new: str) -> list[int]:
-        """Replace the original `[start, end)`; returns the span it covered in the old text."""
+    def replace(self, start: int, end: int, new: str, type_: str | None = None) -> list[int]:
+        """Replace the original `[start, end)`; returns the span it covered in the old text.
+        The new text has `type_`, or keeps the type the span had as a whole."""
         span = self.locate(start, end)
+        self.retype(start, end, type_)
         self.edits = sorted([edit for edit in self.edits if not (start <= edit[0] and edit[1] <= end)]
                             + [(start, end, new)])
         return span
@@ -787,8 +963,10 @@ class _Renderer:
     """Turns analyzed statements and their (observed) states into unified trace steps."""
 
     def __init__(self, addresses: dict[str, int], cells=None, real: dict[str, int] | None = None,
-                 references: bool = False):
+                 references: bool = False, types: bool = False):
         self.addresses = addresses
+        # Types are drawn only where an example asks for them: elsewhere they are noise.
+        self.types = types
         # What each reference is bound to so far; steps carry it only in a trace with references.
         self.refs = {} if references else None
         self.order = sorted(cells or addresses, key=addresses.get)
@@ -812,6 +990,8 @@ class _Renderer:
     def stored(self, value: Value) -> int:
         if isinstance(value, Pointer):
             return self.addresses[value.target] if value.target else 0
+        if abs(value) > MAX_EXACT:
+            raise Unsupported("integers beyond 2^53 are not drawn exactly")
         return value
 
     def add(self, line: int, pane: _Pane, expr, state: dict, op=None, hold: float = 1.0) -> None:
@@ -824,12 +1004,15 @@ class _Renderer:
                 "values": values, "targets": targets}
         if expr:
             step["expr"] = pane.locate(*expr)
+        if self.types and pane.types:
+            step["types"] = pane.types
         if self.refs is not None:
             step["refs"] = dict(self.refs)
         self.steps.append(step)
 
     def statement(self, line: int, statement: Statement, before: dict, after: dict) -> None:
-        pane, expr = _Pane(statement.pane), statement.expr
+        typed = statement.typed + ([(statement.slot, statement.type)] if statement.slot else [])
+        pane, expr = _Pane(statement.pane, typed, statement.slot), statement.expr
         writes = statement.target is not None and statement.result is not None
         self.add(line, pane, expr, before if writes else after)
         for reduction in statement.reductions:
@@ -846,15 +1029,25 @@ class _Renderer:
                 # The target is where the pointer's observed value points.
                 text = (reduction.value or _load(before, reduction.name)).target
                 op = {"kind": "deref", "target": text, "via": reduction.name}
+            elif reduction.kind == "convert" and self.types:
+                text = self.show(reduction.value)
+                op = {"kind": "convert", "value": text, "from": reduction.source, "to": reduction.type}
             else:
                 text = reduction.spelling or (reduction.record or "") + self.show(reduction.value)
                 op = {"kind": "eval", "value": text}
                 # A brace list of plain values is already its value, however it is spaced.
                 if isinstance(reduction.value, dict) and _spaceless(pane.read(*reduction.span)) == _spaceless(text):
-                    continue
-            if pane.read(*reduction.span) != text:
-                op["span"] = pane.replace(*reduction.span, text)
+                    text = pane.read(*reduction.span)
+            # A typed conversion is a step even when the digits stay: the type is what changes.
+            # Untyped, it is an evaluation like any other, seen only when the text changes.
+            if pane.read(*reduction.span) != text or op["kind"] == "convert":
+                op["span"] = pane.replace(*reduction.span, text, reduction.type)
                 self.add(line, pane, expr, before, op)
+            else:
+                # No step of its own, but the text now reads as one value of its type.
+                pane.retype(*reduction.span, reduction.type)
+                if self.types:
+                    self.steps[-1]["types"] = pane.types
         if statement.result is None:
             return
         if statement.bound:
@@ -891,17 +1084,33 @@ class _Renderer:
         redirected = isinstance(old, Pointer) and old.target and old != _load(after, name)
         self.add(line, pane, expr, after, op, 1.6 if redirected else 1.2)
 
+    def mismatch(self, line: int, mismatch: Mismatch, state: dict) -> None:
+        """The statement as written, then its value's type against the type its slot needs."""
+        pane = _Pane(mismatch.pane, [(mismatch.slot, mismatch.needed), (mismatch.value, mismatch.given)], mismatch.slot)
+        self.add(line, pane, mismatch.value, state)
+        op = {"kind": "clash", "span": list(mismatch.value), "destination": list(mismatch.slot),
+              "from": mismatch.given, "to": mismatch.needed}
+        self.add(line, pane, mismatch.value, state, op)
 
-def trace(source: str, *, runtime: bool = True) -> dict:
+
+def trace(source: str, *, runtime: bool = True, types: bool = False) -> dict:
     """Trace a snippet into a validated unified-format trace, rejecting unsupported constructs.
 
     With `runtime=False` (probing) nothing is executed: values are the predicted ones and the
-    layout is Clang's usual -O0 layout.
+    layout is Clang's usual -O0 layout. With `types`, the pane and memory carry types, a
+    conversion is a step of its own, and a last statement whose types do not fit is shown.
     """
-    body = _body(source)
+    body, mismatch = _body(source), None
     with tempfile.TemporaryDirectory(prefix="course-expression-") as temporary:
         directory = Path(temporary)
-        statements, records = _analyze(body, directory)
+        try:
+            statements, records = _analyze(body, directory)
+        except IllFormed as error:
+            if not types:
+                raise
+            # A last statement whose types do not fit is shown, not run: the rest is traced.
+            body, mismatch = _mismatch(body, error)
+            statements, records = _analyze(body, directory)
         predicted, state = [], {}
         for statement in statements:
             state = _after(statement, state)
@@ -914,7 +1123,7 @@ def trace(source: str, *, runtime: bool = True) -> dict:
                 references[name] = trace_reference(name, color)
                 continue
             record = records.get(declaration.record)
-            size = record.size if record else _size(declaration.pointer)
+            size = record.size if record else declaration.size
             alignment = record.alignment if record else size
             top = (top - size) // alignment * alignment
             if record:
@@ -930,7 +1139,8 @@ def trace(source: str, *, runtime: bool = True) -> dict:
                     return fields
                 variables.append(struct(name, record.name, top, size, fields_of(record), color))
             else:
-                variables.append(scalar(name, top, size, 'ptr' if declaration.pointer else 'int', color))
+                variables.append(scalar(name, top, size, 'ptr' if declaration.pointer else 'int', color,
+                                        declaration.type if types else None))
         if runtime:
             scopes, bound = [], {}
             for statement, row in zip(statements, predicted):
@@ -939,7 +1149,7 @@ def trace(source: str, *, runtime: bool = True) -> dict:
                 scopes.append([(name, value is not None) for name, value in _flatten(row).items()]
                               + [(name, REFERENCE) for name in bound])
             execution = execute([statement.source for statement in statements], scopes, directory)
-            addresses, states = _observed(execution, predicted, set(), variables, bound)
+            addresses, states = _observed(execution, predicted, variables, bound)
         else:
             addresses, states = storage_addresses(variables), predicted
         real = addresses
@@ -947,7 +1157,7 @@ def trace(source: str, *, runtime: bool = True) -> dict:
             addresses = _without_reference_slots(addresses, variables)
         # Shift by ABI alignment, never by a struct's total size (which need not be a power of 2).
         alignment = max([record.alignment for record in records.values()] +
-                        [_size(d.pointer) for d in declarations if not d.record and not d.bound] + [4])
+                        [d.size for d in declarations if not d.record and not d.bound] + [4])
         addresses = _normalize(addresses, {"ABI": alignment})
         for variable in variables:
             variable['address'] = addresses[variable['name']]
@@ -958,14 +1168,17 @@ def trace(source: str, *, runtime: bool = True) -> dict:
              if not _DEFINITION.match(statement.source)]
     if not shown:
         raise Unsupported("a snippet of only struct definitions has nothing to step through")
-    renderer, previous = _Renderer(addresses, leaves(variables), real, bool(references)), {}
+    renderer, previous = _Renderer(addresses, leaves(variables), real, bool(references), types), {}
     for line, (statement, after) in enumerate(shown):
         renderer.statement(line, statement, previous, after)
         previous = after
     if runtime and renderer.real_stdout != execution.stdout:
         raise Unsupported("runtime output disagrees with the expression trace")
-    renderer.steps[-1]["hold"] = 3
     shown = [statement for statement, _ in shown]
+    if mismatch:
+        renderer.mismatch(len(shown), mismatch, previous)
+        shown.append(mismatch)
+    renderer.steps[-1]["hold"] = 3
     result = {"format": FORMAT, "source": [statement.source for statement in shown],
               "spans": [list(statement.span) if statement.span else None for statement in shown],
               "variables": variables, "steps": renderer.steps}

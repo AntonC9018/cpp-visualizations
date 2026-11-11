@@ -82,6 +82,9 @@ def applicable(trace: dict, snippet: str) -> None:
         raise Unsupported(f'the memory row holds at most {MAX_VARIABLES} variables')
     _storage_is_contiguous(variables)
     ops = [step['op'] for step in steps if step['op']]
+    if any(op['kind'] == 'clash' for op in ops):
+        # Types that do not fit are the point, however little memory is involved.
+        return
     writes = [step for step in steps if step['op'] and step['op']['kind'] == 'write']
     reads = [op for op in ops if op['kind'] in ('read', 'addr', 'deref', 'bind')]
     # A single initialized cell alone needs no illustration. Empty initialization is
@@ -100,6 +103,8 @@ def main() -> int:
     parser.add_argument('operation', choices=('probe', 'trace', 'revision'))
     parser.add_argument('--source', type=Path)
     parser.add_argument('--template', default=TEMPLATE)
+    parser.add_argument('--types', action='store_true',
+                        help='show the types of the pane and of memory, conversions and a type mismatch')
     args = parser.parse_args()
     if args.operation == 'revision':
         print(revision())
@@ -110,12 +115,14 @@ def main() -> int:
     try:
         if args.template not in (TEMPLATE, 'layout'):
             raise Unsupported(f'unknown template {args.template!r}')
+        if args.types and args.template != TEMPLATE:
+            raise Unsupported('only the step-through player shows types')
         if args.template == 'layout':
             from layout import trace as layout_trace
             result = layout_trace(args.source.read_text())
         else:
             snippet = args.source.read_text()
-            result = trace(snippet, runtime=args.operation != 'probe')
+            result = trace(snippet, runtime=args.operation != 'probe', types=args.types)
             applicable(result, snippet)
     except Unsupported as exc:
         if args.operation == 'probe':

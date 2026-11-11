@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from execution import Cell, Execution  # noqa: E402
 import tracing  # noqa: E402
 from tracing import Pointer, Unsupported  # noqa: E402
+from trace_format import scalar  # noqa: E402
 
 CLANG = os.environ.get("CLANGXX") or shutil.which("clang++")
 GDB = os.environ.get("GDB") or shutil.which("gdb")
@@ -265,7 +266,7 @@ class StaticPointerTraceTests(unittest.TestCase):
             "int a{1}; int* p{&a}; int* q{&a}; int e = p == q;": "pointer arithmetic and comparison",
             "int a{1}; int&& r = 1;": "references",
             "int a{1}; int* p = (int*)&a;": "CStyleCastExpr",
-            "int a{1}; long* p = reinterpret_cast<long*>(&a);": "pointers to int",
+            "int a{1}; long* p = reinterpret_cast<long*>(&a);": "unsupported expression: CXXReinterpretCastExpr",
             "int* p = new int{1};": "CXXNewExpr",
             "int a{1}; void* p = &a;": "pointers to int",
             "const int a{1}; const int* p = &a;": "pointers to int",
@@ -305,27 +306,31 @@ class StaticPointerTraceTests(unittest.TestCase):
 class ObservationTests(unittest.TestCase):
     """GDB's raw frames are interpreted by address; only real variables are pointer targets."""
     PREDICTED = [{"a": 5}, {"a": 5, "p": Pointer("a")}]
+    VARIABLES = [scalar("a", 0, 4), scalar("p", 0, 8, "ptr")]
+
+    def observed(self, execution):
+        return tracing._observed(execution, self.PREDICTED, self.VARIABLES, {})
 
     def execution(self, pointer_value, size=8):
         a, p = Cell(0x7ffc_1004, 4, False, 5), Cell(0x7ffc_0ff8, size, True, pointer_value)
         return Execution([{"a": a}, {"a": a, "p": p}], "")
 
     def test_pointer_values_map_back_to_variables(self):
-        addresses, states = tracing._observed(self.execution(0x7ffc_1004), self.PREDICTED, {"p"})
+        addresses, states = self.observed(self.execution(0x7ffc_1004))
         self.assertEqual(states, self.PREDICTED)
         self.assertEqual(tracing._normalize(addresses, {"a": 4, "p": 8}), {"a": 76, "p": 64})
 
     def test_a_pointer_to_anything_else_is_rejected(self):
         with self.assertRaisesRegex(Unsupported, "not the address of a variable"):
-            tracing._observed(self.execution(0x7ffc_1008), self.PREDICTED, {"p"})
+            self.observed(self.execution(0x7ffc_1008))
 
     def test_a_disagreeing_target_is_rejected(self):
         with self.assertRaisesRegex(Unsupported, "runtime verification failed: p"):
-            tracing._observed(self.execution(0), self.PREDICTED, {"p"})
+            self.observed(self.execution(0))
 
     def test_unexpected_storage_is_rejected(self):
         with self.assertRaisesRegex(Unsupported, "runtime storage of p"):
-            tracing._observed(self.execution(0x7ffc_1004, size=4), self.PREDICTED, {"p"})
+            self.observed(self.execution(0x7ffc_1004, size=4))
 
     def test_normalization_keeps_alignment(self):
         self.assertEqual(tracing._normalize({"a": 0x1004, "p": 0x1008}, {"a": 4, "p": 8}), {"a": 68, "p": 72})

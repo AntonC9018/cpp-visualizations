@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Write `demo.html`: the player inside a lesson-like page, for checking the engine locally.
 
-It traces a few examples from `en/labs/cpp/02_variables.md` and `04_pointer.md` with the
+It traces a few examples from `en/labs/cpp/02_variables.md`, `03_numeric_conversions.md` and
+`04_pointer.md` with the
 compiler-backed tracer and adds the pointer and struct fixtures. Each player sits in a
 collapsed `<details>`, as on the
 site; the buttons in the header switch `<html data-theme>` and `lang`, as Starlight does.
@@ -29,11 +30,8 @@ EXAMPLES = {
     'Swapping variables':
         'int a { 1 };\nint b { 2 };\na = b;\nb = a;\nstd::cout << a << std::endl;\nstd::cout << b << std::endl;\n',
 }
-# Lesson 04: `auto` deduces a pointer; copying a pointer and a value; a pointer to a pointer;
-# two pointers to one variable.
+# Lesson 04: copying a pointer and a value; a pointer to a pointer; two pointers to one variable.
 POINTER_EXAMPLES = {
-    'auto deduces a pointer type':
-        'int value{ 5 };\nauto p{ &value };\n*p = 8;\nstd::cout << value << std::endl;\n',
     'Copying a pointer and the value it points to':
         'int value{ 5 };\nint* p{ &value };\nauto copy{ p };\nauto copiedValue{ *p };\n'
         '*copy = 8;\nstd::cout << value << std::endl;\nstd::cout << copiedValue << std::endl;\n',
@@ -45,6 +43,24 @@ POINTER_EXAMPLES = {
         'std::cout << *px << std::endl;\nstd::cout << *py << std::endl;\n',
     'Null pointer initialization':
         'int a = 5;\nint* p{};\np = &a;\n*p = 6;\nstd::cout << a << std::endl;\n',
+}
+# Examples about types, traced with them shown: a deduced type, and a value that does not fit.
+TYPE_EXAMPLES = {
+    'auto deduces a pointer type':
+        'int value{ 5 };\nauto p{ &value };\n*p = 8;\nstd::cout << value << std::endl;\n',
+    'A pointer does not fit where a pointer to a pointer is needed':
+        'struct A { int f1; int f2; };\nA a{ 1, 2 };\nA* value{ &a };\nA** p{ value };\n',
+}
+# Lesson 03, with types shown: truncation and an implicit widening; sign changes; a sign extension; promotion.
+CONVERSION_EXAMPLES = {
+    'Truncation, then an implicit widening':
+        'uint32_t a{ 256 };\nuint8_t b{ static_cast<uint8_t>(a) };\nuint32_t c{ b };\nstd::cout << c << std::endl;\n',
+    'Truncating negative numbers':
+        'int a{ -3 };\nint8_t b{ static_cast<int8_t>(a) };\nstd::cout << static_cast<int>(b) << std::endl;\n'
+        'int c{ -200 };\nint8_t d{ static_cast<int8_t>(c) };\nstd::cout << static_cast<int>(d) << std::endl;\n',
+    'Sign extension': 'int8_t a{ -3 };\nint b{ static_cast<int>(a) };\n',
+    'Promotion before arithmetic, and two-byte integers':
+        'uint8_t a{ 200 };\nint16_t s{ -2 };\nuint16_t u = s;\nlong sum = a + u;\nstd::cout << sum << std::endl;\n',
 }
 
 PAGE = '''<!doctype html>
@@ -84,7 +100,7 @@ p {color: var(--muted)}
 <header><strong>Player demo</strong>
  <button id="theme" type="button">Theme</button><button id="lang" type="button">Language</button></header>
 <main>
-<p>Compiler-traced examples from lessons 2 and 4, then the manual pointer and struct fixtures.
+<p>Compiler-traced examples from lessons 2, 4 and 3, then the manual pointer and struct fixtures.
 The first trace is already open; the others initialize when opened.</p>
 __SECTIONS__
 </main>
@@ -116,6 +132,8 @@ def section(index: int, title: str, data: dict, opened: bool) -> str:
 
 def main() -> None:
     traces = [(title, trace(source)) for title, source in {**EXAMPLES, **POINTER_EXAMPLES}.items()]
+    traces += [(title, trace(source, types=True))
+               for title, source in {**TYPE_EXAMPLES, **CONVERSION_EXAMPLES}.items()]
     for path in sorted((HERE / 'fixtures').glob('*.json')):
         data = json.loads(path.read_text())
         traces.append((data.get('title', path.stem), data))

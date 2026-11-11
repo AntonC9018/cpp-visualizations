@@ -10,6 +10,14 @@ class Unsupported(ValueError):
     """The snippet cannot safely be represented by this visualization category."""
 
 
+class IllFormed(Unsupported):
+    """The snippet does not compile. `offset` is where in the program Clang reports it."""
+
+    def __init__(self, diagnostic: str, offset: int | None = None):
+        super().__init__(diagnostic)
+        self.offset = offset
+
+
 def run(command: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess:
     try:
         return subprocess.run(command, capture_output=True, text=True, timeout=timeout)

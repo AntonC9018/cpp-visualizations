@@ -13,7 +13,7 @@ import re
 FORMAT = 1
 SCALAR_KINDS = ('int', 'ptr')
 STRUCT = 'struct'
-OPERATIONS = ('read', 'addr', 'deref', 'eval', 'write', 'print', 'bind', 'alias')
+OPERATIONS = ('read', 'addr', 'deref', 'eval', 'write', 'print', 'bind', 'alias', 'convert', 'clash')
 UNKNOWN = '?'
 IDENTIFIER = re.compile(r'[A-Za-z_]\w*')
 
@@ -32,8 +32,11 @@ def whitespace_output(spelling: str) -> str | None:
 
 # Building blocks ------------------------------------------------------------------------------
 
-def scalar(name: str, address: int, size: int = 4, kind: str = 'int', color: int = 0) -> dict:
-    return {'name': name, 'address': address, 'size': size, 'kind': kind, 'color': color}
+def scalar(name: str, address: int, size: int = 4, kind: str = 'int', color: int = 0,
+           type_: str | None = None) -> dict:
+    """`type_` is the declared type as the lessons write it (`int*`); the player labels with it."""
+    variable = {'name': name, 'address': address, 'size': size, 'kind': kind, 'color': color}
+    return {**variable, 'type': type_} if type_ else variable
 
 
 def struct(name: str, type_: str, address: int, size: int, fields: list[dict],
@@ -122,7 +125,8 @@ def _variables(variables, where: str) -> dict[str, dict]:
         here = f'{where}[{index}]'
         struct_ = isinstance(variable, dict) and variable.get('kind') == 'struct'
         common = {'name', 'address', 'size', 'kind', 'color'}
-        _keys(variable, here, common | ({'type', 'fields'} if struct_ else set()))
+        _keys(variable, here, common | ({'type', 'fields'} if struct_ else set()), {'type'})
+        _check(isinstance(variable.get('type', ''), str), here + '.type', 'expected text')
         _check(bool(IDENTIFIER.fullmatch(str(variable['name']))), here, 'name is not an identifier')
         _check(variable['name'] not in names, here, f'duplicate variable {variable["name"]!r}')
         names.add(variable['name'])
@@ -188,6 +192,23 @@ class _Storage:
 
     def cells_of(self, name: str) -> list[str]:
         return cells_of(self.variables, name)
+
+
+def _types(step: dict, where: str) -> None:
+    """Typed spans of the pane are disjoint; at most one of them is the statement's slot."""
+    types = step['types']
+    _check(isinstance(types, list) and types, where, 'expected a nonempty list')
+    end, slots = 0, 0
+    for index, item in enumerate(types):
+        here = f'{where}[{index}]'
+        _keys(item, here, {'span', 'type'}, {'slot'})
+        start, finish = _span(item['span'], step['pane'], here + '.span')
+        _check(start >= end, here + '.span', 'typed spans must be ordered and must not overlap')
+        end = finish
+        _check(isinstance(item['type'], str) and bool(item['type']), here + '.type', 'expected text')
+        _check(item.get('slot', True) is True, here + '.slot', 'expected true when present')
+        slots += 'slot' in item
+    _check(slots <= 1, where, 'a statement has one slot')
 
 
 def _value(value, where: str) -> None:
@@ -271,12 +292,16 @@ def _operation(op, step: dict, previous: dict, storage: _Storage, where: str) ->
               'deref': {'target', 'via', 'span'}, 'eval': {'value', 'span'},
               'write': {'name', 'value', 'span', 'destination'}, 'print': {'value', 'span'},
               'bind': {'name', 'target', 'span', 'destination'},
-              'alias': {'name', 'target', 'span'}}[kind]
+              'alias': {'name', 'target', 'span'}, 'convert': {'value', 'span', 'from', 'to'},
+              'clash': {'span', 'destination', 'from', 'to'}}[kind]
     _keys(op, where, fields | {'kind'})
-    for key in fields & {'name', 'target', 'via', 'value'}:
+    for key in fields & {'name', 'target', 'via', 'value', 'from', 'to'}:
         _check(isinstance(op[key], str) and op[key], f'{where}.{key}', 'expected text')
     if kind in ('bind', 'alias'):
         _reference(op, step, previous, storage, where)
+        return
+    if kind == 'clash':
+        _clash(op, step, previous, where)
         return
     for key in ('name', 'via'):
         if key in op:
@@ -289,15 +314,47 @@ def _operation(op, step: dict, previous: dict, storage: _Storage, where: str) ->
         _check(pointee is not None and (op['target'] == pointee
                                         or op['target'].startswith(pointee + '.')),
                where, f'{op["via"]} does not point to {op["target"]}')
-    if kind in ('read', 'addr', 'deref', 'eval'):
+    if kind in ('read', 'addr', 'deref', 'eval', 'convert'):
         span = _span(op['span'], previous['pane'], where + '.span')
         replaced = _replacement(previous['pane'], step['pane'], span, where)
         expected = op['target'] if kind == 'deref' else op['value']
         _check(replaced == expected, where, f'the replacement {replaced!r} is not {expected!r}')
+        if kind == 'convert':
+            _check(_converted(previous, span) == op['from'], where + '.from', 'is not the type of the converted value')
+            _check(_typed(step, [span[0], span[0] + len(replaced)]) == op['to'], where + '.to',
+                   'is not the type of the result')
     else:
         _unchanged_pane(op, step, previous, where)
     if kind in ('read', 'addr', 'write'):
         _memory(op, step, previous, storage, where)
+
+
+def _typed(step: dict, span: list[int]) -> str | None:
+    """The type of the pane's part at `span`, if it is a typed part."""
+    return next((part['type'] for part in step.get('types', []) if part['span'] == span), None)
+
+
+def _converted(step: dict, span: tuple[int, int]) -> str | None:
+    """The type of the value a conversion at `span` takes: the span itself, or the one typed
+    part inside a written cast (`7` in `static_cast<double>(7)`)."""
+    inside = [part['type'] for part in step.get('types', [])
+              if span[0] <= part['span'][0] and part['span'][1] <= span[1]]
+    return inside[0] if len(inside) == 1 else None
+
+
+def _clash(op: dict, step: dict, previous: dict, where: str) -> None:
+    """A statement that does not compile: the value at `span`, of type `from`, does not fit the
+    slot at `destination`, which needs `to`. Nothing is evaluated and nothing changes."""
+    _check(step['pane'] == previous['pane'] and previous['op'] is None, where,
+           'a clash follows the statement as written and does not change the pane')
+    _, end = _span(op['destination'], step['pane'], where + '.destination')
+    start, _ = _span(op['span'], step['pane'], where + '.span')
+    _check(end <= start, where, 'the slot comes before the value')
+    _check(op['from'] != op['to'], where, 'the types must differ')
+    slot = next((part for part in step.get('types', []) if part.get('slot')), {})
+    _check(slot.get('span') == op['destination'] and slot['type'] == op['to'], where + '.destination',
+           'must be the typed slot of the statement')
+    _check(_typed(step, op['span']) == op['from'], where + '.span', 'must be a typed part of type `from`')
 
 
 def _reference(op: dict, step: dict, previous: dict, storage: _Storage, where: str) -> None:
@@ -439,12 +496,14 @@ def validate(trace) -> None:
     previous = None
     for index, step in enumerate(steps):
         where = f'trace.steps[{index}]'
-        _keys(step, where, {'line', 'pane', 'values', 'targets', 'stdout', 'hold', 'op'}, {'expr', 'refs'})
+        _keys(step, where, {'line', 'pane', 'values', 'targets', 'stdout', 'hold', 'op'}, {'expr', 'refs', 'types'})
         _check(type(step['line']) is int and 0 <= step['line'] < len(source), where + '.line',
                'not a source line')
         _check(isinstance(step['pane'], str), where + '.pane', 'expected text')
         if step.get('expr') is not None:
             _span(step['expr'], step['pane'], where + '.expr', empty=True)
+        if 'types' in step:
+            _types(step, where + '.types')
         _check(isinstance(step['values'], dict) and step['values'].keys() == cells.keys(),
                where + '.values', f'expected exactly {sorted(cells)}')
         for name, value in step['values'].items():
@@ -464,6 +523,8 @@ def validate(trace) -> None:
             if step['op'] is not None:
                 _operation(step['op'], step, previous, storage, where + '.op')
             _changes(step, previous, storage, where)
+        _check(index == len(steps) - 1 or (step['op'] or {}).get('kind') != 'clash', where + '.op',
+               'nothing runs after a statement that does not compile')
         previous = step
 
 
