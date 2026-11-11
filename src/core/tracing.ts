@@ -1,19 +1,21 @@
-// Compiler-backed execution traces of flat int, pointer and aggregate struct examples.
+// Compiler-backed execution traces of flat int, pointer and aggregate struct examples (isomorphic core).
 //
-// Clang supplies syntax, types and record layouts. A strict AST whitelist predicts each
-// statement's effects without executing arbitrary C++. GDB verifies every live scalar and
-// struct field after every statement, including unchanged memory. Only verified states become
-// unified-format reductions; addresses are normalized deterministically near 64.
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+// Clang supplies syntax, types and record layouts via `CompilerFrontend`. A strict AST whitelist
+// predicts each statement's effects without executing arbitrary C++. An optional `RuntimeExecutor`
+// (such as GDB in Node) verifies every live scalar and struct field after every statement.
 
-import { Cell, Execution, REFERENCE, execute as defaultExecute } from './execution.mjs';
-import { layouts, typeName, typeSpelling } from './records.mjs';
-import { Unsupported, run, tool } from './toolchain.mjs';
+import { type AstNode, type CompilerFrontend, Unsupported } from './errors.ts';
+import { type Record as RecordInfo, type RecordFieldInfo, layoutsFromFrontend, typeName, typeSpelling } from './records.ts';
 import {
+  type ExecutionTrace,
   FORMAT,
   FormatError,
+  type Span,
+  type StoredCellValue,
+  type TraceField,
+  type TraceReference,
+  type TraceStep,
+  type TraceVariable,
   UNKNOWN,
   addresses as storageAddresses,
   field as traceField,
@@ -24,12 +26,74 @@ import {
   structField,
   validate,
   whitespaceOutput,
-} from './trace_format.mjs';
+} from './trace_format.ts';
 
 export { Unsupported };
 
-export const hooks = {
-  execute: defaultExecute,
+export interface CellInput {
+  address: number;
+  size: number;
+  pointer: boolean;
+  value: number | null;
+  object_address?: number | null;
+  object_size?: number | null;
+  reference?: boolean;
+}
+
+export class Cell {
+  address: number;
+  size: number;
+  pointer: boolean;
+  value: number | null;
+  object_address: number | null;
+  object_size: number | null;
+  reference: boolean;
+
+  constructor({
+    address,
+    size,
+    pointer,
+    value,
+    object_address = null,
+    object_size = null,
+    reference = false,
+  }: CellInput) {
+    this.address = address;
+    this.size = size;
+    this.pointer = pointer;
+    this.value = value;
+    this.object_address = object_address;
+    this.object_size = object_size;
+    this.reference = reference;
+    Object.freeze(this);
+  }
+}
+
+export const REFERENCE = 'reference' as const;
+export type ScopeEntry = [string, boolean | typeof REFERENCE];
+
+export class Execution {
+  checkpoints: Record<string, Cell>[];
+  stdout: string;
+
+  constructor(checkpoints: Record<string, Cell>[], stdout: string) {
+    this.checkpoints = checkpoints;
+    this.stdout = stdout;
+    Object.freeze(this);
+  }
+}
+
+export type RuntimeExecutor = (
+  statements: string[],
+  expected: ScopeEntry[][],
+  directory?: string
+) => Execution;
+
+export const hooks: {
+  execute: RuntimeExecutor | null;
+  after: ((statement: Statement, state: Record<string, any>) => Record<string, any>) | null;
+} = {
+  execute: null,
   after: null,
 };
 
@@ -45,17 +109,19 @@ const QUOTED_OR_COMMENT = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\/\/[^\n]*|\/\*[\
 // Values -----------------------------------------------------------------------------------
 
 export class Pointer {
-  constructor(target = null) {
+  target: string | null;
+
+  constructor(target: string | null = null) {
     this.target = target;
     Object.freeze(this);
   }
 }
 
-function isPlainObject(value) {
+function isPlainObject(value: unknown): value is Record<string, any> {
   return typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Pointer);
 }
 
-function integer(value) {
+function integer(value: number | bigint): number {
   if (typeof value === 'bigint') {
     if (value < BigInt(MIN_INT) || value > BigInt(MAX_INT)) {
       throw new Unsupported('signed integer overflow is outside the timeline category');
@@ -68,20 +134,21 @@ function integer(value) {
   return value === 0 ? 0 : value;
 }
 
-function hasRecord(records, name) {
+function hasRecord(records: unknown, name: string): boolean {
   if (!records) return false;
   if (Array.isArray(records) || records instanceof Set) {
     return [...records].includes(name);
   }
-  return Object.hasOwn(records, name);
+  return Object.hasOwn(records as object, name);
 }
 
-function getRecord(records, name) {
+function getRecord(records: unknown, name: string): RecordInfo | undefined {
   if (!records || Array.isArray(records) || records instanceof Set) return undefined;
-  return Object.hasOwn(records, name) ? records[name] : undefined;
+  const map = records as Record<string, RecordInfo>;
+  return Object.hasOwn(map, name) ? map[name] : undefined;
 }
 
-export function _depth(node, records = {}) {
+export function _depth(node: AstNode | null | undefined, records: unknown = {}): number {
   const qualified = typeSpelling(node);
   const intMatch = /^(const )?int(?: (\*+))?$/.exec(qualified);
   if (intMatch && !(intMatch[1] && intMatch[2])) {
@@ -109,14 +176,14 @@ export function _depth(node, records = {}) {
 
 // Source text ------------------------------------------------------------------------------
 
-function isAscii(str) {
+function isAscii(str: string): boolean {
   for (let i = 0; i < str.length; i++) {
     if (str.charCodeAt(i) > 0x7f) return false;
   }
   return true;
 }
 
-export function _body(source) {
+export function _body(source: string): string {
   let cleaned = source.replace(QUOTED_OR_COMMENT, value => {
     if (value.startsWith('//') || value.startsWith('/*')) {
       const newlines = (value.match(/\n/g) || []).length;
@@ -156,9 +223,9 @@ export function _body(source) {
 const DEFINITION = /^struct\s+\w+\s*[{;]/;
 const DEFINITION_TEXT = /^([ \t]*)(struct\s+(\w+)\s*\{[^{}]*\}\s*;)/gm;
 
-function dedent(text) {
+function dedent(text: string): string {
   const lines = text.split('\n');
-  let margin = null;
+  let margin: string | null = null;
   for (const line of lines) {
     const stripped = line.replace(/^[ \t]+/, '');
     if (!stripped) continue;
@@ -176,18 +243,20 @@ function dedent(text) {
     }
   }
   if (!margin) return text;
-  return lines.map(line => (line.startsWith(margin) ? line.slice(margin.length) : line.replace(/^[ \t]+$/, ''))).join('\n');
+  return lines
+    .map(line => (line.startsWith(margin!) ? line.slice(margin!.length) : line.replace(/^[ \t]+$/, '')))
+    .join('\n');
 }
 
-function definitions(body) {
-  const result = {};
+function definitions(body: string): Record<string, string> {
+  const result: Record<string, string> = {};
   for (const match of body.matchAll(DEFINITION_TEXT)) {
     result[match[3]] = dedent(match[1] + match[2]);
   }
   return result;
 }
 
-function bounds(node) {
+export function bounds(node: AstNode | null | undefined): Span {
   const first = node?.range?.begin;
   const last = node?.range?.end;
   if (
@@ -202,17 +271,17 @@ function bounds(node) {
   return [first.offset, last.offset + last.tokLen];
 }
 
-function compact(source) {
-  const out = [];
-  const mapping = new Array(source.length + 1).fill(0);
+function compact(source: string): [string, number[]] {
+  const out: string[] = [];
+  const mapping = new Array<number>(source.length + 1).fill(0);
   let index = 0;
   const pattern = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\s+|[\s\S]/g;
   for (const match of source.matchAll(pattern)) {
     const token = match[0];
-    const start = match.index;
+    const start = match.index!;
     const end = start + token.length;
     const isSpace = /^\s+$/.test(token);
-    let replacement;
+    let replacement: string;
     if (isSpace) {
       replacement = out.length > 0 && out[out.length - 1] !== ' ' ? ' ' : '';
     } else {
@@ -229,7 +298,7 @@ function compact(source) {
   return [out.join('').replace(/\s+$/, ''), mapping];
 }
 
-function parseLeadingJson(text, startOffset) {
+function parseLeadingJson(text: string, startOffset: number): [AstNode, number] | null {
   let i = startOffset;
   const n = text.length;
   while (i < n && /\s/.test(text[i])) i++;
@@ -268,33 +337,15 @@ function parseLeadingJson(text, startOffset) {
   if (depth !== 0 || inString) {
     throw new Error('Unterminated JSON value');
   }
-  return [JSON.parse(text.slice(start, i)), i];
+  return [JSON.parse(text.slice(start, i)) as AstNode, i];
 }
 
-export function _main_ast(program, directory) {
-  const path = join(directory, 'source.cpp');
-  writeFileSync(path, program);
-  const result = run([
-    tool('CLANGXX', 'clang++'),
-    '-std=c++20',
-    '-fsyntax-only',
-    '-fno-color-diagnostics',
-    '-Xclang',
-    '-ast-dump=json',
-    '-Xclang',
-    '-ast-dump-filter=main',
-    path,
-  ]);
-  if (result.returncode) {
-    const line =
-      result.stderr.split(/\r?\n/).find(l => l.includes('error:')) || 'error: ill-formed C++';
-    throw new Unsupported(line.slice(line.indexOf('error:')));
-  }
-  const selected = [];
+export function extractMainAstFromStdout(stdout: string, program: string): AstNode {
+  const selected: AstNode[] = [];
   let offset = 0;
   try {
-    while (offset < result.stdout.length) {
-      const parsed = parseLeadingJson(result.stdout, offset);
+    while (offset < stdout.length) {
+      const parsed = parseLeadingJson(stdout, offset);
       if (!parsed) break;
       const [node, nextOffset] = parsed;
       offset = nextOffset;
@@ -302,7 +353,7 @@ export function _main_ast(program, directory) {
         selected.push(node);
       }
     }
-  } catch (exc) {
+  } catch {
     throw new Unsupported('Clang returned invalid AST JSON');
   }
   if (selected.length !== 1) {
@@ -321,7 +372,28 @@ export function _main_ast(program, directory) {
 // Evaluation -------------------------------------------------------------------------------
 
 export class Reduction {
-  constructor(kind, span, { name = null, value = null, spelling = null, record = null } = {}) {
+  kind: string;
+  span: Span;
+  name: string | null;
+  value: any;
+  spelling: string | null;
+  record: string | null;
+
+  constructor(
+    kind: string,
+    span: Span,
+    {
+      name = null,
+      value = null,
+      spelling = null,
+      record = null,
+    }: {
+      name?: string | null;
+      value?: any;
+      spelling?: string | null;
+      record?: string | null;
+    } = {}
+  ) {
     this.kind = kind;
     this.span = span;
     this.name = name;
@@ -332,7 +404,7 @@ export class Reduction {
   }
 }
 
-function load(state, name, missing = false) {
+function load(state: Record<string, any>, name: string, missing = false): any {
   const [owner, ...path] = name.split('.');
   if (!missing && !Object.hasOwn(state, owner)) {
     throw new Error(`KeyError: ${owner}`);
@@ -344,11 +416,11 @@ function load(state, name, missing = false) {
   return value;
 }
 
-export function _flatten(state) {
-  const cells = {};
+export function _flatten(state: Record<string, any>): Record<string, any> {
+  const cells: Record<string, any> = {};
   for (const [name, value] of Object.entries(state)) {
     if (isPlainObject(value)) {
-      const sub = {};
+      const sub: Record<string, any> = {};
       for (const [member, item] of Object.entries(value)) {
         sub[`${name}.${member}`] = item;
       }
@@ -360,28 +432,28 @@ export function _flatten(state) {
   return cells;
 }
 
-function filled(item, records, zero = false) {
-  const record =
-    item && Array.isArray(item.fields)
+function filled(item: RecordInfo | RecordFieldInfo, records: Record<string, RecordInfo>, zero = false): any {
+  const record: RecordInfo | null =
+    item && 'fields' in item && Array.isArray(item.fields)
       ? item
-      : item?.kind === 'struct'
+      : 'kind' in item && item.kind === 'struct' && item.type
         ? records[item.type]
         : null;
   if (record) {
-    const res = {};
+    const res: Record<string, any> = {};
     for (const inner of record.fields) {
       res[inner.name] = filled(inner, records, zero);
     }
     return res;
   }
-  return !zero ? null : item.kind === 'ptr' ? new Pointer() : 0;
+  return !zero ? null : ('kind' in item && item.kind === 'ptr' ? new Pointer() : 0);
 }
 
-function operandIsPointer(node) {
+function operandIsPointer(node: AstNode | null | undefined): boolean {
   return (node?.type?.qualType ?? '').includes('*');
 }
 
-function rejectPointerOperator(node) {
+function rejectPointerOperator(node: AstNode | null | undefined): void {
   if (
     node?.kind === 'BinaryOperator' &&
     (operandIsPointer(node) || (node.inner ?? []).some(operandIsPointer))
@@ -391,7 +463,19 @@ function rejectPointerOperator(node) {
 }
 
 class Evaluator {
-  constructor(state, locate, records, references = {}) {
+  state: Record<string, any>;
+  locate: (item: AstNode) => Span;
+  reductions: Reduction[];
+  records: Record<string, RecordInfo>;
+  references: Record<string, string>;
+  temporary: boolean;
+
+  constructor(
+    state: Record<string, any>,
+    locate: (item: AstNode) => Span,
+    records: Record<string, RecordInfo>,
+    references: Record<string, string> = {}
+  ) {
     this.state = state;
     this.locate = locate;
     this.reductions = [];
@@ -400,11 +484,15 @@ class Evaluator {
     this.temporary = false;
   }
 
-  _reduce(kind, node, details = {}) {
+  _reduce(
+    kind: string,
+    node: AstNode,
+    details: { name?: string | null; value?: any; spelling?: string | null; record?: string | null } = {}
+  ): void {
     this.reductions.push(new Reduction(kind, this.locate(node), details));
   }
 
-  _load(name) {
+  _load(name: string): any {
     const value = load(this.state, name);
     if (value === null || value === undefined) {
       throw new Unsupported(`reading uninitialized variable ${name}`);
@@ -412,9 +500,9 @@ class Evaluator {
     return value;
   }
 
-  variable(node) {
+  variable(node: AstNode): string {
     const declaration = node?.referencedDecl ?? {};
-    const name = declaration.name;
+    const name = declaration.name ?? '';
     if (
       node?.kind === 'DeclRefExpr' &&
       declaration.kind === 'VarDecl' &&
@@ -433,7 +521,7 @@ class Evaluator {
     return name;
   }
 
-  lvalue(node, outer = null) {
+  lvalue(node: AstNode, outer: AstNode | null = null): string {
     const kind = node?.kind;
     const children = node?.inner ?? [];
     if (kind === 'ParenExpr' && children.length === 1) {
@@ -471,7 +559,7 @@ class Evaluator {
     throw new Unsupported(`unsupported assignable expression: ${kind}`);
   }
 
-  rvalue(node) {
+  rvalue(node: AstNode): [any, string | null] {
     const kind = node?.kind;
     const children = node?.inner ?? [];
     if (kind === 'MaterializeTemporaryExpr' && children.length === 1) {
@@ -522,7 +610,7 @@ class Evaluator {
         return [value, null];
       }
       if (kind === 'InitListExpr') {
-        const value = {};
+        const value: Record<string, any> = {};
         const limit = Math.min(record.fields.length, children.length);
         for (let i = 0; i < limit; i++) {
           const item = record.fields[i];
@@ -567,12 +655,12 @@ class Evaluator {
       }
     }
     if (kind === 'IntegerLiteral') {
-      return [integer(BigInt(node.value)), null];
+      return [integer(BigInt(node.value ?? '0')), null];
     }
     if (kind === 'InitListExpr' || kind === 'CXXFunctionalCastExpr') {
       return [this._braces(node, depth), null];
     }
-    let value;
+    let value: any;
     if (kind === 'ParenExpr' && children.length === 1) {
       [value] = this.rvalue(children[0]);
     } else if (kind === 'UnaryOperator' && node.opcode === '&' && children.length === 1) {
@@ -592,12 +680,12 @@ class Evaluator {
       value = integer(node.opcode === '+' ? operand : -operand);
     } else if (
       kind === 'BinaryOperator' &&
-      ['+', '-', '*', '/', '%'].includes(node.opcode) &&
+      ['+', '-', '*', '/', '%'].includes(node.opcode ?? '') &&
       children.length === 2
     ) {
       rejectPointerOperator(node);
       value = Evaluator._arithmetic(
-        node.opcode,
+        node.opcode!,
         this._integerOperand(children[0]),
         this._integerOperand(children[1])
       );
@@ -608,7 +696,7 @@ class Evaluator {
     return [value, null];
   }
 
-  _integerOperand(node) {
+  _integerOperand(node: AstNode): number {
     const [value] = this.rvalue(node);
     if (typeof value !== 'number') {
       throw new Unsupported('pointer arithmetic and comparison are not supported');
@@ -616,9 +704,9 @@ class Evaluator {
     return value;
   }
 
-  _braces(node, depth) {
+  _braces(node: AstNode, depth: number): any {
     const children = node.inner ?? [];
-    let value;
+    let value: any;
     if (node.kind === 'CXXFunctionalCastExpr') {
       if (
         children.length !== 1 ||
@@ -639,7 +727,7 @@ class Evaluator {
     return value;
   }
 
-  static _arithmetic(operation, left, right) {
+  static _arithmetic(operation: string, left: number, right: number): number {
     const l = BigInt(left);
     const r = BigInt(right);
     if (operation === '/' || operation === '%') {
@@ -657,10 +745,10 @@ class Evaluator {
   }
 }
 
-function stripParentheses(node) {
+function stripParentheses(node: AstNode): AstNode {
   let cur = node;
   while (cur?.kind === 'ParenExpr' && (cur.inner ?? []).length === 1) {
-    cur = cur.inner[0];
+    cur = cur.inner![0];
   }
   return cur;
 }
@@ -668,6 +756,23 @@ function stripParentheses(node) {
 // Statements -------------------------------------------------------------------------------
 
 export class Statement {
+  source: string;
+  span: Span | null;
+  pane: string;
+  expr: Span | null;
+  result: Span | null;
+  value: any;
+  reductions: Reduction[];
+  target: string | null;
+  destination: Span | null;
+  declared: string | null;
+  pointer: boolean;
+  record: string | null;
+  output_suffix: string | null;
+  printed: string | null;
+  temporary: boolean;
+  bound: string | null;
+
   constructor({
     source,
     span,
@@ -685,6 +790,23 @@ export class Statement {
     printed = null,
     temporary = false,
     bound = null,
+  }: {
+    source: string;
+    span: Span | null;
+    pane: string;
+    expr?: Span | null;
+    result?: Span | null;
+    value?: any;
+    reductions?: Reduction[];
+    target?: string | null;
+    destination?: Span | null;
+    declared?: string | null;
+    pointer?: boolean;
+    record?: string | null;
+    output_suffix?: string | null;
+    printed?: string | null;
+    temporary?: boolean;
+    bound?: string | null;
   }) {
     this.source = source;
     this.span = span;
@@ -705,7 +827,7 @@ export class Statement {
   }
 }
 
-function paneParts(source, span, emptyInitializer) {
+function paneParts(source: string, span: Span, emptyInitializer: boolean): [string, string] {
   const [start, end] = span;
   let prefix = source.slice(0, start);
   let suffix = source
@@ -724,13 +846,13 @@ function paneParts(source, span, emptyInitializer) {
   return [prefix, suffix];
 }
 
-function coutOperands(node) {
+function coutOperands(node: AstNode): AstNode[] {
   let cur = node;
   while (
     (cur?.kind === 'ImplicitCastExpr' || cur?.kind === 'ExprWithCleanups') &&
     (cur.inner ?? []).length === 1
   ) {
-    cur = cur.inner[0];
+    cur = cur.inner![0];
   }
   if (cur?.kind === 'DeclRefExpr' && cur.referencedDecl?.name === 'cout') {
     return [];
@@ -738,8 +860,8 @@ function coutOperands(node) {
   if (cur?.kind !== 'CXXOperatorCallExpr' || (cur.inner ?? []).length !== 3) {
     throw new Unsupported('only std::cout insertion calls are supported');
   }
-  let [callee, left, right] = cur.inner;
-  while (callee?.kind === 'ImplicitCastExpr' && callee.inner?.length > 0) {
+  let [callee, left, right] = cur.inner!;
+  while (callee?.kind === 'ImplicitCastExpr' && callee.inner && callee.inner.length > 0) {
     callee = callee.inner[0];
   }
   if (callee?.referencedDecl?.name !== 'operator<<') {
@@ -748,21 +870,21 @@ function coutOperands(node) {
   return [...coutOperands(left), right];
 }
 
-function stripCasts(operand) {
+function stripCasts(operand: AstNode): AstNode {
   let cur = operand;
-  while (cur?.kind === 'ImplicitCastExpr' && cur.inner?.length > 0) {
+  while (cur?.kind === 'ImplicitCastExpr' && cur.inner && cur.inner.length > 0) {
     cur = cur.inner[0];
   }
   return cur;
 }
 
-function whitespace(operand) {
+function whitespace(operand: AstNode): string | null {
   const stripped = stripCasts(operand);
   if (stripped?.referencedDecl?.name === 'endl') {
     return '\n';
   }
   if (stripped?.kind === 'CharacterLiteral') {
-    const code = Number.parseInt(stripped.value, 10);
+    const code = Number.parseInt(stripped.value ?? '', 10);
     if (code === 9 || code === 10 || code === 32) {
       return String.fromCharCode(code);
     }
@@ -770,7 +892,7 @@ function whitespace(operand) {
   return null;
 }
 
-function outputSuffix(operands) {
+function outputSuffix(operands: AstNode[]): string {
   let suffix = '';
   for (const operand of operands) {
     const printed = whitespace(operand);
@@ -782,27 +904,33 @@ function outputSuffix(operands) {
   return suffix;
 }
 
-function analyzeStatement(node, program, state, records, references) {
+function analyzeStatement(
+  node: AstNode,
+  program: string,
+  state: Record<string, any>,
+  records: Record<string, RecordInfo>,
+  references: Record<string, string>
+): Statement {
   let cur = node;
   while (cur?.kind === 'ExprWithCleanups' && (cur.inner ?? []).length === 1) {
-    cur = cur.inner[0];
+    cur = cur.inner![0];
   }
   let [start, end] = bounds(cur);
   if (end < program.length && program[end] === ';') {
     end += 1;
   }
   const [source, mapping] = compact(program.slice(start, end));
-  let left = null;
-  let declared = null;
-  let outSuffix = null;
-  let printed = null;
-  let root = null;
-  let nameOffset = null;
+  let left: AstNode | null = null;
+  let declared: string | null = null;
+  let outSuffix: string | null = null;
+  let printed: string | null = null;
+  let root: AstNode | null = null;
+  let nameOffset: number | null = null;
   let whole = false;
   let pointer = false;
   let emptyInitializer = false;
   let reference = false;
-  let record = null;
+  let record: string | null = null;
 
   if (cur.kind === 'DeclStmt') {
     const children = cur.inner ?? [];
@@ -831,8 +959,9 @@ function analyzeStatement(node, program, state, records, references) {
       pointer = _depth(variable, records) > 0;
     }
     record = !pointer && Object.hasOwn(records, typeName(variable)) ? typeName(variable) : null;
-    declared = variable.name;
+    declared = variable.name ?? null;
     if (
+      !declared ||
       declared.startsWith('__course_') ||
       Object.hasOwn(state, declared) ||
       Object.hasOwn(references, declared)
@@ -849,7 +978,7 @@ function analyzeStatement(node, program, state, records, references) {
     const varChildren = variable.inner ?? [];
     root = varChildren.length > 0 ? varChildren[0] : null;
     if (!record && root && root.kind === 'InitListExpr' && (root.inner ?? []).length === 1) {
-      root = root.inner[0];
+      root = root.inner![0];
     }
     while (
       reference &&
@@ -857,7 +986,7 @@ function analyzeStatement(node, program, state, records, references) {
       root.castKind === 'NoOp' &&
       (root.inner ?? []).length === 1
     ) {
-      root = root.inner[0];
+      root = root.inner![0];
     }
     if (
       record &&
@@ -876,17 +1005,17 @@ function analyzeStatement(node, program, state, records, references) {
       });
     }
     if (record && root && root.kind === 'CXXConstructExpr' && (root.inner ?? []).length === 1) {
-      root = root.inner[0];
+      root = root.inner![0];
     }
     emptyInitializer =
-      Boolean(root) && root.kind === 'InitListExpr' && (!root.inner || root.inner.length === 0);
+      Boolean(root) && root!.kind === 'InitListExpr' && (!root!.inner || root!.inner.length === 0);
   } else if (
     (cur.kind === 'BinaryOperator' && cur.opcode === '=') ||
     (cur.kind === 'CXXOperatorCallExpr' &&
       (cur.inner ?? []).length === 3 &&
       Object.hasOwn(records, typeName(cur)))
   ) {
-    const inner = cur.inner;
+    const inner = cur.inner!;
     left = inner[inner.length - 2];
     root = inner[inner.length - 1];
     _depth(left, records);
@@ -913,7 +1042,7 @@ function analyzeStatement(node, program, state, records, references) {
       typeSpelling(root) === 'const void *' &&
       (root.inner ?? []).length === 1
     ) {
-      root = root.inner[0];
+      root = root.inner![0];
     }
   } else {
     throw new Unsupported(`unsupported statement: ${cur.kind}`);
@@ -931,16 +1060,16 @@ function analyzeStatement(node, program, state, records, references) {
   }
 
   const [first, last] = whole ? [start, bounds(cur)[1]] : bounds(root);
-  const span = [mapping[first - start], mapping[last - start]];
+  const span: Span = [mapping[first - start], mapping[last - start]];
   const [prefix, suffix] = paneParts(source, span, emptyInitializer);
   const text = source.slice(span[0], span[1]);
 
-  function toPane(offset) {
+  function toPane(offset: number): number {
     const position = mapping[offset - start];
     return position < span[0] ? position : position - span[0] + prefix.length;
   }
 
-  function locate(item) {
+  function locate(item: AstNode): Span {
     const [b0, b1] = bounds(item);
     return [toPane(b0), toPane(b1)];
   }
@@ -975,13 +1104,13 @@ function analyzeStatement(node, program, state, records, references) {
       reductions: evaluator.reductions,
       declared,
       bound,
-      destination: [toPane(nameOffset), toPane(nameOffset) + declared.length],
+      destination: [toPane(nameOffset!), toPane(nameOffset!) + declared!.length],
     });
   }
 
   let target = declared;
-  let destination = null;
-  let designation = [];
+  let destination: Span | null = null;
+  let designation: Reduction[] = [];
   if (left !== null) {
     target = evaluator.lvalue(left);
     destination = locate(left);
@@ -998,7 +1127,7 @@ function analyzeStatement(node, program, state, records, references) {
   const [value] = evaluator.rvalue(root);
   evaluator.reductions.push(...designation);
   if (declared) {
-    destination = [toPane(nameOffset), toPane(nameOffset) + declared.length];
+    destination = [toPane(nameOffset!), toPane(nameOffset!) + declared.length];
   } else if (left === null && isPlainObject(value)) {
     throw new Unsupported('only integer and pointer output is supported');
   }
@@ -1020,21 +1149,21 @@ function analyzeStatement(node, program, state, records, references) {
   });
 }
 
-function storedAt(value, path, newValue) {
+function storedAt(value: any, path: string[], newValue: any): any {
   if (path.length === 0) {
     return newValue;
   }
   return { ...value, [path[0]]: storedAt(value[path[0]], path.slice(1), newValue) };
 }
 
-export function _after(statement, state) {
+export function _after(statement: Statement, state: Record<string, any>): Record<string, any> {
   if (hooks.after) {
     return hooks.after(statement, state);
   }
   return defaultAfter(statement, state);
 }
 
-export function defaultAfter(statement, state) {
+export function defaultAfter(statement: Statement, state: Record<string, any>): Record<string, any> {
   const after = { ...state };
   if (statement.target !== null) {
     const [owner, ...path] = statement.target.split('.');
@@ -1043,16 +1172,19 @@ export function defaultAfter(statement, state) {
   return after;
 }
 
-function analyze(source, directory) {
+export function analyzeWithFrontend(
+  source: string,
+  frontend: CompilerFrontend
+): [Statement[], Record<string, RecordInfo>] {
   const program =
     '#include <iostream>\n#include <cstdint>\nusing namespace std;\nint main() {\n' +
     source +
     '\n}\n';
-  const ast = _main_ast(program, directory);
-  const records = layouts(ast, directory);
-  const statements = [];
-  let state = {};
-  const references = {};
+  const ast = frontend.mainAst(program);
+  const records = layoutsFromFrontend(ast, program, frontend);
+  const statements: Statement[] = [];
+  let state: Record<string, any> = {};
+  const references: Record<string, string> = {};
   const inner = ast.inner ?? [];
   for (let i = 0; i < inner.length; i++) {
     const node = inner[i];
@@ -1079,7 +1211,7 @@ function analyze(source, directory) {
       throw new Unsupported('too many statements');
     }
     state = _after(statement, state);
-    if (statement.bound) {
+    if (statement.bound && statement.declared) {
       references[statement.declared] = statement.bound;
     }
     if (Object.keys(state).length > MAX_VARIABLES) {
@@ -1094,30 +1226,36 @@ function analyze(source, directory) {
 
 // Memory -----------------------------------------------------------------------------------
 
-function sizeOf(pointer) {
+function sizeOf(pointer: boolean): number {
   return pointer ? POINTER_SIZE : INT_SIZE;
 }
 
-function floorDiv(a, b) {
+function floorDiv(a: number, b: number): number {
   return Math.floor(a / b);
 }
 
-function pyMod(a, b) {
+function pyMod(a: number, b: number): number {
   return ((a % b) + b) % b;
 }
 
-export function _normalize(addresses, sizes) {
+export function _normalize(
+  addresses: Record<string, number>,
+  sizes: Record<string, number>
+): Record<string, number> {
   const alignment = Math.max(...Object.values(sizes));
   const lowest = Math.min(...Object.values(addresses));
   const base = lowest - pyMod(lowest, alignment);
-  const result = {};
+  const result: Record<string, number> = {};
   for (const [name, address] of Object.entries(addresses)) {
     result[name] = FIRST_ADDRESS + address - base;
   }
   return result;
 }
 
-function withoutReferenceSlots(real, variables) {
+function withoutReferenceSlots(
+  real: Record<string, number>,
+  variables: TraceVariable[]
+): Record<string, number> {
   const packed = storageAddresses(variables);
   const names = variables.map(v => v.name);
   const sortedReal = [...names].sort((a, b) => real[a] - real[b]);
@@ -1129,12 +1267,12 @@ function withoutReferenceSlots(real, variables) {
 }
 
 export function _observed(
-  execution,
-  predicted,
-  pointers = new Set(),
-  variables = null,
-  references = null
-) {
+  execution: Execution,
+  predicted: Record<string, any>[],
+  pointers: Iterable<string> = new Set(),
+  variables: TraceVariable[] | null = null,
+  references: Record<string, string> | null = null
+): [Record<string, number>, Record<string, any>[]] {
   const ptrSet = pointers instanceof Set ? pointers : new Set(pointers);
   if (variables === null) {
     variables = Object.keys(predicted[predicted.length - 1]).map(name =>
@@ -1142,7 +1280,7 @@ export function _observed(
     );
   }
   const cells = leaves(variables);
-  const addresses = {};
+  const addresses: Record<string, number> = {};
   const owners = Object.fromEntries(variables.map(v => [v.name, v]));
   const offsets = storageAddresses(variables);
   const bindings = execution.checkpoints.map(row =>
@@ -1166,7 +1304,7 @@ export function _observed(
       const member = dot === -1 ? '' : name.slice(dot + 1);
       if (member) {
         const offset = offsets[name] - offsets[owner];
-        const base = cell.object_address;
+        const base = cell.object_address!;
         if (!Object.hasOwn(addresses, owner)) {
           addresses[owner] = base;
         }
@@ -1223,18 +1361,21 @@ export function _observed(
 
 // Rendering --------------------------------------------------------------------------------
 
-function spaceless(text) {
+function spaceless(text: string): string {
   return text.replace(/\s+/g, '');
 }
 
 class Pane {
-  constructor(text) {
+  original: string;
+  edits: [number, number, string][];
+
+  constructor(text: string) {
     this.original = text;
     this.edits = []; // [start, end, text] in original coordinates
   }
 
-  get text() {
-    const parts = [];
+  get text(): string {
+    const parts: string[] = [];
     let cursor = 0;
     for (const [start, end, newText] of this.edits) {
       parts.push(this.original.slice(cursor, start), newText);
@@ -1243,8 +1384,8 @@ class Pane {
     return parts.join('') + this.original.slice(cursor);
   }
 
-  locate(start, end) {
-    const shift = at => {
+  locate(start: number, end: number): Span {
+    const shift = (at: number): number => {
       let delta = 0;
       for (const [begin, finish, newText] of this.edits) {
         if (finish <= at) {
@@ -1256,12 +1397,12 @@ class Pane {
     return [shift(start), shift(end)];
   }
 
-  read(start, end) {
+  read(start: number, end: number): string {
     const [first, last] = this.locate(start, end);
     return this.text.slice(first, last);
   }
 
-  replace(start, end, newText) {
+  replace(start: number, end: number, newText: string): Span {
     const span = this.locate(start, end);
     const filtered = this.edits.filter(edit => !(start <= edit[0] && edit[1] <= end));
     filtered.push([start, end, newText]);
@@ -1271,7 +1412,7 @@ class Pane {
   }
 }
 
-function valuesEqual(a, b) {
+function valuesEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (a instanceof Pointer && b instanceof Pointer) {
     return a.target === b.target;
@@ -1285,7 +1426,20 @@ function valuesEqual(a, b) {
 }
 
 class Renderer {
-  constructor(addresses, cells = null, real = null, hasReferences = false) {
+  addresses: Record<string, number>;
+  refs: Record<string, string> | null;
+  order: string[];
+  steps: TraceStep[];
+  stdout: string;
+  real: Record<string, number>;
+  realStdout: string;
+
+  constructor(
+    addresses: Record<string, number>,
+    cells: Record<string, unknown> | null = null,
+    real: Record<string, number> | null = null,
+    hasReferences = false
+  ) {
     this.addresses = addresses;
     this.refs = hasReferences ? {} : null;
     const keys = Object.keys(cells ?? addresses);
@@ -1296,7 +1450,7 @@ class Renderer {
     this.realStdout = '';
   }
 
-  printed(pointer, addresses) {
+  printed(pointer: Pointer, addresses: Record<string, number>): string {
     if (pointer.target === null) {
       return '0';
     }
@@ -1307,7 +1461,7 @@ class Renderer {
     return `0x${address.toString(16).padStart(16, '0')}`;
   }
 
-  show(value) {
+  show(value: any): string {
     if (isPlainObject(value)) {
       return `{${Object.values(value)
         .map(item => this.show(item))
@@ -1316,16 +1470,23 @@ class Renderer {
     return String(this.stored(value));
   }
 
-  stored(value) {
+  stored(value: any): number {
     if (value instanceof Pointer) {
       return value.target ? this.addresses[value.target] : 0;
     }
     return value;
   }
 
-  add(line, pane, expr, state, op = null, hold = 1.0) {
+  add(
+    line: number,
+    pane: Pane,
+    expr: Span | null,
+    state: Record<string, any>,
+    op: any = null,
+    hold = 1.0
+  ): void {
     const flat = _flatten(state);
-    const values = {};
+    const values: Record<string, StoredCellValue> = {};
     for (const name of this.order) {
       values[name] = !Object.hasOwn(flat, name)
         ? null
@@ -1333,13 +1494,13 @@ class Renderer {
           ? UNKNOWN
           : this.stored(flat[name]);
     }
-    const targets = {};
+    const targets: Record<string, string> = {};
     for (const [name, value] of Object.entries(flat)) {
       if (value instanceof Pointer && value.target) {
         targets[name] = value.target;
       }
     }
-    const step = {
+    const step: TraceStep = {
       line,
       pane: pane.text,
       op,
@@ -1357,25 +1518,30 @@ class Renderer {
     this.steps.push(step);
   }
 
-  statement(line, statement, before, after) {
+  statement(
+    line: number,
+    statement: Statement,
+    before: Record<string, any>,
+    after: Record<string, any>
+  ): void {
     const pane = new Pane(statement.pane);
     const expr = statement.expr;
     const writes = statement.target !== null && statement.result !== null;
     this.add(line, pane, expr, writes ? before : after);
     for (const reduction of statement.reductions) {
-      let text;
-      let op;
+      let text: string;
+      let op: Record<string, any>;
       if (reduction.kind === 'read') {
-        text = (reduction.record ?? '') + this.show(load(before, reduction.name));
+        text = (reduction.record ?? '') + this.show(load(before, reduction.name!));
         op = { kind: 'read', name: reduction.name, value: text };
       } else if (reduction.kind === 'addr') {
-        text = String(this.addresses[reduction.name]);
+        text = String(this.addresses[reduction.name!]);
         op = { kind: 'addr', name: reduction.name, value: text };
       } else if (reduction.kind === 'alias') {
-        text = reduction.spelling;
+        text = reduction.spelling!;
         op = { kind: 'alias', name: reduction.name, target: text };
       } else if (reduction.kind === 'deref') {
-        text = (reduction.value ?? load(before, reduction.name)).target;
+        text = (reduction.value ?? load(before, reduction.name!)).target;
         op = { kind: 'deref', target: text, via: reduction.name };
       } else {
         text = reduction.spelling ?? (reduction.record ?? '') + this.show(reduction.value);
@@ -1395,10 +1561,10 @@ class Renderer {
     if (statement.result === null) {
       return;
     }
-    if (statement.bound) {
-      this.refs[statement.declared] = statement.bound;
+    if (statement.bound && statement.declared && statement.destination) {
+      this.refs![statement.declared] = statement.bound;
       const op = {
-        kind: 'bind',
+        kind: 'bind' as const,
         name: statement.declared,
         target: statement.bound,
         span: pane.locate(statement.result[0], statement.result[1]),
@@ -1412,7 +1578,7 @@ class Renderer {
       pane.read(statement.result[0], statement.result[1]) !== String(statement.value)
     ) {
       const op = {
-        kind: 'eval',
+        kind: 'eval' as const,
         value: String(statement.value),
         span: pane.replace(statement.result[0], statement.result[1], String(statement.value)),
       };
@@ -1428,7 +1594,7 @@ class Renderer {
       real = this.printed(statement.value, this.real);
       if (pane.read(statement.result[0], statement.result[1]) !== text) {
         const op = {
-          kind: 'eval',
+          kind: 'eval' as const,
           value: text,
           span: pane.replace(statement.result[0], statement.result[1], text),
         };
@@ -1442,14 +1608,14 @@ class Renderer {
       this.add(line, pane, expr, after, { kind: 'print', value: text, span }, 1.2);
       return;
     }
-    const name = statement.target;
-    const old = load(before, statement.target, true);
+    const name = statement.target!;
+    const old = load(before, name, true);
     const op = {
-      kind: 'write',
+      kind: 'write' as const,
       name,
       value: text,
       span,
-      destination: pane.locate(statement.destination[0], statement.destination[1]),
+      destination: pane.locate(statement.destination![0], statement.destination![1]),
     };
     const redirected =
       old instanceof Pointer && Boolean(old.target) && !valuesEqual(old, load(after, name));
@@ -1457,114 +1623,115 @@ class Renderer {
   }
 }
 
-export function trace(source, { runtime = true } = {}) {
-  const body = _body(source);
-  const directory = mkdtempSync(join(tmpdir(), 'course-expression-'));
-  let statements;
-  let records;
-  let variables;
-  let references;
-  let addresses;
-  let states;
-  let real;
-  let execution;
-  try {
-    [statements, records] = analyze(body, directory);
-    const predicted = [];
-    let state = {};
-    for (const statement of statements) {
-      state = _after(statement, state);
-      predicted.push(state);
-    }
-    const declarations = statements.filter(s => s.declared);
-    variables = [];
-    references = {};
-    let top = -8;
-    const fieldColors = {};
-    for (let color = 0; color < declarations.length; color++) {
-      const declaration = declarations[color];
-      const name = declaration.declared;
-      if (declaration.bound) {
-        references[name] = traceReference(name, color);
-        continue;
-      }
-      const record = records[declaration.record];
-      const size = record ? record.size : sizeOf(declaration.pointer);
-      const alignment = record ? record.alignment : size;
-      top = floorDiv(top - size, alignment) * alignment;
-      if (record) {
-        const fieldsOf = rec => {
-          const flds = [];
-          for (const item of rec.fields) {
-            if (!Object.hasOwn(fieldColors, item.name)) {
-              fieldColors[item.name] = Object.keys(fieldColors).length;
-            }
-            const shade = fieldColors[item.name];
-            if (item.kind === 'struct') {
-              flds.push(
-                structField(
-                  item.name,
-                  item.type,
-                  item.offset,
-                  item.size,
-                  fieldsOf(records[item.type]),
-                  shade
-                )
-              );
-            } else {
-              flds.push(traceField(item.name, item.offset, item.size, item.kind, shade));
-            }
-          }
-          return flds;
-        };
-        variables.push(struct(name, record.name, top, size, fieldsOf(record), color));
-      } else {
-        variables.push(scalar(name, top, size, declaration.pointer ? 'ptr' : 'int', color));
-      }
-    }
-    if (runtime) {
-      const scopes = [];
-      const bound = {};
-      for (let i = 0; i < statements.length; i++) {
-        const statement = statements[i];
-        const row = predicted[i];
-        if (statement.bound) {
-          bound[statement.declared] = statement.bound;
-        }
-        scopes.push([
-          ...Object.entries(_flatten(row)).map(([name, value]) => [name, value !== null]),
-          ...Object.keys(bound).map(name => [name, REFERENCE]),
-        ]);
-      }
-      execution = hooks.execute(
-        statements.map(s => s.source),
-        scopes,
-        directory
-      );
-      [addresses, states] = _observed(execution, predicted, new Set(), variables, bound);
-    } else {
-      addresses = storageAddresses(variables);
-      states = predicted;
-    }
-    real = addresses;
-    if (Object.keys(references).length > 0) {
-      addresses = withoutReferenceSlots(addresses, variables);
-    }
-    const alignment = Math.max(
-      ...Object.values(records).map(r => r.alignment),
-      ...declarations.filter(d => !d.record && !d.bound).map(d => sizeOf(d.pointer)),
-      4
-    );
-    addresses = _normalize(addresses, { ABI: alignment });
-    for (const variable of variables) {
-      variable.address = addresses[variable.name];
-    }
-    variables.sort((a, b) => a.address - b.address);
-  } finally {
-    rmSync(directory, { recursive: true, force: true });
-  }
+export interface TraceOptions {
+  runtime?: boolean;
+  frontend: CompilerFrontend;
+  executor?: RuntimeExecutor | null;
+  directory?: string;
+}
 
-  const shown = [];
+export function traceWithFrontend(source: string, options: TraceOptions): ExecutionTrace {
+  const { runtime = true, frontend, executor = hooks.execute, directory } = options;
+  const body = _body(source);
+  const [statements, records] = analyzeWithFrontend(body, frontend);
+  const predicted: Record<string, any>[] = [];
+  let state: Record<string, any> = {};
+  for (const statement of statements) {
+    state = _after(statement, state);
+    predicted.push(state);
+  }
+  const declarations = statements.filter(s => s.declared);
+  const variables: TraceVariable[] = [];
+  const references: Record<string, TraceReference> = {};
+  let top = -8;
+  const fieldColors: Record<string, number> = {};
+  for (let color = 0; color < declarations.length; color++) {
+    const declaration = declarations[color];
+    const name = declaration.declared!;
+    if (declaration.bound) {
+      references[name] = traceReference(name, color);
+      continue;
+    }
+    const record = declaration.record ? records[declaration.record] : undefined;
+    const size = record ? record.size : sizeOf(declaration.pointer);
+    const alignment = record ? record.alignment : size;
+    top = floorDiv(top - size, alignment) * alignment;
+    if (record) {
+      const fieldsOf = (rec: RecordInfo): TraceField[] => {
+        const flds: TraceField[] = [];
+        for (const item of rec.fields) {
+          if (!Object.hasOwn(fieldColors, item.name)) {
+            fieldColors[item.name] = Object.keys(fieldColors).length;
+          }
+          const shade = fieldColors[item.name];
+          if (item.kind === 'struct') {
+            flds.push(
+              structField(
+                item.name,
+                item.type!,
+                item.offset,
+                item.size,
+                fieldsOf(records[item.type!]),
+                shade
+              )
+            );
+          } else {
+            flds.push(traceField(item.name, item.offset, item.size, item.kind, shade));
+          }
+        }
+        return flds;
+      };
+      variables.push(struct(name, record.name, top, size, fieldsOf(record), color));
+    } else {
+      variables.push(scalar(name, top, size, declaration.pointer ? 'ptr' : 'int', color));
+    }
+  }
+  let addresses: Record<string, number>;
+  let states: Record<string, any>[];
+  let execution: Execution | null = null;
+  if (runtime) {
+    if (!executor) {
+      throw new Unsupported('runtime executor is required when runtime=true');
+    }
+    const scopes: ScopeEntry[][] = [];
+    const bound: Record<string, string> = {};
+    for (let i = 0; i < statements.length; i++) {
+      const statement = statements[i];
+      const row = predicted[i];
+      if (statement.bound && statement.declared) {
+        bound[statement.declared] = statement.bound;
+      }
+      scopes.push([
+        ...Object.entries(_flatten(row)).map(([name, value]): ScopeEntry => [name, value !== null]),
+        ...Object.keys(bound).map((name): ScopeEntry => [name, REFERENCE]),
+      ]);
+    }
+    execution = executor(
+      statements.map(s => s.source),
+      scopes,
+      directory
+    );
+    [addresses, states] = _observed(execution, predicted, new Set(), variables, bound);
+  } else {
+    addresses = storageAddresses(variables);
+    states = predicted;
+  }
+  const real = addresses;
+  if (Object.keys(references).length > 0) {
+    addresses = withoutReferenceSlots(addresses, variables);
+  }
+  const alignment = Math.max(
+    ...Object.values(records).map(r => r.alignment),
+    ...declarations.filter(d => !d.record && !d.bound).map(d => sizeOf(d.pointer)),
+    4
+  );
+  addresses = _normalize(addresses, { ABI: alignment });
+  for (const variable of variables) {
+    variable.address = addresses[variable.name];
+  }
+  variables.sort((a, b) => a.address - b.address);
+
+  const shown: [Statement, Record<string, any>][] = [];
   for (let i = 0; i < statements.length; i++) {
     if (!DEFINITION.test(statements[i].source)) {
       shown.push([statements[i], states[i]]);
@@ -1575,21 +1742,21 @@ export function trace(source, { runtime = true } = {}) {
   }
   const hasRefs = Object.keys(references).length > 0;
   const renderer = new Renderer(addresses, leaves(variables), real, hasRefs);
-  let previous = {};
+  let previous: Record<string, any> = {};
   for (let line = 0; line < shown.length; line++) {
     const [statement, after] = shown[line];
     renderer.statement(line, statement, previous, after);
     previous = after;
   }
-  if (runtime && renderer.realStdout !== execution.stdout) {
+  if (runtime && execution && renderer.realStdout !== execution.stdout) {
     throw new Unsupported('runtime output disagrees with the expression trace');
   }
   renderer.steps[renderer.steps.length - 1].hold = 3;
   const shownStatements = shown.map(([s]) => s);
-  const result = {
+  const result: ExecutionTrace = {
     format: FORMAT,
     source: shownStatements.map(s => s.source),
-    spans: shownStatements.map(s => (s.span ? [...s.span] : null)),
+    spans: shownStatements.map(s => (s.span ? ([...s.span] as Span) : null)),
     variables,
     steps: renderer.steps,
   };

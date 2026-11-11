@@ -6,12 +6,12 @@ import { dirname, join } from 'node:path';
 import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { Cell } from '../execution.mjs';
-import * as generate from '../generate.mjs';
-import { dumpsSorted } from '../json_format.mjs';
-import { validate } from '../trace_format.mjs';
-import * as tracing from '../tracing.mjs';
-import { Unsupported } from '../tracing.mjs';
+import { dumpsSorted } from '../src/core/json_format.ts';
+import { type ExecutionTrace, validate } from '../src/core/trace_format.ts';
+import { Cell } from '../src/node/execution.ts';
+import * as generate from '../src/node/generate.ts';
+import * as tracing from '../src/node/tracing.ts';
+import { Unsupported } from '../src/node/tracing.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -39,6 +39,8 @@ describe('StructTests', () => {
     assert.equal(last.stdout, '3');
     const variables = Object.fromEntries(result.variables.map(v => [v.name, v]));
     assert.equal(variables.s.size, 24);
+    assert.equal(variables.s.kind, 'struct');
+    assert.equal(variables.t.kind, 'struct');
     assert.deepEqual(
       variables.s.fields.map(f => f.offset),
       [0, 8, 16]
@@ -100,39 +102,39 @@ p->next->x=9; c=*p; (*p).x=7; std::cout << a.x;`;
       try {
         const path = join(temporary, 'source.cpp');
         writeFileSync(path, source);
-        const results = {};
+        let probeResult: { supported: boolean; reason: string } | null = null;
+        let traceResult = '';
         const original = tracing.hooks.execute;
-        for (const operation of ['probe', 'trace']) {
+        for (const operation of ['probe', 'trace'] as const) {
           let stdout = '';
           let stderr = '';
           let called = false;
           tracing.hooks.execute = () => {
             called = true;
+            throw new Error('unreachable');
           };
-          let status;
+          let status: number;
           try {
-            status = generate.main(
-              [operation, '--source', path],
-              {
-                stdout: { write: s => (stdout += s) },
-                stderr: { write: s => (stderr += s) },
-              }
-            );
+            status = generate.main([operation, '--source', path], {
+              stdout: { write: s => (stdout += s) },
+              stderr: { write: s => (stderr += s) },
+            });
           } finally {
             tracing.hooks.execute = original;
           }
           assert.equal(called, false);
           if (operation === 'probe') {
             assert.equal(status, 0);
-            results[operation] = JSON.parse(stdout);
+            probeResult = JSON.parse(stdout) as { supported: boolean; reason: string };
           } else {
             assert.equal(status, 1);
-            results[operation] = stderr.trim();
+            traceResult = stderr.trim();
           }
         }
-        assert.equal(results.probe.supported, false);
-        assert.match(results.probe.reason, /materialized temporary/);
-        assert.equal(results.trace, 'unsupported: ' + results.probe.reason);
+        assert.ok(probeResult !== null);
+        assert.equal(probeResult.supported, false);
+        assert.match(probeResult.reason, /materialized temporary/);
+        assert.equal(traceResult, 'unsupported: ' + probeResult.reason);
       } finally {
         rmSync(temporary, { recursive: true, force: true });
       }
@@ -147,7 +149,7 @@ p->next->x=9; c=*p; (*p).x=7; std::cout << a.x;`;
     assert.equal(result.steps[result.steps.length - 1].stdout, '4');
     const writes = result.steps
       .filter(step => (step.line === 3 || step.line === 4) && step.op)
-      .map(step => step.op);
+      .map(step => step.op!);
     assert.deepEqual(
       writes.map(op => op.kind),
       ['write', 'read', 'deref', 'write']
@@ -173,7 +175,8 @@ c=b.n; b.n={5, 6}; std::cout << c.g;`;
       { 'a.n.f': 4, 'a.n.g': 0, 'a.f': 0, 'b.n.f': 5, 'b.n.g': 6, 'c.f': 2, 'c.g': 9 }
     );
     assert.deepEqual(last.targets, { 'a.p': 'v', 'b.p': 'v', q: 'b.n', r: 'a.n.f' });
-    const a = result.variables.find(v => v.name === 'a');
+    const a = result.variables.find(v => v.name === 'a')!;
+    assert.equal(a.kind, 'struct');
     assert.deepEqual(
       a.fields.map(f => [f.name, f.kind, f.offset, f.size]),
       [
@@ -182,9 +185,11 @@ c=b.n; b.n={5, 6}; std::cout << c.g;`;
         ['f', 'int', 16, 4],
       ]
     );
-    assert.equal(a.fields[1].type, 'N');
+    const nField = a.fields[1];
+    assert.equal(nField.kind, 'struct');
+    assert.equal(nField.type, 'N');
     assert.deepEqual(
-      a.fields[1].fields.map(f => f.name),
+      nField.fields.map(f => f.name),
       ['f', 'g']
     );
     const first = result.steps.filter(step => step.line === 1).map(step => step.pane);
@@ -193,9 +198,13 @@ c=b.n; b.n={5, 6}; std::cout << c.g;`;
       `A a{ .p = ${last.values['a.p']}, .n = { .f = 2 } }`,
     ]);
     assert.equal(first[2], `A a{${last.values['a.p']}, {2, 0}, 0}`);
-    const copy = result.steps.filter(step => step.line === 8 && step.op).map(step => step.op);
+    const copy = result.steps.filter(step => step.line === 8 && step.op).map(step => step.op!);
     assert.deepEqual(
-      copy.map(op => [op.kind, op.name, op.value]),
+      copy.map(op => [
+        op.kind,
+        'name' in op ? op.name : null,
+        'value' in op ? op.value : null,
+      ]),
       [
         ['read', 'b.n', 'N{2, 9}'],
         ['write', 'c', 'N{2, 9}'],
@@ -269,7 +278,7 @@ c=b.n; b.n={5, 6}; std::cout << c.g;`;
   });
 
   test('unsupported_definitions_and_reads_never_execute', () => {
-    const cases = {
+    const cases: Record<string, RegExp> = {
       'struct S {double x;}; S s{};': /unsupported field type double/,
       'struct S {int x[2];}; S s{};': /unsupported field type int/,
       'struct S {int x:2;}; S s{};': /bitfields/,
@@ -287,11 +296,12 @@ c=b.n; b.n={5, 6}; std::cout << c.g;`;
       let called = false;
       tracing.hooks.execute = () => {
         called = true;
+        throw new Error('unreachable');
       };
       try {
         assert.throws(
           () => tracing.trace(source),
-          err => err instanceof Unsupported && reason.test(err.message)
+          (err: unknown) => err instanceof Unsupported && reason.test(err.message)
         );
         assert.equal(called, false);
       } finally {
@@ -302,13 +312,13 @@ c=b.n; b.n={5, 6}; std::cout << c.g;`;
 
   test('generated_browser_fixture_is_current', () => {
     const path = join(HERE, 'fixtures', 'struct-generated.json');
-    const fixture = JSON.parse(readFileSync(path, 'utf8'));
+    const fixture = JSON.parse(readFileSync(path, 'utf8')) as ExecutionTrace;
     const source = [...Object.values(fixture.types ?? {}), ...fixture.source].join('\n');
     assert.deepEqual(tracing.trace(source), fixture);
   });
 
   test('unchanged_field_mismatch_is_fatal', () => {
-    const original = tracing.hooks.execute;
+    const original = tracing.hooks.execute!;
     tracing.hooks.execute = (...args) => {
       const execution = original(...args);
       const last = execution.checkpoints[execution.checkpoints.length - 1];
@@ -318,7 +328,7 @@ c=b.n; b.n={5, 6}; std::cout << c.g;`;
     try {
       assert.throws(
         () => tracing.trace('struct S {int x; int y;}; S s{1,2}; s.y=3;'),
-        err => err instanceof Unsupported && /s\.x disagrees/.test(err.message)
+        (err: unknown) => err instanceof Unsupported && /s\.x disagrees/.test(err.message)
       );
     } finally {
       tracing.hooks.execute = original;

@@ -14,19 +14,20 @@ git submodule add https://github.com/AntonC9018/cpp-visualizations visualization
 The commands below are written from this repository's root;
 from a host repository, prefix the paths with `visualizations/`.
 
+- `src/core/` holds the isomorphic TypeScript tracer and trace format (`errors.ts`,
+  `json_format.ts`, `trace_format.ts`, `records.ts`, `layout.ts`, `tracing.ts`), decoupled from
+  Node APIs so the same AST and layout logic can run in Node or a browser Web Worker.
+- `src/node/` holds the Node toolchain, GDB runtime verification, and CLI implementations
+  (`toolchain.ts`, `execution.ts`, `records.ts`, `layout.ts`, `tracing.ts`, `generate.ts`,
+  `discover.ts`, `fixtures.ts`, `demo.ts`).
+- `src/player/` holds the modular TypeScript browser player (`constants.ts`, `svg.ts`,
+  `model.ts`, `geometry.ts`, `scene.ts`, `player_view.ts`, `layout_view.ts`, `index.ts`), bundled
+  by Vite into `player/player.js`.
 - `discover.mjs` lists the lesson examples the tracer supports and tags the ones chosen by hand.
-- `tracing.mjs` uses Clang AST types and ranges to emit unified integer, pointer and struct traces.
-- `records.mjs` validates aggregate definitions and reads field offsets, sizes and alignment
-  from Clang.
-- `execution.mjs` runs whitelisted statements under GDB and observes every post-statement state.
-- `toolchain.mjs` selects compiler/debugger executables and bounds tool execution.
-- `trace_format.mjs` defines and validates the unified format and builds manual traces.
-- `json_format.mjs` formats deterministic sorted-key JSON output.
 - `generate.mjs` is the command line maintenance uses: `trace`, `probe` and `revision`.
-- `player/` holds the site engine (`player.js`, `player.css`), the manual pointer and struct
+- `player/` holds the bundled site engine (`player.js`, `player.css`), the manual pointer and struct
   fixtures, and a local demo. [`player/README.md`](player/README.md) documents the engine and
   the format.
-- `layout.mjs` emits the static struct-layout view from [#62], replacing its prototype.
 
 [course]: https://github.com/AntonC9018/uniCourse_dataStructuresAndAlgorithms
 [course maintenance]: https://github.com/AntonC9018/course_maintenance
@@ -136,11 +137,14 @@ The default shell (`nix develop`) adds Chromium for headless screenshots of the 
 nix develop .#visualizations --command npm run test:tracer
 ```
 
-The player's browser tests run headless Chromium through Playwright, in the default shell:
+The player's browser tests, TypeScript typecheck, and Vite bundle build run in the default shell:
 
 ```sh
 nix develop --command npm ci
+nix develop --command npm run typecheck
+nix develop --command npm run build
 nix develop --command npm run test:player
+nix develop --command npm run dev
 ```
 
 ## Interactivity in Markdown

@@ -5,38 +5,16 @@
 // bits); the tracer interprets and verifies them. Nothing here decides what is supported.
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { Unsupported, run, tool } from './toolchain.mjs';
+import {
+  Cell,
+  type CellInput,
+  Execution,
+  REFERENCE,
+  type ScopeEntry,
+} from '../core/tracing.ts';
+import { Unsupported, run, tool } from './toolchain.ts';
 
-export class Cell {
-  constructor({
-    address,
-    size,
-    pointer,
-    value,
-    object_address = null,
-    object_size = null,
-    reference = false,
-  }) {
-    this.address = address;
-    this.size = size;
-    this.pointer = pointer;
-    this.value = value;
-    this.object_address = object_address;
-    this.object_size = object_size;
-    this.reference = reference;
-    Object.freeze(this);
-  }
-}
-
-export const REFERENCE = 'reference';
-
-export class Execution {
-  constructor(checkpoints, stdout) {
-    this.checkpoints = checkpoints;
-    this.stdout = stdout;
-    Object.freeze(this);
-  }
-}
+export { Cell, Execution, REFERENCE };
 
 const PROGRAM = `#include <iostream>
 #include <cstdint>
@@ -90,8 +68,18 @@ with open(report, "w") as handle:
     json.dump({"records": records, "failures": failures, "exits": exits}, handle)
 `;
 
-export function execute(statements, expected, directory) {
-  const body = [];
+interface GdbObservedReport {
+  records: Array<{ position: number; variables: Record<string, CellInput> }>;
+  failures: string[];
+  exits: Array<number | null>;
+}
+
+export function execute(
+  statements: string[],
+  expected: ScopeEntry[][],
+  directory = '.'
+): Execution {
+  const body: string[] = [];
   for (let index = 0; index < statements.length; index++) {
     const statement = statements[index];
     const scope = expected[index];
@@ -138,7 +126,7 @@ export function execute(statements, expected, directory) {
   if (result.returncode || !existsSync(report)) {
     throw new Unsupported('GDB could not collect the runtime trace');
   }
-  const observed = JSON.parse(readFileSync(report, 'utf8'));
+  const observed = JSON.parse(readFileSync(report, 'utf8')) as GdbObservedReport;
   const records = observed.records;
   if (
     observed.failures.length > 0 ||

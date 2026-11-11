@@ -1,10 +1,23 @@
-// Clang-backed aggregate record validation and layout extraction.
-import { writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { Unsupported, run, tool } from './toolchain.mjs';
+// Clang-backed aggregate record validation and layout extraction (isomorphic core).
 
-export class Record {
-  constructor(name, size, alignment, fields) {
+import { type AstNode, type CompilerFrontend, Unsupported } from './errors.ts';
+import type { ScalarKind } from './trace_format.ts';
+
+export interface RecordFieldInfo {
+  name: string;
+  offset: number;
+  kind: ScalarKind | 'struct';
+  type?: string;
+  size: number;
+}
+
+class RecordLayout {
+  name: string;
+  size: number;
+  alignment: number;
+  fields: RecordFieldInfo[];
+
+  constructor(name: string, size: number, alignment: number, fields: RecordFieldInfo[]) {
     this.name = name;
     this.size = size;
     this.alignment = alignment;
@@ -13,16 +26,18 @@ export class Record {
   }
 }
 
-export function typeSpelling(node) {
+export { RecordLayout as Record };
+
+export function typeSpelling(node: AstNode | null | undefined): string {
   const qualified = node?.type?.qualType ?? '';
   return qualified.replace(/^(const )?struct /, '$1');
 }
 
-export function typeName(node) {
+export function typeName(node: AstNode | null | undefined): string {
   return typeSpelling(node).replace(/^const /, '');
 }
 
-export function canonicalType(node) {
+export function canonicalType(node: AstNode | null | undefined): string {
   const qualified = node?.type ?? {};
   return qualified.desugaredQualType ?? qualified.qualType ?? '';
 }
@@ -46,12 +61,41 @@ const BUILTIN_INTEGERS = [
   'unsigned long long',
 ];
 
-function isPointer(node) {
+function isPointer(node: AstNode): boolean {
   return canonicalType(node).endsWith('*');
 }
 
-export function layouts(ast, directory, { layoutOnly = false } = {}) {
-  const definitions = {};
+export function extractEnumConstantSizes(tree: AstNode, types: string[]): Record<string, number> {
+  const enumValues: Record<string, number> = {};
+  function constant(item: AstNode): number {
+    if (item.kind === 'ConstantExpr') {
+      return Number.parseInt(item.value ?? '0', 10);
+    }
+    return constant(item.inner![0]);
+  }
+  function walkTree(node: AstNode): void {
+    if (node.kind === 'EnumConstantDecl' && node.name) {
+      enumValues[node.name] = constant(node);
+    }
+    for (const child of node.inner ?? []) {
+      walkTree(child);
+    }
+  }
+  walkTree(tree);
+  const result: Record<string, number> = {};
+  for (let i = 0; i < types.length; i++) {
+    result[types[i]] = enumValues[`__course_${i}`];
+  }
+  return result;
+}
+
+export function layoutsFromFrontend(
+  ast: AstNode,
+  program: string,
+  frontend: CompilerFrontend,
+  { layoutOnly = false }: { layoutOnly?: boolean } = {}
+): Record<string, RecordLayout> {
+  const definitions: Record<string, AstNode> = {};
   for (const statement of ast?.inner ?? []) {
     const inner = statement?.kind === 'DeclStmt' ? (statement.inner ?? []) : [];
     for (const node of inner) {
@@ -71,7 +115,7 @@ export function layouts(ast, directory, { layoutOnly = false } = {}) {
     if (node.tagUsed !== 'struct' || (node.bases && node.bases.length > 0)) {
       throw new Unsupported('only plain aggregate structs without inheritance are supported');
     }
-    const fields = [];
+    const fields: AstNode[] = [];
     for (const child of node.inner ?? []) {
       if (child.isImplicit) continue;
       if (child.kind !== 'FieldDecl') {
@@ -99,20 +143,10 @@ export function layouts(ast, directory, { layoutOnly = false } = {}) {
     }
   }
 
-  const result = run([
-    tool('CLANGXX', 'clang++'),
-    '-std=c++20',
-    '-fsyntax-only',
-    '-Xclang',
-    '-fdump-record-layouts-complete',
-    join(directory, 'source.cpp'),
-  ]);
-  if (result.returncode) {
-    throw new Unsupported('Clang could not obtain struct layouts');
-  }
-  const records = {};
-  const canonicals = {};
-  for (const block of result.stdout.split('*** Dumping AST Record Layout')) {
+  const dumpOutput = frontend.recordLayoutsDump(program);
+  const records: Record<string, RecordLayout> = {};
+  const canonicals: Record<string, (string | null)[]> = {};
+  for (const block of dumpOutput.split('*** Dumping AST Record Layout')) {
     const header = /^\s*0 \| struct (\w+)\s*$/m.exec(block);
     if (!header || !Object.hasOwn(definitions, header[1])) continue;
     const name = header[1];
@@ -126,18 +160,19 @@ export function layouts(ast, directory, { layoutOnly = false } = {}) {
     ) {
       throw new Unsupported(`Clang returned an incomplete layout for ${name}`);
     }
-    const fields = [];
-    const recordCanonicals = [];
+    const fields: RecordFieldInfo[] = [];
+    const recordCanonicals: (string | null)[] = [];
     for (let i = 0; i < rows.length; i++) {
       const offset = Number.parseInt(rows[i][1], 10);
       const member = rows[i][3];
       const node = nodes[i];
       const spelling = typeSpelling(node);
       const nested = !layoutOnly && Object.hasOwn(definitions, spelling) ? spelling : null;
-      const item = {
+      const item: RecordFieldInfo = {
         name: member,
         offset,
         kind: nested ? 'struct' : isPointer(node) ? 'ptr' : 'int',
+        size: 0,
       };
       if (layoutOnly || nested) {
         item.type = spelling;
@@ -147,7 +182,7 @@ export function layouts(ast, directory, { layoutOnly = false } = {}) {
         item.kind === 'struct' ? null : isPointer(node) ? 'void *' : canonicalType(node)
       );
     }
-    records[name] = new Record(
+    records[name] = new RecordLayout(
       name,
       Number.parseInt(sizes[1], 10),
       Number.parseInt(sizes[2], 10),
@@ -166,42 +201,11 @@ export function layouts(ast, directory, { layoutOnly = false } = {}) {
     ...new Set(
       Object.values(canonicals)
         .flat()
-        .filter(Boolean)
+        .filter((v): v is string => Boolean(v))
     ),
   ].sort();
-  const probe = join(directory, 'sizes.cpp');
-  writeFileSync(
-    probe,
-    types.map((value, i) => `enum { __course_${i} = sizeof(${value}) };\n`).join('')
-  );
-  const sizes = run([
-    tool('CLANGXX', 'clang++'),
-    '-std=c++20',
-    '-fsyntax-only',
-    '-Xclang',
-    '-ast-dump=json',
-    probe,
-  ]);
-  if (sizes.returncode) {
-    throw new Unsupported('Clang could not obtain field sizes');
-  }
-  const tree = JSON.parse(sizes.stdout);
-  const values = {};
-  function constant(item) {
-    if (item.kind === 'ConstantExpr') {
-      return Number.parseInt(item.value, 10);
-    }
-    return constant(item.inner[0]);
-  }
-  function walkTree(node) {
-    if (node.kind === 'EnumConstantDecl') {
-      values[node.name] = constant(node);
-    }
-    for (const child of node.inner ?? []) {
-      walkTree(child);
-    }
-  }
-  walkTree(tree);
+
+  const sizesMap = frontend.typeSizes(types);
   for (const [name, record] of Object.entries(records)) {
     const recCanonicals = canonicals[name];
     for (let i = 0; i < record.fields.length; i++) {
@@ -209,8 +213,8 @@ export function layouts(ast, directory, { layoutOnly = false } = {}) {
       const canonical = recCanonicals[i];
       item.size =
         canonical === null
-          ? records[item.type].size
-          : values[`__course_${types.indexOf(canonical)}`];
+          ? records[item.type!].size
+          : sizesMap[canonical];
     }
   }
   return records;

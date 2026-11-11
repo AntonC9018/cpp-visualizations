@@ -7,9 +7,9 @@ import { dirname, join, resolve } from 'node:path';
 import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { trace } from '../layout.mjs';
-import { Unsupported } from '../toolchain.mjs';
-import { FormatError, validate } from '../trace_format.mjs';
+import { FormatError, validate } from '../src/core/trace_format.ts';
+import { trace } from '../src/node/layout.ts';
+import { Unsupported } from '../src/node/toolchain.ts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -69,10 +69,11 @@ describe('LayoutTests', () => {
       ['offset', 2],
       ['size', 20],
       ['kind', 'float'],
-    ]) {
-      const bad = structuredClone(result);
-      bad.records[0].fields[1][key] = value;
-      assert.throws(() => validate(bad), FormatError);
+    ] as const) {
+      const bad = structuredClone(result) as unknown as Record<string, unknown>;
+      const records = bad.records as Array<{ fields: Array<Record<string, unknown>> }>;
+      records[0].fields[1][key] = value;
+      assert.throws(() => validate(bad as unknown as typeof result), FormatError);
     }
   });
 
@@ -88,7 +89,7 @@ describe('LayoutTests', () => {
           [script, operation, '--template', 'layout', '--source', path],
           { encoding: 'utf8' }
         );
-        const data = JSON.parse(stdout);
+        const data = JSON.parse(stdout) as { template?: string; kind?: string };
         assert.equal(operation === 'probe' ? data.template : data.kind, 'layout');
       }
     } finally {

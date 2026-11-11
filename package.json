@@ -2,12 +2,22 @@
   "name": "course-expression-visualizations",
   "private": true,
   "version": "1.0.0",
+  "type": "module",
   "scripts": {
-    "test": "node --test \"tests/*.test.mjs\"",
-    "test:tracer": "node --test tests/generation.test.mjs tests/layout.test.mjs tests/references.test.mjs tests/structs.test.mjs tests/trace_format.test.mjs tests/tracing.test.mjs",
-    "test:player": "node --test tests/player.test.mjs"
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"tests/*.test.ts\"",
+    "test:tracer": "node --test tests/generation.test.ts tests/layout.test.ts tests/references.test.ts tests/structs.test.ts tests/trace_format.test.ts tests/tracing.test.ts",
+    "test:player": "node --test tests/player.test.ts"
   },
   "dependencies": {
     "playwright": "1.62.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.0",
+    "typescript": "^5.8.2",
+    "vite": "^6.2.0"
   }
 }

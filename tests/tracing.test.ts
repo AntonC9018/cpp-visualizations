@@ -5,10 +5,11 @@ import { dirname, join } from 'node:path';
 import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { Cell, Execution } from '../execution.mjs';
-import { dumpsSorted } from '../json_format.mjs';
-import * as tracing from '../tracing.mjs';
-import { Pointer, Unsupported } from '../tracing.mjs';
+import { dumpsSorted } from '../src/core/json_format.ts';
+import type { ExecutionTrace, TraceOperation, TraceStep } from '../src/core/trace_format.ts';
+import { Cell, Execution } from '../src/node/execution.ts';
+import * as tracing from '../src/node/tracing.ts';
+import { Pointer, Unsupported } from '../src/node/tracing.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -23,24 +24,28 @@ std::cout << a << std::endl;
 std::cout << *p << std::endl;
 `;
 
-function panes(trace, line) {
+function panes(trace: ExecutionTrace, line: number): string[] {
   return trace.steps.filter(step => step.line === line).map(step => step.pane);
 }
 
-function ops(trace, line) {
-  return trace.steps.filter(step => step.line === line && step.op).map(step => step.op);
+function ops(trace: ExecutionTrace, line: number): TraceOperation[] {
+  return trace.steps
+    .filter((step): step is TraceStep & { op: TraceOperation } => step.line === line && !!step.op)
+    .map(step => step.op);
 }
 
-function final(trace, key = 'values') {
+function final(trace: ExecutionTrace): ExecutionTrace['steps'][number]['values'];
+function final<K extends keyof TraceStep>(trace: ExecutionTrace, key: K): TraceStep[K];
+function final(trace: ExecutionTrace, key: keyof TraceStep = 'values'): unknown {
   return trace.steps[trace.steps.length - 1][key];
 }
 
-function addresses(trace) {
+function addresses(trace: ExecutionTrace): Record<string, number> {
   return Object.fromEntries(trace.variables.map(v => [v.name, v.address]));
 }
 
 describe('StaticIntegerTraceTests', () => {
-  const traceStatic = source => tracing.trace(source, { runtime: false });
+  const traceStatic = (source: string): ExecutionTrace => tracing.trace(source, { runtime: false });
 
   test('expression_and_cumulative_output', () => {
     const trace = traceStatic('int a = 5; int b = a + 6; a = 7; std::cout << b << std::endl;');
@@ -55,7 +60,9 @@ describe('StaticIntegerTraceTests', () => {
       ['read', 'eval', 'write']
     );
     assert.deepEqual(ops(trace, 1)[1], { kind: 'eval', value: '11', span: [8, 13] });
-    assert.deepEqual(ops(trace, 1)[2].destination, [4, 5]);
+    const writeOp = ops(trace, 1)[2];
+    assert.ok(writeOp.kind === 'write');
+    assert.deepEqual(writeOp.destination, [4, 5]);
     assert.deepEqual(final(trace), { a: 7, b: 11 });
     assert.equal(final(trace, 'stdout'), '11\n');
     assert.deepEqual(trace.spans, [
@@ -88,7 +95,7 @@ describe('StaticIntegerTraceTests', () => {
     const trace = traceStatic('int a{}; a = int{}; int b = int{};');
     assert.deepEqual(panes(trace, 0), ['int a = {}', 'int a = 0', 'int a = 0']);
     assert.deepEqual(ops(trace, 0)[0], { kind: 'eval', value: '0', span: [8, 10] });
-    assert.deepEqual(trace.spans[0], [5, 7]);
+    assert.deepEqual(trace.spans?.[0], [5, 7]);
     assert.ok(!JSON.stringify(trace).includes('int0'));
     assert.deepEqual(final(trace), { a: 0, b: 0 });
   });
@@ -133,7 +140,7 @@ int main() {
     assert.deepEqual(panes(trace, 2), ['std::cout << std::endl', 'std::cout << std::endl']);
     assert.deepEqual(ops(trace, 2), [{ kind: 'print', value: '\n', span: [13, 22] }]);
     assert.deepEqual(trace.steps[trace.steps.length - 1].expr, [13, 22]);
-    assert.deepEqual(trace.spans[2], [13, 22]);
+    assert.deepEqual(trace.spans?.[2], [13, 22]);
     assert.equal(final(trace, 'stdout'), '1\n');
   });
 
@@ -166,7 +173,7 @@ int main() {
   test('uninitialized_storage_is_distinct_from_unallocated', () => {
     const trace = traceStatic('int a; a = 2 * 3 + 1; int b;');
     assert.deepEqual(trace.steps[0].values, { a: '?', b: null });
-    assert.equal(trace.spans[0], null);
+    assert.equal(trace.spans?.[0], null);
     assert.deepEqual(panes(trace, 1), ['a = 2 * 3 + 1', 'a = 6 + 1', 'a = 7', 'a = 7']);
     assert.deepEqual(final(trace), { a: 7, b: '?' });
   });
@@ -191,7 +198,7 @@ int main() {
 });
 
 describe('StaticPointerTraceTests', () => {
-  const traceStatic = source => tracing.trace(source, { runtime: false });
+  const traceStatic = (source: string): ExecutionTrace => tracing.trace(source, { runtime: false });
 
   test('double_pointer_reduces_in_lesson_notation', () => {
     const trace = traceStatic(DOUBLE_POINTER);
@@ -227,7 +234,10 @@ describe('StaticPointerTraceTests', () => {
       `p = ${at.b}`,
       `p = ${at.b}`,
     ]);
-    assert.deepEqual(ops(trace, 5)[ops(trace, 5).length - 1].destination, [0, 1]);
+    const line5Ops = ops(trace, 5);
+    const lastOp5 = line5Ops[line5Ops.length - 1];
+    assert.ok(lastOp5.kind === 'write');
+    assert.deepEqual(lastOp5.destination, [0, 1]);
     assert.deepEqual(final(trace, 'targets'), { p: 'b', pp: 'p' });
     assert.deepEqual(final(trace), { a: 7, b: 8, p: at.b, pp: at.p });
     assert.equal(final(trace, 'stdout'), '7\n8\n');
@@ -244,7 +254,7 @@ describe('StaticPointerTraceTests', () => {
       span: [9, 11],
     });
     const write = trace.steps[4];
-    assert.deepEqual([write.op.kind, write.targets, write.values.b], [
+    assert.deepEqual([write.op?.kind, write.targets, write.values.b], [
       'write',
       { b: 'a' },
       76,
@@ -282,7 +292,7 @@ describe('StaticPointerTraceTests', () => {
     for (const [source, pane] of [
       ['int a{}; int* p{&a}; int * * pp{};', 'int * * pp = {}'],
       ['signed int* p{};', 'signed int* p = {}'],
-    ]) {
+    ] as const) {
       const trace = traceStatic(source);
       const shown = trace.steps.map(step => step.pane);
       assert.ok(shown.includes(pane));
@@ -379,6 +389,7 @@ describe('StaticPointerTraceTests', () => {
     let called = false;
     tracing.hooks.execute = () => {
       called = true;
+      throw new Error('unreachable');
     };
     try {
       for (const source of sources) {
@@ -391,7 +402,7 @@ describe('StaticPointerTraceTests', () => {
   });
 
   test('unsupported_pointer_constructs_never_execute', () => {
-    const cases = {
+    const cases: Record<string, RegExp> = {
       'int a[2]{};': /arrays/,
       'int a{1}; int* p{&a}; int* q = p + 1;': /pointer arithmetic/,
       'int a{1}; int* p{&a}; int d = *(p + 0);': /pointer arithmetic/,
@@ -424,11 +435,12 @@ describe('StaticPointerTraceTests', () => {
       let called = false;
       tracing.hooks.execute = () => {
         called = true;
+        throw new Error('unreachable');
       };
       try {
         assert.throws(
           () => tracing.trace(source),
-          err => err instanceof Unsupported && reason.test(err.message)
+          (err: unknown) => err instanceof Unsupported && reason.test(err.message)
         );
         assert.equal(called, false);
       } finally {
@@ -440,7 +452,7 @@ describe('StaticPointerTraceTests', () => {
   test('compiler_errors_name_no_temporary_path', () => {
     assert.throws(
       () => traceStatic('int* b{ 32 };'),
-      err =>
+      (err: unknown) =>
         err instanceof Unsupported &&
         /^error: cannot initialize a variable of type 'int \*'/.test(err.message)
     );
@@ -450,7 +462,7 @@ describe('StaticPointerTraceTests', () => {
 describe('ObservationTests', () => {
   const PREDICTED = [{ a: 5 }, { a: 5, p: new Pointer('a') }];
 
-  function makeExecution(pointerValue, size = 8) {
+  function makeExecution(pointerValue: number, size = 8): Execution {
     const a = new Cell({ address: 0x7ffc_1004, size: 4, pointer: false, value: 5 });
     const p = new Cell({ address: 0x7ffc_0ff8, size, pointer: true, value: pointerValue });
     return new Execution([{ a }, { a, p }], '');
@@ -469,21 +481,21 @@ describe('ObservationTests', () => {
   test('a_pointer_to_anything_else_is_rejected', () => {
     assert.throws(
       () => tracing._observed(makeExecution(0x7ffc_1008), PREDICTED, new Set(['p'])),
-      err => err instanceof Unsupported && /not the address of a variable/.test(err.message)
+      (err: unknown) => err instanceof Unsupported && /not the address of a variable/.test(err.message)
     );
   });
 
   test('a_disagreeing_target_is_rejected', () => {
     assert.throws(
       () => tracing._observed(makeExecution(0), PREDICTED, new Set(['p'])),
-      err => err instanceof Unsupported && /runtime verification failed: p/.test(err.message)
+      (err: unknown) => err instanceof Unsupported && /runtime verification failed: p/.test(err.message)
     );
   });
 
   test('unexpected_storage_is_rejected', () => {
     assert.throws(
       () => tracing._observed(makeExecution(0x7ffc_1004, 4), PREDICTED, new Set(['p'])),
-      err => err instanceof Unsupported && /runtime storage of p/.test(err.message)
+      (err: unknown) => err instanceof Unsupported && /runtime storage of p/.test(err.message)
     );
   });
 
@@ -516,7 +528,7 @@ describe('RuntimeTraceTests', () => {
     assert.deepEqual(final(trace), { a: 2, b: 2 });
     const writes = trace.steps
       .filter(step => step.op && step.op.kind === 'write')
-      .map(step => step.op.value);
+      .map(step => (step.op as { value: string }).value);
     assert.deepEqual(writes, ['1', '2', '2', '2']);
   });
 
@@ -531,7 +543,7 @@ describe('RuntimeTraceTests', () => {
         '0\n0\n',
       ],
       ['int a; a=5; std::cout << a;', '5'],
-    ]) {
+    ] as const) {
       assert.equal(final(tracing.trace(source), 'stdout'), output);
     }
   });
@@ -549,7 +561,7 @@ describe('RuntimeTraceTests', () => {
     try {
       assert.throws(
         () => tracing.trace(source),
-        err => err instanceof Unsupported && /runtime output disagrees/.test(err.message)
+        (err: unknown) => err instanceof Unsupported && /runtime output disagrees/.test(err.message)
       );
     } finally {
       tracing.hooks.execute = original;
@@ -558,7 +570,7 @@ describe('RuntimeTraceTests', () => {
 
   test('generated_endl_browser_fixture_is_current', () => {
     const path = join(HERE, 'fixtures', 'endl-generated.json');
-    const fixture = JSON.parse(readFileSync(path, 'utf8'));
+    const fixture = JSON.parse(readFileSync(path, 'utf8')) as ExecutionTrace;
     assert.deepEqual(tracing.trace(fixture.source.join('\n')), fixture);
   });
 
@@ -598,8 +610,8 @@ describe('RuntimeTraceTests', () => {
     assert.deepEqual(final(traced, 'targets'), { q: 'a' });
     assert.equal(final(traced).p, 0);
     const writes = traced.steps.filter(step => step.op && step.op.kind === 'write');
-    assert.equal(writes[1].op.value, '0');
-    assert.equal(writes[writes.length - 1].op.value, '0');
+    assert.equal((writes[1].op as { value: string }).value, '0');
+    assert.equal((writes[writes.length - 1].op as { value: string }).value, '0');
   });
 
   test('three_pointer_levels_read_and_write', () => {
@@ -638,9 +650,10 @@ describe('RuntimeTraceTests', () => {
     for (const [source, kind] of [
       ['int a{5};', 'int'],
       ['int a{5}; int* p{&a};', 'ptr'],
-    ]) {
+    ] as const) {
       tracing.hooks.after = (statement, state) => {
         const result = original(statement, state);
+        if (statement.target === null) return result;
         const value = result[statement.target];
         if (kind === 'int' && typeof value === 'number') {
           result[statement.target] = value + 1;
@@ -652,7 +665,8 @@ describe('RuntimeTraceTests', () => {
       try {
         assert.throws(
           () => tracing.trace(source),
-          err => err instanceof Unsupported && /runtime verification failed/.test(err.message)
+          (err: unknown) =>
+            err instanceof Unsupported && /runtime verification failed/.test(err.message)
         );
       } finally {
         tracing.hooks.after = null;

@@ -2,24 +2,197 @@
 //
 // A trace lists the source lines, the objects in memory and the visible evaluation states.
 // `validate` checks a trace; `Builder` writes traces by hand, the way the lessons explain an
-// evaluation. The compiler-backed tracer (`tracing.mjs`) emits the format directly.
+// evaluation. The compiler-backed tracer (`tracing.ts`) emits the format directly.
 // `player/README.md` documents every field.
 
 export const FORMAT = 1;
-export const SCALAR_KINDS = ['int', 'ptr'];
-export const STRUCT = 'struct';
-export const OPERATIONS = ['read', 'addr', 'deref', 'eval', 'write', 'print', 'bind', 'alias'];
-export const UNKNOWN = '?';
+export type ScalarKind = 'int' | 'ptr';
+export const SCALAR_KINDS: readonly ScalarKind[] = ['int', 'ptr'];
+export const STRUCT = 'struct' as const;
+export type OperationKind = 'read' | 'addr' | 'deref' | 'eval' | 'write' | 'print' | 'bind' | 'alias';
+export const OPERATIONS: readonly OperationKind[] = [
+  'read',
+  'addr',
+  'deref',
+  'eval',
+  'write',
+  'print',
+  'bind',
+  'alias',
+];
+export const UNKNOWN = '?' as const;
+export type StoredCellValue = number | typeof UNKNOWN | null;
+export type Span = [number, number];
+
+export interface ScalarField {
+  name: string;
+  offset: number;
+  size: number;
+  kind: ScalarKind;
+  color: number;
+  type?: string;
+}
+
+export interface StructField {
+  name: string;
+  type: string;
+  offset: number;
+  size: number;
+  kind: typeof STRUCT;
+  color: number;
+  fields: TraceField[];
+}
+
+export type TraceField = ScalarField | StructField;
+
+export interface ScalarVariable {
+  name: string;
+  address: number;
+  size: number;
+  kind: ScalarKind;
+  color: number;
+}
+
+export interface StructVariable {
+  name: string;
+  type: string;
+  address: number;
+  size: number;
+  kind: typeof STRUCT;
+  color: number;
+  fields: TraceField[];
+}
+
+export type TraceVariable = ScalarVariable | StructVariable;
+
+export interface TraceReference {
+  name: string;
+  color: number;
+}
+
+export type ReadOperation = {
+  kind: 'read';
+  name: string;
+  value: string;
+  span: Span;
+};
+
+export type AddrOperation = {
+  kind: 'addr';
+  name: string;
+  value: string;
+  span: Span;
+};
+
+export type DerefOperation = {
+  kind: 'deref';
+  target: string;
+  via: string;
+  span: Span;
+};
+
+export type EvalOperation = {
+  kind: 'eval';
+  value: string;
+  span: Span;
+};
+
+export type WriteOperation = {
+  kind: 'write';
+  name: string;
+  value: string;
+  span: Span;
+  destination: Span;
+};
+
+export type PrintOperation = {
+  kind: 'print';
+  value: string;
+  span: Span;
+};
+
+export type BindOperation = {
+  kind: 'bind';
+  name: string;
+  target: string;
+  span: Span;
+  destination: Span;
+};
+
+export type AliasOperation = {
+  kind: 'alias';
+  name: string;
+  target: string;
+  span: Span;
+};
+
+export type TraceOperation =
+  | ReadOperation
+  | AddrOperation
+  | DerefOperation
+  | EvalOperation
+  | WriteOperation
+  | PrintOperation
+  | BindOperation
+  | AliasOperation;
+
+export interface TraceStep {
+  line: number;
+  pane: string;
+  expr?: Span | null;
+  values: Record<string, StoredCellValue>;
+  targets: Record<string, string>;
+  refs?: Record<string, string>;
+  stdout: string;
+  hold: number;
+  op: TraceOperation | null;
+}
+
+export interface ExecutionTrace {
+  format: number;
+  kind?: undefined;
+  title?: string;
+  source: string[];
+  spans?: (Span | null)[];
+  types?: Record<string, string>;
+  variables: TraceVariable[];
+  references?: TraceReference[];
+  steps: TraceStep[];
+}
+
+export interface LayoutField {
+  name: string;
+  offset: number;
+  size: number;
+  kind: ScalarKind;
+  type: string;
+}
+
+export interface LayoutRecord {
+  name: string;
+  size: number;
+  alignment: number;
+  fields: LayoutField[];
+}
+
+export interface LayoutTrace {
+  format: number;
+  kind: 'layout';
+  records: LayoutRecord[];
+}
+
+export type AnyTrace = ExecutionTrace | LayoutTrace;
+
 const IDENTIFIER = /^[A-Za-z_]\w*$/;
 
 export class FormatError extends Error {
-  constructor(message) {
+  constructor(message: string) {
     super(message);
     this.name = 'FormatError';
   }
 }
 
-const WHITESPACE_SPELLINGS = {
+const WHITESPACE_SPELLINGS: Record<string, string> = {
   'std::endl': '\n',
   endl: '\n',
   "'\\n'": '\n',
@@ -27,36 +200,65 @@ const WHITESPACE_SPELLINGS = {
   "' '": ' ',
 };
 
-export function whitespaceOutput(spelling) {
+export function whitespaceOutput(spelling: string): string | null {
   return Object.hasOwn(WHITESPACE_SPELLINGS, spelling) ? WHITESPACE_SPELLINGS[spelling] : null;
 }
 
 // Building blocks ------------------------------------------------------------------------------
 
-export function scalar(name, address, size = 4, kind = 'int', color = 0) {
+export function scalar(
+  name: string,
+  address: number,
+  size = 4,
+  kind: ScalarKind = 'int',
+  color = 0
+): ScalarVariable {
   return { name, address, size, kind, color };
 }
 
-export function struct(name, type_, address, size, fields, color = 0) {
+export function struct(
+  name: string,
+  type_: string,
+  address: number,
+  size: number,
+  fields: TraceField[],
+  color = 0
+): StructVariable {
   return { name, type: type_, address, size, kind: 'struct', color, fields };
 }
 
-export function reference(name, color = 0) {
+export function reference(name: string, color = 0): TraceReference {
   return { name, color };
 }
 
-export function field(name, offset, size = 4, kind = 'int', color = 0) {
+export function field(
+  name: string,
+  offset: number,
+  size = 4,
+  kind: ScalarKind = 'int',
+  color = 0
+): ScalarField {
   return { name, offset, size, kind, color };
 }
 
-export function structField(name, type_, offset, size, fields, color = 0) {
+export function structField(
+  name: string,
+  type_: string,
+  offset: number,
+  size: number,
+  fields: TraceField[],
+  color = 0
+): StructField {
   return { name, type: type_, offset, size, kind: STRUCT, color, fields };
 }
 
-function* walk(variables) {
-  function* visit(prefix, base, item) {
+type WalkItem = TraceVariable | TraceField;
+
+function* walk(variables: TraceVariable[]): Generator<[string, number, WalkItem]> {
+  function* visit(prefix: string, base: number, item: WalkItem): Generator<[string, number, WalkItem]> {
     const name = prefix + item.name;
-    const address = base + (item.offset ?? item.address ?? 0);
+    const itemOffset = 'offset' in item ? item.offset : item.address;
+    const address = base + (itemOffset ?? 0);
     yield [name, address, item];
     if (item.kind === STRUCT) {
       for (const inner of item.fields) {
@@ -69,8 +271,8 @@ function* walk(variables) {
   }
 }
 
-export function leaves(variables) {
-  const result = {};
+export function leaves(variables: TraceVariable[]): Record<string, ScalarVariable | ScalarField> {
+  const result: Record<string, ScalarVariable | ScalarField> = {};
   for (const [name, , item] of walk(variables)) {
     if (item.kind !== STRUCT) {
       result[name] = item;
@@ -79,42 +281,47 @@ export function leaves(variables) {
   return result;
 }
 
-export function addresses(variables) {
-  const result = {};
+export function addresses(variables: TraceVariable[]): Record<string, number> {
+  const result: Record<string, number> = {};
   for (const [name, address] of walk(variables)) {
     result[name] = address;
   }
   return result;
 }
 
-export function cellsOf(variables, name) {
+export function cellsOf(variables: TraceVariable[], name: string): string[] {
   return Object.keys(leaves(variables)).filter(leaf => leaf === name || leaf.startsWith(name + '.'));
 }
 
 // Validation -----------------------------------------------------------------------------------
 
-function isPlainObject(value) {
+function isPlainObject(value: unknown): value is Record<string, any> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function pyRepr(value) {
+function pyRepr(value: unknown): string {
   if (typeof value === 'string') {
     return `'${value.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
   }
   return JSON.stringify(value);
 }
 
-function pyListRepr(items) {
+function pyListRepr(items: unknown[]): string {
   return `[${items.map(pyRepr).join(', ')}]`;
 }
 
-function check(condition, where, message) {
+function check(condition: unknown, where: string, message: string): asserts condition {
   if (!condition) {
     throw new FormatError(`${where}: ${message}`);
   }
 }
 
-function checkKeys(value, where, required, optional = []) {
+function checkKeys(
+  value: unknown,
+  where: string,
+  required: string[],
+  optional: string[] = []
+): asserts value is Record<string, any> {
   check(isPlainObject(value), where, 'expected an object');
   const keys = Object.keys(value);
   const reqSet = new Set(required);
@@ -125,7 +332,7 @@ function checkKeys(value, where, required, optional = []) {
   check(unknown.length === 0, where, `unknown ${pyListRepr(unknown)}`);
 }
 
-function natural(value, where, positive = false) {
+function natural(value: unknown, where: string, positive = false): asserts value is number {
   check(
     Number.isInteger(value) && typeof value === 'number' && value >= (positive ? 1 : 0),
     where,
@@ -133,13 +340,13 @@ function natural(value, where, positive = false) {
   );
 }
 
-function checkSpan(value, text, where, empty = false) {
+function checkSpan(value: unknown, text: string, where: string, empty = false): Span {
   check(
     Array.isArray(value) && value.length === 2 && value.every(v => Number.isInteger(v) && typeof v === 'number'),
     where,
     'expected [start, end]'
   );
-  const [start, end] = value;
+  const [start, end] = value as [number, number];
   check(
     0 <= start && start <= end && end <= text.length && (empty || start < end),
     where,
@@ -148,11 +355,11 @@ function checkSpan(value, text, where, empty = false) {
   return [start, end];
 }
 
-function checkFields(owner, here) {
+function checkFields(owner: Record<string, any>, here: string): void {
   check(typeof owner.type === 'string' && owner.type.length > 0, here, 'type must be a name');
   const fields = owner.fields;
   check(Array.isArray(fields) && fields.length > 0, `${here}.fields`, 'expected a nonempty list');
-  const seen = new Set();
+  const seen = new Set<string>();
   let end = 0;
   for (let position = 0; position < fields.length; position++) {
     const item = fields[position];
@@ -164,7 +371,7 @@ function checkFields(owner, here) {
     check(!seen.has(item.name), spot, `duplicate field ${pyRepr(item.name)}`);
     seen.add(item.name);
     check(
-      nested || SCALAR_KINDS.includes(item.kind),
+      nested || (SCALAR_KINDS as readonly string[]).includes(item.kind),
       spot,
       "kind must be one of ('int', 'ptr') or struct"
     );
@@ -180,10 +387,13 @@ function checkFields(owner, here) {
   check(end <= owner.size, here, 'fields exceed the struct size');
 }
 
-function checkVariables(variables, where) {
+function checkVariables(
+  variables: unknown,
+  where: string
+): Record<string, ScalarVariable | ScalarField> {
   check(Array.isArray(variables) && variables.length > 0, where, 'expected a nonempty list');
-  const names = new Set();
-  const ranges = [];
+  const names = new Set<string>();
+  const ranges: [number, number, string][] = [];
   for (let index = 0; index < variables.length; index++) {
     const variable = variables[index];
     const here = `${where}[${index}]`;
@@ -199,7 +409,7 @@ function checkVariables(variables, where) {
     ranges.push([variable.address, variable.address + variable.size, variable.name]);
     if (!struct_) {
       check(
-        SCALAR_KINDS.includes(variable.kind),
+        (SCALAR_KINDS as readonly string[]).includes(variable.kind),
         here,
         "kind must be one of ('int', 'ptr') or struct"
       );
@@ -213,12 +423,16 @@ function checkVariables(variables, where) {
     const [start, , right] = ranges[i + 1];
     check(start >= end, where, `${pyRepr(left)} and ${pyRepr(right)} overlap`);
   }
-  return leaves(variables);
+  return leaves(variables as TraceVariable[]);
 }
 
-function checkReferences(references, variables, where) {
+function checkReferences(
+  references: unknown,
+  variables: TraceVariable[],
+  where: string
+): Set<string> {
   check(Array.isArray(references) && references.length > 0, where, 'expected a nonempty list');
-  const names = new Set();
+  const names = new Set<string>();
   const taken = new Set(variables.map(v => v.name));
   for (let index = 0; index < references.length; index++) {
     const item = references[index];
@@ -232,7 +446,7 @@ function checkReferences(references, variables, where) {
   return names;
 }
 
-function checkValue(value, where) {
+function checkValue(value: unknown, where: string): void {
   check(
     value === null || value === UNKNOWN || (Number.isInteger(value) && typeof value === 'number'),
     where,
@@ -240,7 +454,7 @@ function checkValue(value, where) {
   );
 }
 
-function replacement(before, after, span, where) {
+function replacement(before: string, after: string, span: Span, where: string): string {
   const [start, end] = span;
   const tail = before.length - end;
   check(
@@ -257,11 +471,11 @@ function replacement(before, after, span, where) {
 
 const LITERAL = /^-?\d+$/;
 
-function stored(text, where) {
+function stored(text: string, where: string): (number | string)[] {
   const braced = /^(?:[A-Za-z_]\w*)?\{[\s\S]*\}$/.test(text);
   const inner = braced ? text.slice(text.indexOf('{')) : text;
   const items = braced ? inner.replace(/[{}]/g, '').split(',').map(s => s.trim()) : [inner];
-  const result = [];
+  const result: (number | string)[] = [];
   for (const item of items) {
     check(
       item === 'nullptr' || item === UNKNOWN || LITERAL.test(item),
@@ -273,11 +487,25 @@ function stored(text, where) {
   return result;
 }
 
-function arraysEqual(a, b) {
+function arraysEqual(a: unknown[], b: unknown[]): boolean {
   return a.length === b.length && a.every((v, i) => v === b[i]);
 }
 
-function checkMemory(op, step, previous, storage, where) {
+interface StorageContext {
+  variables: TraceVariable[];
+  cells: Record<string, ScalarVariable | ScalarField>;
+  addresses: Record<string, number>;
+  references: Set<string>;
+  cellsOf(name: string): string[];
+}
+
+function checkMemory(
+  op: Record<string, any>,
+  step: Record<string, any>,
+  previous: Record<string, any>,
+  storage: StorageContext,
+  where: string
+): void {
   const { kind, name } = op;
   if (kind === 'addr') {
     const address = storage.addresses[name];
@@ -301,11 +529,11 @@ function checkMemory(op, step, previous, storage, where) {
   );
 }
 
-function checkPointers(step, storage, where) {
+function checkPointers(step: Record<string, any>, storage: StorageContext, where: string): void {
   for (const [name, target] of Object.entries(step.targets)) {
     check(storage.cells[name]?.kind === 'ptr', `${where}.targets.${name}`, 'only pointers have targets');
     check(
-      Object.hasOwn(storage.addresses, target),
+      Object.hasOwn(storage.addresses, target as string),
       `${where}.targets.${name}`,
       `unknown variable ${pyRepr(target)}`
     );
@@ -331,11 +559,17 @@ function checkPointers(step, storage, where) {
   }
 }
 
-function refs(step) {
+function refs(step: Record<string, any>): Record<string, string> {
   return step.refs ?? {};
 }
 
-function checkReferenceOp(op, step, previous, storage, where) {
+function checkReferenceOp(
+  op: Record<string, any>,
+  step: Record<string, any>,
+  previous: Record<string, any>,
+  storage: StorageContext,
+  where: string
+): void {
   const { kind, name, target } = op;
   check(storage.references.has(name), `${where}.name`, `unknown reference ${pyRepr(name)}`);
   check(Object.hasOwn(storage.addresses, target), `${where}.target`, `unknown variable ${pyRepr(target)}`);
@@ -357,13 +591,18 @@ function checkReferenceOp(op, step, previous, storage, where) {
   for (const [key, text] of [
     ['span', target],
     ['destination', name],
-  ]) {
+  ] as const) {
     const [start, end] = checkSpan(op[key], step.pane, `${where}.${key}`);
     check(step.pane.slice(start, end) === text, `${where}.${key}`, `does not cover ${pyRepr(text)}`);
   }
 }
 
-function unchangedPane(op, step, previous, where) {
+function unchangedPane(
+  op: Record<string, any>,
+  step: Record<string, any>,
+  previous: Record<string, any>,
+  where: string
+): void {
   const { kind } = op;
   check(step.pane === previous.pane, where, `a ${kind} does not change the pane`);
   const [start, end] = checkSpan(op.span, step.pane, `${where}.span`);
@@ -386,14 +625,20 @@ function unchangedPane(op, step, previous, where) {
   }
 }
 
-function checkOperation(op, step, previous, storage, where) {
+function checkOperation(
+  op: unknown,
+  step: Record<string, any>,
+  previous: Record<string, any>,
+  storage: StorageContext,
+  where: string
+): void {
   check(
-    isPlainObject(op) && OPERATIONS.includes(op.kind),
+    isPlainObject(op) && (OPERATIONS as readonly string[]).includes(op.kind),
     where,
     `kind must be one of (${OPERATIONS.map(pyRepr).join(', ')})`
   );
-  const { kind } = op;
-  const fieldMap = {
+  const kind = op.kind as OperationKind;
+  const fieldMap: Record<OperationKind, string[]> = {
     read: ['name', 'value', 'span'],
     addr: ['name', 'value', 'span'],
     deref: ['target', 'via', 'span'],
@@ -448,13 +693,18 @@ function checkOperation(op, step, previous, storage, where) {
   }
 }
 
-function shallowEqualObj(a, b) {
+function shallowEqualObj(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
   const ka = Object.keys(a);
   const kb = Object.keys(b);
   return ka.length === kb.length && ka.every(k => Object.hasOwn(b, k) && a[k] === b[k]);
 }
 
-function checkChanges(step, previous, storage, where) {
+function checkChanges(
+  step: Record<string, any>,
+  previous: Record<string, any>,
+  storage: StorageContext,
+  where: string
+): void {
   const op = step.op || {};
   const written = new Set(op.kind === 'write' ? storage.cellsOf(op.name) : []);
   for (const [name, value] of Object.entries(step.values)) {
@@ -486,16 +736,16 @@ function checkChanges(step, previous, storage, where) {
   );
 }
 
-function roundUp(value, alignment) {
+function roundUp(value: number, alignment: number): number {
   return Math.ceil(value / alignment) * alignment;
 }
 
-function checkLayout(trace) {
+function checkLayout(trace: unknown): asserts trace is LayoutTrace {
   checkKeys(trace, 'layout', ['format', 'kind', 'records']);
   check(trace.format === FORMAT, 'layout.format', `expected ${FORMAT}`);
   const records = trace.records;
   check(Array.isArray(records) && records.length > 0, 'layout.records', 'expected nonempty list');
-  const names = new Set();
+  const names = new Set<string>();
   for (const record of records) {
     checkKeys(record, 'record', ['name', 'size', 'alignment', 'fields']);
     const { name } = record;
@@ -508,7 +758,7 @@ function checkLayout(trace) {
     check([1, 4, 8].includes(align), name, 'invalid alignment');
     const fields = record.fields;
     check(Array.isArray(fields) && fields.length > 0, name, 'expected nonempty fields');
-    const seen = new Set();
+    const seen = new Set<string>();
     let end = 0;
     for (const item of fields) {
       checkKeys(item, name, ['name', 'offset', 'size', 'kind', 'type']);
@@ -516,7 +766,7 @@ function checkLayout(trace) {
       check(!seen.has(item.name), name, 'duplicate field');
       seen.add(item.name);
       check(typeof item.type === 'string' && item.type.length > 0, name, 'invalid field type');
-      check(SCALAR_KINDS.includes(item.kind), name, 'invalid field kind');
+      check((SCALAR_KINDS as readonly string[]).includes(item.kind), name, 'invalid field kind');
       natural(item.offset, `${name}.offset`);
       natural(item.size, `${name}.size`, true);
       const { size } = item;
@@ -529,7 +779,7 @@ function checkLayout(trace) {
       );
       end = item.offset + size;
     }
-    const widest = Math.max(...fields.map(item => item.size));
+    const widest = Math.max(...fields.map((item: LayoutField) => item.size));
     check(align === widest, name, `alignment must be ${widest}, the widest field`);
     const expectedSize = roundUp(end, align);
     check(
@@ -540,7 +790,7 @@ function checkLayout(trace) {
   }
 }
 
-export function validate(trace) {
+export function validate(trace: unknown): asserts trace is AnyTrace {
   if (isPlainObject(trace) && trace.kind === 'layout') {
     checkLayout(trace);
     return;
@@ -585,24 +835,24 @@ export function validate(trace) {
       'expected struct names mapped to their definitions'
     );
   }
-  const { variables } = trace;
+  const variables = trace.variables as TraceVariable[];
   const cells = checkVariables(variables, 'trace.variables');
   const references = Object.hasOwn(trace, 'references')
     ? checkReferences(trace.references, variables, 'trace.references')
-    : new Set();
-  const storage = {
+    : new Set<string>();
+  const storage: StorageContext = {
     variables,
     cells,
     addresses: addresses(variables),
     references,
-    cellsOf(name) {
+    cellsOf(name: string) {
       return cellsOf(variables, name);
     },
   };
   const { steps } = trace;
   check(Array.isArray(steps) && steps.length > 0, 'trace.steps', 'expected a nonempty list');
   const sortedCellNames = Object.keys(cells).sort();
-  let previous = null;
+  let previous: Record<string, any> | null = null;
   for (let index = 0; index < steps.length; index++) {
     const step = steps[index];
     const where = `trace.steps[${index}]`;
@@ -665,16 +915,28 @@ export function validate(trace) {
 
 // Hand-written traces --------------------------------------------------------------------------
 
-function escapeRegExp(string) {
+function escapeRegExp(string: string): string {
   return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function isWordChar(ch) {
+function isWordChar(ch: string): boolean {
   return /[A-Za-z0-9_]/.test(ch);
 }
 
 export class Builder {
-  constructor(source, variables, title = null) {
+  source: string[];
+  variables: TraceVariable[];
+  title: string | null;
+  cells: Record<string, ScalarVariable | ScalarField>;
+  values: Record<string, StoredCellValue>;
+  targets: Record<string, string>;
+  steps: TraceStep[];
+  pane: string;
+  line: number;
+  stdout: string;
+  carry: string | ['address', string] | null;
+
+  constructor(source: string[], variables: TraceVariable[], title: string | null = null) {
     this.source = source;
     this.variables = variables;
     this.title = title;
@@ -688,7 +950,7 @@ export class Builder {
     this.carry = null;
   }
 
-  _add(op = null, hold = 1.0) {
+  _add(op: TraceOperation | null = null, hold = 1.0): void {
     this.steps.push({
       line: this.line,
       pane: this.pane,
@@ -700,14 +962,14 @@ export class Builder {
     });
   }
 
-  _value(name) {
+  _value(name: string): string {
     if (Object.hasOwn(this.values, name)) {
       return String(this.values[name]);
     }
     return `{${cellsOf(this.variables, name).map(cell => String(this.values[cell])).join(', ')}}`;
   }
 
-  _find(token) {
+  _find(token: string): number {
     let pattern = escapeRegExp(token);
     if (isWordChar(token[0])) {
       pattern = '(?<![\\w.>])' + pattern;
@@ -722,13 +984,13 @@ export class Builder {
     return match.index;
   }
 
-  _replace(token, newText) {
+  _replace(token: string, newText: string): Span {
     const start = this._find(token);
     this.pane = this.pane.slice(0, start) + newText + this.pane.slice(start + token.length);
     return [start, start + token.length];
   }
 
-  statement(line, pane = null) {
+  statement(line: number, pane: string | null = null): this {
     this.line = line;
     const stripped = this.source[line].replace(/;+$/, '');
     this.pane = pane ?? stripped.replace(/(\w)\s*\{\s*(.*?)\s*\}$/, '$1 = $2');
@@ -736,7 +998,7 @@ export class Builder {
     return this;
   }
 
-  declare(name) {
+  declare(name: string): this {
     for (const cell of cellsOf(this.variables, name)) {
       this.values[cell] = UNKNOWN;
     }
@@ -744,7 +1006,7 @@ export class Builder {
     return this;
   }
 
-  read(name, token = null) {
+  read(name: string, token: string | null = null): this {
     const value = this._value(name);
     const span = this._replace(token ?? name, value);
     this._carry(span, name);
@@ -752,7 +1014,7 @@ export class Builder {
     return this;
   }
 
-  _carry(span, source) {
+  _carry(span: Span, source: string | ['address', string] | null): void {
     const idx = this.pane.lastIndexOf('= ');
     const threshold = idx + (idx !== -1 ? 2 : 0);
     if (span[0] >= threshold) {
@@ -760,7 +1022,7 @@ export class Builder {
     }
   }
 
-  address(name) {
+  address(name: string): this {
     const value = String(this._address(name));
     const span = this._replace('&' + name, value);
     this._carry(span, ['address', name]);
@@ -768,39 +1030,39 @@ export class Builder {
     return this;
   }
 
-  _address(name) {
+  _address(name: string): number {
     const dot = name.indexOf('.');
     const owner = dot === -1 ? name : name.slice(0, dot);
     const member = dot === -1 ? '' : name.slice(dot + 1);
-    const variable = this.variables.find(item => item.name === owner);
-    if (!member) {
+    const variable = this.variables.find(item => item.name === owner)!;
+    if (!member || variable.kind !== STRUCT) {
       return variable.address;
     }
-    const fld = variable.fields.find(item => item.name === member);
+    const fld = variable.fields.find(item => item.name === member)!;
     return variable.address + fld.offset;
   }
 
-  deref(token, target, via) {
+  deref(token: string, target: string, via: string): this {
     const span = this._replace(token, target);
     this._carry(span, null);
     this._add({ kind: 'deref', target, via, span });
     return this;
   }
 
-  evaluate(token, value) {
+  evaluate(token: string, value: number | string): this {
     const str = String(value);
     this._add({ kind: 'eval', value: str, span: this._replace(token, str) });
     return this;
   }
 
-  write(name, hold = 1.2) {
+  write(name: string, hold = 1.2): this {
     const start = this.pane.lastIndexOf('= ') + 2;
     const text = this.pane.slice(start);
     const values = text.startsWith('{')
       ? text.replace(/^[{}]+|[{}]+$/g, '').split(', ')
       : [text];
     const cells = cellsOf(this.variables, name);
-    const sources =
+    const sources: (string | null)[] =
       typeof this.carry === 'string'
         ? cellsOf(this.variables, this.carry)
         : Array(cells.length).fill(null);
@@ -813,7 +1075,7 @@ export class Builder {
           ? 0
           : /^-?\d+$/.test(value)
             ? Number.parseInt(value, 10)
-            : value;
+            : (value as typeof UNKNOWN);
       delete this.targets[cell];
       if (Array.isArray(this.carry)) {
         this.targets[cell] = this.carry[1];
@@ -822,7 +1084,7 @@ export class Builder {
       }
     }
     this.carry = null;
-    const targetMatch = new RegExp(`(?<![\\w.])${escapeRegExp(name)}(?=\\s*=)`).exec(this.pane);
+    const targetMatch = new RegExp(`(?<![\\w.])${escapeRegExp(name)}(?=\\s*=)`).exec(this.pane)!;
     const target = targetMatch.index;
     this._add(
       {
@@ -837,7 +1099,7 @@ export class Builder {
     return this;
   }
 
-  print(name, hold = 1.2) {
+  print(name: string, hold = 1.2): this {
     this.read(name);
     const value = this._value(name);
     const start = this.pane.indexOf('<< ') + 3;
@@ -846,9 +1108,9 @@ export class Builder {
     return this;
   }
 
-  build() {
+  build(): ExecutionTrace {
     this.steps[this.steps.length - 1].hold = 3;
-    const trace = {
+    const trace: ExecutionTrace = {
       format: FORMAT,
       source: this.source,
       variables: this.variables,

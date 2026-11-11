@@ -2,18 +2,18 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import { Cell } from '../execution.mjs';
-import * as generate from '../generate.mjs';
-import { FormatError, validate } from '../trace_format.mjs';
-import * as tracing from '../tracing.mjs';
-import { Unsupported } from '../tracing.mjs';
+import { type ExecutionTrace, FormatError, type TraceStep, validate } from '../src/core/trace_format.ts';
+import { Cell } from '../src/node/execution.ts';
+import * as generate from '../src/node/generate.ts';
+import * as tracing from '../src/node/tracing.ts';
+import { Unsupported } from '../src/node/tracing.ts';
 
 const SOURCE = `struct A { int f; };
 int a = 5; int b{1}; int& c = a; auto& d{ c }; c = b; int* p = &c; int& e = *p;
 A s{1}; A& rs = s; int& rf = rs.f; rf = 4; int*& rp = p; *rp = 3; const int& k = a;
 b = k + c; std::cout << d;`;
 
-function panes(result, line) {
+function panes(result: ExecutionTrace, line: number): Array<[string, string | null]> {
   return result.steps
     .filter(step => step.line === line)
     .map(step => [step.pane, step.op?.kind ?? null]);
@@ -25,7 +25,7 @@ describe('ReferenceTraceTests', () => {
   test('a_reference_has_no_storage_and_is_bound_once', () => {
     generate.applicable(result, SOURCE);
     assert.deepEqual(
-      result.references.map(item => item.name),
+      (result.references ?? []).map(item => item.name),
       ['c', 'd', 'e', 'rs', 'rf', 'rp', 'k']
     );
     assert.deepEqual(
@@ -123,7 +123,7 @@ describe('ReferenceTraceTests', () => {
   });
 
   test('unsupported_references_never_execute', () => {
-    const cases = {
+    const cases: Record<string, RegExp> = {
       'int&& r = 1; int a = r;': /rvalue references/,
       'const int& r = 5; int a = r;': /unsupported assignable expression/,
       'int a = 1; int& r = a; int r2 = 2; int& a2 = r2; int& r = r2;': /error/,
@@ -133,11 +133,12 @@ describe('ReferenceTraceTests', () => {
       let called = false;
       tracing.hooks.execute = () => {
         called = true;
+        throw new Error('unreachable');
       };
       try {
         assert.throws(
           () => tracing.trace(source),
-          err => err instanceof Unsupported && reason.test(err.message)
+          (err: unknown) => err instanceof Unsupported && reason.test(err.message)
         );
         assert.equal(called, false);
       } finally {
@@ -147,7 +148,7 @@ describe('ReferenceTraceTests', () => {
   });
 
   test('a_reference_observed_elsewhere_is_fatal', () => {
-    const original = tracing.hooks.execute;
+    const original = tracing.hooks.execute!;
     tracing.hooks.execute = (...args) => {
       const execution = original(...args);
       for (const row of execution.checkpoints) {
@@ -162,7 +163,7 @@ describe('ReferenceTraceTests', () => {
     try {
       assert.throws(
         () => tracing.trace('int a = 1; int& c = a; c = 2;'),
-        err => err instanceof Unsupported && /the reference c disagrees/.test(err.message)
+        (err: unknown) => err instanceof Unsupported && /the reference c disagrees/.test(err.message)
       );
     } finally {
       tracing.hooks.execute = original;
@@ -171,7 +172,7 @@ describe('ReferenceTraceTests', () => {
 });
 
 describe('ReferenceFormatTests', () => {
-  const step = {
+  const step: TraceStep = {
     line: 0,
     pane: 'int a = 1',
     values: { a: null },
@@ -181,7 +182,7 @@ describe('ReferenceFormatTests', () => {
     op: null,
     refs: {},
   };
-  const baseTrace = {
+  const baseTrace: ExecutionTrace = {
     format: 1,
     source: ['int a = 1;', 'int& c = a;', 'c = 2;'],
     variables: [{ name: 'a', address: 64, size: 4, kind: 'int', color: 0 }],
@@ -222,12 +223,12 @@ describe('ReferenceFormatTests', () => {
     ],
   };
 
-  function rejects(message, change) {
-    const broken = structuredClone(baseTrace);
+  function rejects(message: string, change: (t: Record<string, any>) => void): void {
+    const broken = structuredClone(baseTrace) as Record<string, any>;
     change(broken);
     assert.throws(
-      () => validate(broken),
-      err => err instanceof FormatError && new RegExp(message).test(err.message)
+      () => validate(broken as ExecutionTrace),
+      (err: unknown) => err instanceof FormatError && new RegExp(message).test(err.message)
     );
   }
 

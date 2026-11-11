@@ -70,8 +70,8 @@ red, blue), each at least 3:1 against the stage. Reads use `#2f64d6` on `#d9e5ff
 
 ## Trace format, version 1
 
-`../trace_format.mjs` defines the format, validates it (`validate(trace)`), builds traces by hand
-(`Builder`). The compiler-backed tracer emits this format directly.
+`../src/core/trace_format.ts` defines the format, validates it (`validate(trace)`), builds traces by hand
+(`Builder`). The compiler-backed tracer emits this format directly, and `../src/player/` imports its types and gets bundled into `player.js` via `npm run build` (`vite build`).
 
 ```text
 trace     = {format: 1, source: [line…], variables: [variable…], steps: [step…],

@@ -1,24 +1,25 @@
 // Layout eligibility gates that must remain true even for compiler-valid inputs.
 import assert from 'node:assert/strict';
-import { readdirSync, readFileSync } from 'node:fs';
-import { basename, dirname, join, resolve } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join, relative, resolve } from 'node:path';
 import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import * as generate from '../generate.mjs';
-import * as fixtures from '../player/fixtures.mjs';
-import { Unsupported } from '../tracing.mjs';
+import type { ExecutionTrace } from '../src/core/trace_format.ts';
+import * as fixtures from '../src/node/fixtures.ts';
+import * as generate from '../src/node/generate.ts';
+import { Unsupported } from '../src/node/tracing.ts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-function applicable(trace, snippet = null) {
+function applicable(trace: ExecutionTrace, snippet: string | null = null): void {
   generate.applicable(trace, snippet === null ? trace.source.join('\n') : snippet);
 }
 
 describe('LayoutEligibilityTests', () => {
   const baseTrace = fixtures.reassign();
 
-  function changed(addresses) {
+  function changed(addresses: Record<string, number>): ExecutionTrace {
     const trace = structuredClone(baseTrace);
     for (const variable of trace.variables) {
       if (Object.hasOwn(addresses, variable.name)) {
@@ -38,17 +39,18 @@ describe('LayoutEligibilityTests', () => {
   });
 
   test('address_gaps_cannot_be_drawn_as_adjacent_cells', () => {
-    for (const addresses of [{ b: 72, p: 80 }, { p: 80 }]) {
+    const cases: Array<Record<string, number>> = [{ b: 72, p: 80 }, { p: 80 }];
+    for (const addresses of cases) {
       assert.throws(
         () => applicable(changed(addresses)),
-        err => err instanceof Unsupported && /noncontiguous/.test(err.message)
+        (err: unknown) => err instanceof Unsupported && /noncontiguous/.test(err.message)
       );
     }
   });
 
   test('long_names_sources_and_panes_are_accepted', () => {
     let trace = structuredClone(baseTrace);
-    const renamed = { a: 'copiedValue', b: 'copiedPointer' };
+    const renamed: Record<string, string> = { a: 'copiedValue', b: 'copiedPointer' };
     for (const variable of trace.variables) {
       variable.name = renamed[variable.name] ?? variable.name;
     }
@@ -66,7 +68,7 @@ describe('SpacingTests', () => {
     for (const snippet of ['int     *     d{ &value };', '     *     d = 6;', 'int a  = 5;']) {
       assert.throws(
         () => applicable(trace, snippet),
-        err => err instanceof Unsupported && /spacing/.test(err.message)
+        (err: unknown) => err instanceof Unsupported && /spacing/.test(err.message)
       );
     }
   });
@@ -81,26 +83,25 @@ describe('SpacingTests', () => {
 
 describe('RevisionTests', () => {
   test('every_imported_tracer_module_is_hashed', () => {
-    const hashed = new Set(generate.TRACER_SOURCES.map(p => basename(p)));
-    const local = new Set(
-      readdirSync(ROOT)
-        .filter(f => f.endsWith('.mjs'))
-        .map(f => basename(f, '.mjs'))
-    );
-    const pending = ['generate'];
-    const seen = new Set();
+    const hashed = new Set(generate.TRACER_SOURCES.map(p => resolve(p)));
+    const pending = [join(ROOT, 'generate.mjs')];
+    const seen = new Set<string>();
     while (pending.length > 0) {
-      const name = pending.pop();
-      if (seen.has(name)) continue;
-      seen.add(name);
+      const filePath = pending.pop()!;
+      if (seen.has(filePath)) continue;
+      seen.add(filePath);
+      const rel = relative(ROOT, filePath);
       assert.ok(
-        hashed.has(`${name}.mjs`),
-        `${name} is imported by the tracer but not hashed`
+        hashed.has(filePath),
+        `${rel} is imported by the tracer but not hashed`
       );
-      const text = readFileSync(join(ROOT, `${name}.mjs`), 'utf8');
-      for (const match of text.matchAll(/^\s*import\s+[\s\S]*?from\s+['"]\.\/(\w+)\.mjs['"]/gm)) {
-        if (local.has(match[1])) {
-          pending.push(match[1]);
+      const text = readFileSync(filePath, 'utf8');
+      for (const match of text.matchAll(
+        /^\s*(?:import|export)\s+[\s\S]*?from\s+['"](\.[^'"]+)['"]/gm
+      )) {
+        const target = resolve(dirname(filePath), match[1]);
+        if (existsSync(target) && target.startsWith(ROOT)) {
+          pending.push(target);
         }
       }
     }
