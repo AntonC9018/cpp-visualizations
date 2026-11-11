@@ -16,6 +16,9 @@
   const CODE_CHAR = CODE_SIZE * CHAR, EVAL_CHAR = PANE_SIZE * CHAR;
   const LINE = 56, CELL = 64, MARGIN = 28;
   const MEMORY_WIDTH = 600, MAX_BYTE = 28;
+  // A trace with one- or two-byte cells draws wider bytes, as far as memory has room: their
+  // values must stay readable.
+  const NARROW_BYTE = 48;
   // Struct frames hug their cells; neighbouring frames just touch.
   const FRAME = { side: 4, top: 36, bottom: 40, stroke: 2.5 };
   const GAP = 2 * FRAME.side + FRAME.stroke;
@@ -360,7 +363,8 @@
     // Memory: top-level variables sit GAP apart, so frames hug their cells and just touch.
     const first = m.tops[0], last = m.tops[m.tops.length - 1];
     const fixed = GAP * (m.tops.length - 1) + 2 * NEST * m.groups.filter(s => s.parent).length;
-    const placed = placement(m, Math.min(MAX_BYTE, (MEMORY_WIDTH - fixed) / (last.address + last.size - first.address)));
+    const widest = m.leaves.some(leaf => leaf.size < 4) ? NARROW_BYTE : MAX_BYTE;
+    const placed = placement(m, Math.min(widest, (MEMORY_WIDTH - fixed) / (last.address + last.size - first.address)));
     const memoryW = placed.width;
     g.rise = m.rise;
     const paneChars = Math.max(...m.steps.map(step => step.pane.length));
@@ -677,7 +681,7 @@
       markup += rect(cell.x + 1.5, cell.y + 1.5, cell.w - 3, cell.h - 3, 'none', on ? color : P.deadStroke, 0, 3);
       if (on) {
         const shown = value => {
-          const length = String(value).length, size = Math.min(30, (cell.w - 12) / (length * CHAR));
+          const length = String(value).length, size = Math.min(30, (cell.w - Math.min(12, cell.w / 5)) / (length * CHAR));
           return text(0, size / 3 + 1, value, round(size), value === '?' ? P.grey : P.fg, 'middle');
         };
         markup += `<g transform="translate(${round(cell.x + cell.w / 2)} ${cell.y + cell.h / 2})"><g>` + (changing ? pulse(at - 0.2) : '');
