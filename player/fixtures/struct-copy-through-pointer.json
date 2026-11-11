@@ -12,7 +12,7 @@
  ],
  "steps": [
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 1,
    "op": null,
    "pane": "A a",
@@ -27,7 +27,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 2,
    "op": null,
    "pane": "a.f1 = 5",
@@ -69,7 +69,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 3,
    "op": null,
    "pane": "a.f2 = 6",
@@ -111,7 +111,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 4,
    "op": null,
    "pane": "A* pa = &a",
@@ -126,7 +126,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 4,
    "op": {
     "kind": "addr",
@@ -178,7 +178,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 5,
    "op": null,
    "pane": "a.f1 = 7",
@@ -224,7 +224,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 6,
    "op": null,
    "pane": "A b = *pa",
@@ -241,7 +241,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 6,
    "op": {
     "kind": "read",
@@ -266,7 +266,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 6,
    "op": {
     "kind": "deref",
@@ -291,7 +291,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 6,
    "op": {
     "kind": "read",
@@ -345,7 +345,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 7,
    "op": null,
    "pane": "std::cout << b.f1 << std::endl",
@@ -362,7 +362,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 7,
    "op": {
     "kind": "read",

@@ -9,7 +9,7 @@
  ],
  "steps": [
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 0,
    "op": null,
    "pane": "int a = 5",
@@ -47,7 +47,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 1,
    "op": null,
    "pane": "int* p = &a",
@@ -60,7 +60,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 1,
    "op": {
     "kind": "addr",
@@ -108,7 +108,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 2,
    "op": null,
    "pane": "int* q = p",
@@ -123,7 +123,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 2,
    "op": {
     "kind": "read",
@@ -174,7 +174,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 3,
    "op": null,
    "pane": "*q = 6",
@@ -190,7 +190,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 3,
    "op": {
     "kind": "read",
@@ -214,7 +214,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 3,
    "op": {
     "kind": "deref",
@@ -266,7 +266,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 4,
    "op": null,
    "pane": "std::cout << *p << std::endl",
@@ -282,7 +282,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 4,
    "op": {
     "kind": "read",
@@ -306,7 +306,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 4,
    "op": {
     "kind": "deref",
@@ -330,7 +330,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 4,
    "op": {
     "kind": "read",

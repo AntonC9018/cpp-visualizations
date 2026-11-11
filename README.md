@@ -14,19 +14,20 @@ git submodule add https://github.com/AntonC9018/cpp-visualizations visualization
 The commands below are written from this repository's root;
 from a host repository, prefix the paths with `visualizations/`.
 
-- `discover.py` lists the lesson examples the tracer supports and tags the ones chosen by hand.
-  It needs a host course with [course maintenance] next to this directory.
-- `tracing.py` uses Clang AST types and ranges to emit unified integer, pointer and struct traces.
-- `records.py` validates aggregate definitions and reads field offsets, sizes and alignment
-  from Clang.
-- `execution.py` runs whitelisted statements under GDB and observes every post-statement state.
-- `toolchain.py` selects compiler/debugger executables and bounds tool execution.
-- `trace_format.py` defines and validates the unified format and builds manual traces.
-- `generate.py` is the command line maintenance uses: `trace`, `probe` and `revision`.
-- `player/` holds the site engine (`player.js`, `player.css`), the manual pointer and struct
+- `src/core/` holds the isomorphic TypeScript tracer and trace format (`errors.ts`,
+  `json_format.ts`, `trace_format.ts`, `records.ts`, `layout.ts`, `tracing.ts`), decoupled from
+  Node APIs so the same AST and layout logic can run in Node or a browser Web Worker.
+- `src/node/` holds the Node toolchain, GDB runtime verification, and CLI implementations
+  (`toolchain.ts`, `execution.ts`, `records.ts`, `layout.ts`, `tracing.ts`, `generate.ts`,
+  `discover.ts`, `fixtures.ts`, `demo.ts`).
+- `src/player/` holds the modular TypeScript browser player (`constants.ts`, `svg.ts`,
+  `model.ts`, `geometry.ts`, `scene.ts`, `player_view.ts`, `layout_view.ts`, `index.ts`), bundled
+  by Vite into `player/player.js`.
+- `discover.mjs` lists the lesson examples the tracer supports and tags the ones chosen by hand.
+- `generate.mjs` is the command line maintenance uses: `trace`, `probe` and `revision`.
+- `player/` holds the bundled site engine (`player.js`, `player.css`), the manual pointer and struct
   fixtures, and a local demo. [`player/README.md`](player/README.md) documents the engine and
   the format.
-- `layout.py` emits the static struct-layout view from [#62], replacing its prototype.
 
 [course]: https://github.com/AntonC9018/uniCourse_dataStructuresAndAlgorithms
 [course maintenance]: https://github.com/AntonC9018/course_maintenance
@@ -37,7 +38,7 @@ from a host repository, prefix the paths with `visualizations/`.
 
 ## Tracing lesson examples
 
-`discover.py` inventories all outside-answer C++ fences under the configured lab roots. Clang
+`discover.mjs` inventories all outside-answer C++ fences under the configured lab roots. Clang
 checks syntax and types; an AST whitelist accepts flat integer, pointer and aggregate struct
 examples.
 Address-of, dereference chains, pointer reads/copies, shared targets and reassignment through
@@ -82,8 +83,8 @@ cell gets no visualization; empty initialization, value copies, arithmetic, assi
 output do.
 
 ```sh
-python3 discover.py --report /tmp/visualization-inventory.json
-python3 discover.py --tag en/labs/cpp/05_struct.md:670 ru/labs/cpp/05_struct.md:674
+node discover.mjs --report /tmp/visualization-inventory.json
+node discover.mjs --tag en/labs/cpp/05_struct.md:670 ru/labs/cpp/05_struct.md:674
 ```
 
 Without `--tag` discovery writes nothing: it lists the candidates. Traceable is not the same as
@@ -102,8 +103,8 @@ published. Cells are ordered by address, so declaration order may differ from th
 Unchanged-value writes, such as the failed swap, remain visible writes.
 
 ```sh
-python3 generate.py probe --source /tmp/snippet.cpp
-python3 generate.py trace --source /tmp/snippet.cpp
+node generate.mjs probe --source /tmp/snippet.cpp
+node generate.mjs trace --source /tmp/snippet.cpp
 ```
 
 `trace` prints the unified format as deterministic JSON (sorted keys). `revision` hashes the
@@ -128,19 +129,22 @@ highlight the whole object. Theme changes preserve focus.
 
 The flake pins the tools. A host repository that traces in CI keeps a flake of its own
 with the same shells, so that its lock decides when its traces are stale. `nix develop .#visualizations` provides Clang with C++
-standard headers and Python-enabled GDB, which is all tracing needs; CI uses the same shell.
-The default shell (`nix develop`) adds Node and Chromium for headless screenshots of the demo.
+standard headers, Python-enabled GDB and Node, which is all tracing needs; CI uses the same shell.
+The default shell (`nix develop`) adds Chromium for headless screenshots of the demo.
 `CLANGXX` and `GDB` select the tools; both shells set them.
 
 ```sh
-nix develop .#visualizations --command python3 -m unittest discover -s tests
+nix develop .#visualizations --command npm run test:tracer
 ```
 
-The player's browser tests run headless Chromium through Playwright, in the default shell:
+The player's browser tests, TypeScript typecheck, and Vite bundle build run in the default shell:
 
 ```sh
 nix develop --command npm ci
-nix develop --command npm test
+nix develop --command npm run typecheck
+nix develop --command npm run build
+nix develop --command npm run test:player
+nix develop --command npm run dev
 ```
 
 ## Interactivity in Markdown

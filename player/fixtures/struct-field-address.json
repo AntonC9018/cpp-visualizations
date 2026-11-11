@@ -9,7 +9,7 @@
  ],
  "steps": [
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 1,
    "op": null,
    "pane": "a = {0, 0}",
@@ -47,7 +47,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 2,
    "op": null,
    "pane": "int* b = &a.f2",
@@ -60,7 +60,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 2,
    "op": {
     "kind": "addr",
@@ -108,7 +108,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 3,
    "op": null,
    "pane": "*b = 5",
@@ -123,7 +123,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 3,
    "op": {
     "kind": "read",
@@ -146,7 +146,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 3,
    "op": {
     "kind": "deref",
@@ -196,7 +196,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 4,
    "op": null,
    "pane": "std::cout << a.f2 << std::endl",
@@ -211,7 +211,7 @@
    }
   },
   {
-   "hold": 1.0,
+   "hold": 1,
    "line": 4,
    "op": {
     "kind": "read",
