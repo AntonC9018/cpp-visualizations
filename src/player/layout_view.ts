@@ -117,4 +117,6 @@ export class Layout {
   }
 
   pause(): void {}
+
+  disconnect(): void {}
 }

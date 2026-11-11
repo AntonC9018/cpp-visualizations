@@ -273,12 +273,23 @@ function hasClang(): boolean {
   return false;
 }
 
-function walkMarkdownFiles(dir: string, repoReal: string, out: Set<string>): void {
+function walkMarkdownFiles(
+  dir: string,
+  repoReal: string,
+  out: Set<string>,
+  visitedDirs: Set<string> = new Set()
+): void {
+  const realDir = realpathSync(dir);
+  if (!realDir.startsWith(repoReal + sep) && realDir !== repoReal) {
+    throw new Error(`${dir}: [VIS] source symlink escapes repository`);
+  }
+  if (visitedDirs.has(realDir)) return;
+  visitedDirs.add(realDir);
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name);
     const st = statSync(full);
     if (st.isDirectory()) {
-      walkMarkdownFiles(full, repoReal, out);
+      walkMarkdownFiles(full, repoReal, out, visitedDirs);
     } else if (st.isFile() && entry.name.endsWith('.md')) {
       const resolved = realpathSync(full);
       if (!resolved.startsWith(repoReal + sep) && resolved !== repoReal) {

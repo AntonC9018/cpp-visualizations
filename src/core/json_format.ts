@@ -29,9 +29,9 @@ export function dumpsSorted(value: unknown, indent: number | null = null): strin
       return `[${val.map(formatCompact).join(', ')}]`;
     }
     const record = val as Record<string, unknown>;
-    const entries = Object.keys(record).map(
-      k => `${JSON.stringify(k)}: ${formatCompact(record[k])}`
-    );
+    const entries = Object.keys(record)
+      .filter(k => record[k] !== undefined)
+      .map(k => `${JSON.stringify(k)}: ${formatCompact(record[k])}`);
     return `{${entries.join(', ')}}`;
   }
   return formatCompact(ordered);

@@ -182,7 +182,7 @@ export function activeVariables(m: PreparedModel, i: number): Set<string> {
   const refs = m.steps[i].refs || {};
   for (const token of m.source[line].match(/\b[A-Za-z_]\w*\b/g) || []) {
     if (m.top.includes(token)) active.add(token);
-    if (refs[token]) {
+    if (Object.prototype.hasOwnProperty.call(refs, token) && refs[token]) {
       active.add(token);
       active.add(refs[token].split('.')[0]);
     }

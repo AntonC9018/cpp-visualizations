@@ -45,6 +45,7 @@ export class Player {
   status!: HTMLDivElement;
   typeBox!: HTMLDivElement;
   stacked: boolean | null;
+  observer: ResizeObserver | null = null;
   P!: Palette;
   g!: Geometry;
   shownType: TypeTarget | null;
@@ -137,9 +138,10 @@ export class Player {
     this.svg.addEventListener('pointerleave', () => this.hoverType(null));
     this.stacked = null;
     if (window.ResizeObserver) {
-      new ResizeObserver(() => {
+      this.observer = new ResizeObserver(() => {
         if (this.arrangement() !== this.stacked) this.refresh();
-      }).observe(root);
+      });
+      this.observer.observe(root);
     }
   }
 
@@ -387,7 +389,7 @@ export class Player {
     this.elapsed = 0;
     this.duration = stepSeconds(this.m.steps, index);
     this.render(true);
-    if (this.duration > 0) this.resume();
+    if (this.duration > 0 || autoplay) this.resume();
   }
 
   resume(): void {
@@ -406,6 +408,12 @@ export class Player {
   pause(): void {
     this.stop();
     this.update();
+  }
+
+  disconnect(): void {
+    this.pause();
+    this.observer?.disconnect();
+    this.observer = null;
   }
 
   tick(now: number): void {

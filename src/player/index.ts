@@ -57,6 +57,12 @@ function setupCourseVisualization(): void {
   }
 
   function scan(root: ParentNode = document): void {
+    for (let i = players.length - 1; i >= 0; i--) {
+      if (!players[i].host.isConnected) {
+        players[i].disconnect();
+        players.splice(i, 1);
+      }
+    }
     for (const host of root.querySelectorAll<VisualizationHost>('div.course-visualization')) {
       if (!host.dataset.cvState) host.dataset.cvState = 'waiting';
       if (host.dataset.cvState === 'waiting' && !closedAncestor(host)) initialize(host);

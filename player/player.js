@@ -262,6 +262,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     pause() {
     }
+    disconnect() {
+    }
   }
   const frameOf = (s) => ({
     x: s.x - FRAME.side,
@@ -699,7 +701,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const refs = m.steps[i].refs || {};
     for (const token of m.source[line].match(/\b[A-Za-z_]\w*\b/g) || []) {
       if (m.top.includes(token)) active.add(token);
-      if (refs[token]) {
+      if (Object.prototype.hasOwnProperty.call(refs, token) && refs[token]) {
         active.add(token);
         active.add(refs[token].split(".")[0]);
       }
@@ -1217,6 +1219,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       __publicField(this, "status");
       __publicField(this, "typeBox");
       __publicField(this, "stacked");
+      __publicField(this, "observer", null);
       __publicField(this, "P");
       __publicField(this, "g");
       __publicField(this, "shownType");
@@ -1286,9 +1289,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.svg.addEventListener("pointerleave", () => this.hoverType(null));
       this.stacked = null;
       if (window.ResizeObserver) {
-        new ResizeObserver(() => {
+        this.observer = new ResizeObserver(() => {
           if (this.arrangement() !== this.stacked) this.refresh();
-        }).observe(root);
+        });
+        this.observer.observe(root);
       }
     }
     invokeAction(action) {
@@ -1509,7 +1513,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.elapsed = 0;
       this.duration = stepSeconds(this.m.steps, index);
       this.render(true);
-      if (this.duration > 0) this.resume();
+      if (this.duration > 0 || autoplay) this.resume();
     }
     resume() {
       this.running = true;
@@ -1525,6 +1529,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     pause() {
       this.stop();
       this.update();
+    }
+    disconnect() {
+      var _a;
+      this.pause();
+      (_a = this.observer) == null ? void 0 : _a.disconnect();
+      this.observer = null;
     }
     tick(now) {
       this.frame = 0;
@@ -1622,6 +1632,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
     }
     function scan(root = document) {
+      for (let i = players.length - 1; i >= 0; i--) {
+        if (!players[i].host.isConnected) {
+          players[i].disconnect();
+          players.splice(i, 1);
+        }
+      }
       for (const host of root.querySelectorAll("div.course-visualization")) {
         if (!host.dataset.cvState) host.dataset.cvState = "waiting";
         if (host.dataset.cvState === "waiting" && !closedAncestor(host)) initialize(host);

@@ -26,7 +26,12 @@ export default defineConfig({
       configureServer(server) {
         server.middlewares.use((req, res, next) => {
           const url = req.url?.split('?')[0] ?? '/';
-          if (url === '/' || url === '/index.html' || url === '/player/demo.html') {
+          if (
+            url === '/' ||
+            url === '/index.html' ||
+            url === '/demo.html' ||
+            url === '/player/demo.html'
+          ) {
             const demoPath = resolve(ROOT, 'player/demo.html');
             const rawHtml = existsSync(demoPath)
               ? readFileSync(demoPath, 'utf8')

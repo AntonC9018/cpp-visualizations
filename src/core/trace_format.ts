@@ -541,7 +541,7 @@ function checkPointers(step: Record<string, any>, storage: StorageContext, where
   for (const [name, cell] of Object.entries(storage.cells)) {
     if (cell.kind !== 'ptr') continue;
     const value = step.values[name];
-    const target = step.targets[name];
+    const target = Object.hasOwn(step.targets, name) ? step.targets[name] : undefined;
     if (target !== undefined && target !== null) {
       const address = storage.addresses[target];
       check(
@@ -618,7 +618,9 @@ function unchangedPane(
   } else {
     const printed = step.stdout.slice(previous.stdout.length);
     check(
-      printed.startsWith(op.value) && printed.slice(op.value.length).trim() === '',
+      step.stdout.startsWith(previous.stdout) &&
+        printed.startsWith(op.value) &&
+        printed.slice(op.value.length).trim() === '',
       where,
       'stdout must grow by the printed value and optional whitespace'
     );
@@ -1031,15 +1033,7 @@ export class Builder {
   }
 
   _address(name: string): number {
-    const dot = name.indexOf('.');
-    const owner = dot === -1 ? name : name.slice(0, dot);
-    const member = dot === -1 ? '' : name.slice(dot + 1);
-    const variable = this.variables.find(item => item.name === owner)!;
-    if (!member || variable.kind !== STRUCT) {
-      return variable.address;
-    }
-    const fld = variable.fields.find(item => item.name === member)!;
-    return variable.address + fld.offset;
+    return addresses(this.variables)[name];
   }
 
   deref(token: string, target: string, via: string): this {
@@ -1066,10 +1060,13 @@ export class Builder {
       typeof this.carry === 'string'
         ? cellsOf(this.variables, this.carry)
         : Array(cells.length).fill(null);
+    const sourceTargets = sources.map(source =>
+      source && Object.hasOwn(this.targets, source) ? this.targets[source] : null
+    );
     for (let i = 0; i < cells.length; i++) {
       const cell = cells[i];
       const value = values[i];
-      const source = sources[i];
+      const sourceTarget = sourceTargets[i];
       this.values[cell] =
         value === 'nullptr'
           ? 0
@@ -1079,8 +1076,8 @@ export class Builder {
       delete this.targets[cell];
       if (Array.isArray(this.carry)) {
         this.targets[cell] = this.carry[1];
-      } else if (source && Object.hasOwn(this.targets, source)) {
-        this.targets[cell] = this.targets[source];
+      } else if (sourceTarget !== null) {
+        this.targets[cell] = sourceTarget;
       }
     }
     this.carry = null;
@@ -1103,7 +1100,10 @@ export class Builder {
     this.read(name);
     const value = this._value(name);
     const start = this.pane.indexOf('<< ') + 3;
-    this.stdout += value + (this.pane.includes('endl') ? '\n' : '');
+    const rest = this.pane.slice(start + value.length);
+    const trailing = rest.indexOf('<<');
+    const suffix = trailing === -1 ? null : whitespaceOutput(rest.slice(trailing + 2).trim());
+    this.stdout += value + (suffix ?? '');
     this._add({ kind: 'print', value, span: [start, start + value.length] }, hold);
     return this;
   }

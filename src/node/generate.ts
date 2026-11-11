@@ -69,12 +69,19 @@ export function _storage_is_contiguous(variables: TraceVariable[]): void {
 }
 
 const LITERAL = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g;
-const COMMENT = /\/\/.*/g;
+const LITERAL_OR_COMMENT = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\/\*[\s\S]*?\*\/|\/\/.*/g;
 
 export function _spacing_survives(snippet: string): boolean {
-  return !snippet
+  const stripped = snippet.replace(LITERAL_OR_COMMENT, match =>
+    match.startsWith('"') || match.startsWith("'")
+      ? '""'
+      : match.startsWith('/*')
+        ? match.replace(/[^\r\n]/g, '')
+        : ''
+  );
+  return !stripped
     .split(/\r?\n/)
-    .some(line => /\S[ \t]{2,}\S/.test(line.replace(LITERAL, '""').replace(COMMENT, '').trim()));
+    .some(line => /\S[ \t]{2,}\S/.test(line.trim()));
 }
 
 export function applicable(traceData: ExecutionTrace, snippet: string): void {
@@ -91,7 +98,7 @@ export function applicable(traceData: ExecutionTrace, snippet: string): void {
   const reads = ops.filter(op => ['read', 'addr', 'deref', 'bind'].includes(op.kind));
   const emptyInit = source.some(line => line.replace(/ /g, '').includes('{}'));
   const assignments = writes.filter(step => !DECLARATION.test(source[step.line]));
-  if (reads.length === 0 && writes.length <= 1 && assignments.length === 0) {
+  if (reads.length === 0 && writes.length <= 1 && assignments.length === 0 && !emptyInit) {
     throw new Unsupported('a lone memory cell without a copy or state change needs no visualization');
   }
   const binds = ops.some(op => op.kind === 'bind');

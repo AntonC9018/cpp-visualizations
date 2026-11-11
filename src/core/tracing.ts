@@ -221,7 +221,7 @@ export function _body(source: string): string {
 }
 
 const DEFINITION = /^struct\s+\w+\s*[{;]/;
-const DEFINITION_TEXT = /^([ \t]*)(struct\s+(\w+)\s*\{[^{}]*\}\s*;)/gm;
+const DEFINITION_TEXT = /(?:^([ \t]*)|\s*)(struct\s+(\w+)\s*\{[^{}]*\}\s*;)/gm;
 
 function dedent(text: string): string {
   const lines = text.split('\n');
@@ -251,7 +251,7 @@ function dedent(text: string): string {
 function definitions(body: string): Record<string, string> {
   const result: Record<string, string> = {};
   for (const match of body.matchAll(DEFINITION_TEXT)) {
-    result[match[3]] = dedent(match[1] + match[2]);
+    result[match[3]] = dedent((match[1] ?? '') + match[2]);
   }
   return result;
 }
