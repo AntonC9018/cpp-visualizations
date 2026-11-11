@@ -320,7 +320,7 @@ def _operation(op, step: dict, previous: dict, storage: _Storage, where: str) ->
         expected = op['target'] if kind == 'deref' else op['value']
         _check(replaced == expected, where, f'the replacement {replaced!r} is not {expected!r}')
         if kind == 'convert':
-            _check(_typed(previous, list(span)) == op['from'], where + '.from', 'is not the type of the converted value')
+            _check(_converted(previous, span) == op['from'], where + '.from', 'is not the type of the converted value')
             _check(_typed(step, [span[0], span[0] + len(replaced)]) == op['to'], where + '.to',
                    'is not the type of the result')
     else:
@@ -332,6 +332,14 @@ def _operation(op, step: dict, previous: dict, storage: _Storage, where: str) ->
 def _typed(step: dict, span: list[int]) -> str | None:
     """The type of the pane's part at `span`, if it is a typed part."""
     return next((part['type'] for part in step.get('types', []) if part['span'] == span), None)
+
+
+def _converted(step: dict, span: tuple[int, int]) -> str | None:
+    """The type of the value a conversion at `span` takes: the span itself, or the one typed
+    part inside a written cast (`7` in `static_cast<double>(7)`)."""
+    inside = [part['type'] for part in step.get('types', [])
+              if span[0] <= part['span'][0] and part['span'][1] <= span[1]]
+    return inside[0] if len(inside) == 1 else None
 
 
 def _clash(op: dict, step: dict, previous: dict, where: str) -> None:

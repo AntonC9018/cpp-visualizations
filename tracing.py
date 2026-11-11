@@ -1,4 +1,4 @@
-"""Compiler-backed execution traces of flat int, pointer and aggregate struct examples.
+"""Compiler-backed execution traces of flat integer, pointer and aggregate struct examples.
 
 Clang supplies syntax, types and record layouts. A strict AST whitelist predicts each
 statement's effects without executing arbitrary C++. GDB verifies every live scalar and
@@ -16,7 +16,7 @@ import textwrap
 import tempfile
 
 from execution import REFERENCE, Execution, execute
-from records import displayed, displayed_type, layouts, type_name, type_spelling
+from records import canonical_type, displayed, displayed_type, layouts, type_name, type_spelling
 from toolchain import IllFormed, Unsupported, run, tool
 from trace_format import (FORMAT, UNKNOWN, FormatError, scalar, struct, struct_field, field as trace_field,
                           reference as trace_reference,
@@ -24,9 +24,10 @@ from trace_format import (FORMAT, UNKNOWN, FormatError, scalar, struct, struct_f
 
 __all__ = ["Pointer", "Unsupported", "trace"]
 
-MIN_INT, MAX_INT = -(2**31), 2**31 - 1
 FIRST_ADDRESS = 64
-INT_SIZE, POINTER_SIZE = 4, 8
+POINTER_SIZE = 8
+# JSON numbers are doubles in the player: larger magnitudes would not be drawn exactly.
+MAX_EXACT = 2**53
 MAX_STATEMENTS, MAX_VARIABLES = 20, 8
 _QUOTED_OR_COMMENT = re.compile(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|//[^\n]*|/\*[\s\S]*?\*/')
 
@@ -42,18 +43,58 @@ class Pointer:
 Value = int | Pointer | dict[str, "Value | None"]
 
 
-def _integer(value: int) -> int:
-    if not MIN_INT <= value <= MAX_INT:
-        raise Unsupported("signed integer overflow is outside the timeline category")
-    return value
+@dataclass(frozen=True)
+class Integer:
+    """A builtin integer type: its bytes and whether it is signed."""
+    size: int
+    signed: bool
+
+    def wrap(self, value: int) -> int:
+        """`value` converted to this type: its low bits, as every conversion keeps them."""
+        bits = 8 * self.size
+        value %= 1 << bits
+        return value - (1 << bits) if self.signed and value >> (bits - 1) else value
+
+    def holds(self, value: int) -> bool:
+        return self.wrap(value) == value
+
+    def result(self, value: int) -> int:
+        """The result of arithmetic in this type: unsigned wraps, signed overflow is undefined."""
+        if self.signed and not self.holds(value):
+            raise Unsupported("signed integer overflow is outside the timeline category")
+        return self.wrap(value)
+
+
+# By Clang's canonical spelling, with the sizes of the pinned x86-64 toolchain; GDB checks the
+# size of every cell. `char` and `bool` are not numbers in the lessons and stay out.
+INTEGERS = {spelling: Integer(size, signed)
+            for size, names in ((1, ("signed char", "unsigned char")), (2, ("short", "unsigned short")),
+                                (4, ("int", "unsigned int")), (8, ("long", "unsigned long")),
+                                (8, ("long long", "unsigned long long")))
+            for spelling, signed in zip(names, (True, False))}
+# Clang resolves an alias only where it is the whole type, not under a pointer (`uint8_t *`).
+ALIASES = {"size_t": "unsigned long", "ptrdiff_t": "long", "intptr_t": "long", "uintptr_t": "unsigned long",
+           **{f"{prefix}int{8 * size}_t": spelling for spelling, integer in INTEGERS.items()
+              if "long long" not in spelling for prefix, size in [("" if integer.signed else "u", integer.size)]}}
+
+
+def _integer_named(spelling: str, records=()) -> Integer | None:
+    """The integer type a spelling names, unless the snippet has a struct of that name."""
+    name = spelling.removeprefix("const ").removeprefix("std::")
+    return None if name in records else INTEGERS.get(ALIASES.get(name, name))
+
+
+def _integer_type(node: dict, records=()) -> Integer | None:
+    """The integer type of an expression or declaration, behind any alias (`uint8_t`)."""
+    return _integer_named(canonical_type(node), records)
 
 
 def _depth(node: dict, records=()) -> int:
-    """How many pointer levels lie over an int or a supported struct."""
+    """How many pointer levels lie over an integer or a supported struct."""
     qualified = type_spelling(node)
-    match = re.fullmatch(r"(const )?int(?: (\*+))?", qualified)
-    if match and not (match.group(1) and match.group(2)):
-        return len(match.group(2) or "")
+    match = re.fullmatch(r"(const )?([\w: ]+?)(?: (\*+))?", canonical_type(node))
+    if match and _integer_named(match[2], records) and not (match[1] and match[3]):
+        return len(match[3] or "")
     record_type = type_name(node)
     if record_type in records:
         return 0
@@ -65,8 +106,8 @@ def _depth(node: dict, records=()) -> int:
     if "[" in qualified:
         raise Unsupported("arrays are not supported")
     if "*" in qualified:
-        raise Unsupported(f"only pointers to int are supported, not {qualified}")
-    raise Unsupported(f"only int and pointer values are supported, not {qualified or 'this type'}")
+        raise Unsupported(f"only pointers to integers are supported, not {qualified}")
+    raise Unsupported(f"only integer and pointer values are supported, not {qualified or 'this type'}")
 
 
 # Source text ------------------------------------------------------------------------------
@@ -177,7 +218,8 @@ class Reduction:
     `read` replaces it with the value of `name`, `addr` with the address of `name`, `deref`
     with the name of the variable `name` (a pointer) points to, `alias` the reference `name`
     with what it is bound to (`spelling`), and `eval` with `value` (or
-    `spelling`, when the value is not written as a number). A struct value that has a type on
+    `spelling`, when the value is not written as a number). `convert` replaces a value of the
+    type `source` with the `value` it has in another type, even when it reads the same. A struct value that has a type on
     its own, a read or a typed literal, keeps it in front: `record` names it. `span` indexes the
     statement's original pane; inner reductions come first. `type` is the type of the result.
     """
@@ -188,6 +230,7 @@ class Reduction:
     spelling: str | None = None
     record: str | None = None
     type: str | None = None
+    source: str | None = None
 
 
 class _Evaluator:
@@ -273,7 +316,16 @@ class _Evaluator:
             if cast == "NoOp":
                 return self.rvalue(children[0])
             _reject_pointer_operator(children[0])
+            if cast == "IntegralCast":
+                return self._convert(node, children[0]), None
             raise Unsupported(f"implicit {cast} conversions are outside this category")
+        if kind == "CXXStaticCastExpr" and len(children) == 1:
+            # Clang spells the conversion as implicit casts inside the written one: one step.
+            operand = children[0]
+            while (operand.get("kind") == "ImplicitCastExpr" and operand.get("castKind") in {"IntegralCast", "NoOp"}
+                   and len(operand.get("inner", [])) == 1):
+                operand = operand["inner"][0]
+            return self._convert(node, operand), None
         depth = _depth(node, self.records)
         record = self.records.get(type_name(node)) if not depth else None
         if record:
@@ -289,6 +341,9 @@ class _Evaluator:
                 for item, child in zip(record.fields, children):
                     if child.get("kind") == "ImplicitValueInitExpr":
                         value[item["name"]] = _filled(item, self.records, zero=True)
+                    elif child.get("castKind") == "IntegralCast":
+                        # The list is one typed value: a part of it has no label to change.
+                        raise Unsupported("a conversion inside a struct's braces is not supported")
                     else:
                         value[item["name"]], _ = self.rvalue(child)
                         # A list inside a list is part of the one value: it takes no step alone.
@@ -310,7 +365,7 @@ class _Evaluator:
                 self._reduce("read", node, name=name, value=value, record=record.name)
                 return value, name
         if kind == "IntegerLiteral":
-            return _integer(int(node["value"])), None
+            return int(node["value"]), None
         if kind == "InitListExpr" or kind == "CXXFunctionalCastExpr":
             return self._braces(node, depth), None
         if kind == "ParenExpr" and len(children) == 1:
@@ -323,10 +378,10 @@ class _Evaluator:
             return Pointer(name), None
         elif kind == "UnaryOperator" and node.get("opcode") in {"+", "-"} and len(children) == 1 and not depth:
             operand = self._integer_operand(children[0])
-            value = _integer(operand if node["opcode"] == "+" else -operand)
+            value = _integer_type(node).result(operand if node["opcode"] == "+" else -operand)
         elif kind == "BinaryOperator" and node.get("opcode") in {"+", "-", "*", "/", "%"} and len(children) == 2:
             _reject_pointer_operator(node)
-            value = self._arithmetic(node["opcode"], self._integer_operand(children[0]),
+            value = self._arithmetic(_integer_type(node), node["opcode"], self._integer_operand(children[0]),
                                      self._integer_operand(children[1]))
         else:
             raise Unsupported(f"unsupported expression: {kind} {node.get('opcode', '')}".rstrip())
@@ -337,6 +392,21 @@ class _Evaluator:
         value, _ = self.rvalue(node)
         if not isinstance(value, int):
             raise Unsupported("pointer arithmetic and comparison are not supported")
+        return value
+
+    def _convert(self, node: dict, operand: dict) -> int:
+        """`operand` converted to the integer type of `node`, a cast written or implied."""
+        _depth(node, self.records)
+        target = _integer_type(node)
+        if target is None or _integer_type(operand) is None:
+            raise Unsupported("only conversions between integer types are supported")
+        value = target.wrap(self._integer_operand(operand))
+        source = displayed_type(operand)
+        if source == displayed_type(node):
+            # `static_cast<int>` of an int changes nothing: the cast just goes away.
+            self._reduce("eval", node, value=value)
+        else:
+            self._reduce("convert", node, value=value, source=source)
         return value
 
     def _braces(self, node: dict, depth: int) -> Value:
@@ -356,13 +426,13 @@ class _Evaluator:
         return value
 
     @staticmethod
-    def _arithmetic(operation: str, left: int, right: int) -> int:
+    def _arithmetic(type_: Integer, operation: str, left: int, right: int) -> int:
         if operation in {"/", "%"}:
-            if right == 0 or (left == MIN_INT and right == -1):
+            quotient = right and (abs(left) // abs(right)) * (-1 if (left < 0) != (right < 0) else 1)
+            if right == 0 or not type_.holds(quotient):
                 raise Unsupported("undefined integer division")
-            quotient = (abs(left) // abs(right)) * (-1 if (left < 0) != (right < 0) else 1)
-            return _integer(quotient if operation == "/" else left - quotient * right)
-        return _integer({"+": left + right, "-": left - right, "*": left * right}[operation])
+            return quotient if operation == "/" else left - quotient * right
+        return type_.result({"+": left + right, "-": left - right, "*": left * right}[operation])
 
 
 def _strip_parentheses(node: dict) -> dict:
@@ -417,6 +487,8 @@ class Statement:
     typed: list[tuple[tuple[int, int], str]] = field(default_factory=list)
     slot: tuple[int, int] | None = None
     type: str | None = None
+    # The bytes a declared scalar takes.
+    size: int | None = None
 
 
 def _filled(item, records, zero: bool = False):
@@ -506,7 +578,7 @@ def _statement(node: dict, program: str, state: dict[str, Value | None], records
     source, mapping = _compact(program[start:end])
     left = declared = output_suffix = printed = root = name_offset = None
     whole = pointer = empty_initializer = reference = False
-    record = None
+    record = size = None
     if node["kind"] == "DeclStmt":
         children = node.get("inner", [])
         if len(children) == 1 and children[0].get("kind") == "CXXRecordDecl":
@@ -522,9 +594,11 @@ def _statement(node: dict, program: str, state: dict[str, Value | None], records
             if spelling.endswith("&&"):
                 raise Unsupported("rvalue references are not supported")
             # A reference to anything a variable may hold.
-            _depth({"type": {"qualType": spelling[:-1].rstrip()}}, records)
+            _depth({"type": {key: text[:-1].rstrip() for key, text in variable["type"].items()}}, records)
         else:
             pointer = _depth(variable, records) > 0
+            integer = _integer_type(variable)
+            size = POINTER_SIZE if pointer else integer and integer.size
         record = type_name(variable) if not pointer and type_name(variable) in records else None
         declared = variable["name"]
         if declared.startswith("__course_") or declared in state or declared in references:
@@ -579,7 +653,7 @@ def _statement(node: dict, program: str, state: dict[str, Value | None], records
     if root is None:
         pane = source.removesuffix(";").rstrip()
         return Statement(source, None, pane, target=declared, declared=declared, pointer=pointer,
-                         slot=(0, len(pane)), type=displayed_type(variable))
+                         slot=(0, len(pane)), type=displayed_type(variable), size=size)
     first, last = (start, _bounds(node)[1]) if whole else _bounds(root)
     span = (mapping[first - start], mapping[last - start])
     prefix, suffix = _pane_parts(source, span, empty_initializer)
@@ -624,10 +698,12 @@ def _statement(node: dict, program: str, state: dict[str, Value | None], records
         slot = (0, destination[1])
     elif left is None and isinstance(value, dict):
         raise Unsupported("only integer and pointer output is supported")
+    elif left is None and getattr(_integer_type(root), "size", None) == 1:
+        raise Unsupported("std::cout prints a one-byte integer as a character")
     return Statement(source, span, prefix + text + suffix, (len(prefix), len(prefix) + len(text)),
                      locate(root), value, evaluator.reductions, target, destination, declared, pointer, record,
                      output_suffix, temporary=evaluator.temporary, typed=typed, slot=slot,
-                     type=displayed_type(variable) if declared else None)
+                     type=displayed_type(variable) if declared else None, size=size)
 
 
 def _load(state, name, missing=False):
@@ -753,10 +829,6 @@ def _analyze(source: str, directory: Path) -> tuple[list[Statement], dict]:
 
 # Memory -----------------------------------------------------------------------------------
 
-def _size(pointer: bool) -> int:
-    return POINTER_SIZE if pointer else INT_SIZE
-
-
 def _normalize(addresses: dict[str, int], sizes: dict[str, int]) -> dict[str, int]:
     """Shift real addresses so the lowest sits at 64, keeping every alignment."""
     alignment = max(sizes.values())
@@ -779,16 +851,13 @@ def _without_reference_slots(real: dict[str, int], variables: list[dict]) -> dic
     return packed
 
 
-def _observed(execution: Execution, predicted: list[dict], pointers: set[str],
-              variables: list[dict] | None = None, references: dict[str, str] | None = None):
+def _observed(execution: Execution, predicted: list[dict], variables: list[dict],
+              references: dict[str, str]):
     """Check every live leaf, including unchanged fields, against GDB after each statement.
 
     A struct and its first field can share an address. Keep the statically typed target and
     verify its address rather than trying to recover an ambiguous target from that number.
     """
-    if variables is None:
-        variables = [scalar(name, 0, _size(name in pointers),
-                            'ptr' if name in pointers else 'int') for name in predicted[-1]]
     cells, addresses = leaves(variables), {}
     owners, offsets = {variable['name']: variable for variable in variables}, storage_addresses(variables)
     # A reference is observed as the address of what it names; the rest are storage.
@@ -815,7 +884,7 @@ def _observed(execution: Execution, predicted: list[dict], pointers: set[str],
             addresses.setdefault(name, addresses[owner] + offset - offsets[owner])
     for row in bindings:
         for name, cell in row.items():
-            if cell.address != addresses.get((references or {}).get(name)):
+            if cell.address != addresses.get(references.get(name)):
                 raise Unsupported(f'runtime verification failed: the reference {name} disagrees')
     for row, expected in zip(checkpoints, predicted):
         expected = _flatten(expected)
@@ -919,6 +988,8 @@ class _Renderer:
     def stored(self, value: Value) -> int:
         if isinstance(value, Pointer):
             return self.addresses[value.target] if value.target else 0
+        if abs(value) > MAX_EXACT:
+            raise Unsupported("integers beyond 2^53 are not drawn exactly")
         return value
 
     def add(self, line: int, pane: _Pane, expr, state: dict, op=None, hold: float = 1.0) -> None:
@@ -956,13 +1027,17 @@ class _Renderer:
                 # The target is where the pointer's observed value points.
                 text = (reduction.value or _load(before, reduction.name)).target
                 op = {"kind": "deref", "target": text, "via": reduction.name}
+            elif reduction.kind == "convert":
+                text = self.show(reduction.value)
+                op = {"kind": "convert", "value": text, "from": reduction.source, "to": reduction.type}
             else:
                 text = reduction.spelling or (reduction.record or "") + self.show(reduction.value)
                 op = {"kind": "eval", "value": text}
                 # A brace list of plain values is already its value, however it is spaced.
                 if isinstance(reduction.value, dict) and _spaceless(pane.read(*reduction.span)) == _spaceless(text):
                     text = pane.read(*reduction.span)
-            if pane.read(*reduction.span) != text:
+            # A conversion is a step even when the digits stay: the type is what changes.
+            if pane.read(*reduction.span) != text or reduction.kind == "convert":
                 op["span"] = pane.replace(*reduction.span, text, reduction.type)
                 self.add(line, pane, expr, before, op)
             else:
@@ -1041,7 +1116,7 @@ def trace(source: str, *, runtime: bool = True) -> dict:
                 references[name] = trace_reference(name, color)
                 continue
             record = records.get(declaration.record)
-            size = record.size if record else _size(declaration.pointer)
+            size = record.size if record else declaration.size
             alignment = record.alignment if record else size
             top = (top - size) // alignment * alignment
             if record:
@@ -1067,7 +1142,7 @@ def trace(source: str, *, runtime: bool = True) -> dict:
                 scopes.append([(name, value is not None) for name, value in _flatten(row).items()]
                               + [(name, REFERENCE) for name in bound])
             execution = execute([statement.source for statement in statements], scopes, directory)
-            addresses, states = _observed(execution, predicted, set(), variables, bound)
+            addresses, states = _observed(execution, predicted, variables, bound)
         else:
             addresses, states = storage_addresses(variables), predicted
         real = addresses
@@ -1075,7 +1150,7 @@ def trace(source: str, *, runtime: bool = True) -> dict:
             addresses = _without_reference_slots(addresses, variables)
         # Shift by ABI alignment, never by a struct's total size (which need not be a power of 2).
         alignment = max([record.alignment for record in records.values()] +
-                        [_size(d.pointer) for d in declarations if not d.record and not d.bound] + [4])
+                        [d.size for d in declarations if not d.record and not d.bound] + [4])
         addresses = _normalize(addresses, {"ABI": alignment})
         for variable in variables:
             variable['address'] = addresses[variable['name']]

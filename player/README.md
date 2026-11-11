@@ -77,11 +77,12 @@ red, blue), each at least 3:1 against the stage. Reads use `#2f64d6` on `#d9e5ff
 trace     = {format: 1, source: [line…], variables: [variable…], steps: [step…],
              title?: text, spans?: [span | null per source line],
              types?: {struct name: definition text}, references?: [{name, color}…]}
-variable  = {name, address, size, kind: "int" | "ptr", color}
+variable  = {name, address, size, kind: "int" | "ptr", color, type?}
           | {name, address, size, kind: "struct", color, type, fields: [field…]}
 field     = {name, offset, size, kind: "int" | "ptr", color}
           | {name, offset, size, kind: "struct", color, type, fields: [field…]}
-step      = {line, pane, values, targets, stdout, hold, op, expr?, refs?}
+step      = {line, pane, values, targets, stdout, hold, op, expr?, refs?, types?}
+typed     = {span, type, slot?: true}
 span      = [start, end)  — character offsets
 ```
 
@@ -97,6 +98,12 @@ span      = [start, end)  — character offsets
   are named by path (`outer.inner.x`).
 - `references` are names without storage. `refs` maps each reference bound so far to the
   variable or leaf it names; it only ever grows, by a `bind`.
+- A scalar's `type` is its declared type as the lessons write it (`int*`, `uint8_t`); the
+  player writes it under the name. `size` is its bytes: 1, 2, 4 or 8 for an integer.
+- `types` lists the typed parts of the pane, ordered and disjoint: names, literals and values,
+  each with the `type` of its label and underline. One of them may be the `slot`: the
+  declaration (`int* p`) whose type the statement's value must fit. A compound expression has
+  no part of its own until it has become a value. A trace without `types` is drawn unlabelled.
 - `line` is the zero-based source line. `pane` is the statement as currently evaluated, in the
   lessons' notation (`int b{ a };` appears as `int b = a`, `int a{};` as `int a = {}`);
   `expr` is the part of the pane that is being evaluated, the rest being muted context.
@@ -120,9 +127,16 @@ a value may only change from `null` to `"?"` (a declaration).
 | `print` | `value`, `span` | `value` (at `span`) is appended to `stdout`. |
 | `bind` | `name`, `target`, `span`, `destination` | The reference `name` (at `destination`) is bound to `target` (at `span`). |
 | `alias` | `name`, `target`, `span` | The reference `name`, at `span`, becomes `target`, which it is bound to. |
+| `convert` | `value`, `span`, `from`, `to` | The value at `span`, of type `from`, becomes `value` of type `to`. |
+| `clash` | `span`, `destination`, `from`, `to` | The value at `span`, of type `from`, does not fit the slot at `destination`, which needs `to`. |
 
-- For `read`, `addr`, `deref` and `eval`, `span` indexes the previous pane, and the new pane is
-  the previous one with that span replaced by `value` (`target` for `deref`).
+- For `read`, `addr`, `deref`, `eval` and `convert`, `span` indexes the previous pane, and the
+  new pane is the previous one with that span replaced by `value` (`target` for `deref`).
+- A `convert` replaces a typed part of type `from`, or a written cast around one
+  (`static_cast<uint8_t>(256)`), by a typed part of type `to`. The text may stay the same
+  (`0` → `0`): the label and underline change colour all the same.
+- A `clash` is the last step, on a statement that does not compile. It follows the statement
+  as written, changes nothing, and its `destination` is the pane's `slot`.
 - `write` and `print` leave the pane unchanged; their `span` covers `value` in it. A write's
   `destination` covers `name` in the pane. A print of whitespace alone is no value: its `span`
   covers the spelling that prints it, `std::endl` (or `endl`) or `'\n'` for `"\n"`, `'\t'`
@@ -141,7 +155,7 @@ The double-pointer fixture shows a full reduction: `**pp = 7` → `**72 = 7` (re
 
 `fixtures.py` writes the manual pointer and struct traces from the approved prototypes to
 `fixtures/*.json`; the tests check they are current. `demo.py` writes `demo.html` (git-ignored)
-with real tracer outputs for lesson 2 and pointer lesson examples and every fixture, each in a
+with real tracer outputs for lesson 2, pointer and conversion lesson examples and every fixture, each in a
 `<details>`, plus
 theme and language switches:
 
