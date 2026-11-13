@@ -1,0 +1,46 @@
+#pragma once
+#include_next <future>
+#if defined(_LIBCPP_HAS_THREADS) && !_LIBCPP_HAS_THREADS
+#include <functional>
+#include <memory>
+#include <utility>
+namespace std {
+enum class launch { async = 1, deferred = 2, any = 3 };
+template <class R>
+class shared_future {
+  std::shared_ptr<std::function<R()>> fn_;
+public:
+  shared_future() = default;
+  explicit shared_future(std::shared_ptr<std::function<R()>> fn) : fn_(std::move(fn)) {}
+  void wait() const { if (fn_ && *fn_) (*fn_)(); }
+  R get() const { return (*fn_)(); }
+  bool valid() const noexcept { return static_cast<bool>(fn_); }
+};
+template <>
+class shared_future<void> {
+  std::shared_ptr<std::function<void()>> fn_;
+public:
+  shared_future() = default;
+  explicit shared_future(std::shared_ptr<std::function<void()>> fn) : fn_(std::move(fn)) {}
+  void wait() const { if (fn_ && *fn_) { (*fn_)(); *fn_ = nullptr; } }
+  void get() const { wait(); }
+  bool valid() const noexcept { return static_cast<bool>(fn_); }
+};
+template <class R>
+class future {
+  std::shared_ptr<std::function<R()>> fn_;
+public:
+  future() = default;
+  explicit future(std::function<R()> fn) : fn_(std::make_shared<std::function<R()>>(std::move(fn))) {}
+  shared_future<R> share() noexcept { return shared_future<R>(std::move(fn_)); }
+  void wait() const { if (fn_ && *fn_) (*fn_)(); }
+  R get() { return (*fn_)(); }
+};
+template <class F, class... Args>
+auto async(launch, F &&f, Args &&...args) -> future<decltype(f(std::forward<Args>(args)...))> {
+  using R = decltype(f(std::forward<Args>(args)...));
+  auto bound = std::bind(std::forward<F>(f), std::forward<Args>(args)...);
+  return future<R>(std::move(bound));
+}
+} // namespace std
+#endif

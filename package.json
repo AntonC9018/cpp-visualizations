@@ -5,12 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "vite build && vite build --mode worker && vite build --mode playground",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "node --test \"tests/*.test.ts\"",
-    "test:tracer": "node --test tests/generation.test.ts tests/layout.test.ts tests/references.test.ts tests/structs.test.ts tests/trace_format.test.ts tests/tracing.test.ts",
-    "test:player": "node --test tests/player.test.ts"
+    "test:tracer": "node --test tests/generation.test.ts tests/layout.test.ts tests/references.test.ts tests/structs.test.ts tests/trace_format.test.ts tests/tracing.test.ts tests/wasm_frontend.test.ts",
+    "test:player": "node --test tests/player.test.ts",
+    "test:wasm": "node --test tests/wasm_frontend.test.ts tests/playground.test.ts"
   },
   "dependencies": {
     "playwright": "1.62.0"

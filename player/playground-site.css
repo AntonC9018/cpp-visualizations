@@ -1,0 +1,186 @@
+/* Course-site integration for the C++ Execution Playground:
+ * - Rainbow button in the top header (next to theme/language) and C++ sidebar
+ * - Always-visible Playground launch button next to Expressive Code's Copy button
+ *   on code blocks paired with a visualization.
+ */
+
+@keyframes cv-rainbow-flow {
+  0% {
+    background-position: 0% 50%, 0% 50%;
+  }
+  50% {
+    background-position: 0% 50%, 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%, 0% 50%;
+  }
+}
+
+.cv-rainbow-link {
+  --cv-rb-surface: linear-gradient(135deg, rgba(22, 27, 46, 0.96), rgba(32, 24, 54, 0.96));
+  --cv-rb-border: linear-gradient(
+    115deg,
+    #ff5f6d 0%,
+    #ffc371 18%,
+    #5eead4 38%,
+    #38bdf8 58%,
+    #818cf8 78%,
+    #f472b6 92%,
+    #ff5f6d 100%
+  );
+  --cv-rb-ink: #f6f8ff;
+  --cv-rb-glow: 0 2px 12px -2px rgba(129, 140, 248, 0.38),
+    0 1px 6px -1px rgba(56, 189, 248, 0.26);
+
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  border: 1.5px solid transparent;
+  background-image: var(--cv-rb-surface), var(--cv-rb-border);
+  background-origin: padding-box, border-box;
+  background-clip: padding-box, border-box;
+  background-size: 100% 100%, 240% 240%;
+  animation: cv-rainbow-flow 7s ease infinite;
+  color: var(--cv-rb-ink);
+  font-weight: 650;
+  text-decoration: none;
+  box-shadow: var(--cv-rb-glow);
+  transition: transform 0.16s ease, box-shadow 0.16s ease, filter 0.16s ease;
+}
+
+:root[data-theme='light'] .cv-rainbow-link {
+  --cv-rb-surface: linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(244, 242, 255, 0.98));
+  --cv-rb-ink: #171c2e;
+  --cv-rb-glow: 0 2px 10px -2px rgba(99, 102, 241, 0.28),
+    0 1px 4px -1px rgba(236, 72, 153, 0.18);
+}
+
+.cv-rainbow-link::before {
+  content: '';
+  flex: none;
+  width: 0.9rem;
+  height: 0.9rem;
+  background: linear-gradient(135deg, #ff6b6b, #ffd166, #4ade80, #38bdf8, #c084fc);
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cpath d='M5 3.5v13l11-6.5z'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cpath d='M5 3.5v13l11-6.5z'/%3E%3C/svg%3E");
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+}
+
+.cv-rainbow-link:hover,
+.cv-rainbow-link:focus-visible {
+  color: var(--cv-rb-ink);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 16px -2px rgba(56, 189, 248, 0.45),
+    0 2px 10px -2px rgba(244, 114, 182, 0.35);
+}
+
+.cv-rainbow-link:focus-visible {
+  outline: 2px solid var(--sl-color-text-accent, #818cf8);
+  outline-offset: 2px;
+}
+
+.cv-rainbow-header {
+  padding: 0.3rem 0.72rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  line-height: 1.25;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.mobile-preferences .cv-rainbow-header {
+  padding: 0.35rem 0.75rem;
+}
+
+.sidebar-content a.cv-rainbow-sidebar {
+  display: inline-flex;
+  width: 100%;
+  align-items: center;
+  border-radius: 0.5rem;
+  padding: 0.38rem 0.6rem;
+  margin: 0.15rem 0 0.3rem;
+  font-size: var(--sl-text-sm, 0.875rem);
+  line-height: 1.35;
+}
+
+/* Always-visible Playground action next to Expressive Code's Copy button. */
+.expressive-code .copy .cv-ec-playground-btn {
+  --cv-btn-border: linear-gradient(
+    135deg,
+    #ff6b6b 0%,
+    #ffd166 25%,
+    #5eead4 50%,
+    #38bdf8 75%,
+    #c084fc 100%
+  );
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: flex-end;
+  flex: none;
+  margin: 0;
+  padding: 0;
+  width: 2.5rem;
+  height: 2.5rem;
+  border: 1.5px solid transparent;
+  border-radius: 0.25rem;
+  background-image: linear-gradient(var(--code-background, #1d2027), var(--code-background, #1d2027)),
+    var(--cv-btn-border);
+  background-origin: padding-box, border-box;
+  background-clip: padding-box, border-box;
+  color: var(--sl-color-text, #eef3fa);
+  text-decoration: none;
+  cursor: pointer;
+  z-index: 1;
+  opacity: 1;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+:root[data-theme='light'] .expressive-code .copy .cv-ec-playground-btn {
+  color: var(--sl-color-text, #1d2430);
+}
+
+@media (hover: hover) {
+  .expressive-code .copy .cv-ec-playground-btn {
+    width: 2rem;
+    height: 2rem;
+  }
+}
+
+.expressive-code .copy .cv-ec-playground-btn svg {
+  width: 0.95rem;
+  height: 0.95rem;
+  display: block;
+}
+
+.expressive-code .copy .cv-ec-playground-btn:hover,
+.expressive-code .copy .cv-ec-playground-btn:focus-visible {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 10px -1px rgba(56, 189, 248, 0.45);
+}
+
+.expressive-code .copy .cv-ec-playground-btn:focus-visible {
+  outline: 2px solid var(--sl-color-text-accent, #818cf8);
+  outline-offset: 2px;
+}
+
+/* Reserve horizontal space on line 1 for both Playground and Copy buttons. */
+.expressive-code.cv-has-playground :nth-child(1 of .ec-line) .code {
+  padding-inline-end: calc(4.75rem + var(--ec-codePadInl, 1rem));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cv-rainbow-link {
+    animation: none;
+  }
+  .cv-rainbow-link,
+  .expressive-code .copy .cv-ec-playground-btn {
+    transition: none;
+  }
+}

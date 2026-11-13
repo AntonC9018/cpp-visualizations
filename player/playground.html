@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>C++ Memory &amp; Layout Playground</title>
+<script>
+const query = new URLSearchParams(location.search);
+const theme = query.get('theme');
+if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
+const lang = query.get('lang');
+if (lang === 'en' || lang === 'ru') document.documentElement.lang = lang;
+</script>
+<link rel="stylesheet" href="player.css">
+<link rel="stylesheet" href="playground.css">
+<script defer src="playground.js"></script>
+<body>
+  <div id="playground-root" class="pg-shell"></div>
+</body>
+</html>

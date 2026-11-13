@@ -23,11 +23,17 @@ from a host repository, prefix the paths with `visualizations/`.
 - `src/player/` holds the modular TypeScript browser player (`constants.ts`, `svg.ts`,
   `model.ts`, `geometry.ts`, `scene.ts`, `player_view.ts`, `layout_view.ts`, `index.ts`), bundled
   by Vite into `player/player.js`.
+- `src/browser/` holds the browser Clang WASM runtime and interactive playground (`wasi.ts`,
+  `wasm_frontend.ts`, `cache.ts`, `worker.ts`, `client.ts`, `playground.ts`), bundled into
+  `player/clang-worker.js` and `player/playground.js`.
+- `wasm/` holds the trimmed Clang 21 WASM frontend (`clang-trace-frontend.cpp`, WASI compatibility
+  shims, and `build.sh` producing the git-ignored `player/clang-trace-frontend.wasm`).
 - `discover.mjs` lists the lesson examples the tracer supports and tags the ones chosen by hand.
 - `generate.mjs` is the command line maintenance uses: `trace`, `probe` and `revision`.
-- `player/` holds the bundled site engine (`player.js`, `player.css`), the manual pointer and struct
-  fixtures, and a local demo. [`player/README.md`](player/README.md) documents the engine and
-  the format.
+- `player/` holds the bundled site engine (`player.js`, `player.css`), the browser playground
+  (`playground.html`, `playground.css`, `playground.js`, `clang-worker.js`), the manual pointer
+  and struct fixtures, and a local demo. [`player/README.md`](player/README.md) documents the
+  engine and the format.
 
 [course]: https://github.com/AntonC9018/uniCourse_dataStructuresAndAlgorithms
 [course maintenance]: https://github.com/AntonC9018/course_maintenance
@@ -144,8 +150,26 @@ nix develop --command npm ci
 nix develop --command npm run typecheck
 nix develop --command npm run build
 nix develop --command npm run test:player
+nix develop --command npm run test:wasm
 nix develop --command npm run dev
 ```
+
+## Browser Clang WASM playground
+
+`player/playground.html` runs the isomorphic tracer (`src/core/`) inside a dedicated Web Worker
+against a trimmed Clang 21 WASM build (`player/clang-trace-frontend.wasm`, ~17 MB raw / ~4.2 MB
+brotli). The worker downloads the module once, stores it in the browser Cache API
+(`clang-trace-frontend-v1`), and reuses cached bytes across reloads without re-fetching.
+
+`*.wasm` binaries are git-ignored; rebuild `player/clang-trace-frontend.wasm` from LLVM 21.1.8
+sources with:
+
+```sh
+./wasm/build.sh
+```
+
+Override the compiler binary URL via `?wasm=https://.../clang-trace-frontend.wasm`,
+`data-wasm-url` on `#playground-root`, or `window.CoursePlaygroundConfig.wasmUrl`.
 
 ## Interactivity in Markdown
 

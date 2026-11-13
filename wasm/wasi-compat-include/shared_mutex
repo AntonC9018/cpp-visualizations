@@ -1,0 +1,32 @@
+#pragma once
+#include_next <shared_mutex>
+#if defined(_LIBCPP_HAS_THREADS) && !_LIBCPP_HAS_THREADS
+namespace std {
+struct shared_mutex {
+  void lock() noexcept {}
+  bool try_lock() noexcept { return true; }
+  void unlock() noexcept {}
+  void lock_shared() noexcept {}
+  bool try_lock_shared() noexcept { return true; }
+  void unlock_shared() noexcept {}
+};
+struct shared_timed_mutex : shared_mutex {};
+template <class Mutex>
+class shared_lock {
+  Mutex *m_ = nullptr;
+  bool owns_ = false;
+public:
+  shared_lock() noexcept = default;
+  explicit shared_lock(Mutex &m) : m_(&m), owns_(true) { m_->lock_shared(); }
+  ~shared_lock() { if (owns_) m_->unlock_shared(); }
+  shared_lock(shared_lock &&o) noexcept : m_(o.m_), owns_(o.owns_) { o.m_ = nullptr; o.owns_ = false; }
+  shared_lock &operator=(shared_lock &&o) noexcept {
+    if (owns_) m_->unlock_shared();
+    m_ = o.m_; owns_ = o.owns_; o.m_ = nullptr; o.owns_ = false;
+    return *this;
+  }
+  void lock() { if (m_) { m_->lock_shared(); owns_ = true; } }
+  void unlock() { if (m_ && owns_) { m_->unlock_shared(); owns_ = false; } }
+};
+} // namespace std
+#endif

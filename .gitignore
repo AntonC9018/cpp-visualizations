@@ -4,3 +4,5 @@ renders/
 __pycache__/
 node_modules/
 player/demo.html
+*.wasm
+wasm/build/
