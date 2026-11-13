@@ -1,0 +1,16 @@
+#pragma once
+#include_next <fstream>
+#include <istream>
+
+_LIBCPP_BEGIN_NAMESPACE_STD
+
+template <class _CharT, class _Traits>
+class basic_ifstream : public basic_istream<_CharT, _Traits> {
+public:
+  explicit basic_ifstream(const char *) : basic_istream<_CharT, _Traits>(nullptr) {}
+  explicit basic_ifstream(const basic_string<_CharT, _Traits> &)
+      : basic_istream<_CharT, _Traits>(nullptr) {}
+  bool is_open() const { return false; }
+};
+
+_LIBCPP_END_NAMESPACE_STD

@@ -1,0 +1,18 @@
+#pragma once
+#include_next <mutex>
+#if defined(_LIBCPP_HAS_THREADS) && !_LIBCPP_HAS_THREADS
+namespace std {
+struct mutex {
+  constexpr mutex() noexcept = default;
+  void lock() noexcept {}
+  bool try_lock() noexcept { return true; }
+  void unlock() noexcept {}
+};
+struct recursive_mutex {
+  constexpr recursive_mutex() noexcept = default;
+  void lock() noexcept {}
+  bool try_lock() noexcept { return true; }
+  void unlock() noexcept {}
+};
+} // namespace std
+#endif

@@ -1,0 +1,12 @@
+#pragma once
+#include_next <condition_variable>
+#if defined(_LIBCPP_HAS_THREADS) && !_LIBCPP_HAS_THREADS
+namespace std {
+struct condition_variable {
+  void notify_one() noexcept {}
+  void notify_all() noexcept {}
+  template <class Lock> void wait(Lock &) {}
+  template <class Lock, class Pred> void wait(Lock &, Pred p) { while (!p()) {} }
+};
+} // namespace std
+#endif
