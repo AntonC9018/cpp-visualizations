@@ -458,53 +458,29 @@ export function extractMainAstFromStdout(stdout: string, program: string): AstNo
 
 // Evaluation -------------------------------------------------------------------------------
 
-export type ReductionKind = 'read' | 'addr' | 'deref' | 'alias' | 'eval' | 'convert';
-
-export interface ReductionDetails {
-  name?: string | null;
-  value?: any;
-  spelling?: string | null;
-  record?: string | null;
-  type?: string | null;
-  source?: string | null;
-}
-
 /**
- * One rewrite of the pane. `read` replaces `span` with the value of `name`, `addr` with the
- * address of `name`, `deref` with the name of the variable `name` (a pointer) points to,
- * `alias` the reference `name` with what it is bound to (`spelling`), and `eval` with `value`
- * (or `spelling`, when the value is not written as a number). `convert` replaces a value of
- * the type `source` with the `value` it has in another type, even when it reads the same. A
- * struct value that has a type on its own keeps it in front: `record` names it. `span`
- * indexes the statement's original pane; inner reductions come first. `type` is the type of
- * the result.
+ * One rewrite of the pane: the part at `span`, which indexes the statement's original pane,
+ * becomes a value of `type`; inner reductions come first.
+ * - `read`: the value of `name`; a struct value that has a type on its own keeps it in front,
+ *   and `record` names it.
+ * - `addr`: the address of `name`.
+ * - `deref`: the name of the variable that the pointer `name` points to (`value`, when known).
+ * - `alias`: what the reference `name` is bound to, `spelling`.
+ * - `eval`: `value`, with `record` as for `read`.
+ * - `convert`: a value of the type `source` becomes the `value` it has in `type`, even when it
+ *   reads the same.
  */
-export class Reduction {
-  kind: ReductionKind;
-  span: Span;
-  name: string | null;
-  value: any;
-  spelling: string | null;
-  record: string | null;
-  type: string | null;
-  source: string | null;
+export type Reduction = { readonly span: Span; readonly type: string } & (
+  | { readonly kind: 'read'; readonly name: string; readonly record: string | null }
+  | { readonly kind: 'addr'; readonly name: string }
+  | { readonly kind: 'deref'; readonly name: string; readonly value: Pointer | null }
+  | { readonly kind: 'alias'; readonly name: string; readonly spelling: string }
+  | { readonly kind: 'eval'; readonly value: any; readonly record: string | null }
+  | { readonly kind: 'convert'; readonly value: number; readonly source: string }
+);
 
-  constructor(
-    kind: ReductionKind,
-    span: Span,
-    { name = null, value = null, spelling = null, record = null, type = null, source = null }: ReductionDetails = {}
-  ) {
-    this.kind = kind;
-    this.span = span;
-    this.name = name;
-    this.value = value;
-    this.spelling = spelling;
-    this.record = record;
-    this.type = type;
-    this.source = source;
-    Object.freeze(this);
-  }
-}
+/** A reduction's own fields, one shape per kind: the evaluator adds where it is and its type. */
+type ReductionDetails = Reduction extends infer R ? (R extends unknown ? Omit<R, 'span' | 'type'> : never) : never;
 
 function load(state: Record<string, any>, name: string, missing = false): any {
   const [owner, ...path] = name.split('.');
@@ -586,8 +562,16 @@ class Evaluator {
     this.temporary = false;
   }
 
-  _reduce(kind: ReductionKind, node: AstNode, details: Omit<ReductionDetails, 'type'> = {}): void {
-    this.reductions.push(new Reduction(kind, this.locate(node), { ...details, type: displayedType(node) }));
+  _reduce(node: AstNode, details: ReductionDetails): void {
+    this.reductions.push({ ...details, span: this.locate(node), type: displayedType(node) });
+  }
+
+  /** A brace list inside another one is part of its value, not an evaluation of its own. */
+  _absorb(child: AstNode | undefined, value: any): void {
+    const last = this.reductions[this.reductions.length - 1];
+    if (child?.kind === 'InitListExpr' && last?.kind === 'eval' && last.value === value) {
+      this.reductions.pop();
+    }
   }
 
   _load(name: string): any {
@@ -606,7 +590,7 @@ class Evaluator {
       declaration.kind === 'VarDecl' &&
       Object.hasOwn(this.references, name)
     ) {
-      this._reduce('alias', node, { name, spelling: this.references[name] });
+      this._reduce(node, { kind: 'alias', name, spelling: this.references[name] });
       return this.references[name];
     }
     if (
@@ -638,7 +622,7 @@ class Evaluator {
           throw new Unsupported(`dereferencing the null pointer ${via} is undefined`);
         }
         const name = `${pointer.target}.${node.name}`;
-        this._reduce('deref', outer ?? node, { name: via, value: new Pointer(name) });
+        this._reduce(outer ?? node, { kind: 'deref', name: via, value: new Pointer(name) });
         return name;
       }
       return `${this.lvalue(children[0])}.${node.name}`;
@@ -651,7 +635,7 @@ class Evaluator {
       if (pointer.target === null) {
         throw new Unsupported(`dereferencing the null pointer ${via} is undefined`);
       }
-      this._reduce('deref', outer ?? node, { name: via });
+      this._reduce(outer ?? node, { kind: 'deref', name: via, value: null });
       return pointer.target;
     }
     throw new Unsupported(`unsupported assignable expression: ${kind}`);
@@ -673,7 +657,7 @@ class Evaluator {
         _depth(node, this.records);
         const name = this.lvalue(children[0]);
         const value = this._load(name);
-        this._reduce('read', node, { name, value });
+        this._reduce(node, { kind: 'read', name, record: null });
         return [value, name];
       }
       if (cast === 'NullToPointer' && _depth(node, this.records)) {
@@ -682,7 +666,7 @@ class Evaluator {
           literal?.kind === 'CXXNullPtrLiteralExpr' ||
           (literal?.kind === 'IntegerLiteral' && literal?.value === '0')
         ) {
-          this._reduce('eval', node, { value: new Pointer() });
+          this._reduce(node, { kind: 'eval', value: new Pointer(), record: null });
           return [new Pointer(), null];
         }
       }
@@ -712,14 +696,8 @@ class Evaluator {
     if (record) {
       if (kind === 'CXXFunctionalCastExpr' && children.length === 1) {
         const [value] = this.rvalue(children[0]);
-        if (
-          children[0]?.kind === 'InitListExpr' &&
-          this.reductions.length > 0 &&
-          this.reductions[this.reductions.length - 1].value === value
-        ) {
-          this.reductions.pop();
-        }
-        this._reduce('eval', node, { value, record: record.name });
+        this._absorb(children[0], value);
+        this._reduce(node, { kind: 'eval', value, record: record.name });
         return [value, null];
       }
       if (kind === 'InitListExpr') {
@@ -736,16 +714,10 @@ class Evaluator {
           } else {
             const [childVal] = this.rvalue(child);
             value[item.name] = childVal;
-            if (
-              child?.kind === 'InitListExpr' &&
-              this.reductions.length > 0 &&
-              this.reductions[this.reductions.length - 1].value === value[item.name]
-            ) {
-              this.reductions.pop();
-            }
+            this._absorb(child, childVal);
           }
         }
-        this._reduce('eval', node, { value });
+        this._reduce(node, { kind: 'eval', value, record: null });
         return [value, null];
       }
       if (kind === 'CXXConstructExpr') {
@@ -766,7 +738,7 @@ class Evaluator {
         if (Object.values(_flatten({ [name]: value })).some(item => item === null)) {
           throw new Unsupported(`reading uninitialized struct ${name}`);
         }
-        this._reduce('read', node, { name, value, record: record.name });
+        this._reduce(node, { kind: 'read', name, record: record.name });
         return [value, name];
       }
     }
@@ -784,7 +756,7 @@ class Evaluator {
         throw new Unsupported('only the address of a variable is supported');
       }
       const name = this.lvalue(children[0]);
-      this._reduce('addr', node, { name });
+      this._reduce(node, { kind: 'addr', name });
       return [new Pointer(name), null];
     } else if (
       kind === 'UnaryOperator' &&
@@ -812,7 +784,7 @@ class Evaluator {
     } else {
       throw new Unsupported(`unsupported expression: ${kind} ${node?.opcode ?? ''}`.trimEnd());
     }
-    this._reduce('eval', node, { value });
+    this._reduce(node, { kind: 'eval', value, record: null });
     return [value, null];
   }
 
@@ -835,9 +807,9 @@ class Evaluator {
     const source = displayedType(operand);
     if (source === displayedType(node)) {
       // `static_cast<int>` of an int changes nothing: the cast just goes away.
-      this._reduce('eval', node, { value });
+      this._reduce(node, { kind: 'eval', value, record: null });
     } else {
-      this._reduce('convert', node, { value, source });
+      this._reduce(node, { kind: 'convert', value, source });
     }
     return value;
   }
@@ -861,7 +833,7 @@ class Evaluator {
     } else {
       value = depth ? new Pointer() : 0;
     }
-    this._reduce('eval', node, { value });
+    this._reduce(node, { kind: 'eval', value, record: null });
     return value;
   }
 
@@ -1864,22 +1836,22 @@ class Renderer {
       let text: string;
       let op: Record<string, any>;
       if (reduction.kind === 'read') {
-        text = (reduction.record ?? '') + this.show(load(before, reduction.name!));
+        text = (reduction.record ?? '') + this.show(load(before, reduction.name));
         op = { kind: 'read', name: reduction.name, value: text };
       } else if (reduction.kind === 'addr') {
-        text = String(this.addresses[reduction.name!]);
+        text = String(this.addresses[reduction.name]);
         op = { kind: 'addr', name: reduction.name, value: text };
       } else if (reduction.kind === 'alias') {
-        text = reduction.spelling!;
+        text = reduction.spelling;
         op = { kind: 'alias', name: reduction.name, target: text };
       } else if (reduction.kind === 'deref') {
-        text = (reduction.value ?? load(before, reduction.name!)).target;
+        text = (reduction.value ?? load(before, reduction.name)).target;
         op = { kind: 'deref', target: text, via: reduction.name };
       } else if (reduction.kind === 'convert' && this.types) {
         text = this.show(reduction.value);
         op = { kind: 'convert', value: text, from: reduction.source, to: reduction.type };
       } else {
-        text = reduction.spelling ?? (reduction.record ?? '') + this.show(reduction.value);
+        text = (reduction.kind === 'eval' ? (reduction.record ?? '') : '') + this.show(reduction.value);
         op = { kind: 'eval', value: text };
         // A brace list of plain values is already its value, however it is spaced.
         if (
