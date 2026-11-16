@@ -13,7 +13,9 @@ import {
   Pointer,
   REFERENCE,
   type Reduction,
+  type State,
   Statement,
+  type StructValue,
   Unsupported,
   snippetBody,
   pointerDepth,
@@ -23,6 +25,7 @@ import {
   storeResult,
   hooks,
   traceWithFrontend,
+  type Value,
 } from '../core/tracing.ts';
 import { execute as defaultExecute } from './execution.ts';
 import { createClangFrontend } from './toolchain.ts';
@@ -38,7 +41,9 @@ export {
   Pointer,
   REFERENCE,
   type Reduction,
+  type State,
   Statement,
+  type StructValue,
   Unsupported,
   snippetBody,
   pointerDepth,
@@ -48,6 +53,7 @@ export {
   storeResult,
   hooks,
   traceWithFrontend,
+  type Value,
 };
 
 export function trace(

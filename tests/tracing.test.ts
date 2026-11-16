@@ -460,7 +460,7 @@ describe('StaticPointerTraceTests', () => {
 });
 
 describe('ObservationTests', () => {
-  const PREDICTED = [{ a: 5 }, { a: 5, p: new Pointer('a') }];
+  const PREDICTED: tracing.State[] = [{ a: 5 }, { a: 5, p: new Pointer('a') }];
   const VARIABLES = [scalar('a', 0, 4), scalar('p', 0, 8, 'ptr')];
   const observed = (execution: Execution) => tracing.observeExecution(execution, PREDICTED, VARIABLES, {});
 

@@ -1102,7 +1102,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }
   const REFERENCE = "reference";
   const hooks = {
-    execute: null
+    execute: null,
+    after: (statement, state) => storeResult(statement, state)
   };
   const FIRST_ADDRESS = 64;
   const POINTER_SIZE = 8;
@@ -1116,6 +1117,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.target = target;
       Object.freeze(this);
     }
+  }
+  function asPointer(value) {
+    if (!(value instanceof Pointer)) throw new Error("expected a pointer value");
+    return value;
+  }
+  function fieldOf(value, field2) {
+    if (!isPlainObject(value)) throw new Error(`expected a struct value with the field ${field2}`);
+    return value[field2];
   }
   function isPlainObject(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value) && !(value instanceof Pointer);
@@ -1203,7 +1212,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const map = records;
     return Object.hasOwn(map, name) ? map[name] : void 0;
   }
-  function _depth(node, records = {}) {
+  function pointerDepth(node, records = {}) {
     const qualified = typeSpelling(node);
     const intMatch = /^(const )?([\w: ]+?)(?: (\*+))?$/.exec(canonicalType(node));
     if (intMatch && integerNamed(intMatch[2], records) && !(intMatch[1] && intMatch[3])) {
@@ -1234,7 +1243,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return true;
   }
-  function _body(source) {
+  function snippetBody(source) {
     let cleaned = source.replace(QUOTED_OR_COMMENT, (value) => {
       if (value.startsWith("//") || value.startsWith("/*")) {
         const newlines = (value.match(/\n/g) || []).length;
@@ -1407,11 +1416,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     let value = state[owner];
     for (const member of path) {
-      value = value[member];
+      value = fieldOf(value, member);
     }
     return value;
   }
-  function _flatten(state) {
+  function flatten(state) {
     const cells = {};
     for (const [name, value] of Object.entries(state)) {
       if (isPlainObject(value)) {
@@ -1419,7 +1428,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         for (const [member, item] of Object.entries(value)) {
           sub[`${name}.${member}`] = item;
         }
-        Object.assign(cells, _flatten(sub));
+        Object.assign(cells, flatten(sub));
       } else {
         cells[name] = value;
       }
@@ -1461,17 +1470,17 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.references = references;
       this.temporary = false;
     }
-    _reduce(node, details) {
+    reduce(node, details) {
       this.reductions.push({ ...details, span: this.locate(node), type: displayedType(node) });
     }
     /** A brace list inside another one is part of its value, not an evaluation of its own. */
-    _absorb(child, value) {
+    absorb(child, value) {
       const last = this.reductions[this.reductions.length - 1];
       if ((child == null ? void 0 : child.kind) === "InitListExpr" && (last == null ? void 0 : last.kind) === "eval" && last.value === value) {
         this.reductions.pop();
       }
     }
-    _load(name) {
+    load(name) {
       const value = load(this.state, name);
       if (value === null || value === void 0) {
         throw new Unsupported(`reading uninitialized variable ${name}`);
@@ -1482,7 +1491,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const declaration = (node == null ? void 0 : node.referencedDecl) ?? {};
       const name = declaration.name ?? "";
       if ((node == null ? void 0 : node.kind) === "DeclRefExpr" && declaration.kind === "VarDecl" && Object.hasOwn(this.references, name)) {
-        this._reduce(node, { kind: "alias", name, spelling: this.references[name] });
+        this.reduce(node, { kind: "alias", name, spelling: this.references[name] });
         return this.references[name];
       }
       if ((node == null ? void 0 : node.kind) !== "DeclRefExpr" || declaration.kind !== "VarDecl" || !Object.hasOwn(this.state, name)) {
@@ -1501,28 +1510,30 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
       if (kind === "MemberExpr" && children.length === 1) {
         if (node.isArrow) {
-          const [pointer, via] = this.rvalue(children[0]);
+          const [value, via] = this.rvalue(children[0]);
           if (via === null) {
             throw new Unsupported("arrow access requires a pointer variable");
           }
+          const pointer = asPointer(value);
           if (pointer.target === null) {
             throw new Unsupported(`dereferencing the null pointer ${via} is undefined`);
           }
           const name = `${pointer.target}.${node.name}`;
-          this._reduce(outer ?? node, { kind: "deref", name: via, value: new Pointer(name) });
+          this.reduce(outer ?? node, { kind: "deref", name: via, value: new Pointer(name) });
           return name;
         }
         return `${this.lvalue(children[0])}.${node.name}`;
       }
       if (kind === "UnaryOperator" && node.opcode === "*" && children.length === 1) {
-        const [pointer, via] = this.rvalue(children[0]);
+        const [value, via] = this.rvalue(children[0]);
         if (via === null) {
           throw new Unsupported("only dereferencing a pointer variable is supported, not a computed address");
         }
+        const pointer = asPointer(value);
         if (pointer.target === null) {
           throw new Unsupported(`dereferencing the null pointer ${via} is undefined`);
         }
-        this._reduce(outer ?? node, { kind: "deref", name: via, value: null });
+        this.reduce(outer ?? node, { kind: "deref", name: via, value: null });
         return pointer.target;
       }
       throw new Unsupported(`unsupported assignable expression: ${kind}`);
@@ -1541,16 +1552,16 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       if (kind === "ImplicitCastExpr" && children.length === 1) {
         const cast = node.castKind;
         if (cast === "LValueToRValue") {
-          _depth(node, this.records);
+          pointerDepth(node, this.records);
           const name = this.lvalue(children[0]);
-          const value2 = this._load(name);
-          this._reduce(node, { kind: "read", name, record: null });
+          const value2 = this.load(name);
+          this.reduce(node, { kind: "read", name, record: null });
           return [value2, name];
         }
-        if (cast === "NullToPointer" && _depth(node, this.records)) {
+        if (cast === "NullToPointer" && pointerDepth(node, this.records)) {
           const literal = children[0];
           if ((literal == null ? void 0 : literal.kind) === "CXXNullPtrLiteralExpr" || (literal == null ? void 0 : literal.kind) === "IntegerLiteral" && (literal == null ? void 0 : literal.value) === "0") {
-            this._reduce(node, { kind: "eval", value: new Pointer(), record: null });
+            this.reduce(node, { kind: "eval", value: new Pointer(), record: null });
             return [new Pointer(), null];
           }
         }
@@ -1559,7 +1570,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         }
         rejectPointerOperator(children[0]);
         if (cast === "IntegralCast") {
-          return [this._convert(node, children[0]), null];
+          return [this.convert(node, children[0]), null];
         }
         throw new Unsupported(`implicit ${cast} conversions are outside this category`);
       }
@@ -1568,15 +1579,15 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         while ((operand == null ? void 0 : operand.kind) === "ImplicitCastExpr" && (operand.castKind === "IntegralCast" || operand.castKind === "NoOp") && (operand.inner ?? []).length === 1) {
           operand = operand.inner[0];
         }
-        return [this._convert(node, operand), null];
+        return [this.convert(node, operand), null];
       }
-      const depth = _depth(node, this.records);
+      const depth = pointerDepth(node, this.records);
       const record = !depth ? getRecord(this.records, typeName(node)) : null;
       if (record) {
         if (kind === "CXXFunctionalCastExpr" && children.length === 1) {
           const [value2] = this.rvalue(children[0]);
-          this._absorb(children[0], value2);
-          this._reduce(node, { kind: "eval", value: value2, record: record.name });
+          this.absorb(children[0], value2);
+          this.reduce(node, { kind: "eval", value: value2, record: record.name });
           return [value2, null];
         }
         if (kind === "InitListExpr") {
@@ -1592,10 +1603,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
             } else {
               const [childVal] = this.rvalue(child);
               value2[item.name] = childVal;
-              this._absorb(child, childVal);
+              this.absorb(child, childVal);
             }
           }
-          this._reduce(node, { kind: "eval", value: value2, record: null });
+          this.reduce(node, { kind: "eval", value: value2, record: null });
           return [value2, null];
         }
         if (kind === "CXXConstructExpr") {
@@ -1608,11 +1619,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         }
         if (kind === "DeclRefExpr" || kind === "MemberExpr" || kind === "UnaryOperator" && node.opcode === "*") {
           const name = this.lvalue(node);
-          const value2 = this._load(name);
-          if (Object.values(_flatten({ [name]: value2 })).some((item) => item === null)) {
+          const value2 = this.load(name);
+          if (Object.values(flatten({ [name]: value2 })).some((item) => item === null)) {
             throw new Unsupported(`reading uninitialized struct ${name}`);
           }
-          this._reduce(node, { kind: "read", name, record: record.name });
+          this.reduce(node, { kind: "read", name, record: record.name });
           return [value2, name];
         }
       }
@@ -1620,7 +1631,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         return [exact(BigInt(node.value ?? "0")), null];
       }
       if (kind === "InitListExpr" || kind === "CXXFunctionalCastExpr") {
-        return [this._braces(node, depth), null];
+        return [this.braces(node, depth), null];
       }
       let value;
       if (kind === "ParenExpr" && children.length === 1) {
@@ -1630,28 +1641,28 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           throw new Unsupported("only the address of a variable is supported");
         }
         const name = this.lvalue(children[0]);
-        this._reduce(node, { kind: "addr", name });
+        this.reduce(node, { kind: "addr", name });
         return [new Pointer(name), null];
       } else if (kind === "UnaryOperator" && (node.opcode === "+" || node.opcode === "-") && children.length === 1 && !depth) {
-        const operand = BigInt(this._integerOperand(children[0]));
+        const operand = BigInt(this.integerOperand(children[0]));
         value = exact(integerTypeOf(node).result(node.opcode === "+" ? operand : -operand));
       } else if (kind === "UnaryOperator" && node.opcode === "~" && children.length === 1 && !depth) {
-        value = exact(integerTypeOf(node).wrap(~BigInt(this._integerOperand(children[0]))));
+        value = exact(integerTypeOf(node).wrap(~BigInt(this.integerOperand(children[0]))));
       } else if (kind === "BinaryOperator" && ["+", "-", "*", "/", "%"].includes(node.opcode ?? "") && children.length === 2) {
         rejectPointerOperator(node);
-        value = Evaluator._arithmetic(
+        value = Evaluator.arithmetic(
           integerTypeOf(node),
           node.opcode,
-          this._integerOperand(children[0]),
-          this._integerOperand(children[1])
+          this.integerOperand(children[0]),
+          this.integerOperand(children[1])
         );
       } else {
         throw new Unsupported(`unsupported expression: ${kind} ${(node == null ? void 0 : node.opcode) ?? ""}`.trimEnd());
       }
-      this._reduce(node, { kind: "eval", value, record: null });
+      this.reduce(node, { kind: "eval", value, record: null });
       return [value, null];
     }
-    _integerOperand(node) {
+    integerOperand(node) {
       const [value] = this.rvalue(node);
       if (typeof value !== "number") {
         throw new Unsupported("pointer arithmetic and comparison are not supported");
@@ -1659,22 +1670,22 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       return value;
     }
     /** `operand` converted to the integer type of `node`, a cast written or implied. */
-    _convert(node, operand) {
-      _depth(node, this.records);
+    convert(node, operand) {
+      pointerDepth(node, this.records);
       const target = integerType(node);
       if (!target || !integerType(operand)) {
         throw new Unsupported("only conversions between integer types are supported");
       }
-      const value = exact(target.wrap(BigInt(this._integerOperand(operand))));
+      const value = exact(target.wrap(BigInt(this.integerOperand(operand))));
       const source = displayedType(operand);
       if (source === displayedType(node)) {
-        this._reduce(node, { kind: "eval", value, record: null });
+        this.reduce(node, { kind: "eval", value, record: null });
       } else {
-        this._reduce(node, { kind: "convert", value, source });
+        this.reduce(node, { kind: "convert", value, source });
       }
       return value;
     }
-    _braces(node, depth) {
+    braces(node, depth) {
       var _a;
       const children = node.inner ?? [];
       let value;
@@ -1690,10 +1701,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       } else {
         value = depth ? new Pointer() : 0;
       }
-      this._reduce(node, { kind: "eval", value, record: null });
+      this.reduce(node, { kind: "eval", value, record: null });
       return value;
     }
-    static _arithmetic(type, operation, left, right) {
+    static arithmetic(type, operation, left, right) {
       const l = BigInt(left);
       const r = BigInt(right);
       if (operation === "/" || operation === "%") {
@@ -1729,7 +1740,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       declared = null,
       pointer = false,
       record = null,
-      output_suffix = null,
+      outputSuffix: outputSuffix2 = null,
       printed = null,
       temporary = false,
       bound = null,
@@ -1750,7 +1761,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       __publicField(this, "declared");
       __publicField(this, "pointer");
       __publicField(this, "record");
-      __publicField(this, "output_suffix");
+      __publicField(this, "outputSuffix");
       __publicField(this, "printed");
       __publicField(this, "temporary");
       __publicField(this, "bound");
@@ -1770,7 +1781,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.declared = declared;
       this.pointer = pointer;
       this.record = record;
-      this.output_suffix = output_suffix;
+      this.outputSuffix = outputSuffix2;
       this.printed = printed;
       this.temporary = temporary;
       this.bound = bound;
@@ -1911,9 +1922,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         const referred = Object.fromEntries(
           Object.entries(variable.type ?? {}).map(([key, text2]) => [key, text2.slice(0, -1).replace(/\s+$/, "")])
         );
-        _depth({ type: referred }, records);
+        pointerDepth({ type: referred }, records);
       } else {
-        pointer = _depth(variable, records) > 0;
+        pointer = pointerDepth(variable, records) > 0;
         size = pointer ? POINTER_SIZE : ((_c = integerType(variable)) == null ? void 0 : _c.size) ?? null;
       }
       record = !pointer && Object.hasOwn(records, typeName(variable)) ? typeName(variable) : null;
@@ -1958,7 +1969,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const inner = cur.inner;
       left = inner[inner.length - 2];
       root = inner[inner.length - 1];
-      _depth(left, records);
+      pointerDepth(left, records);
       if (left.kind === "ParenExpr" && stripParentheses(left).kind === "DeclRefExpr") {
         throw new Unsupported("a parenthesized variable as assignment target is not supported");
       }
@@ -2016,7 +2027,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         pane: prefix + text + suffix,
         expr: [prefix.length, prefix.length + text.length],
         result: locate(root),
-        output_suffix: outSuffix,
+        outputSuffix: outSuffix,
         printed
       });
     }
@@ -2082,7 +2093,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       declared,
       pointer,
       record,
-      output_suffix: outSuffix,
+      outputSuffix: outSuffix,
       temporary: evaluator.temporary,
       typed,
       slot,
@@ -2094,12 +2105,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     if (path.length === 0) {
       return newValue;
     }
-    return { ...value, [path[0]]: storedAt(value[path[0]], path.slice(1), newValue) };
+    const struct2 = value;
+    return { ...struct2, [path[0]]: storedAt(fieldOf(struct2, path[0]), path.slice(1), newValue) };
   }
-  function _after(statement, state) {
-    return defaultAfter(statement, state);
-  }
-  function defaultAfter(statement, state) {
+  function storeResult(statement, state) {
     const after = { ...state };
     if (statement.target !== null) {
       const [owner, ...path] = statement.target.split(".");
@@ -2120,7 +2129,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return end > 0 ? text.lastIndexOf(character, end - 1) : -1;
   }
   const leading = (text) => text.length - text.trimStart().length;
-  function _mismatch(body, error) {
+  function cutMismatch(body, error) {
     var _a;
     const found = (_a = MISMATCHES.map((pattern) => pattern.exec(error.message)).find(Boolean)) == null ? void 0 : _a.groups;
     let at = error.offset === null ? -1 : error.offset - PREAMBLE.length;
@@ -2188,7 +2197,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       if (statements.length > MAX_STATEMENTS) {
         throw new Unsupported("too many statements");
       }
-      state = _after(statement, state);
+      state = hooks.after(statement, state);
       if (statement.bound && statement.declared) {
         references[statement.declared] = statement.bound;
       }
@@ -2207,7 +2216,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   function pyMod(a, b) {
     return (a % b + b) % b;
   }
-  function _normalize(addresses2, sizes) {
+  function normalizeAddresses(addresses2, sizes) {
     const alignment = Math.max(...Object.values(sizes));
     const lowest = Math.min(...Object.values(addresses2));
     const base = lowest - pyMod(lowest, alignment);
@@ -2227,7 +2236,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return packed;
   }
-  function _observed(execution, predicted, variables, references) {
+  function observeExecution(execution, predicted, variables, references) {
     const cells = leaves(variables);
     const addresses$1 = {};
     const owners = Object.fromEntries(variables.map((v) => [v.name, v]));
@@ -2253,11 +2262,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         const member = dot === -1 ? "" : name.slice(dot + 1);
         if (member) {
           const offset = offsets[name] - offsets[owner];
-          const base = cell.object_address;
+          const base = cell.objectAddress;
           if (!Object.hasOwn(addresses$1, owner)) {
             addresses$1[owner] = base;
           }
-          if (cell.object_size !== owners[owner].size || cell.address !== base + offset || addresses$1[owner] !== base) {
+          if (cell.objectSize !== owners[owner].size || cell.address !== base + offset || addresses$1[owner] !== base) {
             throw new Unsupported(`runtime field offset of ${name} disagrees with Clang`);
           }
         }
@@ -2279,7 +2288,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     for (let i = 0; i < checkpoints.length; i++) {
       const row = checkpoints[i];
-      const expected = _flatten(predicted[i]);
+      const expected = flatten(predicted[i]);
       const rowKeys = Object.keys(row).sort();
       const expKeys = Object.keys(expected).sort();
       if (rowKeys.length !== expKeys.length || rowKeys.some((k, idx) => k !== expKeys[idx])) {
@@ -2425,10 +2434,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       if (value instanceof Pointer) {
         return value.target ? this.addresses[value.target] : 0;
       }
+      if (typeof value !== "number") throw new Error("only an integer or a pointer is stored in a cell");
       return value;
     }
     add(line, pane, expr, state, op = null, hold = 1) {
-      const flat = _flatten(state);
+      const flat = flatten(state);
       const values = {};
       for (const name of this.order) {
         values[name] = !Object.hasOwn(flat, name) ? null : flat[name] === null ? UNKNOWN : this.stored(flat[name]);
@@ -2482,7 +2492,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           text2 = reduction.spelling;
           op2 = { kind: "alias", name: reduction.name, target: text2 };
         } else if (reduction.kind === "deref") {
-          text2 = (reduction.value ?? load(before, reduction.name)).target;
+          text2 = (reduction.value ?? asPointer(load(before, reduction.name))).target;
           op2 = { kind: "deref", target: text2, via: reduction.name };
         } else if (reduction.kind === "convert" && this.types) {
           text2 = this.show(reduction.value);
@@ -2495,8 +2505,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           }
         }
         if (pane.read(reduction.span[0], reduction.span[1]) !== text2 || op2.kind === "convert") {
-          op2.span = pane.replace(reduction.span[0], reduction.span[1], text2, reduction.type);
-          this.add(line, pane, expr, before, op2);
+          const span2 = pane.replace(reduction.span[0], reduction.span[1], text2, reduction.type);
+          this.add(line, pane, expr, before, { ...op2, span: span2 });
         } else {
           pane.retype(reduction.span[0], reduction.span[1], reduction.type);
           this.retyped(this.steps[this.steps.length - 1], pane);
@@ -2530,7 +2540,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       let real = text;
       if (statement.printed !== null) {
         real = text = statement.printed;
-      } else if (statement.output_suffix !== null && statement.value instanceof Pointer) {
+      } else if (statement.outputSuffix !== null && statement.value instanceof Pointer) {
         text = this.printed(statement.value, this.addresses);
         real = this.printed(statement.value, this.real);
         if (pane.read(statement.result[0], statement.result[1]) !== text) {
@@ -2543,9 +2553,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           span = pane.locate(statement.result[0], statement.result[1]);
         }
       }
-      if (statement.output_suffix !== null) {
-        this.realStdout += real + statement.output_suffix;
-        this.stdout += text + statement.output_suffix;
+      if (statement.outputSuffix !== null) {
+        this.realStdout += real + statement.outputSuffix;
+        this.stdout += text + statement.outputSuffix;
         this.add(line, pane, expr, after, { kind: "print", value: text, span }, 1.2);
         return;
       }
@@ -2581,7 +2591,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }
   function traceWithFrontend(source, options) {
     const { runtime = true, types = false, frontend, executor = hooks.execute, directory } = options;
-    let body = _body(source);
+    let body = snippetBody(source);
     let mismatch = null;
     let statements;
     let records;
@@ -2589,13 +2599,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       [statements, records] = analyzeWithFrontend(body, frontend);
     } catch (error) {
       if (!types || !(error instanceof IllFormed)) throw error;
-      [body, mismatch] = _mismatch(body, error);
+      [body, mismatch] = cutMismatch(body, error);
       [statements, records] = analyzeWithFrontend(body, frontend);
     }
     const predicted = [];
     let state = {};
     for (const statement of statements) {
-      state = _after(statement, state);
+      state = hooks.after(statement, state);
       predicted.push(state);
     }
     const declarations = statements.filter((s) => s.declared);
@@ -2662,7 +2672,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           bound[statement.declared] = statement.bound;
         }
         scopes.push([
-          ...Object.entries(_flatten(row)).map(([name, value]) => [name, value !== null]),
+          ...Object.entries(flatten(row)).map(([name, value]) => [name, value !== null]),
           ...Object.keys(bound).map((name) => [name, REFERENCE])
         ]);
       }
@@ -2671,7 +2681,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         scopes,
         directory
       );
-      [addresses$1, states] = _observed(execution, predicted, variables, bound);
+      [addresses$1, states] = observeExecution(execution, predicted, variables, bound);
     } else {
       addresses$1 = addresses(variables);
       states = predicted;
@@ -2685,7 +2695,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       ...declarations.filter((d) => !d.record && !d.bound).map((d) => d.size),
       4
     );
-    addresses$1 = _normalize(addresses$1, { ABI: alignment });
+    addresses$1 = normalizeAddresses(addresses$1, { ABI: alignment });
     for (const variable of variables) {
       variable.address = addresses$1[variable.name];
     }
@@ -2741,7 +2751,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return result;
   }
   function traceLayout(source, frontend) {
-    const body = _body(source);
+    const body = snippetBody(source);
     const program = "#include <iostream>\n#include <cstdint>\n#include <cstddef>\nusing namespace std;\nint main() {\n" + body + "\n}\n";
     const ast = frontend.mainAst(program);
     const records = layoutsFromFrontend(ast, program, frontend, { layoutOnly: true });

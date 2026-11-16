@@ -27,6 +27,7 @@ import {
   type TraceStep,
   type TraceVariable,
   type ClashOperation,
+  type TraceOperation,
   UNKNOWN,
   addresses as storageAddresses,
   field as traceField,
@@ -103,7 +104,7 @@ export type RuntimeExecutor = (
 export const hooks: {
   execute: RuntimeExecutor | null;
   /** The state after a statement, from the state before it; tests swap it to break predictions. */
-  after: (statement: Statement, state: Record<string, any>) => Record<string, any>;
+  after: (statement: Statement, state: State) => State;
 } = {
   execute: null,
   after: (statement, state) => storeResult(statement, state),
@@ -128,7 +129,33 @@ export class Pointer {
   }
 }
 
-function isPlainObject(value: unknown): value is Record<string, any> {
+/** An operation before the pane says where it happens. */
+type Unplaced<T> = T extends unknown ? Omit<T, 'span'> : never;
+
+/** A struct's value: its fields' values by name. */
+export interface StructValue {
+  [field: string]: Value;
+}
+
+/** What a variable or field holds: an integer, a pointer, a struct, or null until initialized. */
+export type Value = number | Pointer | StructValue | null;
+
+/** Every variable's value by name, between two statements. */
+export type State = Record<string, Value>;
+
+/** The pointer a value must be where the types say it is one. */
+function asPointer(value: Value): Pointer {
+  if (!(value instanceof Pointer)) throw new Error('expected a pointer value');
+  return value;
+}
+
+/** A field of a value the types say is a struct. */
+function fieldOf(value: Value, field: string): Value {
+  if (!isPlainObject(value)) throw new Error(`expected a struct value with the field ${field}`);
+  return value[field];
+}
+
+function isPlainObject(value: unknown): value is StructValue {
   return typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Pointer);
 }
 
@@ -476,30 +503,30 @@ export type Reduction = { readonly span: Span; readonly type: string } & (
   | { readonly kind: 'addr'; readonly name: string }
   | { readonly kind: 'deref'; readonly name: string; readonly value: Pointer | null }
   | { readonly kind: 'alias'; readonly name: string; readonly spelling: string }
-  | { readonly kind: 'eval'; readonly value: any; readonly record: string | null }
+  | { readonly kind: 'eval'; readonly value: Value; readonly record: string | null }
   | { readonly kind: 'convert'; readonly value: number; readonly source: string }
 );
 
 /** A reduction's own fields, one shape per kind: the evaluator adds where it is and its type. */
 type ReductionDetails = Reduction extends infer R ? (R extends unknown ? Omit<R, 'span' | 'type'> : never) : never;
 
-function load(state: Record<string, any>, name: string, missing = false): any {
+function load(state: State, name: string, missing = false): Value {
   const [owner, ...path] = name.split('.');
   if (!missing && !Object.hasOwn(state, owner)) {
     throw new Error(`KeyError: ${owner}`);
   }
   let value = state[owner];
   for (const member of path) {
-    value = value[member];
+    value = fieldOf(value, member);
   }
   return value;
 }
 
-function flatten(state: Record<string, any>): Record<string, any> {
-  const cells: Record<string, any> = {};
+function flatten(state: State): State {
+  const cells: State = {};
   for (const [name, value] of Object.entries(state)) {
     if (isPlainObject(value)) {
-      const sub: Record<string, any> = {};
+      const sub: State = {};
       for (const [member, item] of Object.entries(value)) {
         sub[`${name}.${member}`] = item;
       }
@@ -511,7 +538,7 @@ function flatten(state: Record<string, any>): Record<string, any> {
   return cells;
 }
 
-function filled(item: RecordInfo | RecordFieldInfo, records: Record<string, RecordInfo>, zero = false): any {
+function filled(item: RecordInfo | RecordFieldInfo, records: Record<string, RecordInfo>, zero = false): Value {
   const record: RecordInfo | null =
     item && 'fields' in item && Array.isArray(item.fields)
       ? item
@@ -519,7 +546,7 @@ function filled(item: RecordInfo | RecordFieldInfo, records: Record<string, Reco
         ? records[item.type]
         : null;
   if (record) {
-    const res: Record<string, any> = {};
+    const res: State = {};
     for (const inner of record.fields) {
       res[inner.name] = filled(inner, records, zero);
     }
@@ -542,7 +569,7 @@ function rejectPointerOperator(node: AstNode | null | undefined): void {
 }
 
 class Evaluator {
-  state: Record<string, any>;
+  state: State;
   locate: (item: AstNode) => Span;
   reductions: Reduction[];
   records: Record<string, RecordInfo>;
@@ -550,7 +577,7 @@ class Evaluator {
   temporary: boolean;
 
   constructor(
-    state: Record<string, any>,
+    state: State,
     locate: (item: AstNode) => Span,
     records: Record<string, RecordInfo>,
     references: Record<string, string> = {}
@@ -568,14 +595,14 @@ class Evaluator {
   }
 
   /** A brace list inside another one is part of its value, not an evaluation of its own. */
-  private absorb(child: AstNode | undefined, value: any): void {
+  private absorb(child: AstNode | undefined, value: Value): void {
     const last = this.reductions[this.reductions.length - 1];
     if (child?.kind === 'InitListExpr' && last?.kind === 'eval' && last.value === value) {
       this.reductions.pop();
     }
   }
 
-  private load(name: string): any {
+  private load(name: string): Value {
     const value = load(this.state, name);
     if (value === null || value === undefined) {
       throw new Unsupported(`reading uninitialized variable ${name}`);
@@ -615,10 +642,11 @@ class Evaluator {
     }
     if (kind === 'MemberExpr' && children.length === 1) {
       if (node.isArrow) {
-        const [pointer, via] = this.rvalue(children[0]);
+        const [value, via] = this.rvalue(children[0]);
         if (via === null) {
           throw new Unsupported('arrow access requires a pointer variable');
         }
+        const pointer = asPointer(value);
         if (pointer.target === null) {
           throw new Unsupported(`dereferencing the null pointer ${via} is undefined`);
         }
@@ -629,10 +657,11 @@ class Evaluator {
       return `${this.lvalue(children[0])}.${node.name}`;
     }
     if (kind === 'UnaryOperator' && node.opcode === '*' && children.length === 1) {
-      const [pointer, via] = this.rvalue(children[0]);
+      const [value, via] = this.rvalue(children[0]);
       if (via === null) {
         throw new Unsupported('only dereferencing a pointer variable is supported, not a computed address');
       }
+      const pointer = asPointer(value);
       if (pointer.target === null) {
         throw new Unsupported(`dereferencing the null pointer ${via} is undefined`);
       }
@@ -642,7 +671,7 @@ class Evaluator {
     throw new Unsupported(`unsupported assignable expression: ${kind}`);
   }
 
-  rvalue(node: AstNode): [any, string | null] {
+  rvalue(node: AstNode): [Value, string | null] {
     const kind = node?.kind;
     const children = node?.inner ?? [];
     if (kind === 'MaterializeTemporaryExpr' && children.length === 1) {
@@ -702,7 +731,7 @@ class Evaluator {
         return [value, null];
       }
       if (kind === 'InitListExpr') {
-        const value: Record<string, any> = {};
+        const value: State = {};
         const limit = Math.min(record.fields.length, children.length);
         for (let i = 0; i < limit; i++) {
           const item = record.fields[i];
@@ -749,7 +778,7 @@ class Evaluator {
     if (kind === 'InitListExpr' || kind === 'CXXFunctionalCastExpr') {
       return [this.braces(node, depth), null];
     }
-    let value: any;
+    let value: Value;
     if (kind === 'ParenExpr' && children.length === 1) {
       [value] = this.rvalue(children[0]);
     } else if (kind === 'UnaryOperator' && node.opcode === '&' && children.length === 1) {
@@ -815,9 +844,9 @@ class Evaluator {
     return value;
   }
 
-  private braces(node: AstNode, depth: number): any {
+  private braces(node: AstNode, depth: number): Value {
     const children = node.inner ?? [];
-    let value: any;
+    let value: Value;
     if (node.kind === 'CXXFunctionalCastExpr') {
       if (
         children.length !== 1 ||
@@ -879,7 +908,7 @@ export class Statement {
   pane: string;
   expr: Span | null;
   result: Span | null;
-  value: any;
+  value: Value;
   reductions: Reduction[];
   target: string | null;
   destination: Span | null;
@@ -922,7 +951,7 @@ export class Statement {
     pane: string;
     expr?: Span | null;
     result?: Span | null;
-    value?: any;
+    value?: Value;
     reductions?: Reduction[];
     target?: string | null;
     destination?: Span | null;
@@ -1061,7 +1090,7 @@ function outputSuffix(operands: AstNode[]): string {
 function analyzeStatement(
   node: AstNode,
   program: string,
-  state: Record<string, any>,
+  state: State,
   records: Record<string, RecordInfo>,
   references: Record<string, string>
 ): Statement {
@@ -1332,14 +1361,15 @@ function analyzeStatement(
   });
 }
 
-function storedAt(value: any, path: string[], newValue: any): any {
+function storedAt(value: Value, path: string[], newValue: Value): Value {
   if (path.length === 0) {
     return newValue;
   }
-  return { ...value, [path[0]]: storedAt(value[path[0]], path.slice(1), newValue) };
+  const struct = value as StructValue;
+  return { ...struct, [path[0]]: storedAt(fieldOf(struct, path[0]), path.slice(1), newValue) };
 }
 
-export function storeResult(statement: Statement, state: Record<string, any>): Record<string, any> {
+export function storeResult(statement: Statement, state: State): State {
   const after = { ...state };
   if (statement.target !== null) {
     const [owner, ...path] = statement.target.split('.');
@@ -1440,7 +1470,7 @@ export function analyzeWithFrontend(
   const ast = frontend.mainAst(program);
   const records = layoutsFromFrontend(ast, program, frontend);
   const statements: Statement[] = [];
-  let state: Record<string, any> = {};
+  let state: State = {};
   const references: Record<string, string> = {};
   const inner = ast.inner ?? [];
   for (let i = 0; i < inner.length; i++) {
@@ -1527,10 +1557,10 @@ function withoutReferenceSlots(
  */
 export function observeExecution(
   execution: Execution,
-  predicted: Record<string, any>[],
+  predicted: State[],
   variables: TraceVariable[],
   references: Record<string, string>
-): [Record<string, number>, Record<string, any>[]] {
+): [Record<string, number>, State[]] {
   const cells = leaves(variables);
   const addresses: Record<string, number> = {};
   const owners = Object.fromEntries(variables.map(v => [v.name, v]));
@@ -1750,7 +1780,7 @@ class Renderer {
     return `0x${address.toString(16).padStart(16, '0')}`;
   }
 
-  show(value: any): string {
+  show(value: Value): string {
     if (isPlainObject(value)) {
       return `{${Object.values(value)
         .map(item => this.show(item))
@@ -1759,10 +1789,11 @@ class Renderer {
     return String(this.stored(value));
   }
 
-  stored(value: any): number {
+  stored(value: Value): number {
     if (value instanceof Pointer) {
       return value.target ? this.addresses[value.target] : 0;
     }
+    if (typeof value !== 'number') throw new Error('only an integer or a pointer is stored in a cell');
     return value;
   }
 
@@ -1770,8 +1801,8 @@ class Renderer {
     line: number,
     pane: Pane,
     expr: Span | null,
-    state: Record<string, any>,
-    op: any = null,
+    state: State,
+    op: TraceOperation | null = null,
     hold = 1.0
   ): void {
     const flat = flatten(state);
@@ -1818,8 +1849,8 @@ class Renderer {
   statement(
     line: number,
     statement: Statement,
-    before: Record<string, any>,
-    after: Record<string, any>
+    before: State,
+    after: State
   ): void {
     const typed: Typed[] = statement.slot ? [...statement.typed, [statement.slot, statement.type!]] : statement.typed;
     const pane = new Pane(statement.pane, typed, statement.slot);
@@ -1828,7 +1859,7 @@ class Renderer {
     this.add(line, pane, expr, writes ? before : after);
     for (const reduction of statement.reductions) {
       let text: string;
-      let op: Record<string, any>;
+      let op: Unplaced<TraceOperation>;
       if (reduction.kind === 'read') {
         text = (reduction.record ?? '') + this.show(load(before, reduction.name));
         op = { kind: 'read', name: reduction.name, value: text };
@@ -1839,7 +1870,8 @@ class Renderer {
         text = reduction.spelling;
         op = { kind: 'alias', name: reduction.name, target: text };
       } else if (reduction.kind === 'deref') {
-        text = (reduction.value ?? load(before, reduction.name)).target;
+        // Only a pointer that is not null is ever dereferenced.
+        text = (reduction.value ?? asPointer(load(before, reduction.name))).target!;
         op = { kind: 'deref', target: text, via: reduction.name };
       } else if (reduction.kind === 'convert' && this.types) {
         text = this.show(reduction.value);
@@ -1858,8 +1890,8 @@ class Renderer {
       // A typed conversion is a step even when the digits stay: the type is what changes.
       // Untyped, it is an evaluation like any other, seen only when the text changes.
       if (pane.read(reduction.span[0], reduction.span[1]) !== text || op.kind === 'convert') {
-        op.span = pane.replace(reduction.span[0], reduction.span[1], text, reduction.type);
-        this.add(line, pane, expr, before, op);
+        const span = pane.replace(reduction.span[0], reduction.span[1], text, reduction.type);
+        this.add(line, pane, expr, before, { ...op, span });
       } else {
         // No step of its own, but the text now reads as one value of its type.
         pane.retype(reduction.span[0], reduction.span[1], reduction.type);
@@ -1931,7 +1963,7 @@ class Renderer {
   }
 
   /** The statement as written, then its value's type against the type its slot needs. */
-  mismatch(line: number, mismatch: Mismatch, state: Record<string, any>): void {
+  mismatch(line: number, mismatch: Mismatch, state: State): void {
     const typed: Typed[] = [
       [mismatch.slot, mismatch.needed],
       [mismatch.value, mismatch.given],
@@ -1981,8 +2013,8 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
     [body, mismatch] = cutMismatch(body, error);
     [statements, records] = analyzeWithFrontend(body, frontend);
   }
-  const predicted: Record<string, any>[] = [];
-  let state: Record<string, any> = {};
+  const predicted: State[] = [];
+  let state: State = {};
   for (const statement of statements) {
     state = hooks.after(statement, state);
     predicted.push(state);
@@ -2036,7 +2068,7 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
     }
   }
   let addresses: Record<string, number>;
-  let states: Record<string, any>[];
+  let states: State[];
   let execution: Execution | null = null;
   if (runtime) {
     if (!executor) {
@@ -2080,7 +2112,7 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
   }
   variables.sort((a, b) => a.address - b.address);
 
-  const shown: [Statement, Record<string, any>][] = [];
+  const shown: [Statement, State][] = [];
   for (let i = 0; i < statements.length; i++) {
     if (!DEFINITION.test(statements[i].source)) {
       shown.push([statements[i], states[i]]);
@@ -2091,7 +2123,7 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
   }
   const hasRefs = Object.keys(references).length > 0;
   const renderer = new Renderer(addresses, leaves(variables), real, hasRefs, types);
-  let previous: Record<string, any> = {};
+  let previous: State = {};
   for (let line = 0; line < shown.length; line++) {
     const [statement, after] = shown[line];
     renderer.statement(line, statement, previous, after);
