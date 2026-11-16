@@ -6,7 +6,7 @@ import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { dumpsSorted } from '../src/core/json_format.ts';
-import type { ExecutionTrace, TraceOperation, TraceStep } from '../src/core/trace_format.ts';
+import { type ExecutionTrace, type TraceOperation, type TraceStep, scalar } from '../src/core/trace_format.ts';
 import { Cell, Execution } from '../src/node/execution.ts';
 import * as tracing from '../src/node/tracing.ts';
 import { Pointer, Unsupported } from '../src/node/tracing.ts';
@@ -411,7 +411,7 @@ describe('StaticPointerTraceTests', () => {
       'int a{1}; int* p{&a}; int* q{&a}; int e = p == q;': /pointer arithmetic and comparison/,
       'int a{1}; int&& r = 1;': /references/,
       'int a{1}; int* p = (int*)&a;': /CStyleCastExpr/,
-      'int a{1}; long* p = reinterpret_cast<long*>(&a);': /pointers to int/,
+      'int a{1}; long* p = reinterpret_cast<long*>(&a);': /unsupported expression: CXXReinterpretCastExpr/,
       'int* p = new int{1};': /CXXNewExpr/,
       'int a{1}; void* p = &a;': /pointers to int/,
       'const int a{1}; const int* p = &a;': /pointers to int/,
@@ -461,6 +461,8 @@ describe('StaticPointerTraceTests', () => {
 
 describe('ObservationTests', () => {
   const PREDICTED = [{ a: 5 }, { a: 5, p: new Pointer('a') }];
+  const VARIABLES = [scalar('a', 0, 4), scalar('p', 0, 8, 'ptr')];
+  const observed = (execution: Execution) => tracing._observed(execution, PREDICTED, VARIABLES, {});
 
   function makeExecution(pointerValue: number, size = 8): Execution {
     const a = new Cell({ address: 0x7ffc_1004, size: 4, pointer: false, value: 5 });
@@ -469,32 +471,28 @@ describe('ObservationTests', () => {
   }
 
   test('pointer_values_map_back_to_variables', () => {
-    const [addrs, states] = tracing._observed(
-      makeExecution(0x7ffc_1004),
-      PREDICTED,
-      new Set(['p'])
-    );
+    const [addrs, states] = observed(makeExecution(0x7ffc_1004));
     assert.deepEqual(states, PREDICTED);
     assert.deepEqual(tracing._normalize(addrs, { a: 4, p: 8 }), { a: 76, p: 64 });
   });
 
   test('a_pointer_to_anything_else_is_rejected', () => {
     assert.throws(
-      () => tracing._observed(makeExecution(0x7ffc_1008), PREDICTED, new Set(['p'])),
+      () => observed(makeExecution(0x7ffc_1008)),
       (err: unknown) => err instanceof Unsupported && /not the address of a variable/.test(err.message)
     );
   });
 
   test('a_disagreeing_target_is_rejected', () => {
     assert.throws(
-      () => tracing._observed(makeExecution(0), PREDICTED, new Set(['p'])),
+      () => observed(makeExecution(0)),
       (err: unknown) => err instanceof Unsupported && /runtime verification failed: p/.test(err.message)
     );
   });
 
   test('unexpected_storage_is_rejected', () => {
     assert.throws(
-      () => tracing._observed(makeExecution(0x7ffc_1004, 4), PREDICTED, new Set(['p'])),
+      () => observed(makeExecution(0x7ffc_1004, 4)),
       (err: unknown) => err instanceof Unsupported && /runtime storage of p/.test(err.message)
     );
   });

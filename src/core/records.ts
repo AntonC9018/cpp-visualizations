@@ -33,6 +33,18 @@ export function typeSpelling(node: AstNode | null | undefined): string {
   return qualified.replace(/^(const )?struct /, '$1');
 }
 
+/** Clang's spelling of a type as the lessons write it: `int*`, `A**`. */
+export function displayed(spelling: string): string {
+  return spelling
+    .replace(/^(const )?struct /, '$1')
+    .replace(/\s+(?=[*&])/g, '')
+    .replace(/^std::/, '');
+}
+
+export function displayedType(node: AstNode | null | undefined): string {
+  return displayed(typeSpelling(node));
+}
+
 export function typeName(node: AstNode | null | undefined): string {
   return typeSpelling(node).replace(/^const /, '');
 }

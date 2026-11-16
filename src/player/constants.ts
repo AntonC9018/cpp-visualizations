@@ -118,6 +118,8 @@ export interface PlayerStrings {
   bind: string;
   alias: string;
   blank: Record<string, string>;
+  convert: string;
+  clash: string;
   error: string;
 }
 
@@ -144,6 +146,8 @@ export const STRINGS: Record<string, PlayerStrings> = {
     bind: '{name} becomes another name for {target}',
     alias: '{name} is another name for {target}',
     blank: { '\n': 'Print a newline', '\t': 'Print a tab', ' ': 'Print a space' },
+    convert: 'Convert {from} to {to}: {value}',
+    clash: 'Does not compile: {value} is {from}, {slot} needs {to}',
     error: 'This visualization could not be loaded.',
   },
   ru: {
@@ -168,6 +172,8 @@ export const STRINGS: Record<string, PlayerStrings> = {
     bind: '{name} становится ещё одним именем для {target}',
     alias: '{name} — другое имя для {target}',
     blank: { '\n': 'Вывод перевода строки', '\t': 'Вывод табуляции', ' ': 'Вывод пробела' },
+    convert: 'Преобразование {from} в {to}: {value}',
+    clash: 'Не компилируется: {value} имеет тип {from}, а для {slot} нужен {to}',
     error: 'Не удалось загрузить визуализацию.',
   },
 };

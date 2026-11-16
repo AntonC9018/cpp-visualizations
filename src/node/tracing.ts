@@ -8,6 +8,9 @@ import type { ExecutionTrace } from '../core/trace_format.ts';
 import {
   Cell,
   Execution,
+  INTEGERS,
+  IllFormed,
+  Integer,
   Pointer,
   REFERENCE,
   Reduction,
@@ -17,6 +20,7 @@ import {
   _body,
   _depth,
   _flatten,
+  _mismatch,
   _normalize,
   _observed,
   analyzeWithFrontend,
@@ -32,6 +36,9 @@ hooks.execute = defaultExecute;
 export {
   Cell,
   Execution,
+  INTEGERS,
+  IllFormed,
+  Integer,
   Pointer,
   REFERENCE,
   Reduction,
@@ -41,6 +48,7 @@ export {
   _body,
   _depth,
   _flatten,
+  _mismatch,
   _normalize,
   _observed,
   analyzeWithFrontend,
@@ -55,13 +63,14 @@ export function _main_ast(program: string, directory: string): AstNode {
 
 export function trace(
   source: string,
-  { runtime = true }: { runtime?: boolean } = {}
+  { runtime = true, types = false }: { runtime?: boolean; types?: boolean } = {}
 ): ExecutionTrace {
   const directory = mkdtempSync(join(tmpdir(), 'trace-'));
   try {
     const frontend = createClangFrontend(directory);
     return traceWithFrontend(source, {
       runtime,
+      types,
       frontend,
       executor: hooks.execute ?? defaultExecute,
       directory,

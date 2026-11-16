@@ -94,6 +94,10 @@ export function applicable(traceData: ExecutionTrace, snippet: string): void {
   }
   _storage_is_contiguous(variables);
   const ops = steps.filter(s => s.op !== null && s.op !== undefined).map(s => s.op!);
+  if (ops.some(op => op.kind === 'clash')) {
+    // Types that do not fit are the point, however little memory is involved.
+    return;
+  }
   const writes = steps.filter(s => s.op && s.op.kind === 'write');
   const reads = ops.filter(op => ['read', 'addr', 'deref', 'bind'].includes(op.kind));
   const emptyInit = source.some(line => line.replace(/ /g, '').includes('{}'));
@@ -125,6 +129,7 @@ export function main(
   let operation: string | null = null;
   let sourcePath: string | null = null;
   let template = TEMPLATE;
+  let types = false;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -136,6 +141,9 @@ export function main(
       template = argv[++i] ?? '';
     } else if (arg.startsWith('--template=')) {
       template = arg.slice('--template='.length);
+    } else if (arg === '--types') {
+      // Show the types of the pane and of memory, conversions and a type mismatch.
+      types = true;
     } else if (!arg.startsWith('-') && !operation) {
       operation = arg;
     } else {
@@ -162,11 +170,14 @@ export function main(
     if (template !== TEMPLATE && template !== 'layout') {
       throw new Unsupported(`unknown template '${template}'`);
     }
+    if (types && template !== TEMPLATE) {
+      throw new Unsupported('only the step-through player shows types');
+    }
     const snippet = readFileSync(sourcePath, 'utf8');
     if (template === 'layout') {
       result = layoutTrace(snippet);
     } else {
-      result = trace(snippet, { runtime: operation !== 'probe' });
+      result = trace(snippet, { runtime: operation !== 'probe', types });
       applicable(result, snippet);
     }
   } catch (exc) {
