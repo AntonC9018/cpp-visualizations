@@ -10,6 +10,7 @@ import {
   EVAL_CHAR,
   FRAME,
   KEYWORDS,
+  LABEL,
   PANE_SIZE,
   type Palette,
   type PlayerStrings,
@@ -23,9 +24,10 @@ import {
   labelCentre,
   labelWidth,
   links,
+  typeLabelWidth,
   valueCentre,
 } from './geometry.ts';
-import { type PreparedModel, arrival, copies, copyBegin, departure } from './model.ts';
+import { type PreparedModel, arrival, copies, copyBegin, departure, stores } from './model.ts';
 import {
   animateAttr,
   animated,
@@ -163,6 +165,116 @@ function dim(c: SceneContext, name: string, markup: string): string {
   );
 }
 
+// Types ------------------------------------------------------------------------------------
+// A type is a unit of measurement: one colour per type, on a label and under what it types.
+
+const typeColour = (c: SceneContext, type: string): string =>
+  c.P.types[c.m.typeColours.get(type) ?? 0];
+
+/** A filled pill on the light palette, an outlined one on the dark (--cv-type-label). */
+function typeLabel(
+  c: SceneContext,
+  cx: number,
+  top: number,
+  type: string,
+  size: number,
+  color: string
+): string {
+  const w = typeLabelWidth(type, size);
+  const h = size + 7;
+  const label = (fill: string): string => text(cx, top + size + 1, type, size, fill, 'middle');
+  return c.P.typeLabel === 'fill'
+    ? rect(cx - w / 2, top, w, h, color, 'none', h / 2) + label(c.P.bg)
+    : rect(cx - w / 2, top, w, h, 'none', color, h / 2, 1.5) + label(color);
+}
+
+interface PaneLabel {
+  type: string;
+  cx: number;
+  from: number;
+  size: number;
+  slot: boolean;
+  start: number;
+}
+
+/**
+ * One label per typed part of a pane starting at x. Neighbours of one type that would collide
+ * share a label; neighbours of different types shrink until they fit.
+ */
+function paneLabels(step: TraceStep, x: number): PaneLabel[] {
+  const labels: PaneLabel[] = [];
+  for (const part of step.types ?? []) {
+    const cx = x + ((part.span[0] + part.span[1]) / 2) * EVAL_CHAR;
+    const last = labels[labels.length - 1];
+    const label: PaneLabel = {
+      type: part.type,
+      cx,
+      from: cx,
+      size: LABEL.pane,
+      slot: Boolean(part.slot),
+      start: part.span[0],
+    };
+    const gap = (): number =>
+      label.cx -
+      last.cx -
+      6 -
+      (typeLabelWidth(last.type, last.size) + typeLabelWidth(label.type, label.size)) / 2;
+    if (last && gap() < 0 && last.type === label.type && !last.slot) {
+      last.cx = (last.from + cx) / 2;
+      continue;
+    }
+    while (last && gap() < 0 && label.size > 11) {
+      last.size = label.size = Math.min(last.size, label.size) - 1;
+    }
+    labels.push(label);
+  }
+  return labels;
+}
+
+const labelTop = (y: number, label: PaneLabel): number => y - 70 + (LABEL.pane - label.size) / 2;
+
+/** The types of one step's pane, settled, with the pane's text starting at (x, y). */
+function paneTypes(c: SceneContext, step: TraceStep, x: number, y: number): string {
+  const { P } = c;
+  const op = step.op;
+  const clash = op?.kind === 'clash';
+  const labels = paneLabels(step, x);
+  const opStart = op && 'span' in op ? op.span[0] : undefined;
+  const value = labels.find(label => !label.slot && label.start === opStart);
+  const slot = labels.find(label => label.slot);
+  let out = '';
+  for (const part of step.types ?? []) {
+    out +=
+      `<path d="M ${round(x + part.span[0] * EVAL_CHAR)} ${y + 14} H ${round(x + part.span[1] * EVAL_CHAR)}" ` +
+      `stroke="${typeColour(c, part.type)}" stroke-width="3" stroke-linecap="round"/>`;
+  }
+  for (const label of labels) {
+    const top = labelTop(y, label);
+    const middle = top + (label.size + 7) / 2;
+    let mark = typeLabel(c, label.cx, top, label.type, label.size, typeColour(c, label.type));
+    const current = c.animate && step === c.step && label === value;
+    // A converted value's new unit pops; a unit that does not fit tries the slot and comes back.
+    if (current && op?.kind === 'convert') {
+      mark =
+        `<g transform="translate(${round(label.cx)} ${round(middle)})"><g>${pulse(arrival(op) + 0.2)}` +
+        `<g transform="translate(${round(-label.cx)} ${round(-middle)})">${mark}</g></g></g>`;
+    }
+    if (current && clash && slot) {
+      mark =
+        `<g><animateMotion path="M 0 0 H ${round(slot.cx - label.cx)}" keyPoints="0;0.75;0" keyTimes="0;0.55;1" ` +
+        `calcMode="linear" begin="0.35s" dur="${T.clash - 0.4}s" fill="freeze"/>${mark}</g>`;
+    }
+    out += mark;
+    if (clash && (label === value || label === slot)) {
+      const w = typeLabelWidth(label.type, label.size);
+      const h = label.size + 7;
+      out += rect(label.cx - w / 2 - 4, top - 4, w + 8, h + 8, 'none', P.error, h / 2 + 4, 2.5);
+    }
+  }
+  if (clash && value && slot) out += text((slot.cx + value.cx) / 2, y - 48, '≠', 26, P.error, 'middle');
+  return out;
+}
+
 function code(c: SceneContext, oldLine: number | null): string {
   const { m, g, P, step, op } = c;
   const x = g.code.x;
@@ -178,15 +290,8 @@ function code(c: SceneContext, oldLine: number | null): string {
   };
   const y = g.lineY(step.line);
   const [bx, by, bw] = box(step.line);
-  let stripe = rect(
-    x + 8,
-    y - 32,
-    4,
-    44,
-    op && op.kind === 'write' ? P.write : P.read,
-    'none',
-    0
-  );
+  const stripeColour = op?.kind === 'clash' ? P.error : op?.kind === 'write' ? P.write : P.read;
+  let stripe = rect(x + 8, y - 32, 4, 44, stripeColour, 'none', 0);
   let span = rect(bx, by, bw, 40, P.highlight, 'none', 6);
   if (oldLine !== null) {
     const [ox, oy, ow] = box(oldLine);
@@ -403,7 +508,7 @@ function memory(c: SceneContext): string {
     if (on) {
       const shown = (value: unknown): string => {
         const length = String(value).length;
-        const size = Math.min(30, (cell.w - 12) / (length * CHAR));
+        const size = Math.min(30, (cell.w - Math.min(12, cell.w / 5)) / (length * CHAR));
         return text(0, size / 3 + 1, value, round(size), value === '?' ? P.grey : P.fg, 'middle');
       };
       markup +=
@@ -432,6 +537,11 @@ function memory(c: SceneContext): string {
   }
   if (op && op.kind === 'bind') {
     out += `<g opacity="0">${fade(0, 1, 0.2)}${fade(1, 0, 0.35, at + 0.5)}${outline(c, g.box(op.target)!, P.fg)}</g>`;
+  }
+  for (const label of g.typeLabels) {
+    const on = g.cellsOf(label.name).some(live);
+    const color = on ? typeColour(c, label.type) : P.deadStroke;
+    out += dim(c, label.name, typeLabel(c, label.cx, label.top, label.type, LABEL.memory, color));
   }
   return out + tags(c, at);
 }
@@ -523,7 +633,26 @@ function transfers(c: SceneContext): string {
   return '';
 }
 
+/** The pane, and over it the types of its parts: the old pane's give way to the new one's. */
 function pane(c: SceneContext, copying: boolean): string {
+  const { g, step, prev, op, animate } = c;
+  const out = paneBody(c, copying);
+  if (!c.m.typed) return out;
+  const types = (shown: TraceStep): string => paneTypes(c, shown, g.tx, g.ty);
+  if (!animate) return out + types(step);
+  const appear = (at: number, shown: TraceStep): string =>
+    `<g opacity="0">${fade(0, 1, 0.25, at)}${types(shown)}</g>`;
+  if (copying) return out + appear(copyBegin(c.m.steps, c.index) + T.copyTravel, step);
+  if (op?.kind === 'clash') return out + appear(0.15, step);
+  if (!op || !prev || stores(op) || op.kind === 'print') return out + types(step);
+  return (
+    out +
+    `<g>${fade(1, 0, 0.2, Math.max(0, arrival(op) - 0.35))}${types(prev)}</g>` +
+    appear(arrival(op) + 0.2, step)
+  );
+}
+
+function paneBody(c: SceneContext, copying: boolean): string {
   const { g, P, step, prev, op } = c;
   const tx = g.tx;
   const ty = g.ty;
@@ -549,7 +678,16 @@ function pane(c: SceneContext, copying: boolean): string {
       '</g></g>';
     return out;
   }
-  if (op && prev && ['read', 'addr', 'deref', 'eval', 'alias'].includes(op.kind)) {
+  if (
+    op &&
+    prev &&
+    (op.kind === 'read' ||
+      op.kind === 'addr' ||
+      op.kind === 'deref' ||
+      op.kind === 'eval' ||
+      op.kind === 'alias' ||
+      op.kind === 'convert')
+  ) {
     const before = prev.pane;
     const [s, e] = op.span;
     const length = step.pane.length - before.length + (e - s);
@@ -557,14 +695,19 @@ function pane(c: SceneContext, copying: boolean): string {
     const dx = (length - (e - s)) * EVAL_CHAR;
     const sx = tx + s * EVAL_CHAR;
     const [stroke, fill] =
-      op.kind === 'read' || op.kind === 'addr' ? [P.read, P.readFill] : [P.fg, P.derefFill];
+      op.kind === 'read' || op.kind === 'addr'
+        ? [P.read, P.readFill]
+        : op.kind === 'convert'
+          ? [P.write, P.writeFill]
+          : [P.fg, P.derefFill];
     out += exprBackground(c, tx, ty, step.expr, prev.expr, at + 0.1);
     out += `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.2, at - 0.1)}${markBox(sx, ty, e - s, stroke, fill)}</g>`;
     out += paneText(c, tx, ty, before, 0, s, prev.expr);
     let old = paneText(c, sx, ty, before, s, e, prev.expr);
     let fresh = paneText(c, sx, ty, step.pane, s, s + length, step.expr);
     const middle = sx + ((e - s) * EVAL_CHAR) / 2;
-    if (op.kind === 'eval') {
+    if (op.kind === 'eval' || op.kind === 'convert') {
+      // The operands gather into the middle of their span; the result grows out of it.
       old = scaleAbout(old, middle, ty - 11, 1, 0.45, 0.15, at - 0.15);
       fresh = scaleAbout(fresh, sx + (length * EVAL_CHAR) / 2, ty - 11, 0.45, 1, at, 0.25);
     }
@@ -682,5 +825,12 @@ export function describe(c: SceneContext): string {
   const op = step.op;
   if (!op) return format(S.copy, { line: step.line + 1, code: m.source[step.line] });
   if (op.kind === 'print' && S.blank[op.value]) return S.blank[op.value];
+  if (op.kind === 'clash') {
+    return format(S.clash, {
+      ...op,
+      value: step.pane.slice(...op.span),
+      slot: step.pane.slice(...op.destination),
+    });
+  }
   return format(S[op.kind], op as unknown as Record<string, unknown>);
 }

@@ -213,6 +213,46 @@ test('a bare std::endl prints a visible newline glyph in both languages and them
   assert.deepEqual(errors, []);
 });
 
+// A typed trace: two conversions, then a statement whose types do not fit.
+test('a typed trace labels types and shows a mismatch in both languages and themes', async () => {
+  const generated = JSON.parse(
+    readFileSync(new URL('fixtures/types-generated.json', import.meta.url), 'utf8')
+  ) as ExecutionTrace;
+  const last = generated.steps.length - 1;
+  assert.equal(generated.steps[last].op?.kind, 'clash');
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  for (const [lang, theme, status] of [
+    ['en', 'dark', 'Does not compile: b is uint8_t, int* p needs int*'],
+    ['ru', 'light', 'Не компилируется: b имеет тип uint8_t, а для int* p нужен int*'],
+  ] as const) {
+    await page.setContent(
+      PAGE.replace(trace, JSON.stringify(generated).replace(/</g, '\\u003c')).replace(
+        'lang="en" data-theme="dark"',
+        `lang="${lang}" data-theme="${theme}"`
+      )
+    );
+    await page.evaluate(() => window.CourseVisualization!.scan());
+    await page.waitForSelector('.cv-player');
+    const labels = await page.evaluate(stepIndex => {
+      const playerEl = (document.querySelector('.course-visualization') as PlayerElement).cvPlayer;
+      for (let step = 0; step <= stepIndex; step++) {
+        playerEl.settle(step);
+        if (/NaN|undefined/.test(playerEl.svg.innerHTML)) {
+          throw new Error(`invalid geometry at step ${step}`);
+        }
+      }
+      playerEl.inspect(stepIndex, 0.5);
+      return [...playerEl.svg.querySelectorAll('text')].map(element => element.textContent);
+    }, last);
+    for (const label of ['uint32_t', 'uint8_t', 'int*', '≠']) {
+      assert.ok(labels.includes(label), `${label} is drawn`);
+    }
+    assert.equal(await page.locator('.cv-status').textContent(), status);
+  }
+  assert.deepEqual(errors, []);
+});
+
 test('static layout links rows and bytes in both themes and initializes lazily', async () => {
   await page.close();
   page = await browser!.newPage({ viewport: { width: 1100, height: 900 } });

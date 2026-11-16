@@ -20,6 +20,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   const MARGIN = 28;
   const MEMORY_WIDTH = 600;
   const MAX_BYTE = 28;
+  const NARROW_BYTE = 48;
   const FRAME = { side: 4, top: 36, bottom: 40, stroke: 2.5 };
   const GAP = 2 * FRAME.side + FRAME.stroke;
   const NEST = 10;
@@ -39,7 +40,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     writeHold: 0.8,
     copyBegin: 0.15,
     copyTravel: 1,
-    evaluate: 0.6
+    evaluate: 0.6,
+    clash: 1.6
   };
   const KEYWORDS = /* @__PURE__ */ new Set(["int", "std", "cout", "endl", "struct", "auto", "const"]);
   const EASE = 'calcMode="spline" keyTimes="0;1" keySplines="0.4 0 0.2 1"';
@@ -60,10 +62,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     "dead-fill",
     "dead-stroke",
     "gap-stroke",
-    "tether"
+    "tether",
+    "error",
+    "type-label"
   ];
   const VARIABLE_COLOURS = 5;
   const FIELD_COLOURS = 4;
+  const TYPE_COLOURS = 6;
+  const LABEL = { pane: 20, memory: 18, rise: 38, row: 30 };
   const STRINGS = {
     en: {
       play: "Play",
@@ -87,6 +93,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       bind: "{name} becomes another name for {target}",
       alias: "{name} is another name for {target}",
       blank: { "\n": "Print a newline", "	": "Print a tab", " ": "Print a space" },
+      convert: "Convert {from} to {to}: {value}",
+      clash: "Does not compile: {value} is {from}, {slot} needs {to}",
       error: "This visualization could not be loaded."
     },
     ru: {
@@ -111,6 +119,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       bind: "{name} становится ещё одним именем для {target}",
       alias: "{name} — другое имя для {target}",
       blank: { "\n": "Вывод перевода строки", "	": "Вывод табуляции", " ": "Вывод пробела" },
+      convert: "Преобразование {from} в {to}: {value}",
+      clash: "Не компилируется: {value} имеет тип {from}, а для {slot} нужен {to}",
       error: "Не удалось загрузить визуализацию."
     }
   };
@@ -278,6 +288,22 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     w: s.w + 2 * FRAME.side,
     h: s.h + FRAME.top + FRAME.bottom + s.rise * (RISE.top + RISE.bottom) + (s.drop || 0)
   });
+  const typeLabelWidth = (type, size) => type.length * size * CHAR + 14;
+  function typeRows(m, box) {
+    const labels = [];
+    const edge = [];
+    for (const item of m.typed ? m.tops : []) {
+      if (!item.type) continue;
+      const at = box(item.name);
+      const cx = at.x + at.w / 2;
+      const half = typeLabelWidth(item.type, LABEL.memory) / 2;
+      let row = 0;
+      while (edge[row] !== void 0 && cx - half < edge[row] + 6) row++;
+      edge[row] = cx + half;
+      labels.push({ name: item.name, type: item.type, cx, row });
+    }
+    return { labels, height: edge.length ? edge.length * LABEL.row + 6 : 0 };
+  }
   const labelWidth = (c) => String(c.address).length * 16 * CHAR;
   const labelCentre = (c) => [
     c.x + 3 + labelWidth(c) / 2,
@@ -441,9 +467,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const first = m.tops[0];
     const last = m.tops[m.tops.length - 1];
     const fixed = GAP * (m.tops.length - 1) + 2 * NEST * m.groups.filter((s) => s.parent).length;
+    const widest = m.leaves.some((leaf) => leaf.size < 4) ? NARROW_BYTE : MAX_BYTE;
     const placed = placement(
       m,
-      Math.min(MAX_BYTE, (MEMORY_WIDTH - fixed) / (last.address + last.size - first.address))
+      Math.min(widest, (MEMORY_WIDTH - fixed) / (last.address + last.size - first.address))
     );
     const memoryW = placed.width;
     const rise = m.rise;
@@ -500,9 +527,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const structs = m.groups.length > 0;
     const room = (level >= 0 ? FRAME.top + 84 + level * 40 + 10 : (structs ? FRAME.top : 0) + 30) + rise * RISE.top;
     const tagged = tagRows(m, probe.box);
-    const names = (structs ? CELL + FRAME.bottom + 32 : CELL + 34) + rise * RISE.bottom + tagged.height;
+    const typeRow = typeRows(m, probe.box);
+    const labelRise = m.typed ? LABEL.rise + 6 : 0;
+    const named = (structs ? CELL + FRAME.bottom + 32 : CELL + 34) + rise * RISE.bottom + tagged.height;
+    const names = named + typeRow.height;
     const paneTop = room + names + 56;
-    const paneH = 76;
+    const paneH = 76 + labelRise;
     const outputTop = paneTop + paneH + 60;
     const columnH = outputLines.length ? outputTop + (outputLines.length - 1) * 36 + 14 : paneTop + paneH;
     const codeX = MARGIN;
@@ -529,7 +559,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const memY = columnY + room;
     const pane2 = { x: columnX, y: columnY + paneTop, w: columnW, h: paneH };
     const tx = columnX + 24;
-    const ty = pane2.y + 38 + 11;
+    const ty = pane2.y + 38 + 11 + (m.typed ? LABEL.rise : 0);
     const below = pane2.y - 56;
     const out = [columnX + 24, columnY + outputTop];
     const code2 = { x: codeX, y: codeY, w: codeW, h: codeH };
@@ -591,6 +621,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       owner,
       field,
       typeTargets: [],
+      typeLabels: typeRow.labels.map(({ row, ...label }) => ({
+        ...label,
+        cx: label.cx + memX,
+        top: memY + named + 8 + row * LABEL.row
+      })),
       nameSize: labelSize(
         [...groups.filter((s) => !s.parent), ...leaves.filter((l) => !l.group)],
         (c) => c.name,
@@ -609,7 +644,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   const departure = (op) => stores(op) ? T.writeHold : op.kind === "print" ? 0.2 : T.prepare;
   function arrival(op) {
     if (op.kind === "deref") return T.prepare + T.follow;
-    if (op.kind === "eval" || op.kind === "alias") return T.evaluate;
+    if (op.kind === "eval" || op.kind === "alias" || op.kind === "convert") return T.evaluate;
+    if (op.kind === "clash") return T.clash;
     if (op.kind === "print") return 0.9;
     return departure(op) + T.travel;
   }
@@ -690,6 +726,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const top = variables.map((variable) => variable.name);
     return {
       trace,
+      typeColours: typeColours(trace),
+      typed: trace.steps.some((step) => step.types),
       steps: trace.steps,
       source: trace.source,
       spans: trace.spans || [],
@@ -701,6 +739,24 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       top,
       rise: Math.max(0, ...groups.map((group) => group.rise))
     };
+  }
+  function typeColours(trace) {
+    const types = new Set(
+      [
+        "int",
+        ...trace.variables.map((variable) => variable.type),
+        ...trace.steps.flatMap((step) => (step.types ?? []).map((part) => part.type))
+      ].filter((type) => Boolean(type))
+    );
+    const colours = /* @__PURE__ */ new Map();
+    const taken = /* @__PURE__ */ new Set();
+    for (const type of types) {
+      let index = type === "int" ? 0 : [...type].reduce((hash, ch) => (hash * 31 + ch.charCodeAt(0)) % 9973, 7) % TYPE_COLOURS;
+      while (taken.has(index) && taken.size < TYPE_COLOURS) index = (index + 1) % TYPE_COLOURS;
+      taken.add(index);
+      colours.set(type, index);
+    }
+    return colours;
   }
   function activeVariables(m, i) {
     const line = m.steps[i].line;
@@ -780,6 +836,72 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     if (on === was) return to === 1 ? markup : `<g opacity="${DIM}">${markup}</g>`;
     return `<g opacity="${was ? 1 : DIM}"><animate attributeName="opacity" from="${was ? 1 : DIM}" to="${to}" dur="0.35s" begin="${round(focus.begin.get(name) ?? 0)}s" ${EASE} fill="freeze"/>${markup}</g>`;
   }
+  const typeColour = (c, type) => c.P.types[c.m.typeColours.get(type) ?? 0];
+  function typeLabel(c, cx, top, type, size, color) {
+    const w = typeLabelWidth(type, size);
+    const h = size + 7;
+    const label = (fill) => text(cx, top + size + 1, type, size, fill, "middle");
+    return c.P.typeLabel === "fill" ? rect(cx - w / 2, top, w, h, color, "none", h / 2) + label(c.P.bg) : rect(cx - w / 2, top, w, h, "none", color, h / 2, 1.5) + label(color);
+  }
+  function paneLabels(step, x) {
+    const labels = [];
+    for (const part of step.types ?? []) {
+      const cx = x + (part.span[0] + part.span[1]) / 2 * EVAL_CHAR;
+      const last = labels[labels.length - 1];
+      const label = {
+        type: part.type,
+        cx,
+        from: cx,
+        size: LABEL.pane,
+        slot: Boolean(part.slot),
+        start: part.span[0]
+      };
+      const gap = () => label.cx - last.cx - 6 - (typeLabelWidth(last.type, last.size) + typeLabelWidth(label.type, label.size)) / 2;
+      if (last && gap() < 0 && last.type === label.type && !last.slot) {
+        last.cx = (last.from + cx) / 2;
+        continue;
+      }
+      while (last && gap() < 0 && label.size > 11) {
+        last.size = label.size = Math.min(last.size, label.size) - 1;
+      }
+      labels.push(label);
+    }
+    return labels;
+  }
+  const labelTop = (y, label) => y - 70 + (LABEL.pane - label.size) / 2;
+  function paneTypes(c, step, x, y) {
+    const { P } = c;
+    const op = step.op;
+    const clash = (op == null ? void 0 : op.kind) === "clash";
+    const labels = paneLabels(step, x);
+    const opStart = op && "span" in op ? op.span[0] : void 0;
+    const value = labels.find((label) => !label.slot && label.start === opStart);
+    const slot = labels.find((label) => label.slot);
+    let out = "";
+    for (const part of step.types ?? []) {
+      out += `<path d="M ${round(x + part.span[0] * EVAL_CHAR)} ${y + 14} H ${round(x + part.span[1] * EVAL_CHAR)}" stroke="${typeColour(c, part.type)}" stroke-width="3" stroke-linecap="round"/>`;
+    }
+    for (const label of labels) {
+      const top = labelTop(y, label);
+      const middle = top + (label.size + 7) / 2;
+      let mark = typeLabel(c, label.cx, top, label.type, label.size, typeColour(c, label.type));
+      const current = c.animate && step === c.step && label === value;
+      if (current && (op == null ? void 0 : op.kind) === "convert") {
+        mark = `<g transform="translate(${round(label.cx)} ${round(middle)})"><g>${pulse(arrival(op) + 0.2)}<g transform="translate(${round(-label.cx)} ${round(-middle)})">${mark}</g></g></g>`;
+      }
+      if (current && clash && slot) {
+        mark = `<g><animateMotion path="M 0 0 H ${round(slot.cx - label.cx)}" keyPoints="0;0.75;0" keyTimes="0;0.55;1" calcMode="linear" begin="0.35s" dur="${T.clash - 0.4}s" fill="freeze"/>${mark}</g>`;
+      }
+      out += mark;
+      if (clash && (label === value || label === slot)) {
+        const w = typeLabelWidth(label.type, label.size);
+        const h = label.size + 7;
+        out += rect(label.cx - w / 2 - 4, top - 4, w + 8, h + 8, "none", P.error, h / 2 + 4, 2.5);
+      }
+    }
+    if (clash && value && slot) out += text((slot.cx + value.cx) / 2, y - 48, "≠", 26, P.error, "middle");
+    return out;
+  }
   function code(c, oldLine) {
     const { m, g, P, step, op } = c;
     const x = g.code.x;
@@ -795,15 +917,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     };
     const y = g.lineY(step.line);
     const [bx, by, bw] = box(step.line);
-    let stripe = rect(
-      x + 8,
-      y - 32,
-      4,
-      44,
-      op && op.kind === "write" ? P.write : P.read,
-      "none",
-      0
-    );
+    const stripeColour = (op == null ? void 0 : op.kind) === "clash" ? P.error : (op == null ? void 0 : op.kind) === "write" ? P.write : P.read;
+    let stripe = rect(x + 8, y - 32, 4, 44, stripeColour, "none", 0);
     let span = rect(bx, by, bw, 40, P.highlight, "none", 6);
     if (oldLine !== null) {
       const [ox, oy, ow] = box(oldLine);
@@ -978,7 +1093,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       if (on) {
         const shown = (value) => {
           const length = String(value).length;
-          const size = Math.min(30, (cell.w - 12) / (length * CHAR));
+          const size = Math.min(30, (cell.w - Math.min(12, cell.w / 5)) / (length * CHAR));
           return text(0, size / 3 + 1, value, round(size), value === "?" ? P.grey : P.fg, "middle");
         };
         markup += `<g transform="translate(${round(cell.x + cell.w / 2)} ${cell.y + cell.h / 2})"><g>` + (changing ? pulse(at - 0.2) : "");
@@ -1005,6 +1120,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     if (op && op.kind === "bind") {
       out += `<g opacity="0">${fade(0, 1, 0.2)}${fade(1, 0, 0.35, at + 0.5)}${outline(c, g.box(op.target), P.fg)}</g>`;
+    }
+    for (const label of g.typeLabels) {
+      const on = g.cellsOf(label.name).some(live);
+      const color = on ? typeColour(c, label.type) : P.deadStroke;
+      out += dim(c, label.name, typeLabel(c, label.cx, label.top, label.type, LABEL.memory, color));
     }
     return out + tags(c, at);
   }
@@ -1079,6 +1199,18 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return "";
   }
   function pane(c, copying) {
+    const { g, step, prev, op, animate } = c;
+    const out = paneBody(c, copying);
+    if (!c.m.typed) return out;
+    const types = (shown) => paneTypes(c, shown, g.tx, g.ty);
+    if (!animate) return out + types(step);
+    const appear = (at, shown) => `<g opacity="0">${fade(0, 1, 0.25, at)}${types(shown)}</g>`;
+    if (copying) return out + appear(copyBegin(c.m.steps, c.index) + T.copyTravel, step);
+    if ((op == null ? void 0 : op.kind) === "clash") return out + appear(0.15, step);
+    if (!op || !prev || stores(op) || op.kind === "print") return out + types(step);
+    return out + `<g>${fade(1, 0, 0.2, Math.max(0, arrival(op) - 0.35))}${types(prev)}</g>` + appear(arrival(op) + 0.2, step);
+  }
+  function paneBody(c, copying) {
     const { g, P, step, prev, op } = c;
     const tx = g.tx;
     const ty = g.ty;
@@ -1095,21 +1227,21 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       out += `<g><animateMotion dur="${round(total)}s" path="M ${round(sx)} ${sy} L ${tx} ${ty}" keyPoints="0;0;1" keyTimes="0;${(begin / total).toFixed(4)};1" calcMode="spline" keySplines="0 0 1 1;0.4 0 0.2 1" fill="freeze"/><g transform="scale(${scale})"><animateTransform attributeName="transform" type="scale" from="${scale}" to="1" begin="${begin}s" dur="${T.copyTravel}s" ${EASE} fill="freeze"/><g opacity="0">${fade(0, 1, 0.15, begin - 0.15)}${fade(1, 0, 0.12, total)}` + rect(-8, -36, step.pane.length * EVAL_CHAR + 16, 48, P.highlight, P.read, 7, 2) + "</g>" + settledPane(c, step, 0, 0) + "</g></g>";
       return out;
     }
-    if (op && prev && ["read", "addr", "deref", "eval", "alias"].includes(op.kind)) {
+    if (op && prev && (op.kind === "read" || op.kind === "addr" || op.kind === "deref" || op.kind === "eval" || op.kind === "alias" || op.kind === "convert")) {
       const before = prev.pane;
       const [s, e] = op.span;
       const length = step.pane.length - before.length + (e - s);
       const at = arrival(op);
       const dx = (length - (e - s)) * EVAL_CHAR;
       const sx = tx + s * EVAL_CHAR;
-      const [stroke, fill] = op.kind === "read" || op.kind === "addr" ? [P.read, P.readFill] : [P.fg, P.derefFill];
+      const [stroke, fill] = op.kind === "read" || op.kind === "addr" ? [P.read, P.readFill] : op.kind === "convert" ? [P.write, P.writeFill] : [P.fg, P.derefFill];
       out += exprBackground(c, tx, ty, step.expr, prev.expr, at + 0.1);
       out += `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.2, at - 0.1)}${markBox(sx, ty, e - s, stroke, fill)}</g>`;
       out += paneText(c, tx, ty, before, 0, s, prev.expr);
       let old = paneText(c, sx, ty, before, s, e, prev.expr);
       let fresh = paneText(c, sx, ty, step.pane, s, s + length, step.expr);
       const middle = sx + (e - s) * EVAL_CHAR / 2;
-      if (op.kind === "eval") {
+      if (op.kind === "eval" || op.kind === "convert") {
         old = scaleAbout(old, middle, ty - 11, 1, 0.45, 0.15, at - 0.15);
         fresh = scaleAbout(fresh, sx + length * EVAL_CHAR / 2, ty - 11, 0.45, 1, at, 0.25);
       }
@@ -1198,6 +1330,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const op = step.op;
     if (!op) return format(S.copy, { line: step.line + 1, code: m.source[step.line] });
     if (op.kind === "print" && S.blank[op.value]) return S.blank[op.value];
+    if (op.kind === "clash") {
+      return format(S.clash, {
+        ...op,
+        value: step.pane.slice(...op.span),
+        slot: step.pane.slice(...op.destination)
+      });
+    }
     return format(S[op.kind], op);
   }
   class Player {
@@ -1398,6 +1537,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
       P.vars = Array.from({ length: VARIABLE_COLOURS }, (_, i) => read("var-" + i) || "#808080");
       P.fields = Array.from({ length: FIELD_COLOURS }, (_, i) => read("field-" + i) || "#808080");
+      P.types = Array.from({ length: TYPE_COLOURS }, (_, i) => read("type-" + i) || "#808080");
       this.P = P;
     }
     refresh() {

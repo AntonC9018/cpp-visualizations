@@ -9,10 +9,12 @@ import {
   FIELD_COLOURS,
   FRAME,
   GAP,
+  LABEL,
   LINE,
   MARGIN,
   MAX_BYTE,
   MEMORY_WIDTH,
+  NARROW_BYTE,
   NEST,
   type Palette,
   RISE,
@@ -65,6 +67,14 @@ export interface PlacedTag {
   y: number;
 }
 
+/** A type label under the name of a top-level variable: its centre and top. */
+export interface TypeLabel {
+  name: string;
+  type: string;
+  cx: number;
+  top: number;
+}
+
 export interface TypeTarget extends PlacedRect {
   type: string;
   underline?: boolean;
@@ -94,6 +104,7 @@ export interface Geometry {
   owner(token: string): PlacedGroup | PlacedLeaf | PlacedTag | undefined;
   field(token: string): PlacedLeaf | PlacedGroup | undefined;
   typeTargets: TypeTarget[];
+  typeLabels: TypeLabel[];
   nameSize: number;
   fieldSize: number;
 }
@@ -111,6 +122,31 @@ export const frameOf = (
     s.rise * (RISE.top + RISE.bottom) +
     (s.drop || 0),
 });
+
+export const typeLabelWidth = (type: string, size: number): number => type.length * size * CHAR + 14;
+
+/**
+ * The types under the names of top-level storage. A label takes the first row where it clears
+ * the label before it, so a narrow cell's type drops below its neighbour's.
+ */
+function typeRows(
+  m: PreparedModel,
+  box: (name: string) => PlacedBox | undefined
+): { labels: Array<Omit<TypeLabel, 'top'> & { row: number }>; height: number } {
+  const labels: Array<Omit<TypeLabel, 'top'> & { row: number }> = [];
+  const edge: number[] = [];
+  for (const item of m.typed ? m.tops : []) {
+    if (!item.type) continue;
+    const at = box(item.name)!;
+    const cx = at.x + at.w / 2;
+    const half = typeLabelWidth(item.type, LABEL.memory) / 2;
+    let row = 0;
+    while (edge[row] !== undefined && cx - half < edge[row] + 6) row++;
+    edge[row] = cx + half;
+    labels.push({ name: item.name, type: item.type, cx, row });
+  }
+  return { labels, height: edge.length ? edge.length * LABEL.row + 6 : 0 };
+}
 
 export const labelWidth = (c: { address: number }): number =>
   String(c.address).length * 16 * CHAR;
@@ -329,9 +365,10 @@ export function geometry(m: PreparedModel, P: Palette, stacked: boolean): Geomet
   const first = m.tops[0];
   const last = m.tops[m.tops.length - 1];
   const fixed = GAP * (m.tops.length - 1) + 2 * NEST * m.groups.filter(s => s.parent).length;
+  const widest = m.leaves.some(leaf => leaf.size < 4) ? NARROW_BYTE : MAX_BYTE;
   const placed = placement(
     m,
-    Math.min(MAX_BYTE, (MEMORY_WIDTH - fixed) / (last.address + last.size - first.address))
+    Math.min(widest, (MEMORY_WIDTH - fixed) / (last.address + last.size - first.address))
   );
   const memoryW = placed.width;
   const rise = m.rise;
@@ -392,10 +429,14 @@ export function geometry(m: PreparedModel, P: Palette, stacked: boolean): Geomet
     (level >= 0 ? FRAME.top + 84 + level * 40 + 10 : (structs ? FRAME.top : 0) + 30) +
     rise * RISE.top;
   const tagged = tagRows(m, probe.box);
-  const names =
+  const typeRow = typeRows(m, probe.box);
+  // A typed pane has room above its text for the labels.
+  const labelRise = m.typed ? LABEL.rise + 6 : 0;
+  const named =
     (structs ? CELL + FRAME.bottom + 32 : CELL + 34) + rise * RISE.bottom + tagged.height;
+  const names = named + typeRow.height;
   const paneTop = room + names + 56;
-  const paneH = 76;
+  const paneH = 76 + labelRise;
   const outputTop = paneTop + paneH + 60;
   const columnH = outputLines.length
     ? outputTop + (outputLines.length - 1) * 36 + 14
@@ -426,7 +467,7 @@ export function geometry(m: PreparedModel, P: Palette, stacked: boolean): Geomet
   const memY = columnY + room;
   const pane: PlacedRect = { x: columnX, y: columnY + paneTop, w: columnW, h: paneH };
   const tx = columnX + 24;
-  const ty = pane.y + 38 + 11;
+  const ty = pane.y + 38 + 11 + (m.typed ? LABEL.rise : 0);
   const below = pane.y - 56;
   const out: [number, number] = [columnX + 24, columnY + outputTop];
   const code: PlacedRect = { x: codeX, y: codeY, w: codeW, h: codeH };
@@ -499,6 +540,11 @@ export function geometry(m: PreparedModel, P: Palette, stacked: boolean): Geomet
     owner,
     field,
     typeTargets: [],
+    typeLabels: typeRow.labels.map(({ row, ...label }) => ({
+      ...label,
+      cx: label.cx + memX,
+      top: memY + named + 8 + row * LABEL.row,
+    })),
     nameSize: labelSize(
       [...groups.filter(s => !s.parent), ...leaves.filter(l => !l.group)],
       c => c.name,
