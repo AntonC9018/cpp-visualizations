@@ -46,8 +46,8 @@ export interface CellInput {
   size: number;
   pointer: boolean;
   value: number | null;
-  object_address?: number | null;
-  object_size?: number | null;
+  objectAddress?: number | null;
+  objectSize?: number | null;
   reference?: boolean;
 }
 
@@ -56,8 +56,8 @@ export class Cell {
   size: number;
   pointer: boolean;
   value: number | null;
-  object_address: number | null;
-  object_size: number | null;
+  objectAddress: number | null;
+  objectSize: number | null;
   reference: boolean;
 
   constructor({
@@ -65,16 +65,16 @@ export class Cell {
     size,
     pointer,
     value,
-    object_address = null,
-    object_size = null,
+    objectAddress = null,
+    objectSize = null,
     reference = false,
   }: CellInput) {
     this.address = address;
     this.size = size;
     this.pointer = pointer;
     this.value = value;
-    this.object_address = object_address;
-    this.object_size = object_size;
+    this.objectAddress = objectAddress;
+    this.objectSize = objectSize;
     this.reference = reference;
     Object.freeze(this);
   }
@@ -102,10 +102,11 @@ export type RuntimeExecutor = (
 
 export const hooks: {
   execute: RuntimeExecutor | null;
-  after: ((statement: Statement, state: Record<string, any>) => Record<string, any>) | null;
+  /** The state after a statement, from the state before it; tests swap it to break predictions. */
+  after: (statement: Statement, state: Record<string, any>) => Record<string, any>;
 } = {
   execute: null,
-  after: null,
+  after: (statement, state) => storeResult(statement, state),
 };
 
 const FIRST_ADDRESS = 64;
@@ -235,7 +236,7 @@ function getRecord(records: unknown, name: string): RecordInfo | undefined {
 }
 
 /** How many pointer levels lie over an integer or a supported struct. */
-export function _depth(node: AstNode | null | undefined, records: unknown = {}): number {
+export function pointerDepth(node: AstNode | null | undefined, records: unknown = {}): number {
   const qualified = typeSpelling(node);
   const intMatch = /^(const )?([\w: ]+?)(?: (\*+))?$/.exec(canonicalType(node));
   if (intMatch && integerNamed(intMatch[2], records) && !(intMatch[1] && intMatch[3])) {
@@ -270,7 +271,7 @@ function isAscii(str: string): boolean {
   return true;
 }
 
-export function _body(source: string): string {
+export function snippetBody(source: string): string {
   let cleaned = source.replace(QUOTED_OR_COMMENT, value => {
     if (value.startsWith('//') || value.startsWith('/*')) {
       const newlines = (value.match(/\n/g) || []).length;
@@ -494,7 +495,7 @@ function load(state: Record<string, any>, name: string, missing = false): any {
   return value;
 }
 
-export function _flatten(state: Record<string, any>): Record<string, any> {
+function flatten(state: Record<string, any>): Record<string, any> {
   const cells: Record<string, any> = {};
   for (const [name, value] of Object.entries(state)) {
     if (isPlainObject(value)) {
@@ -502,7 +503,7 @@ export function _flatten(state: Record<string, any>): Record<string, any> {
       for (const [member, item] of Object.entries(value)) {
         sub[`${name}.${member}`] = item;
       }
-      Object.assign(cells, _flatten(sub));
+      Object.assign(cells, flatten(sub));
     } else {
       cells[name] = value;
     }
@@ -562,19 +563,19 @@ class Evaluator {
     this.temporary = false;
   }
 
-  _reduce(node: AstNode, details: ReductionDetails): void {
+  private reduce(node: AstNode, details: ReductionDetails): void {
     this.reductions.push({ ...details, span: this.locate(node), type: displayedType(node) });
   }
 
   /** A brace list inside another one is part of its value, not an evaluation of its own. */
-  _absorb(child: AstNode | undefined, value: any): void {
+  private absorb(child: AstNode | undefined, value: any): void {
     const last = this.reductions[this.reductions.length - 1];
     if (child?.kind === 'InitListExpr' && last?.kind === 'eval' && last.value === value) {
       this.reductions.pop();
     }
   }
 
-  _load(name: string): any {
+  private load(name: string): any {
     const value = load(this.state, name);
     if (value === null || value === undefined) {
       throw new Unsupported(`reading uninitialized variable ${name}`);
@@ -590,7 +591,7 @@ class Evaluator {
       declaration.kind === 'VarDecl' &&
       Object.hasOwn(this.references, name)
     ) {
-      this._reduce(node, { kind: 'alias', name, spelling: this.references[name] });
+      this.reduce(node, { kind: 'alias', name, spelling: this.references[name] });
       return this.references[name];
     }
     if (
@@ -622,7 +623,7 @@ class Evaluator {
           throw new Unsupported(`dereferencing the null pointer ${via} is undefined`);
         }
         const name = `${pointer.target}.${node.name}`;
-        this._reduce(outer ?? node, { kind: 'deref', name: via, value: new Pointer(name) });
+        this.reduce(outer ?? node, { kind: 'deref', name: via, value: new Pointer(name) });
         return name;
       }
       return `${this.lvalue(children[0])}.${node.name}`;
@@ -635,7 +636,7 @@ class Evaluator {
       if (pointer.target === null) {
         throw new Unsupported(`dereferencing the null pointer ${via} is undefined`);
       }
-      this._reduce(outer ?? node, { kind: 'deref', name: via, value: null });
+      this.reduce(outer ?? node, { kind: 'deref', name: via, value: null });
       return pointer.target;
     }
     throw new Unsupported(`unsupported assignable expression: ${kind}`);
@@ -654,19 +655,19 @@ class Evaluator {
     if (kind === 'ImplicitCastExpr' && children.length === 1) {
       const cast = node.castKind;
       if (cast === 'LValueToRValue') {
-        _depth(node, this.records);
+        pointerDepth(node, this.records);
         const name = this.lvalue(children[0]);
-        const value = this._load(name);
-        this._reduce(node, { kind: 'read', name, record: null });
+        const value = this.load(name);
+        this.reduce(node, { kind: 'read', name, record: null });
         return [value, name];
       }
-      if (cast === 'NullToPointer' && _depth(node, this.records)) {
+      if (cast === 'NullToPointer' && pointerDepth(node, this.records)) {
         const literal = children[0];
         if (
           literal?.kind === 'CXXNullPtrLiteralExpr' ||
           (literal?.kind === 'IntegerLiteral' && literal?.value === '0')
         ) {
-          this._reduce(node, { kind: 'eval', value: new Pointer(), record: null });
+          this.reduce(node, { kind: 'eval', value: new Pointer(), record: null });
           return [new Pointer(), null];
         }
       }
@@ -675,7 +676,7 @@ class Evaluator {
       }
       rejectPointerOperator(children[0]);
       if (cast === 'IntegralCast') {
-        return [this._convert(node, children[0]), null];
+        return [this.convert(node, children[0]), null];
       }
       throw new Unsupported(`implicit ${cast} conversions are outside this category`);
     }
@@ -689,15 +690,15 @@ class Evaluator {
       ) {
         operand = operand.inner![0];
       }
-      return [this._convert(node, operand), null];
+      return [this.convert(node, operand), null];
     }
-    const depth = _depth(node, this.records);
+    const depth = pointerDepth(node, this.records);
     const record = !depth ? getRecord(this.records, typeName(node)) : null;
     if (record) {
       if (kind === 'CXXFunctionalCastExpr' && children.length === 1) {
         const [value] = this.rvalue(children[0]);
-        this._absorb(children[0], value);
-        this._reduce(node, { kind: 'eval', value, record: record.name });
+        this.absorb(children[0], value);
+        this.reduce(node, { kind: 'eval', value, record: record.name });
         return [value, null];
       }
       if (kind === 'InitListExpr') {
@@ -714,10 +715,10 @@ class Evaluator {
           } else {
             const [childVal] = this.rvalue(child);
             value[item.name] = childVal;
-            this._absorb(child, childVal);
+            this.absorb(child, childVal);
           }
         }
-        this._reduce(node, { kind: 'eval', value, record: null });
+        this.reduce(node, { kind: 'eval', value, record: null });
         return [value, null];
       }
       if (kind === 'CXXConstructExpr') {
@@ -734,11 +735,11 @@ class Evaluator {
         (kind === 'UnaryOperator' && node.opcode === '*')
       ) {
         const name = this.lvalue(node);
-        const value = this._load(name);
-        if (Object.values(_flatten({ [name]: value })).some(item => item === null)) {
+        const value = this.load(name);
+        if (Object.values(flatten({ [name]: value })).some(item => item === null)) {
           throw new Unsupported(`reading uninitialized struct ${name}`);
         }
-        this._reduce(node, { kind: 'read', name, record: record.name });
+        this.reduce(node, { kind: 'read', name, record: record.name });
         return [value, name];
       }
     }
@@ -746,7 +747,7 @@ class Evaluator {
       return [exact(BigInt(node.value ?? '0')), null];
     }
     if (kind === 'InitListExpr' || kind === 'CXXFunctionalCastExpr') {
-      return [this._braces(node, depth), null];
+      return [this.braces(node, depth), null];
     }
     let value: any;
     if (kind === 'ParenExpr' && children.length === 1) {
@@ -756,7 +757,7 @@ class Evaluator {
         throw new Unsupported('only the address of a variable is supported');
       }
       const name = this.lvalue(children[0]);
-      this._reduce(node, { kind: 'addr', name });
+      this.reduce(node, { kind: 'addr', name });
       return [new Pointer(name), null];
     } else if (
       kind === 'UnaryOperator' &&
@@ -764,31 +765,31 @@ class Evaluator {
       children.length === 1 &&
       !depth
     ) {
-      const operand = BigInt(this._integerOperand(children[0]));
+      const operand = BigInt(this.integerOperand(children[0]));
       value = exact(integerTypeOf(node).result(node.opcode === '+' ? operand : -operand));
     } else if (kind === 'UnaryOperator' && node.opcode === '~' && children.length === 1 && !depth) {
       // Every bit of the (promoted) operand flips; this never overflows, even when signed.
-      value = exact(integerTypeOf(node).wrap(~BigInt(this._integerOperand(children[0]))));
+      value = exact(integerTypeOf(node).wrap(~BigInt(this.integerOperand(children[0]))));
     } else if (
       kind === 'BinaryOperator' &&
       ['+', '-', '*', '/', '%'].includes(node.opcode ?? '') &&
       children.length === 2
     ) {
       rejectPointerOperator(node);
-      value = Evaluator._arithmetic(
+      value = Evaluator.arithmetic(
         integerTypeOf(node),
         node.opcode!,
-        this._integerOperand(children[0]),
-        this._integerOperand(children[1])
+        this.integerOperand(children[0]),
+        this.integerOperand(children[1])
       );
     } else {
       throw new Unsupported(`unsupported expression: ${kind} ${node?.opcode ?? ''}`.trimEnd());
     }
-    this._reduce(node, { kind: 'eval', value, record: null });
+    this.reduce(node, { kind: 'eval', value, record: null });
     return [value, null];
   }
 
-  _integerOperand(node: AstNode): number {
+  private integerOperand(node: AstNode): number {
     const [value] = this.rvalue(node);
     if (typeof value !== 'number') {
       throw new Unsupported('pointer arithmetic and comparison are not supported');
@@ -797,24 +798,24 @@ class Evaluator {
   }
 
   /** `operand` converted to the integer type of `node`, a cast written or implied. */
-  _convert(node: AstNode, operand: AstNode): number {
-    _depth(node, this.records);
+  private convert(node: AstNode, operand: AstNode): number {
+    pointerDepth(node, this.records);
     const target = integerType(node);
     if (!target || !integerType(operand)) {
       throw new Unsupported('only conversions between integer types are supported');
     }
-    const value = exact(target.wrap(BigInt(this._integerOperand(operand))));
+    const value = exact(target.wrap(BigInt(this.integerOperand(operand))));
     const source = displayedType(operand);
     if (source === displayedType(node)) {
       // `static_cast<int>` of an int changes nothing: the cast just goes away.
-      this._reduce(node, { kind: 'eval', value, record: null });
+      this.reduce(node, { kind: 'eval', value, record: null });
     } else {
-      this._reduce(node, { kind: 'convert', value, source });
+      this.reduce(node, { kind: 'convert', value, source });
     }
     return value;
   }
 
-  _braces(node: AstNode, depth: number): any {
+  private braces(node: AstNode, depth: number): any {
     const children = node.inner ?? [];
     let value: any;
     if (node.kind === 'CXXFunctionalCastExpr') {
@@ -833,11 +834,11 @@ class Evaluator {
     } else {
       value = depth ? new Pointer() : 0;
     }
-    this._reduce(node, { kind: 'eval', value, record: null });
+    this.reduce(node, { kind: 'eval', value, record: null });
     return value;
   }
 
-  static _arithmetic(type: Integer, operation: string, left: number, right: number): number {
+  private static arithmetic(type: Integer, operation: string, left: number, right: number): number {
     const l = BigInt(left);
     const r = BigInt(right);
     if (operation === '/' || operation === '%') {
@@ -885,7 +886,7 @@ export class Statement {
   declared: string | null;
   pointer: boolean;
   record: string | null;
-  output_suffix: string | null;
+  outputSuffix: string | null;
   printed: string | null;
   temporary: boolean;
   bound: string | null;
@@ -907,7 +908,7 @@ export class Statement {
     declared = null,
     pointer = false,
     record = null,
-    output_suffix = null,
+    outputSuffix = null,
     printed = null,
     temporary = false,
     bound = null,
@@ -928,7 +929,7 @@ export class Statement {
     declared?: string | null;
     pointer?: boolean;
     record?: string | null;
-    output_suffix?: string | null;
+    outputSuffix?: string | null;
     printed?: string | null;
     temporary?: boolean;
     bound?: string | null;
@@ -949,7 +950,7 @@ export class Statement {
     this.declared = declared;
     this.pointer = pointer;
     this.record = record;
-    this.output_suffix = output_suffix;
+    this.outputSuffix = outputSuffix;
     this.printed = printed;
     this.temporary = temporary;
     this.bound = bound;
@@ -1113,9 +1114,9 @@ function analyzeStatement(
       const referred = Object.fromEntries(
         Object.entries(variable.type ?? {}).map(([key, text]) => [key, text.slice(0, -1).replace(/\s+$/, '')])
       );
-      _depth({ type: referred }, records);
+      pointerDepth({ type: referred }, records);
     } else {
-      pointer = _depth(variable, records) > 0;
+      pointer = pointerDepth(variable, records) > 0;
       size = pointer ? POINTER_SIZE : (integerType(variable)?.size ?? null);
     }
     record = !pointer && Object.hasOwn(records, typeName(variable)) ? typeName(variable) : null;
@@ -1181,7 +1182,7 @@ function analyzeStatement(
     const inner = cur.inner!;
     left = inner[inner.length - 2];
     root = inner[inner.length - 1];
-    _depth(left, records);
+    pointerDepth(left, records);
     if (left.kind === 'ParenExpr' && stripParentheses(left).kind === 'DeclRefExpr') {
       throw new Unsupported('a parenthesized variable as assignment target is not supported');
     }
@@ -1251,7 +1252,7 @@ function analyzeStatement(
       pane: prefix + text + suffix,
       expr: [prefix.length, prefix.length + text.length],
       result: locate(root),
-      output_suffix: outSuffix,
+      outputSuffix: outSuffix,
       printed,
     });
   }
@@ -1322,7 +1323,7 @@ function analyzeStatement(
     declared,
     pointer,
     record,
-    output_suffix: outSuffix,
+    outputSuffix: outSuffix,
     temporary: evaluator.temporary,
     typed,
     slot,
@@ -1338,14 +1339,7 @@ function storedAt(value: any, path: string[], newValue: any): any {
   return { ...value, [path[0]]: storedAt(value[path[0]], path.slice(1), newValue) };
 }
 
-export function _after(statement: Statement, state: Record<string, any>): Record<string, any> {
-  if (hooks.after) {
-    return hooks.after(statement, state);
-  }
-  return defaultAfter(statement, state);
-}
-
-export function defaultAfter(statement: Statement, state: Record<string, any>): Record<string, any> {
+export function storeResult(statement: Statement, state: Record<string, any>): Record<string, any> {
   const after = { ...state };
   if (statement.target !== null) {
     const [owner, ...path] = statement.target.split('.');
@@ -1398,7 +1392,7 @@ const leading = (text: string): number => text.length - text.trimStart().length;
  * when the slot is a struct; everything before the value, up to the previous statement, is
  * the slot. Any other error, or one that is not in the last statement, stays unsupported.
  */
-export function _mismatch(body: string, error: IllFormed): [string, Mismatch] {
+function cutMismatch(body: string, error: IllFormed): [string, Mismatch] {
   const found = MISMATCHES.map(pattern => pattern.exec(error.message)).find(Boolean)?.groups;
   let at = error.offset === null ? -1 : error.offset - PREAMBLE.length;
   if (!found || at < 0 || at >= body.length) throw error;
@@ -1473,7 +1467,7 @@ export function analyzeWithFrontend(
     if (statements.length > MAX_STATEMENTS) {
       throw new Unsupported('too many statements');
     }
-    state = _after(statement, state);
+    state = hooks.after(statement, state);
     if (statement.bound && statement.declared) {
       references[statement.declared] = statement.bound;
     }
@@ -1497,7 +1491,7 @@ function pyMod(a: number, b: number): number {
   return ((a % b) + b) % b;
 }
 
-export function _normalize(
+export function normalizeAddresses(
   addresses: Record<string, number>,
   sizes: Record<string, number>
 ): Record<string, number> {
@@ -1531,7 +1525,7 @@ function withoutReferenceSlots(
  * A struct and its first field can share an address. Keep the statically typed target and
  * verify its address rather than trying to recover an ambiguous target from that number.
  */
-export function _observed(
+export function observeExecution(
   execution: Execution,
   predicted: Record<string, any>[],
   variables: TraceVariable[],
@@ -1562,12 +1556,12 @@ export function _observed(
       const member = dot === -1 ? '' : name.slice(dot + 1);
       if (member) {
         const offset = offsets[name] - offsets[owner];
-        const base = cell.object_address!;
+        const base = cell.objectAddress!;
         if (!Object.hasOwn(addresses, owner)) {
           addresses[owner] = base;
         }
         if (
-          cell.object_size !== owners[owner].size ||
+          cell.objectSize !== owners[owner].size ||
           cell.address !== base + offset ||
           addresses[owner] !== base
         ) {
@@ -1592,7 +1586,7 @@ export function _observed(
   }
   for (let i = 0; i < checkpoints.length; i++) {
     const row = checkpoints[i];
-    const expected = _flatten(predicted[i]);
+    const expected = flatten(predicted[i]);
     const rowKeys = Object.keys(row).sort();
     const expKeys = Object.keys(expected).sort();
     if (rowKeys.length !== expKeys.length || rowKeys.some((k, idx) => k !== expKeys[idx])) {
@@ -1780,7 +1774,7 @@ class Renderer {
     op: any = null,
     hold = 1.0
   ): void {
-    const flat = _flatten(state);
+    const flat = flatten(state);
     const values: Record<string, StoredCellValue> = {};
     for (const name of this.order) {
       values[name] = !Object.hasOwn(flat, name)
@@ -1903,7 +1897,7 @@ class Renderer {
     let real = text;
     if (statement.printed !== null) {
       real = text = statement.printed;
-    } else if (statement.output_suffix !== null && statement.value instanceof Pointer) {
+    } else if (statement.outputSuffix !== null && statement.value instanceof Pointer) {
       text = this.printed(statement.value, this.addresses);
       real = this.printed(statement.value, this.real);
       if (pane.read(statement.result[0], statement.result[1]) !== text) {
@@ -1916,9 +1910,9 @@ class Renderer {
         span = pane.locate(statement.result[0], statement.result[1]);
       }
     }
-    if (statement.output_suffix !== null) {
-      this.realStdout += real + statement.output_suffix;
-      this.stdout += text + statement.output_suffix;
+    if (statement.outputSuffix !== null) {
+      this.realStdout += real + statement.outputSuffix;
+      this.stdout += text + statement.outputSuffix;
       this.add(line, pane, expr, after, { kind: 'print', value: text, span }, 1.2);
       return;
     }
@@ -1975,7 +1969,7 @@ export interface TraceOptions {
  */
 export function traceWithFrontend(source: string, options: TraceOptions): ExecutionTrace {
   const { runtime = true, types = false, frontend, executor = hooks.execute, directory } = options;
-  let body = _body(source);
+  let body = snippetBody(source);
   let mismatch: Mismatch | null = null;
   let statements: Statement[];
   let records: Record<string, RecordInfo>;
@@ -1984,13 +1978,13 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
   } catch (error) {
     if (!types || !(error instanceof IllFormed)) throw error;
     // A last statement whose types do not fit is shown, not run: the rest is traced.
-    [body, mismatch] = _mismatch(body, error);
+    [body, mismatch] = cutMismatch(body, error);
     [statements, records] = analyzeWithFrontend(body, frontend);
   }
   const predicted: Record<string, any>[] = [];
   let state: Record<string, any> = {};
   for (const statement of statements) {
-    state = _after(statement, state);
+    state = hooks.after(statement, state);
     predicted.push(state);
   }
   const declarations = statements.filter(s => s.declared);
@@ -2057,7 +2051,7 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
         bound[statement.declared] = statement.bound;
       }
       scopes.push([
-        ...Object.entries(_flatten(row)).map(([name, value]): ScopeEntry => [name, value !== null]),
+        ...Object.entries(flatten(row)).map(([name, value]): ScopeEntry => [name, value !== null]),
         ...Object.keys(bound).map((name): ScopeEntry => [name, REFERENCE]),
       ]);
     }
@@ -2066,7 +2060,7 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
       scopes,
       directory
     );
-    [addresses, states] = _observed(execution, predicted, variables, bound);
+    [addresses, states] = observeExecution(execution, predicted, variables, bound);
   } else {
     addresses = storageAddresses(variables);
     states = predicted;
@@ -2080,7 +2074,7 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
     ...declarations.filter(d => !d.record && !d.bound).map(d => d.size!),
     4
   );
-  addresses = _normalize(addresses, { ABI: alignment });
+  addresses = normalizeAddresses(addresses, { ABI: alignment });
   for (const variable of variables) {
     variable.address = addresses[variable.name];
   }

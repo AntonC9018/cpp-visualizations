@@ -54,7 +54,7 @@ class Checkpoint(gdb.Breakpoint):
                              "pointer": kind == gdb.TYPE_CODE_PTR,
                              "value": int(value) if defined else None}
                 if member:
-                    row[name].update(object_address=object_address, object_size=object_size)
+                    row[name].update(objectAddress=object_address, objectSize=object_size)
             records.append({"position": position, "variables": row})
         except Exception as error:
             failures.append(str(error))

@@ -3,7 +3,6 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { AstNode } from '../core/errors.ts';
 import type { ExecutionTrace } from '../core/trace_format.ts';
 import {
   Cell,
@@ -16,15 +15,12 @@ import {
   type Reduction,
   Statement,
   Unsupported,
-  _after,
-  _body,
-  _depth,
-  _flatten,
-  _mismatch,
-  _normalize,
-  _observed,
+  snippetBody,
+  pointerDepth,
+  normalizeAddresses,
+  observeExecution,
   analyzeWithFrontend,
-  defaultAfter,
+  storeResult,
   hooks,
   traceWithFrontend,
 } from '../core/tracing.ts';
@@ -44,22 +40,15 @@ export {
   type Reduction,
   Statement,
   Unsupported,
-  _after,
-  _body,
-  _depth,
-  _flatten,
-  _mismatch,
-  _normalize,
-  _observed,
+  snippetBody,
+  pointerDepth,
+  normalizeAddresses,
+  observeExecution,
   analyzeWithFrontend,
-  defaultAfter,
+  storeResult,
   hooks,
   traceWithFrontend,
 };
-
-export function _main_ast(program: string, directory: string): AstNode {
-  return createClangFrontend(directory).mainAst(program);
-}
 
 export function trace(
   source: string,

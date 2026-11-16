@@ -462,7 +462,7 @@ describe('StaticPointerTraceTests', () => {
 describe('ObservationTests', () => {
   const PREDICTED = [{ a: 5 }, { a: 5, p: new Pointer('a') }];
   const VARIABLES = [scalar('a', 0, 4), scalar('p', 0, 8, 'ptr')];
-  const observed = (execution: Execution) => tracing._observed(execution, PREDICTED, VARIABLES, {});
+  const observed = (execution: Execution) => tracing.observeExecution(execution, PREDICTED, VARIABLES, {});
 
   function makeExecution(pointerValue: number, size = 8): Execution {
     const a = new Cell({ address: 0x7ffc_1004, size: 4, pointer: false, value: 5 });
@@ -473,7 +473,7 @@ describe('ObservationTests', () => {
   test('pointer_values_map_back_to_variables', () => {
     const [addrs, states] = observed(makeExecution(0x7ffc_1004));
     assert.deepEqual(states, PREDICTED);
-    assert.deepEqual(tracing._normalize(addrs, { a: 4, p: 8 }), { a: 76, p: 64 });
+    assert.deepEqual(tracing.normalizeAddresses(addrs, { a: 4, p: 8 }), { a: 76, p: 64 });
   });
 
   test('a_pointer_to_anything_else_is_rejected', () => {
@@ -499,11 +499,11 @@ describe('ObservationTests', () => {
 
   test('normalization_keeps_alignment', () => {
     assert.deepEqual(
-      tracing._normalize({ a: 0x1004, p: 0x1008 }, { a: 4, p: 8 }),
+      tracing.normalizeAddresses({ a: 0x1004, p: 0x1008 }, { a: 4, p: 8 }),
       { a: 68, p: 72 }
     );
     assert.deepEqual(
-      tracing._normalize({ a: 0x1004, b: 0x1008 }, { a: 4, b: 4 }),
+      tracing.normalizeAddresses({ a: 0x1004, b: 0x1008 }, { a: 4, b: 4 }),
       { a: 64, b: 68 }
     );
   });
@@ -644,7 +644,7 @@ describe('RuntimeTraceTests', () => {
   });
 
   test('static_prediction_mismatch_is_fatal', () => {
-    const original = tracing.defaultAfter;
+    const original = tracing.hooks.after;
     for (const [source, kind] of [
       ['int a{5};', 'int'],
       ['int a{5}; int* p{&a};', 'ptr'],
@@ -667,7 +667,7 @@ describe('RuntimeTraceTests', () => {
             err instanceof Unsupported && /runtime verification failed/.test(err.message)
         );
       } finally {
-        tracing.hooks.after = null;
+        tracing.hooks.after = original;
       }
     }
   });

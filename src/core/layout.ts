@@ -2,11 +2,11 @@
 
 import { type CompilerFrontend, Unsupported } from './errors.ts';
 import { layoutsFromFrontend } from './records.ts';
-import { _body } from './tracing.ts';
+import { snippetBody } from './tracing.ts';
 import { FORMAT, type LayoutField, type LayoutTrace, validate } from './trace_format.ts';
 
 export function traceLayout(source: string, frontend: CompilerFrontend): LayoutTrace {
-  const body = _body(source);
+  const body = snippetBody(source);
   const program =
     '#include <iostream>\n#include <cstdint>\n#include <cstddef>\n' +
     'using namespace std;\nint main() {\n' +
