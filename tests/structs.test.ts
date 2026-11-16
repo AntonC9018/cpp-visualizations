@@ -154,7 +154,7 @@ p->next->x=9; c=*p; (*p).x=7; std::cout << a.x;`;
       writes.map(op => op.kind),
       ['write', 'read', 'deref', 'write']
     );
-    generate._storage_is_contiguous(result.variables);
+    generate.checkContiguousStorage(result.variables);
   });
 
   test('nested_structs_are_stored_by_value', () => {
