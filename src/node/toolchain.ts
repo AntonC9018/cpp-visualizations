@@ -4,7 +4,7 @@ import { accessSync, constants, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 
-import { Unsupported, type AstNode, type CompilerFrontend } from '../core/errors.ts';
+import { Unsupported, illFormed, type AstNode, type CompilerFrontend } from '../core/errors.ts';
 import { extractEnumConstantSizes } from '../core/records.ts';
 import { extractMainAstFromStdout } from '../core/tracing.ts';
 
@@ -88,10 +88,7 @@ export function createClangFrontend(directory?: string): CompilerFrontend {
           path,
         ]);
         if (result.returncode !== 0) {
-          const line =
-            result.stderr.split(/\r?\n/).find(l => l.includes('error:')) ||
-            'error: ill-formed C++';
-          throw new Unsupported(line.slice(line.indexOf('error:')));
+          throw illFormed(result.stderr, program);
         }
         return extractMainAstFromStdout(result.stdout, program);
       });

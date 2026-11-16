@@ -10,6 +10,9 @@ export const CELL = 64;
 export const MARGIN = 28;
 export const MEMORY_WIDTH = 600;
 export const MAX_BYTE = 28;
+// A trace with one- or two-byte cells draws wider bytes, as far as memory has room: their
+// values must stay readable.
+export const NARROW_BYTE = 48;
 
 // Struct frames hug their cells; neighbouring frames just touch.
 export const FRAME = { side: 4, top: 36, bottom: 40, stroke: 2.5 } as const;
@@ -45,6 +48,7 @@ export const T = {
   copyBegin: 0.15,
   copyTravel: 1.0,
   evaluate: 0.6,
+  clash: 1.6,
 } as const;
 
 export const KEYWORDS = new Set(['int', 'std', 'cout', 'endl', 'struct', 'auto', 'const']);
@@ -68,10 +72,17 @@ export const PALETTE = [
   'dead-stroke',
   'gap-stroke',
   'tether',
+  'error',
+  'type-label',
 ] as const;
 
 export const VARIABLE_COLOURS = 5;
 export const FIELD_COLOURS = 4;
+export const TYPE_COLOURS = 6;
+
+// Type labels: text sizes in the pane and under names, the room above the pane's text, the
+// step between rows of labels under names.
+export const LABEL = { pane: 20, memory: 18, rise: 38, row: 30 } as const;
 
 export interface Palette {
   outputLabel: string;
@@ -92,8 +103,12 @@ export interface Palette {
   deadStroke: string;
   gapStroke: string;
   tether: string;
+  error: string;
+  // Type labels are filled on the light palette and outlined on the dark one.
+  typeLabel: 'fill' | 'outline';
   vars: string[];
   fields: string[];
+  types: string[];
 }
 
 export interface PlayerStrings {
@@ -118,6 +133,8 @@ export interface PlayerStrings {
   bind: string;
   alias: string;
   blank: Record<string, string>;
+  convert: string;
+  clash: string;
   error: string;
 }
 
@@ -144,6 +161,8 @@ export const STRINGS: Record<string, PlayerStrings> = {
     bind: '{name} becomes another name for {target}',
     alias: '{name} is another name for {target}',
     blank: { '\n': 'Print a newline', '\t': 'Print a tab', ' ': 'Print a space' },
+    convert: 'Convert {from} to {to}: {value}',
+    clash: 'Does not compile: {value} is {from}, {slot} needs {to}',
     error: 'This visualization could not be loaded.',
   },
   ru: {
@@ -168,6 +187,8 @@ export const STRINGS: Record<string, PlayerStrings> = {
     bind: '{name} становится ещё одним именем для {target}',
     alias: '{name} — другое имя для {target}',
     blank: { '\n': 'Вывод перевода строки', '\t': 'Вывод табуляции', ' ': 'Вывод пробела' },
+    convert: 'Преобразование {from} в {to}: {value}',
+    clash: 'Не компилируется: {value} имеет тип {from}, а для {slot} нужен {to}',
     error: 'Не удалось загрузить визуализацию.',
   },
 };

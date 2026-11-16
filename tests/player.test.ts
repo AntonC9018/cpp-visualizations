@@ -8,6 +8,7 @@ import { after, before, beforeEach, test } from 'node:test';
 import { type Browser, type Page, chromium } from 'playwright';
 
 import type { ExecutionTrace, LayoutTrace } from '../src/core/trace_format.ts';
+import { trace as traceSource } from '../src/node/tracing.ts';
 import type {} from '../src/player/index.ts';
 
 const player = new URL('../player/', import.meta.url);
@@ -211,6 +212,87 @@ test('a bare std::endl prints a visible newline glyph in both languages and them
     assert.ok(settled.includes('2'), 'the earlier output stays');
   }
   assert.deepEqual(errors, []);
+});
+
+// A typed trace: two conversions, then a statement whose types do not fit.
+test('a typed trace labels types and shows a mismatch in both languages and themes', async () => {
+  const generated = JSON.parse(
+    readFileSync(new URL('fixtures/types-generated.json', import.meta.url), 'utf8')
+  ) as ExecutionTrace;
+  const last = generated.steps.length - 1;
+  assert.equal(generated.steps[last].op?.kind, 'clash');
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  for (const [lang, theme, status] of [
+    ['en', 'dark', 'Does not compile: b is uint8_t, int* p needs int*'],
+    ['ru', 'light', 'Не компилируется: b имеет тип uint8_t, а для int* p нужен int*'],
+  ] as const) {
+    await page.setContent(
+      PAGE.replace(trace, JSON.stringify(generated).replace(/</g, '\\u003c')).replace(
+        'lang="en" data-theme="dark"',
+        `lang="${lang}" data-theme="${theme}"`
+      )
+    );
+    await page.evaluate(() => window.CourseVisualization!.scan());
+    await page.waitForSelector('.cv-player');
+    const labels = await page.evaluate(stepIndex => {
+      const playerEl = (document.querySelector('.course-visualization') as PlayerElement).cvPlayer;
+      for (let step = 0; step <= stepIndex; step++) {
+        playerEl.settle(step);
+        if (/NaN|undefined/.test(playerEl.svg.innerHTML)) {
+          throw new Error(`invalid geometry at step ${step}`);
+        }
+      }
+      playerEl.inspect(stepIndex, 0.5);
+      return [...playerEl.svg.querySelectorAll('text')].map(element => element.textContent);
+    }, last);
+    for (const label of ['uint32_t', 'uint8_t', 'int*', '≠']) {
+      assert.ok(labels.includes(label), `${label} is drawn`);
+    }
+    assert.equal(await page.locator('.cv-status').textContent(), status);
+  }
+  assert.deepEqual(errors, []);
+});
+
+test('long pane type labels neither overlap nor leave the pane', async () => {
+  for (const source of [
+    'unsigned long long a{ 1 }; unsigned long b{ 2 }; unsigned long long c = a + b;',
+    'auto a = 1ull; std::cout << a;',
+    'int a{ 5 }; int& r{ a };',
+  ]) {
+    const typed = traceSource(source, { runtime: false, types: true });
+    await page.setContent(PAGE.replace(trace, JSON.stringify(typed).replace(/</g, '\\u003c')));
+    await page.evaluate(() => window.CourseVisualization!.scan());
+    await page.waitForSelector('.cv-player');
+    const problems = await page.evaluate(steps => {
+      type Box = { x: number; y: number; w: number; h: number };
+      const box = (rect: Element): Box => {
+        const [x, y, w, h] = ['x', 'y', 'width', 'height'].map(a => Number(rect.getAttribute(a)));
+        return { x, y, w, h };
+      };
+      const playerEl = (document.querySelector('.course-visualization') as PlayerElement).cvPlayer;
+      const found: string[] = [];
+      for (let step = 0; step < steps; step++) {
+        playerEl.settle(step);
+        const pane = box(playerEl.svg.querySelector('.cv-pane rect')!);
+        const labels = [...playerEl.svg.querySelectorAll('.cv-pane-type')].map(g => ({
+          text: g.querySelector('text')!.textContent,
+          ...box(g.querySelector('rect')!),
+        }));
+        labels.forEach((a, i) => {
+          if (a.x < pane.x || a.x + a.w > pane.x + pane.w || a.y < pane.y || a.y + a.h > pane.y + pane.h) {
+            found.push(`step ${step}: ${a.text} leaves the pane`);
+          }
+          for (const b of labels.slice(i + 1)) {
+            const apart = a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y;
+            if (!apart) found.push(`step ${step}: ${a.text} overlaps ${b.text}`);
+          }
+        });
+      }
+      return found;
+    }, typed.steps.length);
+    assert.deepEqual(problems, [], source);
+  }
 });
 
 test('static layout links rows and bytes in both themes and initializes lazily', async () => {

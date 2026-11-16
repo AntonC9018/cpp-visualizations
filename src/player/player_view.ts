@@ -10,6 +10,7 @@ import {
   type PlayerStrings,
   STACK_BELOW,
   T,
+  TYPE_COLOURS,
   VARIABLE_COLOURS,
   icon,
   strings,
@@ -260,6 +261,7 @@ export class Player {
     }
     P.vars = Array.from({ length: VARIABLE_COLOURS }, (_, i) => read('var-' + i) || '#808080');
     P.fields = Array.from({ length: FIELD_COLOURS }, (_, i) => read('field-' + i) || '#808080');
+    P.types = Array.from({ length: TYPE_COLOURS }, (_, i) => read('type-' + i) || '#808080');
     this.P = P as Palette;
   }
 

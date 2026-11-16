@@ -1,5 +1,6 @@
 // Layout eligibility gates that must remain true even for compiler-valid inputs.
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { describe, test } from 'node:test';
@@ -54,7 +55,7 @@ describe('LayoutEligibilityTests', () => {
     for (const variable of trace.variables) {
       variable.name = renamed[variable.name] ?? variable.name;
     }
-    generate._storage_is_contiguous(trace.variables);
+    generate.checkContiguousStorage(trace.variables);
     trace = structuredClone(baseTrace);
     trace.source = [...trace.source, ...trace.source, ...trace.source];
     trace.steps[trace.steps.length - 1].pane = 'x'.repeat(60);
@@ -97,13 +98,22 @@ describe('RevisionTests', () => {
       );
       const text = readFileSync(filePath, 'utf8');
       for (const match of text.matchAll(
-        /^\s*(?:import|export)\s+[\s\S]*?from\s+['"](\.[^'"]+)['"]/gm
+        /^\s*(?:import|export)\s+[\s\S]*?from\s+['"](\.[^'"]+)['"]|\bimport\(\s*['"](\.[^'"]+)['"]\s*\)/gm
       )) {
-        const target = resolve(dirname(filePath), match[1]);
+        const target = resolve(dirname(filePath), match[1] ?? match[2]);
         if (existsSync(target) && target.startsWith(ROOT)) {
           pending.push(target);
         }
       }
     }
+  });
+
+  test('the_cli_prints_the_revision', () => {
+    // Course maintenance keys every cached trace by this line.
+    const printed = execFileSync(process.execPath, [join(ROOT, 'generate.mjs'), 'revision'], {
+      encoding: 'utf8',
+    });
+    assert.match(printed, /^[0-9a-f]{64}\n$/);
+    assert.equal(printed.trim(), generate.revision());
   });
 });

@@ -8,7 +8,7 @@ import type {
   TraceStep,
   TraceVariable,
 } from '../core/trace_format.ts';
-import { T } from './constants.ts';
+import { T, TYPE_COLOURS } from './constants.ts';
 
 export const stores = (op: TraceOperation): boolean =>
   op.kind === 'write' || op.kind === 'bind';
@@ -18,7 +18,8 @@ export const departure = (op: TraceOperation): number =>
 
 export function arrival(op: TraceOperation): number {
   if (op.kind === 'deref') return T.prepare + T.follow;
-  if (op.kind === 'eval' || op.kind === 'alias') return T.evaluate;
+  if (op.kind === 'eval' || op.kind === 'alias' || op.kind === 'convert') return T.evaluate;
+  if (op.kind === 'clash') return T.clash;
   if (op.kind === 'print') return 0.9;
   return departure(op) + T.travel;
 }
@@ -50,6 +51,7 @@ export interface ModelLeaf {
   kind: 'int' | 'ptr' | 'struct';
   color: number;
   fieldColor?: number;
+  type?: string;
   children?: undefined;
   fields?: undefined;
 }
@@ -73,6 +75,9 @@ export type ModelItem = ModelLeaf | ModelGroup;
 
 export interface PreparedModel {
   trace: ExecutionTrace;
+  // Each type's colour index, and whether any pane is typed (else nothing is labelled).
+  typeColours: Map<string, number>;
+  typed: boolean;
   steps: TraceStep[];
   source: string[];
   spans: Array<Span | null>;
@@ -161,6 +166,8 @@ export function prepare(trace: ExecutionTrace): PreparedModel {
   const top = variables.map(variable => variable.name);
   return {
     trace,
+    typeColours: typeColours(trace),
+    typed: trace.steps.some(step => step.types),
     steps: trace.steps,
     source: trace.source,
     spans: trace.spans || [],
@@ -172,6 +179,32 @@ export function prepare(trace: ExecutionTrace): PreparedModel {
     top,
     rise: Math.max(0, ...groups.map(group => group.rise)),
   };
+}
+
+/**
+ * A type's colour follows from its name, so it is the same in every example: `int` has the
+ * first, and two types that would share one in a trace take neighbouring colours.
+ */
+function typeColours(trace: ExecutionTrace): Map<string, number> {
+  const types = new Set(
+    [
+      'int',
+      ...trace.variables.map(variable => variable.type),
+      ...trace.steps.flatMap(step => (step.types ?? []).map(part => part.type)),
+    ].filter((type): type is string => Boolean(type))
+  );
+  const colours = new Map<string, number>();
+  const taken = new Set<number>();
+  for (const type of types) {
+    let index =
+      type === 'int'
+        ? 0
+        : [...type].reduce((hash, ch) => (hash * 31 + ch.charCodeAt(0)) % 9973, 7) % TYPE_COLOURS;
+    while (taken.has(index) && taken.size < TYPE_COLOURS) index = (index + 1) % TYPE_COLOURS;
+    taken.add(index);
+    colours.set(type, index);
+  }
+  return colours;
 }
 
 // Variables the current statement involves stay bright; the rest dim to half. A pointer's

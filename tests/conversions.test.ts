@@ -1,0 +1,227 @@
+// Integer conversions: a value changes its type in one step, whether or not its digits change.
+import assert from 'node:assert/strict';
+import { describe, test } from 'node:test';
+
+import {
+  type ConvertOperation,
+  type ExecutionTrace,
+  FormatError,
+  type TraceStep,
+  validate,
+} from '../src/core/trace_format.ts';
+import * as tracing from '../src/node/tracing.ts';
+import { INTEGERS, Unsupported } from '../src/node/tracing.ts';
+
+type Conversion = [before: string, after: string, from: string, to: string];
+
+/** Each conversion as (pane before, pane after, from, to). */
+function conversions(trace: ExecutionTrace, line?: number): Conversion[] {
+  const { steps } = trace;
+  return steps.slice(1).flatMap((step, i): Conversion[] =>
+    step.op?.kind === 'convert' && (line === undefined || step.line === line)
+      ? [[steps[i].pane, step.pane, step.op.from, step.op.to]]
+      : []
+  );
+}
+
+function typed(step: TraceStep): string[] {
+  return (step.types ?? []).map(part => step.pane.slice(...part.span) + ':' + part.type);
+}
+
+const throwsUnsupported = (run: () => unknown, reason: RegExp): void => {
+  assert.throws(run, (err: unknown) => err instanceof Unsupported && reason.test(err.message));
+};
+
+describe('IntegerTests', () => {
+  test('a_conversion_keeps_the_low_bits', () => {
+    const cases: [string, bigint, bigint][] = [
+      ['unsigned char', 256n, 0n],
+      ['unsigned char', -1n, 255n],
+      ['signed char', -200n, 56n],
+      ['signed char', 255n, -1n],
+      ['short', 65534n, -2n],
+      ['unsigned int', -1n, 4294967295n],
+      ['int', 2n ** 31n, -(2n ** 31n)],
+      ['long', -3n, -3n],
+      ['unsigned long', -1n, 2n ** 64n - 1n],
+    ];
+    for (const [spelling, value, expected] of cases) {
+      assert.equal(INTEGERS[spelling].wrap(value), expected, `${spelling} ${value}`);
+    }
+  });
+
+  test('unsigned_arithmetic_wraps_and_signed_overflow_is_undefined', () => {
+    assert.equal(INTEGERS['unsigned int'].result(-1n), 4294967295n);
+    assert.equal(INTEGERS.short.result(-32768n), -32768n);
+    throwsUnsupported(() => INTEGERS.long.result(2n ** 63n), /signed integer overflow/);
+  });
+});
+
+describe('ConversionTests', () => {
+  const trace = (source: string): ExecutionTrace =>
+    tracing.trace(source, { runtime: false, types: true });
+  const sizes = (t: ExecutionTrace): Record<string, number> =>
+    Object.fromEntries(t.variables.map(v => [v.name, v.size]));
+
+  test('an_explicit_cast_is_one_step', () => {
+    const t = trace('uint32_t a{ 256 }; uint8_t b{ static_cast<uint8_t>(a) };');
+    assert.deepEqual(conversions(t, 1), [
+      ['uint8_t b = static_cast<uint8_t>(256)', 'uint8_t b = 0', 'uint32_t', 'uint8_t'],
+    ]);
+    assert.deepEqual(t.steps.at(-1)!.values, { a: 256, b: 0 });
+    assert.deepEqual(sizes(t), { a: 4, b: 1 });
+  });
+
+  test('the_same_digits_still_change_their_type', () => {
+    const t = trace('uint8_t b{ 0 }; uint32_t c{ b };');
+    assert.deepEqual(conversions(t), [
+      ['uint8_t b = 0', 'uint8_t b = 0', 'int', 'uint8_t'],
+      ['uint32_t c = 0', 'uint32_t c = 0', 'uint8_t', 'uint32_t'],
+    ]);
+    const [read, converted] = t.steps.filter(step => step.line === 1).slice(1, 3);
+    assert.deepEqual([typed(read)[1], typed(converted)[1]], ['0:uint8_t', '0:uint32_t']);
+  });
+
+  test('an_implicit_conversion_in_an_assignment', () => {
+    const t = trace('int16_t s{ -2 }; uint16_t u{ 0 }; u = s;');
+    assert.deepEqual(conversions(t, 2), [['u = -2', 'u = 65534', 'int16_t', 'uint16_t']]);
+    assert.deepEqual(sizes(t), { s: 2, u: 2 });
+  });
+
+  test('a_sign_change_of_one_width', () => {
+    assert.deepEqual(conversions(trace('int8_t a{ -3 }; uint8_t b{ static_cast<uint8_t>(a) };'), 1), [
+      ['uint8_t b = static_cast<uint8_t>(-3)', 'uint8_t b = 253', 'int8_t', 'uint8_t'],
+    ]);
+    assert.deepEqual(conversions(trace('uint8_t a{ 127 }; int8_t b{ static_cast<int8_t>(a) };'), 1), [
+      ['int8_t b = static_cast<int8_t>(127)', 'int8_t b = 127', 'uint8_t', 'int8_t'],
+    ]);
+  });
+
+  test('a_negative_number_widens_with_its_sign', () => {
+    const t = trace('int8_t a{ -3 }; int b{ static_cast<int>(a) }; long c = b;');
+    assert.deepEqual(conversions(t).slice(1), [
+      ['int b = static_cast<int>(-3)', 'int b = -3', 'int8_t', 'int'],
+      ['long c = -3', 'long c = -3', 'int', 'long'],
+    ]);
+  });
+
+  test('narrowing_wraps', () => {
+    const t = trace('int c{ -200 }; int8_t d{ static_cast<int8_t>(c) }; std::cout << static_cast<int>(d);');
+    assert.deepEqual(conversions(t), [
+      ['int8_t d = static_cast<int8_t>(-200)', 'int8_t d = 56', 'int', 'int8_t'],
+      ['std::cout << static_cast<int>(56)', 'std::cout << 56', 'int8_t', 'int'],
+    ]);
+    assert.equal(t.steps.at(-1)!.stdout, '56');
+  });
+
+  test('operands_are_promoted_before_arithmetic', () => {
+    const t = trace('uint8_t a{ 200 }; int b = a + a; unsigned x = 0; x = x - 1;');
+    assert.deepEqual(conversions(t, 1), [
+      ['int b = 200 + a', 'int b = 200 + a', 'uint8_t', 'int'],
+      ['int b = 200 + 200', 'int b = 200 + 200', 'uint8_t', 'int'],
+    ]);
+    assert.deepEqual(conversions(t, 3), [['x = 0 - 1', 'x = 0 - 1', 'int', 'unsigned int']]);
+    assert.deepEqual(t.steps.at(-1)!.values, { a: 200, b: 400, x: 4294967295 });
+  });
+
+  test('a_cast_to_the_same_type_only_goes_away', () => {
+    const t = trace('int a{ 5 }; int b{ static_cast<int>(a) };');
+    assert.deepEqual(conversions(t), []);
+    assert.equal(t.steps.filter(step => step.line === 1).at(-1)!.pane, 'int b = 5');
+  });
+
+  test('bitwise_not_flips_the_promoted_operand', () => {
+    const t = trace('uint8_t a{ 0 }; uint8_t b{ static_cast<uint8_t>(~a) }; unsigned c = ~0u;');
+    assert.deepEqual(conversions(t, 1), [
+      ['uint8_t b = static_cast<uint8_t>(~0)', 'uint8_t b = static_cast<uint8_t>(~0)', 'uint8_t', 'int'],
+      ['uint8_t b = static_cast<uint8_t>(-1)', 'uint8_t b = 255', 'int', 'uint8_t'],
+    ]);
+    assert.deepEqual(t.steps.at(-1)!.values, { a: 0, b: 255, c: 4294967295 });
+  });
+
+  test('a_pointer_to_a_narrow_integer_writes_through', () => {
+    const t = trace('uint8_t a{ 1 }; uint8_t* p = &a; *p = 300 - 45;');
+    assert.deepEqual(conversions(t, 2), [['*p = 255', '*p = 255', 'int', 'uint8_t']]);
+    assert.equal(t.steps.at(-1)!.values.a, 255);
+  });
+
+  test('what_is_not_an_integer_conversion_is_rejected', () => {
+    const cases: Record<string, RegExp> = {
+      'int value{ 7 }; double half{ static_cast<double>(value) / 2 };': /not double/,
+      'bool b{ true }; int a = b;': /not bool/,
+      'char c{ 5 }; int a = c;': /not char/,
+      'uint8_t a{ 65 }; std::cout << a;': /prints a one-byte integer as a character/,
+      'int a{ 5 }; short s{ a };': /cannot be narrowed/,
+      'int a{ 2147483647 }; long b = a + 1;': /signed integer overflow/,
+      'unsigned long a = 18446744073709551615ul;': /beyond 2\^53/,
+      "struct A { int f; }; uint8_t u{ 3 }; A a{ u };": /inside a struct's braces/,
+    };
+    for (const [source, reason] of Object.entries(cases)) {
+      throwsUnsupported(() => trace(source), reason);
+    }
+  });
+
+  test('a_conversion_must_match_the_typed_pane', () => {
+    const t = trace('uint32_t a{ 256 }; uint8_t b{ static_cast<uint8_t>(a) };');
+    const index = t.steps.findIndex(step => step.line === 1 && step.op?.kind === 'convert');
+    const edits: ((op: Partial<ConvertOperation>) => void)[] = [
+      op => (op.from = 'int'),
+      op => (op.to = 'uint32_t'),
+      op => (op.value = '1'),
+      op => delete op.from,
+    ];
+    for (const edit of edits) {
+      const broken = structuredClone(t);
+      edit(broken.steps[index].op as ConvertOperation);
+      assert.throws(() => validate(broken), FormatError);
+    }
+  });
+});
+
+describe('UntypedConversionTests', () => {
+  // Without types a conversion is an evaluation: a step only when the text changes.
+  test('only_a_changed_value_is_a_step', () => {
+    const t = tracing.trace(
+      'uint32_t a{ 256 }; uint8_t b{ static_cast<uint8_t>(a) }; uint32_t c{ b };',
+      { runtime: false }
+    );
+    assert.deepEqual(
+      t.steps.filter(step => step.line).map(step => [step.pane, step.op?.kind ?? null]),
+      [
+        ['uint8_t b = static_cast<uint8_t>(a)', null],
+        ['uint8_t b = static_cast<uint8_t>(256)', 'read'],
+        ['uint8_t b = 0', 'eval'],
+        ['uint8_t b = 0', 'write'],
+        ['uint32_t c = b', null],
+        ['uint32_t c = 0', 'read'],
+        ['uint32_t c = 0', 'write'],
+      ]
+    );
+    assert.ok(!t.steps.some(step => 'types' in step));
+    assert.ok(!t.variables.some(variable => 'type' in variable));
+  });
+
+  test('a_mismatch_is_not_shown', () => {
+    throwsUnsupported(() => tracing.trace('int a = 5; int* p = a;', { runtime: false }), /cannot initialize/);
+  });
+});
+
+describe('RuntimeConversionTests', () => {
+  test('gdb_agrees_on_every_width_and_sign', () => {
+    const t = tracing.trace(
+      'int8_t a{ -3 }; uint16_t b = a; int c{ -200 }; ' +
+        'int8_t d{ static_cast<int8_t>(c) }; uint64_t e = b; long f = d - 60; ' +
+        'std::cout << b << std::endl; std::cout << f;'
+    );
+    assert.deepEqual(t.steps.at(-1)!.values, { a: -3, b: 65533, c: -200, d: 56, e: 65533, f: -4 });
+    assert.equal(t.steps.at(-1)!.stdout, '65533\n-4');
+    assert.deepEqual(Object.fromEntries(t.variables.map(v => [v.name, v.size])), {
+      a: 1,
+      b: 2,
+      c: 4,
+      d: 1,
+      e: 8,
+      f: 8,
+    });
+  });
+});

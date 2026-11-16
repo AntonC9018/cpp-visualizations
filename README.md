@@ -74,12 +74,36 @@ hexadecimal (`64` → `0x0000000000000040`), one more step of the pane; the run'
 randomized address is checked but never published. A null pointer prints `0`. A string
 literal or another character is rejected.
 
+Integers of every width are values: `int`, `short`, `long`, `long long`, their unsigned kinds
+and the aliases over them (`uint8_t`, `int16_t`, `size_t`), each drawn at its own size.
+A conversion between two of them is one step, whether it is written (`static_cast<uint8_t>(a)`)
+or implied: an initializer or assignment of another type, and the promotion of an operand
+before arithmetic (`a + a` on `uint8_t` adds two `int`s, `~a` flips the 32 bits of an `int`).
+The value keeps its low bits, so `256` becomes `0` as `uint8_t` and `-2` becomes `65534` as
+`uint16_t`. `static_cast` to the type the value already has only goes away.
+Unsigned arithmetic wraps; signed overflow is undefined and rejected.
+`char`, `bool` and floating-point types are not supported, a one-byte integer cannot be
+printed (the stream prints a character), and neither can a value beyond 2^53, which the player
+could not draw exactly.
+
+Types are shown only where an example asks for them, with `--types` (the tag's `types`
+attribute): in an example that is not about types they are noise. Then every name, literal
+and value in the pane carries its type, a declaration is the slot its value must fit, and
+memory shows each variable's type. A conversion is a step of its own even when the digits
+stay (`0` as `uint8_t` → `0` as `uint32_t`): the value's type label changes. When the last
+statement does not compile because the types differ (`A** p{ value };`, `copy = p;` with a
+struct `copy`), everything before it is traced and the statement is shown as a final step
+that does not run: the value's type against the slot's.
+Without `--types` a conversion is an evaluation like any other, a step only when the value
+changes, and a statement that does not compile is rejected.
+
 A brace list of plain values (`A a { 1, 2 };`) is stored as spelled, with no step that only
 respaces it, and so is a typed one (`A{ 1, 2 }`); a designated list evaluates to its values.
 A struct value with a type of its own keeps it in the pane: a typed literal, and a struct that
 is read (`b = a` becomes `b = A{1, 2}`).
 
-Pointer arithmetic/comparison, arrays, rvalue references, references bound to temporaries, casts,
+Pointer arithmetic/comparison, arrays, rvalue references, references bound to temporaries,
+casts other than `static_cast` between integers, a conversion inside a struct's braces,
 heap allocation,
 other field types, methods, inheritance, bitfields, default member initializers, empty structs,
 qualified pointers, control flow, ill-formed snippets and undefined reads or
@@ -91,14 +115,17 @@ output do.
 ```sh
 node discover.mjs --report /tmp/visualization-inventory.json
 node discover.mjs --tag en/labs/cpp/05_struct.md:670 ru/labs/cpp/05_struct.md:674
+node discover.mjs --types --tag en/labs/cpp/03_numeric_conversions.md:93
 ```
 
 Without `--tag` discovery writes nothing: it lists the candidates. Traceable is not the same as
 worth tracing, so a person or a model reading the lesson picks the examples where watching
 memory change is the point, and leaves out those that teach something the trace does not show
 (type deduction, a compile error, naming). `--tag` then adds a minimal tag for each pick, in a
-collapsed, localized execution-trace block. Course maintenance
-traces every tag in CI inside the pinned toolchain and stores the results by content, so only
+collapsed, localized execution-trace block. With `--types` the examples are traced with types,
+so a last statement whose types do not fit is a candidate as well, and the tags ask for types:
+use it for examples that are about types, such as a conversion or a type-checking puzzle.
+Course maintenance traces every tag in CI inside the pinned toolchain and stores the results by content, so only
 changed examples are traced again; a tag that cannot be traced fails the build.
 
 Generation uses Clang AST types and operation ranges to build expression reductions. GDB
@@ -111,6 +138,7 @@ Unchanged-value writes, such as the failed swap, remain visible writes.
 ```sh
 node generate.mjs probe --source /tmp/snippet.cpp
 node generate.mjs trace --source /tmp/snippet.cpp
+node generate.mjs trace --source /tmp/snippet.cpp --types
 ```
 
 `trace` prints the unified format as deterministic JSON (sorted keys). `revision` hashes the

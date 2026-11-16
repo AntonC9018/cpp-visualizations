@@ -3,60 +3,23 @@
 // `trace` prints one example's trace in the unified player format (`trace_format.ts`), run and
 // verified under GDB; `probe` says, without running anything, whether an example is supported;
 // `revision` versions every trace.
-import { createHash } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
-import { basename, dirname, join, relative, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
 
 import { dumpsSorted } from '../core/json_format.ts';
 import type { AnyTrace, ExecutionTrace, TraceVariable } from '../core/trace_format.ts';
 import { trace as layoutTrace } from './layout.ts';
+import { revision } from './revision.ts';
 import { Unsupported, trace } from './tracing.ts';
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 export const TEMPLATE = 'expression-timeline';
-// Everything a trace's bytes depend on, besides the toolchain.
-export const TRACER_SOURCES = [
-  'generate.mjs',
-  'src/node/generate.ts',
-  'src/node/layout.ts',
-  'src/node/tracing.ts',
-  'src/node/execution.ts',
-  'src/node/records.ts',
-  'src/node/toolchain.ts',
-  'src/core/errors.ts',
-  'src/core/json_format.ts',
-  'src/core/trace_format.ts',
-  'src/core/records.ts',
-  'src/core/layout.ts',
-  'src/core/tracing.ts',
-].map(name => join(ROOT, name));
+export { TRACER_SOURCES, revision } from './revision.ts';
 
 // The memory row's legible capacity. Code, pane and output have no limit: the player's SVG
 // scales to its content, so longer or wider snippets just draw smaller text.
 export const MAX_VARIABLES = 5;
 const DECLARATION = /^\s*(?:const\s+)?(?:int|auto)\b/;
 
-function toolchainPin(): string[] {
-  const host = resolve(ROOT, '..');
-  const pinnedBy = existsSync(join(host, 'flake.lock')) ? host : ROOT;
-  return [join(pinnedBy, 'flake.nix'), join(pinnedBy, 'flake.lock')];
-}
-
-export function revision(): string {
-  const digest = createHash('sha256');
-  for (const path of TRACER_SOURCES) {
-    digest.update(relative(ROOT, path).split(sep).join('/'));
-    digest.update(readFileSync(path));
-  }
-  for (const path of toolchainPin()) {
-    digest.update(basename(path));
-    digest.update(readFileSync(path));
-  }
-  return digest.digest('hex');
-}
-
-export function _storage_is_contiguous(variables: TraceVariable[]): void {
+export function checkContiguousStorage(variables: TraceVariable[]): void {
   const cells = [...variables].sort((a, b) => a.address - b.address);
   for (let i = 0; i < cells.length - 1; i++) {
     const lower = cells[i];
@@ -71,7 +34,7 @@ export function _storage_is_contiguous(variables: TraceVariable[]): void {
 const LITERAL = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g;
 const LITERAL_OR_COMMENT = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\/\*[\s\S]*?\*\/|\/\/.*/g;
 
-export function _spacing_survives(snippet: string): boolean {
+export function spacingSurvives(snippet: string): boolean {
   const stripped = snippet.replace(LITERAL_OR_COMMENT, match =>
     match.startsWith('"') || match.startsWith("'")
       ? '""'
@@ -85,15 +48,19 @@ export function _spacing_survives(snippet: string): boolean {
 }
 
 export function applicable(traceData: ExecutionTrace, snippet: string): void {
-  if (!_spacing_survives(snippet)) {
+  if (!spacingSurvives(snippet)) {
     throw new Unsupported('the trace would collapse spacing inside a statement');
   }
   const { variables, steps, source } = traceData;
   if (variables.length > MAX_VARIABLES) {
     throw new Unsupported(`the memory row holds at most ${MAX_VARIABLES} variables`);
   }
-  _storage_is_contiguous(variables);
+  checkContiguousStorage(variables);
   const ops = steps.filter(s => s.op !== null && s.op !== undefined).map(s => s.op!);
+  if (ops.some(op => op.kind === 'clash')) {
+    // Types that do not fit are the point, however little memory is involved.
+    return;
+  }
   const writes = steps.filter(s => s.op && s.op.kind === 'write');
   const reads = ops.filter(op => ['read', 'addr', 'deref', 'bind'].includes(op.kind));
   const emptyInit = source.some(line => line.replace(/ /g, '').includes('{}'));
@@ -125,6 +92,7 @@ export function main(
   let operation: string | null = null;
   let sourcePath: string | null = null;
   let template = TEMPLATE;
+  let types = false;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -136,6 +104,9 @@ export function main(
       template = argv[++i] ?? '';
     } else if (arg.startsWith('--template=')) {
       template = arg.slice('--template='.length);
+    } else if (arg === '--types') {
+      // Show the types of the pane and of memory, conversions and a type mismatch.
+      types = true;
     } else if (!arg.startsWith('-') && !operation) {
       operation = arg;
     } else {
@@ -162,11 +133,14 @@ export function main(
     if (template !== TEMPLATE && template !== 'layout') {
       throw new Unsupported(`unknown template '${template}'`);
     }
+    if (types && template !== TEMPLATE) {
+      throw new Unsupported('only the step-through player shows types');
+    }
     const snippet = readFileSync(sourcePath, 'utf8');
     if (template === 'layout') {
       result = layoutTrace(snippet);
     } else {
-      result = trace(snippet, { runtime: operation !== 'probe' });
+      result = trace(snippet, { runtime: operation !== 'probe', types });
       applicable(result, snippet);
     }
   } catch (exc) {

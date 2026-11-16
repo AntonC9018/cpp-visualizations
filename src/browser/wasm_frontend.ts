@@ -1,5 +1,5 @@
 // CompilerFrontend implementation backed by the trimmed Clang WASM binary.
-import { type AstNode, type CompilerFrontend, Unsupported } from '../core/errors.ts';
+import { type AstNode, type CompilerFrontend, Unsupported, illFormed } from '../core/errors.ts';
 import { traceLayout } from '../core/layout.ts';
 import { extractEnumConstantSizes } from '../core/records.ts';
 import type { AnyTrace } from '../core/trace_format.ts';
@@ -23,10 +23,7 @@ export function createWasmClangFrontend(module: WebAssembly.Module): CompilerFro
         stdin: program,
       });
       if (result.returncode !== 0) {
-        const line =
-          result.stderr.split(/\r?\n/).find(l => l.includes('error:')) ||
-          'error: ill-formed C++';
-        throw new Unsupported(line.slice(line.indexOf('error:')));
+        throw illFormed(result.stderr, program);
       }
       return extractMainAstFromStdout(result.stdout, program);
     },

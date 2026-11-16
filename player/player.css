@@ -36,6 +36,15 @@
   --cv-field-1: #e79be6;
   --cv-field-2: #ff8a80;
   --cv-field-3: #7fd8ff;
+  /* Types, one colour each; their labels are outlined on dark and filled on light. */
+  --cv-type-0: #7fb2ff;
+  --cv-type-1: #ff9f6e;
+  --cv-type-2: #b9e769;
+  --cv-type-3: #e79be6;
+  --cv-type-4: #ffd966;
+  --cv-type-5: #6fe0d0;
+  --cv-type-label: outline;
+  --cv-error: #ff6b6b;
   /* Controls. */
   --cv-chrome: #1a212d;
   --cv-border: #363e4c;
@@ -86,6 +95,14 @@
   --cv-field-1: #a2379f;
   --cv-field-2: #cc3d32;
   --cv-field-3: #1679b5;
+  --cv-type-0: #2f64d6;
+  --cv-type-1: #c2540a;
+  --cv-type-2: #4b8710;
+  --cv-type-3: #a530a3;
+  --cv-type-4: #8a6a00;
+  --cv-type-5: #0b8a7c;
+  --cv-type-label: fill;
+  --cv-error: #d42a2a;
   --cv-chrome: #f3f5f9;
   --cv-border: #d3d9e2;
   --cv-button: #ffffff;

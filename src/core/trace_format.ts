@@ -9,7 +9,17 @@ export const FORMAT = 1;
 export type ScalarKind = 'int' | 'ptr';
 export const SCALAR_KINDS: readonly ScalarKind[] = ['int', 'ptr'];
 export const STRUCT = 'struct' as const;
-export type OperationKind = 'read' | 'addr' | 'deref' | 'eval' | 'write' | 'print' | 'bind' | 'alias';
+export type OperationKind =
+  | 'read'
+  | 'addr'
+  | 'deref'
+  | 'eval'
+  | 'write'
+  | 'print'
+  | 'bind'
+  | 'alias'
+  | 'convert'
+  | 'clash';
 export const OPERATIONS: readonly OperationKind[] = [
   'read',
   'addr',
@@ -19,6 +29,8 @@ export const OPERATIONS: readonly OperationKind[] = [
   'print',
   'bind',
   'alias',
+  'convert',
+  'clash',
 ];
 export const UNKNOWN = '?' as const;
 export type StoredCellValue = number | typeof UNKNOWN | null;
@@ -51,6 +63,8 @@ export interface ScalarVariable {
   size: number;
   kind: ScalarKind;
   color: number;
+  /** The declared type as the lessons write it (`int*`); the player labels with it. */
+  type?: string;
 }
 
 export interface StructVariable {
@@ -126,6 +140,22 @@ export type AliasOperation = {
   span: Span;
 };
 
+export type ConvertOperation = {
+  kind: 'convert';
+  value: string;
+  span: Span;
+  from: string;
+  to: string;
+};
+
+export type ClashOperation = {
+  kind: 'clash';
+  span: Span;
+  destination: Span;
+  from: string;
+  to: string;
+};
+
 export type TraceOperation =
   | ReadOperation
   | AddrOperation
@@ -134,7 +164,16 @@ export type TraceOperation =
   | WriteOperation
   | PrintOperation
   | BindOperation
-  | AliasOperation;
+  | AliasOperation
+  | ConvertOperation
+  | ClashOperation;
+
+/** A typed part of a pane; at most one per step is the statement's `slot`. */
+export interface TypedPart {
+  span: Span;
+  type: string;
+  slot?: true;
+}
 
 export interface TraceStep {
   line: number;
@@ -146,6 +185,7 @@ export interface TraceStep {
   stdout: string;
   hold: number;
   op: TraceOperation | null;
+  types?: TypedPart[];
 }
 
 export interface ExecutionTrace {
@@ -211,9 +251,12 @@ export function scalar(
   address: number,
   size = 4,
   kind: ScalarKind = 'int',
-  color = 0
+  color = 0,
+  type: string | null = null
 ): ScalarVariable {
-  return { name, address, size, kind, color };
+  const variable: ScalarVariable = { name, address, size, kind, color };
+  if (type) variable.type = type;
+  return variable;
 }
 
 export function struct(
@@ -399,7 +442,8 @@ function checkVariables(
     const here = `${where}[${index}]`;
     const struct_ = isPlainObject(variable) && variable.kind === 'struct';
     const req = ['name', 'address', 'size', 'kind', 'color', ...(struct_ ? ['type', 'fields'] : [])];
-    checkKeys(variable, here, req);
+    checkKeys(variable, here, req, ['type']);
+    check(typeof (variable.type ?? '') === 'string', `${here}.type`, 'expected text');
     check(IDENTIFIER.test(String(variable.name)), here, 'name is not an identifier');
     check(!names.has(variable.name), here, `duplicate variable ${pyRepr(variable.name)}`);
     names.add(variable.name);
@@ -452,6 +496,70 @@ function checkValue(value: unknown, where: string): void {
     where,
     'a value is an integer, "?" (declared, unknown) or null (no storage yet)'
   );
+}
+
+/** Typed spans of the pane are disjoint; at most one of them is the statement's slot. */
+function checkTypes(step: Record<string, any>, where: string): void {
+  const { types } = step;
+  check(Array.isArray(types) && types.length > 0, where, 'expected a nonempty list');
+  let end = 0;
+  let slots = 0;
+  for (let index = 0; index < types.length; index++) {
+    const item = types[index];
+    const here = `${where}[${index}]`;
+    checkKeys(item, here, ['span', 'type'], ['slot']);
+    const [start, finish] = checkSpan(item.span, step.pane, `${here}.span`);
+    check(start >= end, `${here}.span`, 'typed spans must be ordered and must not overlap');
+    end = finish;
+    check(typeof item.type === 'string' && item.type.length > 0, `${here}.type`, 'expected text');
+    check(!Object.hasOwn(item, 'slot') || item.slot === true, `${here}.slot`, 'expected true when present');
+    if (Object.hasOwn(item, 'slot')) slots++;
+  }
+  check(slots <= 1, where, 'a statement has one slot');
+}
+
+/** The type of the pane's part at `span`, if it is a typed part. */
+function typedAt(step: Record<string, any>, span: Span): string | undefined {
+  return (step.types ?? []).find((part: TypedPart) => part.span[0] === span[0] && part.span[1] === span[1])?.type;
+}
+
+/**
+ * The type of the value a conversion at `span` takes: the span itself, or the one typed part
+ * inside a written cast (`7` in `static_cast<long>(7)`).
+ */
+function convertedFrom(step: Record<string, any>, span: Span): string | undefined {
+  const inside = (step.types ?? []).filter(
+    (part: TypedPart) => span[0] <= part.span[0] && part.span[1] <= span[1]
+  );
+  return inside.length === 1 ? inside[0].type : undefined;
+}
+
+/**
+ * A statement that does not compile: the value at `span`, of type `from`, does not fit the slot
+ * at `destination`, which needs `to`. Nothing is evaluated and nothing changes.
+ */
+function checkClash(
+  op: Record<string, any>,
+  step: Record<string, any>,
+  previous: Record<string, any>,
+  where: string
+): void {
+  check(
+    step.pane === previous.pane && previous.op === null,
+    where,
+    'a clash follows the statement as written and does not change the pane'
+  );
+  const [, end] = checkSpan(op.destination, step.pane, `${where}.destination`);
+  const [start] = checkSpan(op.span, step.pane, `${where}.span`);
+  check(end <= start, where, 'the slot comes before the value');
+  check(op.from !== op.to, where, 'the types must differ');
+  const slot: TypedPart | undefined = (step.types ?? []).find((part: TypedPart) => part.slot);
+  check(
+    slot !== undefined && arraysEqual(slot.span, op.destination) && slot.type === op.to,
+    `${where}.destination`,
+    'must be the typed slot of the statement'
+  );
+  check(typedAt(step, op.span) === op.from, `${where}.span`, 'must be a typed part of type `from`');
 }
 
 function replacement(before: string, after: string, span: Span, where: string): string {
@@ -649,14 +757,20 @@ function checkOperation(
     print: ['value', 'span'],
     bind: ['name', 'target', 'span', 'destination'],
     alias: ['name', 'target', 'span'],
+    convert: ['value', 'span', 'from', 'to'],
+    clash: ['span', 'destination', 'from', 'to'],
   };
   const fields = fieldMap[kind];
   checkKeys(op, where, [...fields, 'kind']);
-  for (const key of fields.filter(k => ['name', 'target', 'via', 'value'].includes(k))) {
+  for (const key of fields.filter(k => ['name', 'target', 'via', 'value', 'from', 'to'].includes(k))) {
     check(typeof op[key] === 'string' && op[key].length > 0, `${where}.${key}`, 'expected text');
   }
   if (kind === 'bind' || kind === 'alias') {
     checkReferenceOp(op, step, previous, storage, where);
+    return;
+  }
+  if (kind === 'clash') {
+    checkClash(op, step, previous, where);
     return;
   }
   for (const key of ['name', 'via']) {
@@ -682,11 +796,19 @@ function checkOperation(
       `${op.via} does not point to ${op.target}`
     );
   }
-  if (['read', 'addr', 'deref', 'eval'].includes(kind)) {
+  if (['read', 'addr', 'deref', 'eval', 'convert'].includes(kind)) {
     const span = checkSpan(op.span, previous.pane, `${where}.span`);
     const replaced = replacement(previous.pane, step.pane, span, where);
     const expected = kind === 'deref' ? op.target : op.value;
     check(replaced === expected, where, `the replacement ${pyRepr(replaced)} is not ${pyRepr(expected)}`);
+    if (kind === 'convert') {
+      check(convertedFrom(previous, span) === op.from, `${where}.from`, 'is not the type of the converted value');
+      check(
+        typedAt(step, [span[0], span[0] + replaced.length]) === op.to,
+        `${where}.to`,
+        'is not the type of the result'
+      );
+    }
   } else {
     unchangedPane(op, step, previous, where);
   }
@@ -862,7 +984,7 @@ export function validate(trace: unknown): asserts trace is AnyTrace {
       step,
       where,
       ['line', 'pane', 'values', 'targets', 'stdout', 'hold', 'op'],
-      ['expr', 'refs']
+      ['expr', 'refs', 'types']
     );
     check(
       Number.isInteger(step.line) && typeof step.line === 'number' && 0 <= step.line && step.line < source.length,
@@ -872,6 +994,9 @@ export function validate(trace: unknown): asserts trace is AnyTrace {
     check(typeof step.pane === 'string', `${where}.pane`, 'expected text');
     if (step.expr !== undefined && step.expr !== null) {
       checkSpan(step.expr, step.pane, `${where}.expr`, true);
+    }
+    if (Object.hasOwn(step, 'types')) {
+      checkTypes(step, `${where}.types`);
     }
     check(
       isPlainObject(step.values) &&
@@ -911,6 +1036,11 @@ export function validate(trace: unknown): asserts trace is AnyTrace {
       }
       checkChanges(step, previous, storage, where);
     }
+    check(
+      index === steps.length - 1 || step.op?.kind !== 'clash',
+      `${where}.op`,
+      'nothing runs after a statement that does not compile'
+    );
     previous = step;
   }
 }
