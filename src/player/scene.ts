@@ -24,6 +24,8 @@ import {
   labelCentre,
   labelWidth,
   links,
+  type PaneLabel,
+  paneLabels,
   typeLabelWidth,
   valueCentre,
 } from './geometry.ts';
@@ -188,57 +190,15 @@ function typeLabel(
     : rect(cx - w / 2, top, w, h, 'none', color, h / 2, 1.5) + label(color);
 }
 
-interface PaneLabel {
-  type: string;
-  cx: number;
-  from: number;
-  size: number;
-  slot: boolean;
-  start: number;
-}
-
-/**
- * One label per typed part of a pane starting at x. Neighbours of one type that would collide
- * share a label; neighbours of different types shrink until they fit.
- */
-function paneLabels(step: TraceStep, x: number): PaneLabel[] {
-  const labels: PaneLabel[] = [];
-  for (const part of step.types ?? []) {
-    const cx = x + ((part.span[0] + part.span[1]) / 2) * EVAL_CHAR;
-    const last = labels[labels.length - 1];
-    const label: PaneLabel = {
-      type: part.type,
-      cx,
-      from: cx,
-      size: LABEL.pane,
-      slot: Boolean(part.slot),
-      start: part.span[0],
-    };
-    const gap = (): number =>
-      label.cx -
-      last.cx -
-      6 -
-      (typeLabelWidth(last.type, last.size) + typeLabelWidth(label.type, label.size)) / 2;
-    if (last && gap() < 0 && last.type === label.type && !last.slot) {
-      last.cx = (last.from + cx) / 2;
-      continue;
-    }
-    while (last && gap() < 0 && label.size > 11) {
-      last.size = label.size = Math.min(last.size, label.size) - 1;
-    }
-    labels.push(label);
-  }
-  return labels;
-}
-
-const labelTop = (y: number, label: PaneLabel): number => y - 70 + (LABEL.pane - label.size) / 2;
+const labelTop = (y: number, label: PaneLabel): number =>
+  y - 70 - label.row * LABEL.row + (LABEL.pane - label.size) / 2;
 
 /** The types of one step's pane, settled, with the pane's text starting at (x, y). */
 function paneTypes(c: SceneContext, step: TraceStep, x: number, y: number): string {
   const { P } = c;
   const op = step.op;
   const clash = op?.kind === 'clash';
-  const labels = paneLabels(step, x);
+  const labels = paneLabels(step).map(label => ({ ...label, cx: x + label.cx }));
   const opStart = op && 'span' in op ? op.span[0] : undefined;
   const value = labels.find(label => !label.slot && label.start === opStart);
   const slot = labels.find(label => label.slot);
@@ -264,7 +224,7 @@ function paneTypes(c: SceneContext, step: TraceStep, x: number, y: number): stri
         `<g><animateMotion path="M 0 0 H ${round(slot.cx - label.cx)}" keyPoints="0;0.75;0" keyTimes="0;0.55;1" ` +
         `calcMode="linear" begin="0.35s" dur="${T.clash - 0.4}s" fill="freeze"/>${mark}</g>`;
     }
-    out += mark;
+    out += `<g class="cv-pane-type">${mark}</g>`;
     if (clash && (label === value || label === slot)) {
       const w = typeLabelWidth(label.type, label.size);
       const h = label.size + 7;
@@ -656,7 +616,7 @@ function paneBody(c: SceneContext, copying: boolean): string {
   const { g, P, step, prev, op } = c;
   const tx = g.tx;
   const ty = g.ty;
-  let out = rect(g.pane.x, g.pane.y, g.pane.w, g.pane.h, P.pane);
+  let out = `<g class="cv-pane">${rect(g.pane.x, g.pane.y, g.pane.w, g.pane.h, P.pane)}</g>`;
   if (copying) {
     const sx = g.code.x + 62;
     const sy = g.lineY(step.line);

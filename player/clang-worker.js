@@ -1400,27 +1400,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return compound[0];
   }
-  class Reduction {
-    constructor(kind, span, { name = null, value = null, spelling = null, record = null, type = null, source = null } = {}) {
-      __publicField(this, "kind");
-      __publicField(this, "span");
-      __publicField(this, "name");
-      __publicField(this, "value");
-      __publicField(this, "spelling");
-      __publicField(this, "record");
-      __publicField(this, "type");
-      __publicField(this, "source");
-      this.kind = kind;
-      this.span = span;
-      this.name = name;
-      this.value = value;
-      this.spelling = spelling;
-      this.record = record;
-      this.type = type;
-      this.source = source;
-      Object.freeze(this);
-    }
-  }
   function load(state, name, missing = false) {
     const [owner, ...path] = name.split(".");
     if (!missing && !Object.hasOwn(state, owner)) {
@@ -1482,8 +1461,15 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.references = references;
       this.temporary = false;
     }
-    _reduce(kind, node, details = {}) {
-      this.reductions.push(new Reduction(kind, this.locate(node), { ...details, type: displayedType(node) }));
+    _reduce(node, details) {
+      this.reductions.push({ ...details, span: this.locate(node), type: displayedType(node) });
+    }
+    /** A brace list inside another one is part of its value, not an evaluation of its own. */
+    _absorb(child, value) {
+      const last = this.reductions[this.reductions.length - 1];
+      if ((child == null ? void 0 : child.kind) === "InitListExpr" && (last == null ? void 0 : last.kind) === "eval" && last.value === value) {
+        this.reductions.pop();
+      }
     }
     _load(name) {
       const value = load(this.state, name);
@@ -1496,7 +1482,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const declaration = (node == null ? void 0 : node.referencedDecl) ?? {};
       const name = declaration.name ?? "";
       if ((node == null ? void 0 : node.kind) === "DeclRefExpr" && declaration.kind === "VarDecl" && Object.hasOwn(this.references, name)) {
-        this._reduce("alias", node, { name, spelling: this.references[name] });
+        this._reduce(node, { kind: "alias", name, spelling: this.references[name] });
         return this.references[name];
       }
       if ((node == null ? void 0 : node.kind) !== "DeclRefExpr" || declaration.kind !== "VarDecl" || !Object.hasOwn(this.state, name)) {
@@ -1523,7 +1509,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
             throw new Unsupported(`dereferencing the null pointer ${via} is undefined`);
           }
           const name = `${pointer.target}.${node.name}`;
-          this._reduce("deref", outer ?? node, { name: via, value: new Pointer(name) });
+          this._reduce(outer ?? node, { kind: "deref", name: via, value: new Pointer(name) });
           return name;
         }
         return `${this.lvalue(children[0])}.${node.name}`;
@@ -1536,13 +1522,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         if (pointer.target === null) {
           throw new Unsupported(`dereferencing the null pointer ${via} is undefined`);
         }
-        this._reduce("deref", outer ?? node, { name: via });
+        this._reduce(outer ?? node, { kind: "deref", name: via, value: null });
         return pointer.target;
       }
       throw new Unsupported(`unsupported assignable expression: ${kind}`);
     }
     rvalue(node) {
-      var _a, _b, _c;
+      var _a, _b;
       const kind = node == null ? void 0 : node.kind;
       const children = (node == null ? void 0 : node.inner) ?? [];
       if (kind === "MaterializeTemporaryExpr" && children.length === 1) {
@@ -1558,13 +1544,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           _depth(node, this.records);
           const name = this.lvalue(children[0]);
           const value2 = this._load(name);
-          this._reduce("read", node, { name, value: value2 });
+          this._reduce(node, { kind: "read", name, record: null });
           return [value2, name];
         }
         if (cast === "NullToPointer" && _depth(node, this.records)) {
           const literal = children[0];
           if ((literal == null ? void 0 : literal.kind) === "CXXNullPtrLiteralExpr" || (literal == null ? void 0 : literal.kind) === "IntegerLiteral" && (literal == null ? void 0 : literal.value) === "0") {
-            this._reduce("eval", node, { value: new Pointer() });
+            this._reduce(node, { kind: "eval", value: new Pointer(), record: null });
             return [new Pointer(), null];
           }
         }
@@ -1589,10 +1575,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       if (record) {
         if (kind === "CXXFunctionalCastExpr" && children.length === 1) {
           const [value2] = this.rvalue(children[0]);
-          if (((_a = children[0]) == null ? void 0 : _a.kind) === "InitListExpr" && this.reductions.length > 0 && this.reductions[this.reductions.length - 1].value === value2) {
-            this.reductions.pop();
-          }
-          this._reduce("eval", node, { value: value2, record: record.name });
+          this._absorb(children[0], value2);
+          this._reduce(node, { kind: "eval", value: value2, record: record.name });
           return [value2, null];
         }
         if (kind === "InitListExpr") {
@@ -1608,12 +1592,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
             } else {
               const [childVal] = this.rvalue(child);
               value2[item.name] = childVal;
-              if ((child == null ? void 0 : child.kind) === "InitListExpr" && this.reductions.length > 0 && this.reductions[this.reductions.length - 1].value === value2[item.name]) {
-                this.reductions.pop();
-              }
+              this._absorb(child, childVal);
             }
           }
-          this._reduce("eval", node, { value: value2 });
+          this._reduce(node, { kind: "eval", value: value2, record: null });
           return [value2, null];
         }
         if (kind === "CXXConstructExpr") {
@@ -1630,7 +1612,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           if (Object.values(_flatten({ [name]: value2 })).some((item) => item === null)) {
             throw new Unsupported(`reading uninitialized struct ${name}`);
           }
-          this._reduce("read", node, { name, value: value2, record: record.name });
+          this._reduce(node, { kind: "read", name, record: record.name });
           return [value2, name];
         }
       }
@@ -1644,11 +1626,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       if (kind === "ParenExpr" && children.length === 1) {
         [value] = this.rvalue(children[0]);
       } else if (kind === "UnaryOperator" && node.opcode === "&" && children.length === 1) {
-        if (((_b = children[0]) == null ? void 0 : _b.kind) !== "DeclRefExpr" && ((_c = children[0]) == null ? void 0 : _c.kind) !== "MemberExpr") {
+        if (((_a = children[0]) == null ? void 0 : _a.kind) !== "DeclRefExpr" && ((_b = children[0]) == null ? void 0 : _b.kind) !== "MemberExpr") {
           throw new Unsupported("only the address of a variable is supported");
         }
         const name = this.lvalue(children[0]);
-        this._reduce("addr", node, { name });
+        this._reduce(node, { kind: "addr", name });
         return [new Pointer(name), null];
       } else if (kind === "UnaryOperator" && (node.opcode === "+" || node.opcode === "-") && children.length === 1 && !depth) {
         const operand = BigInt(this._integerOperand(children[0]));
@@ -1666,7 +1648,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       } else {
         throw new Unsupported(`unsupported expression: ${kind} ${(node == null ? void 0 : node.opcode) ?? ""}`.trimEnd());
       }
-      this._reduce("eval", node, { value });
+      this._reduce(node, { kind: "eval", value, record: null });
       return [value, null];
     }
     _integerOperand(node) {
@@ -1686,9 +1668,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const value = exact(target.wrap(BigInt(this._integerOperand(operand))));
       const source = displayedType(operand);
       if (source === displayedType(node)) {
-        this._reduce("eval", node, { value });
+        this._reduce(node, { kind: "eval", value, record: null });
       } else {
-        this._reduce("convert", node, { value, source });
+        this._reduce(node, { kind: "convert", value, source });
       }
       return value;
     }
@@ -1708,7 +1690,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       } else {
         value = depth ? new Pointer() : 0;
       }
-      this._reduce("eval", node, { value });
+      this._reduce(node, { kind: "eval", value, record: null });
       return value;
     }
     static _arithmetic(type, operation, left, right) {
@@ -2058,7 +2040,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         declared,
         bound,
         destination: [toPane(nameOffset), toPane(nameOffset) + declared.length],
-        typed
+        typed,
+        slot: [0, toPane(nameOffset) + declared.length],
+        type: displayedType(variable)
       });
     }
     let target = declared;
@@ -2504,7 +2488,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           text2 = this.show(reduction.value);
           op2 = { kind: "convert", value: text2, from: reduction.source, to: reduction.type };
         } else {
-          text2 = reduction.spelling ?? (reduction.record ?? "") + this.show(reduction.value);
+          text2 = (reduction.kind === "eval" ? reduction.record ?? "" : "") + this.show(reduction.value);
           op2 = { kind: "eval", value: text2 };
           if (isPlainObject(reduction.value) && spaceless(pane.read(reduction.span[0], reduction.span[1])) === spaceless(text2)) {
             text2 = pane.read(reduction.span[0], reduction.span[1]);

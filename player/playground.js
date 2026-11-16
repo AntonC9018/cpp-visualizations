@@ -289,6 +289,61 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     h: s.h + FRAME.top + FRAME.bottom + s.rise * (RISE.top + RISE.bottom) + (s.drop || 0)
   });
   const typeLabelWidth = (type, size) => type.length * size * CHAR + 14;
+  const PANE_LABEL_LEFT = -16;
+  const PANE_LABEL_MIN = 14;
+  const PANE_LABEL_GAP = 6;
+  const paneLabelWidth = (label) => typeLabelWidth(label.type, label.size);
+  function paneLabels(step) {
+    const labels = [];
+    const centres = [];
+    for (const part of step.types ?? []) {
+      const cx = (part.span[0] + part.span[1]) / 2 * EVAL_CHAR;
+      const last = labels[labels.length - 1];
+      const label = {
+        type: part.type,
+        cx,
+        size: LABEL.pane,
+        slot: Boolean(part.slot),
+        start: part.span[0],
+        row: 0
+      };
+      const gap = () => label.cx - last.cx - PANE_LABEL_GAP - (paneLabelWidth(last) + paneLabelWidth(label)) / 2;
+      if (last && gap() < 0 && last.type === label.type && !last.slot) {
+        last.cx = (centres[centres.length - 1] + cx) / 2;
+        continue;
+      }
+      if (last && gap() < 0) {
+        const before = last.size;
+        while (gap() < 0 && label.size > PANE_LABEL_MIN) {
+          last.size = label.size = Math.min(last.size, label.size) - 1;
+        }
+        if (gap() < 0) [last.size, label.size] = [before, LABEL.pane];
+      }
+      labels.push(label);
+      centres.push(cx);
+    }
+    const edges = [];
+    for (const label of labels) {
+      const half = paneLabelWidth(label) / 2;
+      label.cx = Math.max(label.cx, PANE_LABEL_LEFT + half);
+      let row = 0;
+      while (edges[row] !== void 0 && label.cx - half < edges[row] + PANE_LABEL_GAP) row++;
+      edges[row] = label.cx + half;
+      label.row = row;
+    }
+    return labels;
+  }
+  function paneLabelExtent(m) {
+    let rows = 0;
+    let right = 0;
+    for (const step of m.typed ? m.steps : []) {
+      for (const label of paneLabels(step)) {
+        rows = Math.max(rows, label.row + 1);
+        right = Math.max(right, label.cx + paneLabelWidth(label) / 2);
+      }
+    }
+    return { rows, right };
+  }
   function typeRows(m, box) {
     const labels = [];
     const edge = [];
@@ -478,10 +533,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const finalStdout = m.steps[m.steps.length - 1].stdout;
     const outputLines = finalStdout ? finalStdout.replace(/\n$/, "").split("\n") : [];
     const outputChars = Math.max(0, ...outputLines.map((line) => line.length));
+    const labelExtent = paneLabelExtent(m);
     let columnW = Math.max(
       360,
       memoryW + 48,
       paneChars * EVAL_CHAR + 48,
+      labelExtent.right + 24 - PANE_LABEL_LEFT,
       (P.outputLabel.length + 1) * 26 * CHAR + outputChars * EVAL_CHAR + 48
     );
     if (stacked) codeW = columnW = Math.max(codeW, columnW);
@@ -528,7 +585,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const room = (level >= 0 ? FRAME.top + 84 + level * 40 + 10 : (structs ? FRAME.top : 0) + 30) + rise * RISE.top;
     const tagged = tagRows(m, probe.box);
     const typeRow = typeRows(m, probe.box);
-    const labelRise = m.typed ? LABEL.rise + 6 : 0;
+    const labelHeight = m.typed ? LABEL.rise + Math.max(0, labelExtent.rows - 1) * LABEL.row : 0;
+    const labelRise = m.typed ? labelHeight + 6 : 0;
     const named = (structs ? CELL + FRAME.bottom + 32 : CELL + 34) + rise * RISE.bottom + tagged.height;
     const names = named + typeRow.height;
     const paneTop = room + names + 56;
@@ -559,7 +617,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const memY = columnY + room;
     const pane2 = { x: columnX, y: columnY + paneTop, w: columnW, h: paneH };
     const tx = columnX + 24;
-    const ty = pane2.y + 38 + 11 + (m.typed ? LABEL.rise : 0);
+    const ty = pane2.y + 38 + 11 + labelHeight;
     const below = pane2.y - 56;
     const out = [columnX + 24, columnY + outputTop];
     const code2 = { x: codeX, y: codeY, w: codeW, h: codeH };
@@ -843,37 +901,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const label = (fill) => text(cx, top + size + 1, type, size, fill, "middle");
     return c.P.typeLabel === "fill" ? rect(cx - w / 2, top, w, h, color, "none", h / 2) + label(c.P.bg) : rect(cx - w / 2, top, w, h, "none", color, h / 2, 1.5) + label(color);
   }
-  function paneLabels(step, x) {
-    const labels = [];
-    for (const part of step.types ?? []) {
-      const cx = x + (part.span[0] + part.span[1]) / 2 * EVAL_CHAR;
-      const last = labels[labels.length - 1];
-      const label = {
-        type: part.type,
-        cx,
-        from: cx,
-        size: LABEL.pane,
-        slot: Boolean(part.slot),
-        start: part.span[0]
-      };
-      const gap = () => label.cx - last.cx - 6 - (typeLabelWidth(last.type, last.size) + typeLabelWidth(label.type, label.size)) / 2;
-      if (last && gap() < 0 && last.type === label.type && !last.slot) {
-        last.cx = (last.from + cx) / 2;
-        continue;
-      }
-      while (last && gap() < 0 && label.size > 11) {
-        last.size = label.size = Math.min(last.size, label.size) - 1;
-      }
-      labels.push(label);
-    }
-    return labels;
-  }
-  const labelTop = (y, label) => y - 70 + (LABEL.pane - label.size) / 2;
+  const labelTop = (y, label) => y - 70 - label.row * LABEL.row + (LABEL.pane - label.size) / 2;
   function paneTypes(c, step, x, y) {
     const { P } = c;
     const op = step.op;
     const clash = (op == null ? void 0 : op.kind) === "clash";
-    const labels = paneLabels(step, x);
+    const labels = paneLabels(step).map((label) => ({ ...label, cx: x + label.cx }));
     const opStart = op && "span" in op ? op.span[0] : void 0;
     const value = labels.find((label) => !label.slot && label.start === opStart);
     const slot = labels.find((label) => label.slot);
@@ -892,7 +925,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       if (current && clash && slot) {
         mark = `<g><animateMotion path="M 0 0 H ${round(slot.cx - label.cx)}" keyPoints="0;0.75;0" keyTimes="0;0.55;1" calcMode="linear" begin="0.35s" dur="${T.clash - 0.4}s" fill="freeze"/>${mark}</g>`;
       }
-      out += mark;
+      out += `<g class="cv-pane-type">${mark}</g>`;
       if (clash && (label === value || label === slot)) {
         const w = typeLabelWidth(label.type, label.size);
         const h = label.size + 7;
@@ -1214,7 +1247,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const { g, P, step, prev, op } = c;
     const tx = g.tx;
     const ty = g.ty;
-    let out = rect(g.pane.x, g.pane.y, g.pane.w, g.pane.h, P.pane);
+    let out = `<g class="cv-pane">${rect(g.pane.x, g.pane.y, g.pane.w, g.pane.h, P.pane)}</g>`;
     if (copying) {
       const sx = g.code.x + 62;
       const sy = g.lineY(step.line);

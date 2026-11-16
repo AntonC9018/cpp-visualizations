@@ -125,6 +125,87 @@ export const frameOf = (
 
 export const typeLabelWidth = (type: string, size: number): number => type.length * size * CHAR + 14;
 
+/** A type label over a typed pane, its centre relative to the start of the pane's text. */
+export interface PaneLabel {
+  type: string;
+  cx: number;
+  size: number;
+  slot: boolean;
+  /** The first character of the part it types. */
+  start: number;
+  /** 0 just above the text, each next row one LABEL.row higher. */
+  row: number;
+}
+
+/** How far left of the pane's text a label may reach and still sit inside the pane. */
+export const PANE_LABEL_LEFT = -16;
+const PANE_LABEL_MIN = 14;
+const PANE_LABEL_GAP = 6;
+
+const paneLabelWidth = (label: PaneLabel): number => typeLabelWidth(label.type, label.size);
+
+/**
+ * One label per typed part of a pane. Neighbours of one type that would collide share a label;
+ * neighbours of different types shrink a little if that is enough. A label that would still
+ * collide, or that the pane's left edge pushes into its neighbour, keeps its size and takes the
+ * first row above where it fits.
+ */
+export function paneLabels(step: TraceStep): PaneLabel[] {
+  const labels: PaneLabel[] = [];
+  const centres: number[] = [];
+  for (const part of step.types ?? []) {
+    const cx = ((part.span[0] + part.span[1]) / 2) * EVAL_CHAR;
+    const last = labels[labels.length - 1];
+    const label: PaneLabel = {
+      type: part.type,
+      cx,
+      size: LABEL.pane,
+      slot: Boolean(part.slot),
+      start: part.span[0],
+      row: 0,
+    };
+    const gap = (): number =>
+      label.cx - last.cx - PANE_LABEL_GAP - (paneLabelWidth(last) + paneLabelWidth(label)) / 2;
+    if (last && gap() < 0 && last.type === label.type && !last.slot) {
+      last.cx = (centres[centres.length - 1] + cx) / 2;
+      continue;
+    }
+    if (last && gap() < 0) {
+      const before = last.size;
+      while (gap() < 0 && label.size > PANE_LABEL_MIN) {
+        last.size = label.size = Math.min(last.size, label.size) - 1;
+      }
+      // Too long to sit side by side even small: full size, in a row above.
+      if (gap() < 0) [last.size, label.size] = [before, LABEL.pane];
+    }
+    labels.push(label);
+    centres.push(cx);
+  }
+  const edges: number[] = [];
+  for (const label of labels) {
+    const half = paneLabelWidth(label) / 2;
+    label.cx = Math.max(label.cx, PANE_LABEL_LEFT + half);
+    let row = 0;
+    while (edges[row] !== undefined && label.cx - half < edges[row] + PANE_LABEL_GAP) row++;
+    edges[row] = label.cx + half;
+    label.row = row;
+  }
+  return labels;
+}
+
+/** The rows and the right edge the labels of every step need, relative to the pane's text. */
+function paneLabelExtent(m: PreparedModel): { rows: number; right: number } {
+  let rows = 0;
+  let right = 0;
+  for (const step of m.typed ? m.steps : []) {
+    for (const label of paneLabels(step)) {
+      rows = Math.max(rows, label.row + 1);
+      right = Math.max(right, label.cx + paneLabelWidth(label) / 2);
+    }
+  }
+  return { rows, right };
+}
+
 /**
  * The types under the names of top-level storage. A label takes the first row where it clears
  * the label before it, so a narrow cell's type drops below its neighbour's.
@@ -376,10 +457,12 @@ export function geometry(m: PreparedModel, P: Palette, stacked: boolean): Geomet
   const finalStdout = m.steps[m.steps.length - 1].stdout;
   const outputLines = finalStdout ? finalStdout.replace(/\n$/, '').split('\n') : [];
   const outputChars = Math.max(0, ...outputLines.map(line => line.length));
+  const labelExtent = paneLabelExtent(m);
   let columnW = Math.max(
     360,
     memoryW + 48,
     paneChars * EVAL_CHAR + 48,
+    labelExtent.right + 24 - PANE_LABEL_LEFT,
     (P.outputLabel.length + 1) * 26 * CHAR + outputChars * EVAL_CHAR + 48
   );
   if (stacked) codeW = columnW = Math.max(codeW, columnW);
@@ -430,8 +513,9 @@ export function geometry(m: PreparedModel, P: Palette, stacked: boolean): Geomet
     rise * RISE.top;
   const tagged = tagRows(m, probe.box);
   const typeRow = typeRows(m, probe.box);
-  // A typed pane has room above its text for the labels.
-  const labelRise = m.typed ? LABEL.rise + 6 : 0;
+  // A typed pane has room above its text for every row of labels.
+  const labelHeight = m.typed ? LABEL.rise + Math.max(0, labelExtent.rows - 1) * LABEL.row : 0;
+  const labelRise = m.typed ? labelHeight + 6 : 0;
   const named =
     (structs ? CELL + FRAME.bottom + 32 : CELL + 34) + rise * RISE.bottom + tagged.height;
   const names = named + typeRow.height;
@@ -467,7 +551,7 @@ export function geometry(m: PreparedModel, P: Palette, stacked: boolean): Geomet
   const memY = columnY + room;
   const pane: PlacedRect = { x: columnX, y: columnY + paneTop, w: columnW, h: paneH };
   const tx = columnX + 24;
-  const ty = pane.y + 38 + 11 + (m.typed ? LABEL.rise : 0);
+  const ty = pane.y + 38 + 11 + labelHeight;
   const below = pane.y - 56;
   const out: [number, number] = [columnX + 24, columnY + outputTop];
   const code: PlacedRect = { x: codeX, y: codeY, w: codeW, h: codeH };
