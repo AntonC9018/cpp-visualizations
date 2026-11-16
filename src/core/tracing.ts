@@ -1305,6 +1305,8 @@ function analyzeStatement(
       bound,
       destination: [toPane(nameOffset!), toPane(nameOffset!) + declared!.length],
       typed,
+      slot: [0, toPane(nameOffset!) + declared!.length],
+      type: displayedType(variable),
     });
   }
 

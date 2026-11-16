@@ -77,11 +77,24 @@ describe('TypedPaneTests', () => {
 
   test('a_reference_keeps_the_type_of_what_it_names', () => {
     const trace = traceTyped('struct A { int f; }; A s{ 1 }; A& r = s; r.f = 2;');
-    assert.deepEqual(lines(trace, 1)[0], ['s:A']);
+    assert.deepEqual(lines(trace, 1), [
+      ['A& r:A&!', 's:A'],
+      ['A& r:A&!', 's:A'],
+    ]);
     assert.deepEqual(lines(trace, 2).slice(0, 2), [
       ['r.f:int', '2:int'],
       ['s.f:int', '2:int'],
     ]);
+  });
+
+  test('a_reference_declaration_is_its_slot', () => {
+    const trace = traceTyped('int a{ 5 }; int& r{ a };');
+    assert.deepEqual(lines(trace, 1), [
+      ['int& r:int&!', 'a:int'],
+      ['int& r:int&!', 'a:int'],
+    ]);
+    assert.equal(trace.steps.at(-1)!.op?.kind, 'bind');
+    assert.deepEqual(trace.variables.map(v => v.name), ['a']);
   });
 
   test('null_pointers', () => {
