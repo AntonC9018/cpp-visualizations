@@ -53,7 +53,7 @@ function link(root: HTMLElement): void {
   const apply = (k: string | null): void => {
     root.classList.toggle('pl-active', k !== null);
     for (const el of root.querySelectorAll<HTMLElement>('[data-k]')) {
-      const on = k !== null && (k === 'all' || el.dataset.k === 'all' || el.dataset.k === k);
+      const on = k !== null && (k === 'all' || el.dataset.k === k);
       el.classList.toggle('pl-on', on);
       el.setAttribute('aria-pressed', String(locked !== null && el.dataset.k === locked));
     }
@@ -118,32 +118,48 @@ function variantA(host: HTMLElement, trace: LayoutTrace): void {
 function variantB(host: HTMLElement, trace: LayoutTrace): void {
   const r = trace.records[0];
   const ss = spans(r);
+  // Alignment is only worth showing when it changed something.
+  const padded = padBytes(r) > 0;
   const col = (s: Span): string => `grid-column:${s.offset + 1} / span ${s.size}`;
+  const fields = r.fields
+    .map(
+      (f, fi) =>
+        `<button type="button" data-k="${fi}" class="plb-field ${colour(fi)}">` +
+        `<i></i><span>${esc(f.type)} <b>${esc(f.name)}</b>;</span></button>`
+    )
+    .join('');
   const labels = ss
     .map((s, i) => {
-      const row = s.kind === 'pad' ? 3 : s.size < 3 && i % 2 ? 2 : 1;
-      const text =
-        s.kind === 'pad'
-          ? `${s.size} B`
-          : `<b>${esc(s.field!.name)}</b> <span>${esc(s.field!.type)}</span>`;
-      return `<button type="button" data-k="${k(s)}" class="plb-label plb-r${row} ${s.kind === 'pad' ? 'plb-padlabel' : colour(s.fi)}" style="${col(s)}">${text}</button>`;
+      if (s.kind === 'pad')
+        return `<button type="button" data-k="pad" class="plb-label plb-r3" style="${col(s)}">${s.size} B</button>`;
+      const row = s.size < 3 && i % 2 ? 2 : 1;
+      return `<button type="button" data-k="${k(s)}" class="plb-label plb-r${row} ${colour(s.fi)}" style="${col(s)}"><b>${esc(s.field!.name)}</b></button>`;
     })
     .join('');
   const cells = Array.from({ length: r.size }, (_, o) => {
     const s = ss.find(x => o >= x.offset && o < x.offset + x.size)!;
-    const edge = o % r.alignment === 0 ? ' plb-slot' : '';
-    return `<span data-k="${k(s)}" class="plb-byte${edge} ${s.kind === 'pad' ? 'pl-hatch' : colour(s.fi)}" style="grid-column:${o + 1}"></span>`;
+    const edge = padded && o % r.alignment === 0 ? ' plb-slot' : '';
+    const start = s.offset === o ? ' plb-start' : '';
+    return `<span data-k="${k(s)}" class="plb-byte${edge}${start} ${s.kind === 'pad' ? 'pl-hatch' : colour(s.fi)}" style="grid-column:${o + 1}"></span>`;
   }).join('');
-  const ticks = Array.from({ length: r.size / r.alignment + 1 }, (_, i) => {
-    const o = i * r.alignment;
-    return `<span class="plb-tick" style="grid-column:${Math.min(o + 1, r.size)};${o === r.size ? 'justify-self:end' : ''}">${o}</span>`;
-  }).join('');
+  // Offsets: at slot edges when alignment matters, otherwise where each field starts.
+  const marks = padded
+    ? Array.from({ length: r.size / r.alignment + 1 }, (_, i) => i * r.alignment)
+    : [...r.fields.map(f => f.offset), r.size];
+  const ticks = marks
+    .map(
+      o =>
+        `<span class="plb-tick" style="grid-column:${Math.min(o + 1, r.size)};${o === r.size ? 'justify-self:end;transform:translateX(30%)' : ''}">${o}</span>`
+    )
+    .join('');
+  const facts = padded
+    ? `<span>alignof ${r.alignment}</span><button type="button" data-k="pad" class="plb-pad"><i class="pl-hatch"></i> ${t('padding', 'выравнивание')} ${padBytes(r)} B</button>`
+    : '';
   shell(
     host,
     'plb',
-    `<div class="plb-head"><code>struct ${esc(r.name)}</code>` +
-      `<button type="button" data-k="all">sizeof ${r.size}</button><span>alignof ${r.alignment}</span>` +
-      `<span class="plb-pad">▧ ${t('padding', 'выравнивание')} ${padBytes(r)} B</span></div>` +
+    `<div class="plb-fields"><button type="button" data-k="all" class="plb-struct">struct <b>${esc(r.name)}</b> {</button>${fields}<span class="plb-close">};</span></div>` +
+      `<div class="plb-head"><button type="button" data-k="all">sizeof ${r.size}</button>${facts}</div>` +
       `<div class="plb-tape" style="--n:${r.size}">${labels}${cells}${ticks}</div>`
   );
   link(host.lastElementChild as HTMLElement);
@@ -373,22 +389,42 @@ style.textContent = `
   var(--cv-highlight) 0 4px, var(--cv-border) 4px 6px)}
 
 /* B */
+.plb-fields {display: flex; flex-direction: column; align-items: flex-start; font-size: .85rem;
+  margin-bottom: .9rem}
+.course-visualization .pl .plb-field {display: flex; align-items: center; gap: .5rem;
+  padding: 1px .5rem 1px 1.6rem; border-radius: 3px}
+.plb-field i {width: .7rem; height: .7rem; border-radius: 2px; background: currentColor}
+.plb-field span {color: var(--cv-fg)}
+.plb-field b {color: inherit}
+.course-visualization .pl .plb-struct {padding: 1px .5rem 1px 0; border-radius: 3px}
+.plb-close {color: var(--cv-fg)}
 .plb-head {display: flex; flex-wrap: wrap; gap: .4rem 1.2rem; align-items: baseline;
-  margin-bottom: .8rem; color: var(--cv-muted)}
-.plb-head code {color: var(--cv-fg); font-weight: 700}
+  margin-bottom: .6rem; color: var(--cv-muted); font-size: .8rem}
+.course-visualization .pl .plb-head button {color: var(--cv-fg); font-weight: 700; padding: 0 .3rem;
+  border-radius: 3px}
+.course-visualization .pl .plb-head .plb-pad {color: var(--cv-muted); font-weight: 400}
+.plb-pad i {display: inline-block; width: .7rem; height: .7rem; vertical-align: -1px}
 .plb-tape {display: grid; grid-template-columns: repeat(var(--n), minmax(0, 1fr));
   grid-template-rows: auto auto 2.2rem auto auto; column-gap: 0; row-gap: 2px}
 .course-visualization .pl .plb-label {grid-row: 1; font-size: .78rem; line-height: 1.2;
   padding: 2px 4px 4px; border-bottom: 2px solid currentColor; white-space: nowrap;
   overflow: visible; min-width: 0}
-.plb-label span {color: var(--cv-muted)}
 .course-visualization .pl .plb-r2 {grid-row: 2}
 .course-visualization .pl .plb-r3 {grid-row: 4; border: 0; font-size: .7rem; text-align: center;
   color: var(--cv-muted)}
-.plb-byte {grid-row: 3; border: 1px solid var(--cv-border); border-left-width: 0;
-  background: color-mix(in srgb, currentColor 35%, transparent)}
-.plb-byte.pl-hatch {background-color: transparent}
-.plb-byte.plb-slot {border-left: 2px solid var(--cv-fg)}
+/* Bytes keep their field fill when linked and draw separators in the stage colour,
+ * so one byte stays distinguishable inside a highlighted int. */
+.plb-byte {grid-row: 3; border-block: 1px solid var(--cv-border);
+  box-shadow: inset 1px 0 0 color-mix(in srgb, var(--cv-bg) 70%, transparent);
+  background-color: color-mix(in srgb, currentColor 32%, var(--cv-bg))}
+.course-visualization .pl .plb-byte.pl-on {
+  background-color: color-mix(in srgb, currentColor 70%, var(--cv-bg));
+  box-shadow: inset 1px 0 0 color-mix(in srgb, var(--cv-bg) 55%, transparent)}
+.course-visualization .pl .plb-byte.pl-hatch {background-color: transparent}
+.plb-byte.plb-start {box-shadow: inset 2px 0 0 var(--cv-bg)}
+.course-visualization .pl .plb-byte.plb-start.pl-on {box-shadow: inset 2px 0 0 var(--cv-bg)}
+.course-visualization .pl .plb-byte.plb-slot {box-shadow: inset 2px 0 0 var(--cv-fg)}
+.plb-byte:last-of-type {border-right: 1px solid var(--cv-border)}
 .plb-tick {grid-row: 5; font-size: .7rem; color: var(--cv-muted); transform: translateX(-30%)}
 
 /* C */
