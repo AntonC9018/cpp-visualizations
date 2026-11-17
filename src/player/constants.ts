@@ -4,14 +4,7 @@ export const CHAR = 0.602; // monospace advance, in em
 export const CODE_SIZE = 25;
 export const PANE_MAX = 30;
 export const PANE_MIN = 24;
-// Geometry picks a pane size per trace. The scene restores it before drawing.
-export let PANE_SIZE = PANE_MAX;
 export const CODE_CHAR = CODE_SIZE * CHAR;
-export let EVAL_CHAR = PANE_SIZE * CHAR;
-export function setPaneSize(size: number): void {
-  PANE_SIZE = size;
-  EVAL_CHAR = size * CHAR;
-}
 export const LINE = 56;
 export const CELL = 64;
 export const MARGIN = 28;

@@ -63,13 +63,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   const CODE_SIZE = 25;
   const PANE_MAX = 30;
   const PANE_MIN = 24;
-  let PANE_SIZE = PANE_MAX;
   const CODE_CHAR = CODE_SIZE * CHAR;
-  let EVAL_CHAR = PANE_SIZE * CHAR;
-  function setPaneSize(size) {
-    PANE_SIZE = size;
-    EVAL_CHAR = size * CHAR;
-  }
   const LINE = 56;
   const CELL = 64;
   const MARGIN = 28;
@@ -230,7 +224,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return element.replace(/\/>$/, ">" + animations + "</" + tag + ">");
   };
   const pulse = (begin) => `<animateTransform attributeName="transform" type="scale" values="1;1.14;1" keyTimes="0;0.45;1" calcMode="spline" keySplines="0.4 0 0.2 1;0.4 0 0.2 1" begin="${round(begin)}s" dur="0.65s" fill="freeze"/>`;
-  const markBox = (x, y, length, stroke, fill) => `<rect x="${round(x - 3)}" y="${round(y - 32)}" width="${round(length * EVAL_CHAR + 6)}" height="42" rx="6" fill="${fill}" stroke="${stroke}" stroke-width="2"/>`;
+  const markBox = (x, y, width, stroke, fill) => `<rect x="${round(x - 3)}" y="${round(y - 32)}" width="${round(width + 6)}" height="42" rx="6" fill="${fill}" stroke="${stroke}" stroke-width="2"/>`;
   const settle = (markup, from, begin) => from ? `<g transform="translate(${round(from)} 0)"><animateTransform attributeName="transform" type="translate" from="${round(from)} 0" to="0 0" begin="${round(begin)}s" dur="0.3s" ${EASE} fill="freeze"/>${markup}</g>` : markup;
   const glide = (markup, dx, begin, dur) => dx ? `<g><animateTransform attributeName="transform" type="translate" from="0 0" to="${round(dx)} 0" begin="${round(begin)}s" dur="${dur}s" ${EASE} fill="freeze"/>${markup}</g>` : markup;
   const scaleAbout = (markup, x, y, from, to, begin, dur) => `<g transform="translate(${round(x)} ${round(y)})"><g transform="scale(${from})"><animateTransform attributeName="transform" type="scale" from="${from}" to="${to}" begin="${round(begin)}s" dur="${dur}s" ${EASE} fill="freeze"/><g transform="translate(${round(-x)} ${round(-y)})">${markup}</g></g></g>`;
@@ -488,11 +482,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   const PANE_LABEL_MIN = 14;
   const PANE_LABEL_GAP = 6;
   const paneLabelWidth = (label) => typeLabelWidth(label.type, label.size);
-  function paneLabels(step) {
+  function paneLabels(step, paneChar) {
     const labels = [];
     const centres = [];
     for (const part of step.types ?? []) {
-      const cx = (part.span[0] + part.span[1]) / 2 * EVAL_CHAR;
+      const cx = (part.span[0] + part.span[1]) / 2 * paneChar;
       const last = labels[labels.length - 1];
       const label = {
         type: part.type,
@@ -528,11 +522,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return labels;
   }
-  function paneLabelExtent(m) {
+  function paneLabelExtent(m, paneChar) {
     let rows = 0;
     let right = 0;
     for (const step of m.typed ? m.steps : []) {
-      for (const label of paneLabels(step)) {
+      for (const label of paneLabels(step, paneChar)) {
         rows = Math.max(rows, label.row + 1);
         right = Math.max(right, label.cx + paneLabelWidth(label) / 2);
       }
@@ -732,7 +726,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const finalStdout = m.steps[m.steps.length - 1].stdout;
     const outputLines = finalStdout ? finalStdout.replace(/\n$/, "").split("\n") : [];
     const outputChars = Math.max(0, ...outputLines.map((line) => line.length));
-    const labelExtent = paneLabelExtent(m);
     const canWrap = !stacked && m.tops.length > 1 && !m.typed && m.references.length === 0 && m.steps.every((step) => Object.keys(step.targets).length === 0);
     const pitch = (structs ? CELL + FRAME.bottom + 32 : CELL + 34) + rise * RISE.bottom + (structs ? FRAME.top : 0) + 30 + rise * RISE.top;
     const plan = (rows) => {
@@ -752,19 +745,20 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         PANE_MIN,
         Math.min(PANE_MAX, Math.floor((Math.max(360, natural + 48) - 48) / (paneChars * CHAR)))
       );
-      const evalChar = paneSize * CHAR;
+      const paneChar = paneSize * CHAR;
+      const labelExtent2 = paneLabelExtent(m, paneChar);
       const others = Math.max(
         360,
-        paneChars * evalChar + 48,
-        labelExtent.right + 24 - PANE_LABEL_LEFT,
-        (P.outputLabel.length + 1) * 26 * CHAR + outputChars * evalChar + 48,
+        paneChars * paneChar + 48,
+        labelExtent2.right + 24 - PANE_LABEL_LEFT,
+        (P.outputLabel.length + 1) * 26 * CHAR + outputChars * paneChar + 48,
         stacked ? codeW : 0
       );
       const byte = byteFor(Math.max(MEMORY_WIDTH, others - 48));
       const placed2 = placement(m, byte, rowOf2);
       const columnW2 = Math.max(others, placed2.width + 48);
       const width2 = codeW + 56 + columnW2;
-      return { rows, rowOf: rowOf2, paneSize, placed: placed2, columnW: columnW2, width: width2, cell: byte / width2 };
+      return { rows, rowOf: rowOf2, paneSize, paneChar, labelExtent: labelExtent2, placed: placed2, columnW: columnW2, width: width2, cell: byte / width2 };
     };
     const partitions = (n, count) => {
       if (count === 1) return [[Array.from({ length: n }, (_, i) => i)]];
@@ -792,7 +786,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         if (candidate.width <= single.width + 1 && candidate.cell > chosen.cell * 1.1) chosen = candidate;
       }
     }
-    setPaneSize(chosen.paneSize);
+    const { labelExtent } = chosen;
     const placed = chosen.placed;
     const rowOf = chosen.rowOf;
     const extraRows = chosen.rows.length - 1;
@@ -916,7 +910,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const owner = (token) => groups.find((s) => s.name === token) || leaves.find((l) => !l.group && l.name === token) || tags2.find((t) => t.name === token);
     const field = (token) => leaves.find((l) => l.group && l.label === token) || groups.find((s) => s.parent && s.label === token);
     const g = {
-      paneSize: PANE_SIZE,
+      paneSize: chosen.paneSize,
+      paneChar: chosen.paneChar,
       stacked,
       isStruct,
       rise,
@@ -1133,7 +1128,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return active;
   }
-  function colored(c, x, y, value, size = PANE_SIZE, mute = true, member = false) {
+  function colored(c, x, y, value, size = c.g.paneSize, mute = true, member = false) {
     let out = "";
     let cx = x;
     let isMember = member;
@@ -1150,23 +1145,23 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }
   function paneText(c, x, y, pane2, a, b, expr) {
     const member = /(\.|->)$/.test(pane2.slice(0, a));
-    if (!expr) return colored(c, x, y, pane2.slice(a, b), PANE_SIZE, true, member);
+    if (!expr) return colored(c, x, y, pane2.slice(a, b), c.g.paneSize, true, member);
     const cuts = [a, Math.min(b, Math.max(a, expr[0])), Math.min(b, Math.max(a, expr[1])), b];
     let out = "";
     for (let i = 0; i < 3; i++) {
       const [from, to] = [cuts[i], cuts[i + 1]];
       if (from >= to) continue;
-      const px = x + (from - a) * EVAL_CHAR;
+      const px = x + (from - a) * c.g.paneChar;
       const part = pane2.slice(from, to);
-      out += i === 1 ? colored(c, px, y, part, PANE_SIZE, true, /(\.|->)$/.test(pane2.slice(0, from))) : text(px, y, part, PANE_SIZE, c.P.context);
+      out += i === 1 ? colored(c, px, y, part, c.g.paneSize, true, /(\.|->)$/.test(pane2.slice(0, from))) : text(px, y, part, c.g.paneSize, c.P.context);
     }
     return out;
   }
   function exprBackground(c, x, y, expr, from = null, begin = 0) {
     if (!expr || expr[0] === expr[1]) return "";
     const box = (e) => [
-      x + e[0] * EVAL_CHAR - 4,
-      (e[1] - e[0]) * EVAL_CHAR + 8
+      x + e[0] * c.g.paneChar - 4,
+      (e[1] - e[0]) * c.g.paneChar + 8
     ];
     const [bx, bw] = box(expr);
     if (from && from[1] > from[0] && (from[0] !== expr[0] || from[1] !== expr[1])) {
@@ -1200,13 +1195,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const { P } = c;
     const op = step.op;
     const clash = (op == null ? void 0 : op.kind) === "clash";
-    const labels = paneLabels(step).map((label) => ({ ...label, cx: x + label.cx }));
+    const labels = paneLabels(step, c.g.paneChar).map((label) => ({ ...label, cx: x + label.cx }));
     const opStart = op && "span" in op ? op.span[0] : void 0;
     const value = labels.find((label) => !label.slot && label.start === opStart);
     const slot = labels.find((label) => label.slot);
     let out = "";
     for (const part of step.types ?? []) {
-      out += `<path d="M ${round(x + part.span[0] * EVAL_CHAR)} ${y + 14} H ${round(x + part.span[1] * EVAL_CHAR)}" stroke="${typeColour(c, part.type)}" stroke-width="3" stroke-linecap="round"/>`;
+      out += `<path d="M ${round(x + part.span[0] * c.g.paneChar)} ${y + 14} H ${round(x + part.span[1] * c.g.paneChar)}" stroke="${typeColour(c, part.type)}" stroke-width="3" stroke-linecap="round"/>`;
     }
     for (const label of labels) {
       const top = labelTop(y, label);
@@ -1530,8 +1525,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }).join("");
   }
   function valueBox(c, value, color, path, begin, travel, end) {
-    const half = Math.max(28, String(value).length * EVAL_CHAR / 2 + 12);
-    return `<g opacity="0">${fade(0, 0.55, 0.25, begin)}${fade(0.55, 0, 0.2, end - 0.2)}<path d="${path}" fill="none" stroke="${color}" stroke-width="3"/></g><g opacity="0">${fade(0, 1, 0.12, begin)}${hide(end)}` + rect(-half, -25, 2 * half, 50, c.P.panel, color, 9) + text(0, 11, value, PANE_SIZE, c.P.fg, "middle") + `<animateMotion begin="${round(begin)}s" dur="${travel}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
+    const half = Math.max(28, String(value).length * c.g.paneChar / 2 + 12);
+    return `<g opacity="0">${fade(0, 0.55, 0.25, begin)}${fade(0.55, 0, 0.2, end - 0.2)}<path d="${path}" fill="none" stroke="${color}" stroke-width="3"/></g><g opacity="0">${fade(0, 1, 0.12, begin)}${hide(end)}` + rect(-half, -25, 2 * half, 50, c.P.panel, color, 9) + text(0, 11, value, c.g.paneSize, c.P.fg, "middle") + `<animateMotion begin="${round(begin)}s" dur="${travel}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
   }
   function transfers(c) {
     const { g, P, op } = c;
@@ -1540,7 +1535,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const begin = departure(op);
     const ty = g.ty - 11;
     const below = g.below;
-    const spanCentre = (span) => g.tx + (span[0] + span[1]) / 2 * EVAL_CHAR;
+    const spanCentre = (span) => g.tx + (span[0] + span[1]) / 2 * c.g.paneChar;
     const p = (...values) => values.map(round).join(" ");
     if (op.kind === "read") {
       const [sx, sy] = valueCentre(g.box(op.name));
@@ -1624,8 +1619,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       if (prev && prev.line !== step.line) {
         out += `<g>${fade(1, 0, 0.3, begin + 0.2)}${settledPane(c, prev, tx, ty)}</g>`;
       }
-      const scale = CODE_SIZE / PANE_SIZE;
-      out += `<g><animateMotion dur="${round(total)}s" path="M ${round(sx)} ${sy} L ${tx} ${ty}" keyPoints="0;0;1" keyTimes="0;${(begin / total).toFixed(4)};1" calcMode="spline" keySplines="0 0 1 1;0.4 0 0.2 1" fill="freeze"/><g transform="scale(${scale})"><animateTransform attributeName="transform" type="scale" from="${scale}" to="1" begin="${begin}s" dur="${T.copyTravel}s" ${EASE} fill="freeze"/><g opacity="0">${fade(0, 1, 0.15, begin - 0.15)}${fade(1, 0, 0.12, total)}` + rect(-8, -36, step.pane.length * EVAL_CHAR + 16, 48, P.highlight, P.read, 7, 2) + "</g>" + settledPane(c, step, 0, 0) + "</g></g>";
+      const scale = CODE_SIZE / c.g.paneSize;
+      out += `<g><animateMotion dur="${round(total)}s" path="M ${round(sx)} ${sy} L ${tx} ${ty}" keyPoints="0;0;1" keyTimes="0;${(begin / total).toFixed(4)};1" calcMode="spline" keySplines="0 0 1 1;0.4 0 0.2 1" fill="freeze"/><g transform="scale(${scale})"><animateTransform attributeName="transform" type="scale" from="${scale}" to="1" begin="${begin}s" dur="${T.copyTravel}s" ${EASE} fill="freeze"/><g opacity="0">${fade(0, 1, 0.15, begin - 0.15)}${fade(1, 0, 0.12, total)}` + rect(-8, -36, step.pane.length * c.g.paneChar + 16, 48, P.highlight, P.read, 7, 2) + "</g>" + settledPane(c, step, 0, 0) + "</g></g>";
       return out;
     }
     if (op && prev && (op.kind === "read" || op.kind === "addr" || op.kind === "deref" || op.kind === "eval" || op.kind === "alias" || op.kind === "convert")) {
@@ -1633,28 +1628,28 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const [s, e] = op.span;
       const length = step.pane.length - before.length + (e - s);
       const at = arrival(op);
-      const dx = (length - (e - s)) * EVAL_CHAR;
-      const sx = tx + s * EVAL_CHAR;
+      const dx = (length - (e - s)) * c.g.paneChar;
+      const sx = tx + s * c.g.paneChar;
       const [stroke, fill] = op.kind === "read" || op.kind === "addr" ? [P.read, P.readFill] : op.kind === "convert" ? [P.write, P.writeFill] : [P.fg, P.derefFill];
       out += exprBackground(c, tx, ty, step.expr, prev.expr, at + 0.1);
       out += walkBoxes(
         op.kind === "read" ? paneLevels(op.name, before.slice(s, e)) : null,
         at - 0.1,
-        (chars) => markBox(sx, ty, chars, stroke, fill),
-        `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.2, at - 0.1)}${markBox(sx, ty, e - s, stroke, fill)}</g>`
+        (chars) => markBox(sx, ty, chars * c.g.paneChar, stroke, fill),
+        `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.2, at - 0.1)}${markBox(sx, ty, (e - s) * c.g.paneChar, stroke, fill)}</g>`
       );
       out += paneText(c, tx, ty, before, 0, s, prev.expr);
       let old = paneText(c, sx, ty, before, s, e, prev.expr);
       let fresh = paneText(c, sx, ty, step.pane, s, s + length, step.expr);
-      const middle = sx + (e - s) * EVAL_CHAR / 2;
+      const middle = sx + (e - s) * c.g.paneChar / 2;
       if (op.kind === "eval" || op.kind === "convert") {
         old = scaleAbout(old, middle, ty - 11, 1, 0.45, 0.15, at - 0.15);
-        fresh = scaleAbout(fresh, sx + length * EVAL_CHAR / 2, ty - 11, 0.45, 1, at, 0.25);
+        fresh = scaleAbout(fresh, sx + length * c.g.paneChar / 2, ty - 11, 0.45, 1, at, 0.25);
       }
       out += `<g>${hide(at)}${old}</g>`;
-      out += `<g opacity="0">${show(at)}${settle(fresh, (e - s - length) / 2 * EVAL_CHAR, at + 0.1)}</g>`;
+      out += `<g opacity="0">${show(at)}${settle(fresh, (e - s - length) / 2 * c.g.paneChar, at + 0.1)}</g>`;
       return out + glide(
-        paneText(c, tx + e * EVAL_CHAR, ty, before, e, before.length, prev.expr),
+        paneText(c, tx + e * c.g.paneChar, ty, before, e, before.length, prev.expr),
         dx,
         at + 0.1,
         0.3
@@ -1667,16 +1662,16 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const [ns, ne] = op.destination;
       const tight = ne === vs ? 4 : 0;
       out += `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.2, at + 0.15)}` + rect(
-        tx + vs * EVAL_CHAR - 3 + tight,
+        tx + vs * c.g.paneChar - 3 + tight,
         ty - 32,
-        (ve - vs) * EVAL_CHAR + 6 - tight,
+        (ve - vs) * c.g.paneChar + 6 - tight,
         42,
         P.writeFill,
         P.write,
         6,
         2
       ) + "</g>";
-      const destination = (chars) => rect(tx + ns * EVAL_CHAR - 3, ty - 32, chars * EVAL_CHAR + 6 - tight, 42, "none", P.write, 6, 2);
+      const destination = (chars) => rect(tx + ns * c.g.paneChar - 3, ty - 32, chars * c.g.paneChar + 6 - tight, 42, "none", P.write, 6, 2);
       out += walkBoxes(
         paneLevels(op.name, step.pane.slice(ns, ne)),
         at + 0.4,
@@ -1685,7 +1680,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       );
       out += paneText(c, tx, ty, step.pane, 0, step.pane.length, step.expr);
       if (inContext(step, op.destination)) {
-        out += `<g opacity="0">${fade(0, 1, 0.2)}${fade(1, 0, 0.35, at + 0.15)}` + colored(c, tx + ns * EVAL_CHAR, ty, step.pane.slice(ns, ne)) + "</g>";
+        out += `<g opacity="0">${fade(0, 1, 0.2)}${fade(1, 0, 0.35, at + 0.15)}` + colored(c, tx + ns * c.g.paneChar, ty, step.pane.slice(ns, ne)) + "</g>";
       }
       return out;
     }
@@ -1693,8 +1688,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const at = arrival(op);
       const [vs, ve] = op.span;
       const [ns, ne] = op.destination;
-      out += `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.2, at + 0.15)}${markBox(tx + ns * EVAL_CHAR, ty, ne - ns, P.fg, P.derefFill)}</g>`;
-      out += `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.3, at + 0.4)}` + rect(tx + vs * EVAL_CHAR - 3, ty - 32, (ve - vs) * EVAL_CHAR + 6, 42, "none", P.fg, 6, 2) + "</g>";
+      out += `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.2, at + 0.15)}${markBox(tx + ns * c.g.paneChar, ty, (ne - ns) * c.g.paneChar, P.fg, P.derefFill)}</g>`;
+      out += `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.3, at + 0.4)}` + rect(tx + vs * c.g.paneChar - 3, ty - 32, (ve - vs) * c.g.paneChar + 6, 42, "none", P.fg, 6, 2) + "</g>";
     }
     return out + paneText(c, tx, ty, step.pane, 0, step.pane.length, step.expr);
   }
@@ -1708,14 +1703,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const shown = printing && prev ? prev.stdout : step.stdout;
     let out = (printing && (!prev || !prev.stdout) ? `<g opacity="0">${fade(0, 1, 0.25)}` : "<g>") + text(ox, oy, label, 26, P.muted) + "</g>";
     shown.split("\n").forEach((line, i) => {
-      out += text(vx, oy + i * 36, line, PANE_SIZE, P.fg);
+      out += text(vx, oy + i * 36, line, c.g.paneSize, P.fg);
     });
     if (printing && op.kind === "print") {
       const lines = shown.split("\n");
-      const x = vx + lines[lines.length - 1].length * EVAL_CHAR;
+      const x = vx + lines[lines.length - 1].length * c.g.paneChar;
       const y = oy + (lines.length - 1) * 36;
-      const sx = g.tx + (op.span[0] + op.span[1]) / 2 * EVAL_CHAR;
-      const w = op.value.length * EVAL_CHAR;
+      const sx = g.tx + (op.span[0] + op.span[1]) / 2 * c.g.paneChar;
+      const w = op.value.length * c.g.paneChar;
       const p = (...values) => values.map(round).join(" ");
       out += valueBox(
         c,
@@ -1726,12 +1721,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         0.7,
         0.9
       );
-      out += `<g opacity="0">${show(0.9)}${text(x, y, op.value, PANE_SIZE, P.fg)}</g>`;
+      out += `<g opacity="0">${show(0.9)}${text(x, y, op.value, c.g.paneSize, P.fg)}</g>`;
     }
     return out;
   }
   function scene(c) {
-    setPaneSize(c.g.paneSize);
     const { step, prev, animate } = c;
     const lineChanged = animate && prev !== null && prev.line !== step.line;
     const copying = animate && copies(c.m.steps, c.index);

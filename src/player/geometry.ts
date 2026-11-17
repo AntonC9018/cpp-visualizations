@@ -5,11 +5,8 @@ import {
   CHAR,
   CODE_CHAR,
   CODE_SIZE,
-  EVAL_CHAR,
   PANE_MAX,
   PANE_MIN,
-  PANE_SIZE,
-  setPaneSize,
   FIELD_COLOURS,
   FRAME,
   GAP,
@@ -87,6 +84,7 @@ export interface TypeTarget extends PlacedRect {
 export interface Geometry {
   stacked: boolean;
   paneSize: number;
+  paneChar: number;
   isStruct(c: { fields?: unknown }): c is PlacedGroup;
   rise: number;
   width: number;
@@ -155,11 +153,11 @@ const paneLabelWidth = (label: PaneLabel): number => typeLabelWidth(label.type, 
  * collide, or that the pane's left edge pushes into its neighbour, keeps its size and takes the
  * first row above where it fits.
  */
-export function paneLabels(step: TraceStep): PaneLabel[] {
+export function paneLabels(step: TraceStep, paneChar: number): PaneLabel[] {
   const labels: PaneLabel[] = [];
   const centres: number[] = [];
   for (const part of step.types ?? []) {
-    const cx = ((part.span[0] + part.span[1]) / 2) * EVAL_CHAR;
+    const cx = ((part.span[0] + part.span[1]) / 2) * paneChar;
     const last = labels[labels.length - 1];
     const label: PaneLabel = {
       type: part.type,
@@ -199,11 +197,11 @@ export function paneLabels(step: TraceStep): PaneLabel[] {
 }
 
 /** The rows and the right edge the labels of every step need, relative to the pane's text. */
-function paneLabelExtent(m: PreparedModel): { rows: number; right: number } {
+function paneLabelExtent(m: PreparedModel, paneChar: number): { rows: number; right: number } {
   let rows = 0;
   let right = 0;
   for (const step of m.typed ? m.steps : []) {
-    for (const label of paneLabels(step)) {
+    for (const label of paneLabels(step, paneChar)) {
       rows = Math.max(rows, label.row + 1);
       right = Math.max(right, label.cx + paneLabelWidth(label) / 2);
     }
@@ -469,7 +467,6 @@ export function geometry(m: PreparedModel, P: Palette, stacked: boolean): Geomet
   const finalStdout = m.steps[m.steps.length - 1].stdout;
   const outputLines = finalStdout ? finalStdout.replace(/\n$/, '').split('\n') : [];
   const outputChars = Math.max(0, ...outputLines.map(line => line.length));
-  const labelExtent = paneLabelExtent(m);
 
   // Memory may wrap onto more rows, between top-level variables, to use the height
   // the code beside it leaves empty. Only where nothing would cross rows: no pointers or
@@ -506,13 +503,14 @@ export function geometry(m: PreparedModel, P: Palette, stacked: boolean): Geomet
       PANE_MIN,
       Math.min(PANE_MAX, Math.floor((Math.max(360, natural + 48) - 48) / (paneChars * CHAR)))
     );
-    const evalChar = paneSize * CHAR;
+    const paneChar = paneSize * CHAR;
+    const labelExtent = paneLabelExtent(m, paneChar);
     // Everything but memory: the column is at least this wide whatever memory does.
     const others = Math.max(
       360,
-      paneChars * evalChar + 48,
+      paneChars * paneChar + 48,
       labelExtent.right + 24 - PANE_LABEL_LEFT,
-      (P.outputLabel.length + 1) * 26 * CHAR + outputChars * evalChar + 48,
+      (P.outputLabel.length + 1) * 26 * CHAR + outputChars * paneChar + 48,
       stacked ? codeW : 0
     );
     // Memory takes the width the rest of the column already has, never less than its budget.
@@ -521,7 +519,7 @@ export function geometry(m: PreparedModel, P: Palette, stacked: boolean): Geomet
     const columnW = Math.max(others, placed.width + 48);
     const width = codeW + 56 + columnW;
     // Drawn sizes follow 1 / width; a byte's drawn width follows byte / width.
-    return { rows, rowOf, paneSize, placed, columnW, width, cell: byte / width };
+    return { rows, rowOf, paneSize, paneChar, labelExtent, placed, columnW, width, cell: byte / width };
   };
   const partitions = (n: number, count: number): number[][][] => {
     if (count === 1) return [[Array.from({ length: n }, (_, i) => i)]];
@@ -552,7 +550,7 @@ export function geometry(m: PreparedModel, P: Palette, stacked: boolean): Geomet
       if (candidate.width <= single.width + 1 && candidate.cell > chosen.cell * 1.1) chosen = candidate;
     }
   }
-  setPaneSize(chosen.paneSize);
+  const { labelExtent } = chosen;
   const placed = chosen.placed;
   const rowOf = chosen.rowOf;
   const extraRows = chosen.rows.length - 1;
@@ -697,7 +695,8 @@ export function geometry(m: PreparedModel, P: Palette, stacked: boolean): Geomet
     groups.find(s => s.parent && s.label === token);
 
   const g: Geometry = {
-    paneSize: PANE_SIZE,
+    paneSize: chosen.paneSize,
+    paneChar: chosen.paneChar,
     stacked,
     isStruct,
     rise,
