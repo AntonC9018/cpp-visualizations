@@ -24,6 +24,8 @@ export const TRACER_SOURCES = [
   'src/core/records.ts',
   'src/core/layout.ts',
   'src/core/tracing.ts',
+  'src/core/settings.ts',
+  'src/core/snippet.ts',
 ].map(name => join(ROOT, name));
 
 /** The flake that pins the toolchain: the course's when this is its submodule, else ours. */

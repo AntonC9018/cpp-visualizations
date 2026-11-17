@@ -1,9 +1,12 @@
 // Main-thread RPC client wrapping the Clang WASM Web Worker.
 import { IllFormed, Unsupported } from '../core/errors.ts';
+import type { TraceSettings } from '../core/settings.ts';
 import type { AnyTrace } from '../core/trace_format.ts';
 import { DEFAULT_CACHE_NAME, DEFAULT_WASM_URL, type WasmLoadProgress } from './cache.ts';
-import type { TraceRequestOptions } from './wasm_frontend.ts';
 import type { WasmLoadMetadata, WorkerRequest, WorkerResponse } from './worker.ts';
+
+/** A request before the client numbers it. */
+type Unnumbered<Request> = Request extends unknown ? Omit<Request, 'id'> : never;
 
 export interface ClangWasmClientOptions {
   wasmUrl?: string;
@@ -92,10 +95,7 @@ export class ClangWasmClient {
   }
 
   private call(
-    request:
-      | { type: 'init'; wasmUrl?: string; cacheName?: string }
-      | ({ type: 'trace'; source: string; wasmUrl?: string; cacheName?: string } & TraceRequestOptions)
-      | { type: 'clear-cache'; wasmUrl?: string; cacheName?: string },
+    request: Unnumbered<WorkerRequest>,
     onProgress?: (progress: WasmLoadProgress) => void
   ): Promise<WorkerResponse> {
     const worker = this.ensureWorker();
@@ -124,14 +124,14 @@ export class ClangWasmClient {
 
   async trace(
     source: string,
-    options: TraceRequestOptions & { onProgress?: (progress: WasmLoadProgress) => void } = {}
+    settings: TraceSettings,
+    options: { onProgress?: (progress: WasmLoadProgress) => void } = {}
   ): Promise<ClientTraceResult> {
     const response = await this.call(
       {
         type: 'trace',
         source,
-        mode: options.mode ?? 'trace',
-        types: options.types ?? false,
+        settings,
         wasmUrl: this.wasmUrl,
         cacheName: this.cacheName,
       },

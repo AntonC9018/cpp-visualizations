@@ -239,7 +239,7 @@ describe('TypesTagTests', () => {
     for (const [opening, template, types] of cases) {
       const result = scanDocument(document(`<!-- ${opening} -->\n<!-- </visualization> -->`));
       assert.deepEqual(result.errors, [], opening);
-      assert.deepEqual([result.tags[0].template, result.tags[0].types], [template, types], opening);
+      assert.deepEqual([result.tags[0].template, result.tags[0].flags], [template, types ? ['types'] : []], opening);
     }
   });
 

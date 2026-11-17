@@ -17,13 +17,13 @@ import { WasiExit, runWasiModule } from '../src/browser/wasi.ts';
 import { createWasmClangFrontend, traceWithWasmModule } from '../src/browser/wasm_frontend.ts';
 import { Unsupported } from '../src/core/errors.ts';
 import { dumpsSorted } from '../src/core/json_format.ts';
-import { traceLayout } from '../src/core/layout.ts';
+import { traceSnippet } from '../src/core/snippet.ts';
 import { validate } from '../src/core/trace_format.ts';
 import { traceWithFrontend } from '../src/core/tracing.ts';
-import * as nodeLayout from '../src/node/layout.ts';
 import { createClangFrontend } from '../src/node/toolchain.ts';
 import * as nodeTracing from '../src/node/tracing.ts';
 
+const EXECUTION = { template: 'expression-timeline', flags: {} } as const;
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const WASM_PATH = process.env.CLANG_TRACE_WASM || resolve(ROOT, 'player/clang-trace-frontend.wasm');
 
@@ -180,13 +180,7 @@ describe('WasiAndCacheTests', () => {
 
   test('all playground presets validate against native Clang toolchain', () => {
     for (const preset of PRESETS) {
-      if (preset.mode === 'layout') {
-        const layout = nodeLayout.trace(preset.source);
-        validate(layout);
-      } else {
-        const trace = nodeTracing.trace(preset.source, { runtime: true, types: preset.types });
-        validate(trace);
-      }
+      validate(nodeTracing.traceNatively(preset.source, preset.settings));
     }
   });
 });
@@ -201,22 +195,12 @@ describe('ClangWasmParityTests', { skip: !existsSync(WASM_PATH) }, () => {
     const nativeFrontend = createClangFrontend();
 
     for (const preset of PRESETS) {
-      if (preset.mode === 'layout') {
-        const wasmOut = traceWithWasmModule(preset.source, wasmModule, { mode: 'layout' });
-        const nativeOut = traceLayout(preset.source, nativeFrontend);
-        assert.equal(dumpsSorted(wasmOut), dumpsSorted(nativeOut), `layout parity for ${preset.id}`);
-      } else {
-        const wasmOut = traceWithWasmModule(preset.source, wasmModule, {
-          mode: 'trace',
-          types: preset.types,
-        });
-        const nativeOut = traceWithFrontend(preset.source, {
-          runtime: false,
-          types: preset.types,
-          frontend: nativeFrontend,
-        });
-        assert.equal(dumpsSorted(wasmOut), dumpsSorted(nativeOut), `trace parity for ${preset.id}`);
-      }
+      const wasmOut = traceWithWasmModule(preset.source, wasmModule, preset.settings);
+      const nativeOut = traceSnippet(preset.source, preset.settings, {
+        runtime: false,
+        frontend: nativeFrontend,
+      });
+      assert.equal(dumpsSorted(wasmOut), dumpsSorted(nativeOut), `parity for ${preset.id}`);
     }
 
     const moreTraces = [
@@ -226,7 +210,7 @@ describe('ClangWasmParityTests', { skip: !existsSync(WASM_PATH) }, () => {
     ];
     for (const source of moreTraces) {
       assert.equal(
-        dumpsSorted(traceWithWasmModule(source, wasmModule, { mode: 'trace' })),
+        dumpsSorted(traceWithWasmModule(source, wasmModule, EXECUTION)),
         dumpsSorted(traceWithFrontend(source, { runtime: false, frontend: nativeFrontend }))
       );
     }
@@ -238,7 +222,7 @@ describe('ClangWasmParityTests', { skip: !existsSync(WASM_PATH) }, () => {
       'double d = 1.5;',
     ];
     for (const bad of badSnippets) {
-      assert.throws(() => traceWithWasmModule(bad, wasmModule, { mode: 'trace' }), Unsupported);
+      assert.throws(() => traceWithWasmModule(bad, wasmModule, EXECUTION), Unsupported);
     }
     assert.throws(() => wasmFrontend.mainAst('int main() { unknown_sym; }'), Unsupported);
   });

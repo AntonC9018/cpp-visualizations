@@ -2771,6 +2771,74 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     validate(result);
     return result;
   }
+  const TEMPLATES = {
+    "expression-timeline": {
+      label: { en: "Execution trace", ru: "Трассировка выполнения" },
+      supports: {
+        en: "Supported: integers, pointers, structs, nested structs, references, and single-value std::cout.",
+        ru: "Поддерживается: целые числа, указатели, структуры, вложенные структуры, ссылки и вывод в std::cout."
+      }
+    },
+    layout: {
+      label: { en: "Struct layout", ru: "Раскладка структур" },
+      supports: {
+        en: "Supported: plain structs with uint8_t, int8_t, int, size_t, uint64_t, and pointers.",
+        ru: "Поддерживается: простые структуры с uint8_t, int8_t, int, size_t, uint64_t и указателями."
+      }
+    }
+  };
+  const DEFAULT_TEMPLATE = "expression-timeline";
+  const FLAGS = {
+    types: {
+      templates: ["expression-timeline"],
+      label: { en: "Types", ru: "Типы" },
+      description: {
+        en: "Show the type of every value, and a last statement whose types do not fit",
+        ru: "Показывать тип каждого значения и последнюю инструкцию с несовместимыми типами"
+      }
+    }
+  };
+  const FLAG_NAMES = Object.keys(FLAGS);
+  function isTemplate(name) {
+    return Object.hasOwn(TEMPLATES, name);
+  }
+  function isFlag(name) {
+    return Object.hasOwn(FLAGS, name);
+  }
+  function takesFlag(template, flag) {
+    return FLAGS[flag].templates.includes(template);
+  }
+  function enabledFlags(flags) {
+    return FLAG_NAMES.filter((flag) => flags[flag]);
+  }
+  function parseSettings(template, flags) {
+    const chosen = template ?? DEFAULT_TEMPLATE;
+    if (!isTemplate(chosen)) {
+      throw new Unsupported(`unknown template '${chosen}'`);
+    }
+    const parsed = {};
+    for (const flag of flags) {
+      if (!isFlag(flag)) {
+        throw new Unsupported(`unknown flag '${flag}'`);
+      }
+      if (!takesFlag(chosen, flag)) {
+        throw new Unsupported(`the ${chosen} template does not take '${flag}'`);
+      }
+      parsed[flag] = true;
+    }
+    return { template: chosen, flags: parsed };
+  }
+  function checkSettings(settings) {
+    return parseSettings(settings.template, enabledFlags(settings.flags));
+  }
+  function traceSnippet(source, settings, context) {
+    const { template, flags } = checkSettings(settings);
+    const traces = {
+      layout: () => traceLayout(source, context.frontend),
+      "expression-timeline": () => traceWithFrontend(source, { ...context, ...flags })
+    };
+    return traces[template]();
+  }
   const EBADF = 8;
   const ENOENT = 44;
   const ENOSYS = 52;
@@ -3033,12 +3101,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
     };
   }
-  function traceWithWasmModule(source, module, { mode = "trace", types = false } = {}) {
-    const frontend = createWasmClangFrontend(module);
-    if (mode === "layout") {
-      return traceLayout(source, frontend);
-    }
-    return traceWithFrontend(source, { runtime: false, types, frontend });
+  function traceWithWasmModule(source, module, settings) {
+    return traceSnippet(source, settings, { runtime: false, frontend: createWasmClangFrontend(module) });
   }
   const workerSelf = self;
   let activeKey = null;
@@ -3092,10 +3156,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       if (request.type === "trace") {
         const { module, meta } = await ensureLoaded(request.id, request.wasmUrl, request.cacheName);
         const start = performance.now();
-        const trace = traceWithWasmModule(request.source, module, {
-          mode: request.mode,
-          types: request.types
-        });
+        const trace = traceWithWasmModule(request.source, module, request.settings);
         const durationMs = Math.round(performance.now() - start);
         workerSelf.postMessage({
           id: request.id,

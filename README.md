@@ -17,6 +17,8 @@ from a host repository, prefix the paths with `visualizations/`.
 - `src/core/` holds the isomorphic TypeScript tracer and trace format (`errors.ts`,
   `json_format.ts`, `trace_format.ts`, `records.ts`, `layout.ts`, `tracing.ts`), decoupled from
   Node APIs so the same AST and layout logic can run in Node or a browser Web Worker.
+  `settings.ts` lists the templates and flags a trace can be asked for, and `snippet.ts`
+  traces a snippet with them: the one entry point of the command line and the browser.
 - `src/node/` holds the Node toolchain, GDB runtime verification, and CLI implementations
   (`toolchain.ts`, `execution.ts`, `records.ts`, `layout.ts`, `tracing.ts`, `generate.ts`,
   `discover.ts`, `fixtures.ts`, `demo.ts`).
@@ -24,7 +26,8 @@ from a host repository, prefix the paths with `visualizations/`.
   `model.ts`, `geometry.ts`, `scene.ts`, `player_view.ts`, `layout_view.ts`, `index.ts`), bundled
   by Vite into `player/player.js`.
 - `src/browser/` holds the browser Clang WASM runtime and interactive playground (`wasi.ts`,
-  `wasm_frontend.ts`, `cache.ts`, `worker.ts`, `client.ts`, `playground.ts`), bundled into
+  `wasm_frontend.ts`, `cache.ts`, `worker.ts`, `client.ts`, `presets.ts`, `playground_url.ts`,
+  `playground.ts`), bundled into
   `player/clang-worker.js` and `player/playground.js`.
 - `wasm/` holds the trimmed Clang 21 WASM frontend (`clang-trace-frontend.cpp`, WASI compatibility
   shims, and `build.sh` producing the git-ignored `player/clang-trace-frontend.wasm`).
@@ -196,13 +199,27 @@ sources with:
 ./wasm/build.sh
 ```
 
-The playground runs the same tracer as `generate.mjs trace`, only without GDB; the compiler
-under it is Clang built to WASM instead of the native one, and both give the same AST.
-The **Types** toggle (`?types=1`) traces as `--types` and a tag's `types` attribute do, so a
-last statement whose types do not fit is shown rather than reported as an error.
+The playground traces through the same entry point as `generate.mjs trace`, only without GDB;
+the compiler under it is Clang built to WASM instead of the native one, and both give the same
+AST. Its template buttons and flag toggles are those of `settings.ts`, kept in the URL as
+`?template=expression-timeline&types=1`.
 
 Override the compiler binary URL via `?wasm=https://.../clang-trace-frontend.wasm`,
 `data-wasm-url` on `#playground-root`, or `window.CoursePlaygroundConfig.wasmUrl`.
+
+## Adding a template or flag
+
+A trace is asked for with a template and flags, listed once in `src/core/settings.ts`. A lesson
+tag spells them as attributes (`<visualization template="layout">`, `<visualization types>`),
+which maintenance passes through as `--template layout` and `--types` without knowing them;
+`generate.mjs`, `discover.mjs`, the worker and the playground read the same list.
+
+To add a flag, list it in `FLAGS` with the templates that take it and its playground label,
+then read it in the tracer: `TraceOptions` takes every listed flag, so `traceWithFrontend`
+receives it as an option. The command-line option, the tag attribute, the playground's toggle
+and its URL parameter follow. A new template also needs its function in `snippet.ts`, which the
+compiler asks for. `tests/settings.test.ts` checks that every template and flag reaches each
+entry point and has a playground preset, so the WASM parity test traces it.
 
 ## Interactivity in Markdown
 

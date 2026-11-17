@@ -2,16 +2,23 @@
 //
 // `trace` prints one example's trace in the unified player format (`trace_format.ts`), run and
 // verified under GDB; `probe` says, without running anything, whether an example is supported;
-// `revision` versions every trace.
+// `revision` versions every trace. The template and flags come from `../core/settings.ts`.
 import { readFileSync } from 'node:fs';
 
 import { dumpsSorted } from '../core/json_format.ts';
 import type { AnyTrace, ExecutionTrace, TraceVariable } from '../core/trace_format.ts';
-import { trace as layoutTrace } from './layout.ts';
+import {
+  DEFAULT_TEMPLATE,
+  FLAG_NAMES,
+  TEMPLATE_NAMES,
+  type TraceSettings,
+  isFlag,
+  parseSettings,
+} from '../core/settings.ts';
 import { revision } from './revision.ts';
-import { Unsupported, trace } from './tracing.ts';
+import { Unsupported, traceNatively } from './tracing.ts';
 
-export const TEMPLATE = 'expression-timeline';
+export const TEMPLATE = DEFAULT_TEMPLATE;
 export { TRACER_SOURCES, revision } from './revision.ts';
 
 // The memory row's legible capacity. Code, pane and output have no limit: the player's SVG
@@ -85,14 +92,21 @@ export interface GenerateIo {
   stderr: { write(chunk: string): unknown };
 }
 
+/** The usage line's options, from the settings registry. */
+export function settingsUsage(): string {
+  const templates = TEMPLATE_NAMES.join('|');
+  const flags = FLAG_NAMES.map(flag => ` [--${flag}]`).join('');
+  return `--source PATH [--template ${templates}]${flags}`;
+}
+
 export function main(
   argv: string[] = process.argv.slice(2),
   io: GenerateIo = { stdout: process.stdout, stderr: process.stderr }
 ): number {
   let operation: string | null = null;
   let sourcePath: string | null = null;
-  let template = TEMPLATE;
-  let types = false;
+  let template: string | null = null;
+  const flags: string[] = [];
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -104,13 +118,13 @@ export function main(
       template = argv[++i] ?? '';
     } else if (arg.startsWith('--template=')) {
       template = arg.slice('--template='.length);
-    } else if (arg === '--types') {
-      // Show the types of the pane and of memory, conversions and a type mismatch.
-      types = true;
+    } else if (arg.startsWith('--') && isFlag(arg.slice(2))) {
+      // A tag's attribute, passed through by maintenance: see settings.ts.
+      flags.push(arg.slice(2));
     } else if (!arg.startsWith('-') && !operation) {
       operation = arg;
     } else {
-      io.stderr.write(`error: unrecognized argument ${arg}\n`);
+      io.stderr.write(`error: unrecognized argument ${arg}\nusage: trace|probe ${settingsUsage()}\n`);
       return 2;
     }
   }
@@ -129,18 +143,12 @@ export function main(
   }
 
   let result: AnyTrace;
+  let settings: TraceSettings;
   try {
-    if (template !== TEMPLATE && template !== 'layout') {
-      throw new Unsupported(`unknown template '${template}'`);
-    }
-    if (types && template !== TEMPLATE) {
-      throw new Unsupported('only the step-through player shows types');
-    }
+    settings = parseSettings(template, flags);
     const snippet = readFileSync(sourcePath, 'utf8');
-    if (template === 'layout') {
-      result = layoutTrace(snippet);
-    } else {
-      result = trace(snippet, { runtime: operation !== 'probe', types });
+    result = traceNatively(snippet, settings, { runtime: operation !== 'probe' });
+    if (result.kind !== 'layout') {
       applicable(result, snippet);
     }
   } catch (exc) {
@@ -157,7 +165,7 @@ export function main(
     return 1;
   }
   if (operation === 'probe') {
-    io.stdout.write(dumpsSorted({ supported: true, template }) + '\n');
+    io.stdout.write(dumpsSorted({ supported: true, template: settings.template }) + '\n');
   } else {
     io.stdout.write(dumpsSorted(result) + '\n');
   }

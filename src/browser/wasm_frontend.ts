@@ -1,18 +1,11 @@
 // CompilerFrontend implementation backed by the trimmed Clang WASM binary.
 import { type AstNode, type CompilerFrontend, Unsupported, illFormed } from '../core/errors.ts';
-import { traceLayout } from '../core/layout.ts';
 import { extractEnumConstantSizes } from '../core/records.ts';
-import type { AnyTrace } from '../core/trace_format.ts';
-import { extractMainAstFromStdout, traceWithFrontend } from '../core/tracing.ts';
+import type { Template, TraceSettings } from '../core/settings.ts';
+import { type TraceOf, traceSnippet } from '../core/snippet.ts';
+import { extractMainAstFromStdout } from '../core/tracing.ts';
 import { runWasiModule } from './wasi.ts';
 
-export type TraceMode = 'trace' | 'layout';
-
-/** How to trace a snippet; `types` applies to execution traces only, as the tag's attribute. */
-export interface TraceRequestOptions {
-  mode?: TraceMode;
-  types?: boolean;
-}
 
 export function createWasmClangFrontend(module: WebAssembly.Module): CompilerFrontend {
   return {
@@ -60,14 +53,11 @@ export function createWasmClangFrontend(module: WebAssembly.Module): CompilerFro
   };
 }
 
-export function traceWithWasmModule(
+/** Trace as `generate.mjs` would, without running the snippet: the browser has no GDB. */
+export function traceWithWasmModule<T extends Template>(
   source: string,
   module: WebAssembly.Module,
-  { mode = 'trace', types = false }: TraceRequestOptions = {}
-): AnyTrace {
-  const frontend = createWasmClangFrontend(module);
-  if (mode === 'layout') {
-    return traceLayout(source, frontend);
-  }
-  return traceWithFrontend(source, { runtime: false, types, frontend });
+  settings: TraceSettings & { template: T }
+): TraceOf[T] {
+  return traceSnippet(source, settings, { runtime: false, frontend: createWasmClangFrontend(module) });
 }

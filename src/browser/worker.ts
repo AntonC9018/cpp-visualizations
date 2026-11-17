@@ -1,4 +1,5 @@
 // Dedicated Web Worker running Clang WASM compilation, Cache API loading, and AST tracing off-thread.
+import type { TraceSettings } from '../core/settings.ts';
 import type { AnyTrace } from '../core/trace_format.ts';
 import {
   DEFAULT_CACHE_NAME,
@@ -9,19 +10,20 @@ import {
   loadWasmModule,
   resolveWasmUrl,
 } from './cache.ts';
-import { type TraceRequestOptions, traceWithWasmModule } from './wasm_frontend.ts';
+import { traceWithWasmModule } from './wasm_frontend.ts';
 
 export type WasmLoadMetadata = Omit<WasmLoadResult, 'module'>;
 
 export type WorkerRequest =
   | { id: number; type: 'init'; wasmUrl?: string; cacheName?: string }
-  | ({
+  | {
       id: number;
       type: 'trace';
       source: string;
+      settings: TraceSettings;
       wasmUrl?: string;
       cacheName?: string;
-    } & TraceRequestOptions)
+    }
   | { id: number; type: 'clear-cache'; wasmUrl?: string; cacheName?: string };
 
 export type WorkerResponse =
@@ -102,10 +104,7 @@ async function handleRequest(request: WorkerRequest): Promise<void> {
     if (request.type === 'trace') {
       const { module, meta } = await ensureLoaded(request.id, request.wasmUrl, request.cacheName);
       const start = performance.now();
-      const trace = traceWithWasmModule(request.source, module, {
-        mode: request.mode,
-        types: request.types,
-      });
+      const trace = traceWithWasmModule(request.source, module, request.settings);
       const durationMs = Math.round(performance.now() - start);
       workerSelf.postMessage({
         id: request.id,

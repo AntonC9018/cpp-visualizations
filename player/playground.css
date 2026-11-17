@@ -153,14 +153,23 @@ body {
   display: none;
 }
 
-.pg-types-btn[aria-pressed='true'] {
+.pg-flags {
+  display: inline-flex;
+  gap: 0.4rem;
+}
+
+.pg-flags:not(:has(.pg-flag-btn:not([hidden]))) {
+  display: none;
+}
+
+.pg-flag-btn[aria-pressed='true'] {
   background: var(--pg-accent);
   border-color: var(--pg-accent);
   color: var(--pg-accent-text);
   font-weight: 650;
 }
 
-.pg-types-btn[aria-pressed='true']:hover:not(:disabled) {
+.pg-flag-btn[aria-pressed='true']:hover:not(:disabled) {
   background: var(--pg-accent);
   filter: brightness(1.07);
 }

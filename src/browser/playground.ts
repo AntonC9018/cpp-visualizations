@@ -1,127 +1,35 @@
 // Interactive browser playground driving Clang WASM tracing + Layout/Player rendering.
+//
+// Its templates and flags are those of `../core/settings.ts`: a button each, in the URL, and in
+// the worker's request as they are, so a new one appears here without touching this file.
 import { Unsupported } from '../core/errors.ts';
+import {
+  FLAG_NAMES,
+  type Flag,
+  TEMPLATE_NAMES,
+  TEMPLATES,
+  FLAGS,
+  type Template,
+  type TraceSettings,
+  flagsFor,
+  takesFlag,
+} from '../core/settings.ts';
 import type { AnyTrace } from '../core/trace_format.ts';
 import type { VisualizationHost } from '../player/index.ts';
 import { Layout } from '../player/layout_view.ts';
 import { Player } from '../player/player_view.ts';
 import { DEFAULT_CACHE_NAME, DEFAULT_WASM_URL, type WasmLoadProgress } from './cache.ts';
 import { ClangWasmClient, type ClientTraceResult } from './client.ts';
-import type { TraceMode } from './wasm_frontend.ts';
+import { firstPreset, matchingPreset, readState, writeState } from './playground_url.ts';
+import { PRESETS } from './presets.ts';
 
-export interface PlaygroundPreset {
-  id: string;
-  mode: TraceMode;
-  label: { en: string; ru: string };
-  source: string;
-  /** Trace with types, as a tag with the `types` attribute does. */
-  types?: boolean;
-}
-
-export const PRESETS: readonly PlaygroundPreset[] = [
-  {
-    id: 'double-pointer',
-    mode: 'trace',
-    label: { en: 'Double pointer (**pp)', ru: 'Указатель на указатель (**pp)' },
-    source: [
-      'int a = 5;',
-      'int b = 6;',
-      'int* p = &a;',
-      'int** pp = &p;',
-      '**pp = 7;',
-      'std::cout << a << std::endl;',
-    ].join('\n'),
-  },
-  {
-    id: 'struct-shallow-copy',
-    mode: 'trace',
-    label: { en: 'Struct & shallow pointer copy', ru: 'Структура и поверхностное копирование' },
-    source: [
-      'struct S {',
-      '  int x;',
-      '  int* p;',
-      '};',
-      'int a = 1;',
-      'S s{2, &a};',
-      'S t = s;',
-      'S* ptr = &s;',
-      'ptr->x = 3;',
-      '*t.p = 7;',
-      'std::cout << s.x << std::endl;',
-    ].join('\n'),
-  },
-  {
-    id: 'references',
-    mode: 'trace',
-    label: { en: 'References as aliases', ru: 'Ссылки как псевдонимы' },
-    source: [
-      'int a = 10;',
-      'int& ref = a;',
-      'ref = 25;',
-      'int* p = &ref;',
-      '*p = 42;',
-      'std::cout << a << std::endl;',
-    ].join('\n'),
-  },
-  {
-    id: 'nested-struct',
-    mode: 'trace',
-    label: { en: 'Nested struct & designated init', ru: 'Вложенная структура и поля' },
-    source: [
-      'struct N { int f; int g; };',
-      'struct A { int* p; N n; int f; };',
-      'int v = 1;',
-      'A a{ .p = &v, .n = { .f = 2 } };',
-      'A b{a};',
-      'N* q = &b.n;',
-      'q->g = 9;',
-      'int* r = &a.n.f;',
-      '*r = 4;',
-      'std::cout << b.n.g << std::endl;',
-    ].join('\n'),
-  },
-  {
-    id: 'type-mismatch',
-    mode: 'trace',
-    types: true,
-    label: { en: 'Conversions & mismatched types', ru: 'Преобразования и несовместимые типы' },
-    source: ['uint8_t a = 200;', 'int b = a + a;', 'int* p = b;'].join('\n'),
-  },
-  {
-    id: 'layout-padding',
-    mode: 'layout',
-    label: { en: 'Struct padding & alignment', ru: 'Выравнивание и заполнение полей' },
-    source: [
-      'struct Packet {',
-      '  uint8_t tag;',
-      '  int value;',
-      '  uint8_t flags;',
-      '};',
-    ].join('\n'),
-  },
-  {
-    id: 'layout-pointers',
-    mode: 'layout',
-    label: { en: '64-bit pointer fields layout', ru: 'Раскладка полей с указателями' },
-    source: [
-      'struct Node {',
-      '  int8_t kind;',
-      '  int* next;',
-      '  size_t count;',
-      '  uint64_t id;',
-      '};',
-    ].join('\n'),
-  },
-];
+export { PRESETS, type PlaygroundPreset } from './presets.ts';
 
 const CUSTOM_PRESET_ID = '__custom__';
 
 interface UiCopy {
   title: string;
   subtitle: string;
-  modeTrace: string;
-  modeLayout: string;
-  types: string;
-  typesTitle: string;
   presetLabel: string;
   customPreset: string;
   themeDark: string;
@@ -139,8 +47,6 @@ interface UiCopy {
   readyCached: (sizeMb: string, ms: number | null) => string;
   readyDownloaded: (sizeMb: string, ms: number | null) => string;
   traceTime: (ms: number) => string;
-  hintTrace: string;
-  hintLayout: string;
   emptyPlaceholder: string;
 }
 
@@ -148,10 +54,6 @@ const UI_COPY: Record<'en' | 'ru', UiCopy> = {
   en: {
     title: 'C++ Memory & Layout Playground',
     subtitle: 'Compiled in-browser with Clang 21 WebAssembly — no backend required.',
-    modeTrace: 'Execution trace',
-    modeLayout: 'Struct layout',
-    types: 'Types',
-    typesTitle: 'Show the type of every value, and a last statement whose types do not fit',
     presetLabel: 'Example',
     customPreset: 'Custom code',
     themeDark: 'Dark',
@@ -178,19 +80,11 @@ const UI_COPY: Record<'en' | 'ru', UiCopy> = {
         ? `Clang WASM ready · downloaded & cached (${sizeMb} MB, ${ms} ms)`
         : `Clang WASM ready · downloaded & cached (${sizeMb} MB)`,
     traceTime: ms => `Traced in ${ms} ms`,
-    hintTrace:
-      'Supported: int, int*/int**, structs, nested structs, references, and single-value std::cout.',
-    hintLayout:
-      'Supported: plain structs with uint8_t, int8_t, int, size_t, uint64_t, and pointers.',
     emptyPlaceholder: 'Write a C++ snippet on the left and press Visualize.',
   },
   ru: {
     title: 'Песочница памяти и раскладки C++',
     subtitle: 'Компиляция прямо в браузере через Clang 21 WebAssembly — без сервера.',
-    modeTrace: 'Трассировка выполнения',
-    modeLayout: 'Раскладка структур',
-    types: 'Типы',
-    typesTitle: 'Показывать тип каждого значения и последнюю инструкцию с несовместимыми типами',
     presetLabel: 'Пример',
     customPreset: 'Свой код',
     themeDark: 'Тёмная',
@@ -217,10 +111,6 @@ const UI_COPY: Record<'en' | 'ru', UiCopy> = {
         ? `Clang WASM готов · загружен и кэширован (${sizeMb} МБ, ${ms} мс)`
         : `Clang WASM готов · загружен и кэширован (${sizeMb} МБ)`,
     traceTime: ms => `Готово за ${ms} мс`,
-    hintTrace:
-      'Поддерживается: int, int*/int**, структуры, вложенные структуры, ссылки и вывод в std::cout.',
-    hintLayout:
-      'Поддерживается: простые структуры с uint8_t, int8_t, int, size_t, uint64_t и указателями.',
     emptyPlaceholder: 'Введите фрагмент C++ слева и нажмите «Визуализировать».',
   },
 };
@@ -235,8 +125,8 @@ export interface PlaygroundConfig {
 export interface PlaygroundController {
   client: ClangWasmClient;
   run(): Promise<void>;
-  setMode(mode: TraceMode): void;
-  setTypes(types: boolean): void;
+  setTemplate(template: Template): void;
+  setFlag(flag: Flag, on: boolean): void;
   clearCache(): Promise<boolean>;
 }
 
@@ -299,18 +189,7 @@ export function initPlayground(root: HTMLElement): PlaygroundController {
     document.documentElement.lang = 'en';
   }
 
-  const queryPresetId = params.get('preset');
-  const queryPreset = queryPresetId ? PRESETS.find(p => p.id === queryPresetId) : undefined;
-  const hasQueryCode = params.has('code');
-  const queryCode = params.get('code');
-  const queryMode = params.get('mode');
-
-  let mode: TraceMode =
-    queryMode === 'layout' || queryMode === 'trace'
-      ? queryMode
-      : (queryPreset?.mode ?? 'trace');
-  const initialPreset = queryPreset ?? PRESETS.find(p => p.mode === mode) ?? PRESETS[0];
-  let types = params.has('types') ? params.get('types') === '1' : (initialPreset.types ?? false);
+  const state = readState(params);
 
   const cfg = resolveConfig(root);
 
@@ -321,11 +200,12 @@ export function initPlayground(root: HTMLElement): PlaygroundController {
         <p class="pg-subtitle"></p>
       </div>
       <div class="pg-header-actions">
-        <div class="pg-segmented" role="group" aria-label="Visualization mode">
-          <button type="button" class="pg-mode-btn" data-mode="trace"></button>
-          <button type="button" class="pg-mode-btn" data-mode="layout"></button>
+        <div class="pg-segmented" role="group" aria-label="Visualization template">
+          ${TEMPLATE_NAMES.map(t => `<button type="button" class="pg-mode-btn" data-template="${t}"></button>`).join('')}
         </div>
-        <button type="button" class="pg-btn pg-types-btn"></button>
+        <div class="pg-flags" role="group" aria-label="Trace flags">
+          ${FLAG_NAMES.map(f => `<button type="button" class="pg-btn pg-flag-btn" data-flag="${f}"></button>`).join('')}
+        </div>
         <label class="pg-preset-wrap">
           <span class="pg-preset-label"></span>
           <select class="pg-preset-select"></select>
@@ -366,9 +246,12 @@ export function initPlayground(root: HTMLElement): PlaygroundController {
 
   const titleEl = root.querySelector('.pg-title') as HTMLHeadingElement;
   const subtitleEl = root.querySelector('.pg-subtitle') as HTMLParagraphElement;
-  const modeTraceBtn = root.querySelector('[data-mode="trace"]') as HTMLButtonElement;
-  const modeLayoutBtn = root.querySelector('[data-mode="layout"]') as HTMLButtonElement;
-  const typesBtn = root.querySelector('.pg-types-btn') as HTMLButtonElement;
+  const templateBtns = new Map(
+    TEMPLATE_NAMES.map(t => [t, root.querySelector(`[data-template="${t}"]`) as HTMLButtonElement])
+  );
+  const flagBtns = new Map(
+    FLAG_NAMES.map(f => [f, root.querySelector(`[data-flag="${f}"]`) as HTMLButtonElement])
+  );
   const presetLabelEl = root.querySelector('.pg-preset-label') as HTMLSpanElement;
   const presetSelect = root.querySelector('.pg-preset-select') as HTMLSelectElement;
   const langBtn = root.querySelector('.pg-lang-btn') as HTMLButtonElement;
@@ -386,7 +269,7 @@ export function initPlayground(root: HTMLElement): PlaygroundController {
   const emptyBox = root.querySelector('.pg-empty-box') as HTMLDivElement;
   const visHost = root.querySelector('.pg-vis-host') as HTMLDivElement;
 
-  editor.value = hasQueryCode ? (queryCode ?? '') : initialPreset.source;
+  editor.value = state.source;
 
   let currentView: Player | Layout | null = null;
   let lastTrace: AnyTrace | null = null;
@@ -403,27 +286,15 @@ export function initPlayground(root: HTMLElement): PlaygroundController {
     onProgress: handleProgress,
   });
 
-  function matchingPreset(source: string = editor.value): PlaygroundPreset | undefined {
-    return PRESETS.find(p => p.source === source && p.mode === mode);
+  /** The settings the next trace is made with: the chosen flags its template takes. */
+  function settings(): TraceSettings {
+    return { template: state.template, flags: flagsFor(state.template, state.flags) };
   }
 
   function syncUrl(): void {
     const url = new URL(window.location.href);
-    const matched = matchingPreset();
-    if (!matched) {
-      url.searchParams.set('code', editor.value);
-      url.searchParams.delete('preset');
-    } else {
-      url.searchParams.delete('code');
-      if (matched.id !== PRESETS[0].id) {
-        url.searchParams.set('preset', matched.id);
-      } else {
-        url.searchParams.delete('preset');
-      }
-    }
-    url.searchParams.set('mode', mode);
-    if (types) url.searchParams.set('types', '1');
-    else url.searchParams.delete('types');
+    state.source = editor.value;
+    writeState(url.searchParams, state);
     url.searchParams.set('theme', getTheme());
     url.searchParams.set('lang', getLang());
     window.history.replaceState(null, '', url.pathname + url.search + url.hash);
@@ -451,7 +322,7 @@ export function initPlayground(root: HTMLElement): PlaygroundController {
   function populatePresets(): void {
     const lang = getLang();
     const copy = UI_COPY[lang];
-    const matched = matchingPreset();
+    const matched = matchingPreset({ source: editor.value, template: state.template });
     presetSelect.innerHTML = '';
     if (!matched) {
       const customOpt = document.createElement('option');
@@ -459,11 +330,16 @@ export function initPlayground(root: HTMLElement): PlaygroundController {
       customOpt.textContent = copy.customPreset;
       presetSelect.append(customOpt);
     }
-    for (const preset of PRESETS) {
-      const opt = document.createElement('option');
-      opt.value = preset.id;
-      opt.textContent = `[${preset.mode === 'layout' ? 'Layout' : 'Trace'}] ${preset.label[lang]}`;
-      presetSelect.append(opt);
+    for (const template of TEMPLATE_NAMES) {
+      const group = document.createElement('optgroup');
+      group.label = TEMPLATES[template].label[lang];
+      for (const preset of PRESETS.filter(p => p.settings.template === template)) {
+        const opt = document.createElement('option');
+        opt.value = preset.id;
+        opt.textContent = preset.label[lang];
+        group.append(opt);
+      }
+      if (group.children.length) presetSelect.append(group);
     }
     presetSelect.value = matched ? matched.id : CUSTOM_PRESET_ID;
   }
@@ -475,17 +351,19 @@ export function initPlayground(root: HTMLElement): PlaygroundController {
 
     titleEl.textContent = copy.title;
     subtitleEl.textContent = copy.subtitle;
-    modeTraceBtn.textContent = copy.modeTrace;
-    modeLayoutBtn.textContent = copy.modeLayout;
-    modeTraceBtn.classList.toggle('is-active', mode === 'trace');
-    modeLayoutBtn.classList.toggle('is-active', mode === 'layout');
-    modeTraceBtn.setAttribute('aria-pressed', String(mode === 'trace'));
-    modeLayoutBtn.setAttribute('aria-pressed', String(mode === 'layout'));
-    typesBtn.textContent = copy.types;
-    typesBtn.title = copy.typesTitle;
-    typesBtn.hidden = mode !== 'trace';
-    typesBtn.classList.toggle('is-active', types);
-    typesBtn.setAttribute('aria-pressed', String(types));
+    for (const [template, btn] of templateBtns) {
+      const active = template === state.template;
+      btn.textContent = TEMPLATES[template].label[lang];
+      btn.classList.toggle('is-active', active);
+      btn.setAttribute('aria-pressed', String(active));
+    }
+    for (const [flag, btn] of flagBtns) {
+      const on = Boolean(state.flags[flag]);
+      btn.textContent = FLAGS[flag].label[lang];
+      btn.title = FLAGS[flag].description[lang];
+      btn.hidden = !takesFlag(state.template, flag);
+      btn.setAttribute('aria-pressed', String(on));
+    }
 
     presetLabelEl.textContent = copy.presetLabel;
     populatePresets();
@@ -494,7 +372,7 @@ export function initPlayground(root: HTMLElement): PlaygroundController {
     themeBtn.textContent = theme === 'dark' ? copy.themeLight : copy.themeDark;
     editorLabelEl.textContent = copy.editorLabel;
     shortcutEl.textContent = copy.shortcut;
-    hintEl.textContent = mode === 'trace' ? copy.hintTrace : copy.hintLayout;
+    hintEl.textContent = TEMPLATES[state.template].supports[lang];
     runBtn.textContent = isRunning ? copy.running : copy.run;
     runBtn.disabled = isRunning;
     clearCacheBtn.textContent = copy.clearCache;
@@ -544,7 +422,7 @@ export function initPlayground(root: HTMLElement): PlaygroundController {
     errorBox.hidden = true;
 
     try {
-      const result = await client.trace(source, { mode, types });
+      const result = await client.trace(source, settings());
       if (seq !== activeRunSeq) return;
       lastLoadMeta = result.load;
       lastDurationMs = result.durationMs;
@@ -566,50 +444,41 @@ export function initPlayground(root: HTMLElement): PlaygroundController {
     }
   }
 
-  function setMode(nextMode: TraceMode): void {
-    if (mode === nextMode) return;
-    mode = nextMode;
-    renderStrings();
-  }
-
-  function setTypes(nextTypes: boolean): void {
-    if (types === nextTypes) return;
-    types = nextTypes;
-    renderStrings();
-  }
-
-  function switchMode(nextMode: TraceMode): void {
-    const selectedPreset = PRESETS.find(p => p.id === presetSelect.value);
-    setMode(nextMode);
-    if (selectedPreset && selectedPreset.mode !== nextMode) {
-      const firstForMode = PRESETS.find(p => p.mode === nextMode)!;
-      editor.value = firstForMode.source;
-      types = firstForMode.types ?? false;
-      populatePresets();
+  function setTemplate(template: Template): void {
+    if (state.template === template) return;
+    const selected = PRESETS.find(p => p.id === presetSelect.value);
+    state.template = template;
+    if (selected) {
+      // A preset of the other template means nothing here: open this template's first one.
+      const preset = firstPreset(template);
+      editor.value = preset.source;
+      state.flags = { ...preset.settings.flags };
     }
+    renderStrings();
     syncUrl();
     void run();
   }
 
-  modeTraceBtn.addEventListener('click', () => {
-    switchMode('trace');
-  });
-
-  modeLayoutBtn.addEventListener('click', () => {
-    switchMode('layout');
-  });
-
-  typesBtn.addEventListener('click', () => {
-    setTypes(!types);
+  function setFlag(flag: Flag, on: boolean): void {
+    if (Boolean(state.flags[flag]) === on) return;
+    state.flags = { ...state.flags, [flag]: on };
+    renderStrings();
     syncUrl();
     void run();
-  });
+  }
+
+  for (const [template, btn] of templateBtns) {
+    btn.addEventListener('click', () => setTemplate(template));
+  }
+  for (const [flag, btn] of flagBtns) {
+    btn.addEventListener('click', () => setFlag(flag, !state.flags[flag]));
+  }
 
   presetSelect.addEventListener('change', () => {
     const preset = PRESETS.find(p => p.id === presetSelect.value);
     if (!preset) return;
-    mode = preset.mode;
-    types = preset.types ?? false;
+    state.template = preset.settings.template;
+    state.flags = { ...preset.settings.flags };
     editor.value = preset.source;
     renderStrings();
     syncUrl();
@@ -681,8 +550,8 @@ export function initPlayground(root: HTMLElement): PlaygroundController {
   const controller: PlaygroundController = {
     client,
     run,
-    setMode,
-    setTypes,
+    setTemplate,
+    setFlag,
     clearCache,
   };
   window.CoursePlayground = controller;
