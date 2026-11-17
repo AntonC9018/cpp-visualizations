@@ -20,18 +20,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }
   const TEMPLATES = {
     "expression-timeline": {
-      label: { en: "Execution trace", ru: "Трассировка выполнения" },
-      supports: {
-        en: "Supported: integers, pointers, structs, nested structs, references, and single-value std::cout.",
-        ru: "Поддерживается: целые числа, указатели, структуры, вложенные структуры, ссылки и вывод в std::cout."
-      }
+      label: { en: "Execution trace", ru: "Трассировка выполнения" }
     },
     layout: {
-      label: { en: "Struct layout", ru: "Раскладка структур" },
-      supports: {
-        en: "Supported: plain structs with uint8_t, int8_t, int, size_t, uint64_t, and pointers.",
-        ru: "Поддерживается: простые структуры с uint8_t, int8_t, int, size_t, uint64_t и указателями."
-      }
+      label: { en: "Struct layout", ru: "Раскладка структур" }
     }
   };
   const DEFAULT_TEMPLATE = "expression-timeline";
@@ -2517,7 +2509,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         </div>
         <textarea id="pg-source" class="pg-editor" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea>
         <div class="pg-editor-foot">
-          <p class="pg-hint"></p>
           <button type="button" class="pg-btn pg-btn-primary pg-run-btn"></button>
         </div>
       </section>
@@ -2547,7 +2538,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const editorLabelEl = root.querySelector(".pg-editor-label");
     const shortcutEl = root.querySelector(".pg-shortcut");
     const editor = root.querySelector("#pg-source");
-    const hintEl = root.querySelector(".pg-hint");
     const runBtn = root.querySelector(".pg-run-btn");
     const errorBox = root.querySelector(".pg-error-box");
     const emptyBox = root.querySelector(".pg-empty-box");
@@ -2642,7 +2632,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       themeBtn.textContent = theme === "dark" ? copy.themeLight : copy.themeDark;
       editorLabelEl.textContent = copy.editorLabel;
       shortcutEl.textContent = copy.shortcut;
-      hintEl.textContent = TEMPLATES[state.template].supports[lang];
       runBtn.textContent = isRunning ? copy.running : copy.run;
       runBtn.disabled = isRunning;
       clearCacheBtn.textContent = copy.clearCache;

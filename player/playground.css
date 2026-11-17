@@ -287,17 +287,7 @@ body {
 
 .pg-editor-foot {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.6rem;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.pg-hint {
-  margin: 0;
-  flex: 1 1 12rem;
-  color: var(--pg-muted);
-  font-size: 0.78rem;
+  justify-content: flex-end;
 }
 
 .pg-output-pane {

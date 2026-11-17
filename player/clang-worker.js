@@ -3019,18 +3019,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }
   const TEMPLATES = {
     "expression-timeline": {
-      label: { en: "Execution trace", ru: "Трассировка выполнения" },
-      supports: {
-        en: "Supported: integers, pointers, structs, nested structs, references, and single-value std::cout.",
-        ru: "Поддерживается: целые числа, указатели, структуры, вложенные структуры, ссылки и вывод в std::cout."
-      }
+      label: { en: "Execution trace", ru: "Трассировка выполнения" }
     },
     layout: {
-      label: { en: "Struct layout", ru: "Раскладка структур" },
-      supports: {
-        en: "Supported: plain structs with uint8_t, int8_t, int, size_t, uint64_t, and pointers.",
-        ru: "Поддерживается: простые структуры с uint8_t, int8_t, int, size_t, uint64_t и указателями."
-      }
+      label: { en: "Struct layout", ru: "Раскладка структур" }
     }
   };
   const DEFAULT_TEMPLATE = "expression-timeline";

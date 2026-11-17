@@ -13,8 +13,6 @@ export interface Localized {
 export interface TemplateInfo {
   /** The playground's name for it. */
   label: Localized;
-  /** What snippets it takes, for the playground's hint. */
-  supports: Localized;
 }
 
 export interface FlagInfo {
@@ -29,17 +27,9 @@ export interface FlagInfo {
 export const TEMPLATES = {
   'expression-timeline': {
     label: { en: 'Execution trace', ru: 'Трассировка выполнения' },
-    supports: {
-      en: 'Supported: integers, pointers, structs, nested structs, references, and single-value std::cout.',
-      ru: 'Поддерживается: целые числа, указатели, структуры, вложенные структуры, ссылки и вывод в std::cout.',
-    },
   },
   layout: {
     label: { en: 'Struct layout', ru: 'Раскладка структур' },
-    supports: {
-      en: 'Supported: plain structs with uint8_t, int8_t, int, size_t, uint64_t, and pointers.',
-      ru: 'Поддерживается: простые структуры с uint8_t, int8_t, int, size_t, uint64_t и указателями.',
-    },
   },
 } as const satisfies Record<string, TemplateInfo>;
 
