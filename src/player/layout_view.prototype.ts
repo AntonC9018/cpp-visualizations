@@ -143,14 +143,13 @@ function variantB(host: HTMLElement, trace: LayoutTrace): void {
   const padRow = (s: Span): string => {
     const attrs = `type="button" data-k="${key(s)}"${groups(s)}`;
     const n = s.size;
-    if (pi === 'comment')
-      return `<button ${attrs} class="plb-field plb-phantom"><i class="pl-hatch"></i><span>/* ${n} B ${t('padding', 'выравнивания')} */</span></button>`;
-    if (pi === 'squares')
-      return `<button ${attrs} class="plb-field plb-phantom plb-p-squares"><i class="plb-none"></i>${hatch(n)}<small>${n} B</small></button>`;
-    if (pi === 'array')
-      return `<button ${attrs} class="plb-field plb-phantom plb-p-array"><i class="pl-hatch"></i><span>uint8_t <b>[${n}]</b>;</span></button>`;
-    if (pi === 'seam')
-      return `<button ${attrs} class="plb-seam"><span>${n} B</span></button>`;
+    const w = t('padding', 'выравнивание');
+    const row = (cls: string, body: string): string =>
+      `<button ${attrs} class="plb-field plb-phantom ${cls}"><i class="pl-hatch"></i>${body}</button>`;
+    if (pi === 'italic') return row('', `<span>${w} ×${n}</span>`);
+    if (pi === 'plain') return row('plb-x-plain', `<span>${w} ×${n}</span>`);
+    if (pi === 'pill') return row('plb-x-plain', `<span>${w}</span><span class="plb-pill">×${n}</span>`);
+    if (pi === 'small') return row('plb-x-plain', `<span>${w}<small class="plb-times">×${n}</small></span>`);
     return '';
   };
   const fieldRow = (s: Span): string => {
@@ -163,7 +162,7 @@ function variantB(host: HTMLElement, trace: LayoutTrace): void {
     );
   };
   let rows = '';
-  if (pi === 'trailing') {
+  if (false) {
     // The padding that follows a field trails it on the same line.
     ss.forEach((s, i) => {
       if (s.kind === 'pad') return;
@@ -247,11 +246,10 @@ function variantB(host: HTMLElement, trace: LayoutTrace): void {
 // --- Page and switcher -----------------------------------------------------------------------
 
 const PAD_IDEAS: Record<string, string> = {
-  comment: '/* 3 B padding */ comment',
-  squares: 'one hatched square per byte',
-  array: 'phantom uint8_t [3]; field',
-  seam: 'dashed seam between fields',
-  trailing: 'squares trailing the field before',
+  italic: 'padding ×3, dim italic',
+  plain: 'padding ×3, upright, muted',
+  pill: 'padding with a ×3 badge',
+  small: 'padding with a small ×3',
 };
 const KEYS = Object.keys(PAD_IDEAS);
 
@@ -403,6 +401,10 @@ style.textContent = `
 .plb-tick {grid-row: 5; font-size: .7rem; color: var(--cv-muted); transform: translateX(-30%)}
 
 /* Padding rows */
+.course-visualization .pl .plb-phantom.plb-x-plain {font-style: normal; opacity: .7}
+.plb-pill {margin-left: .45rem; padding: 0 .35rem; border: 1px solid var(--cv-border);
+  border-radius: 999px; font-size: .72rem; line-height: 1.3}
+.plb-times {margin-left: .2rem; font-size: .72rem}
 .plb-squares {display: inline-flex; gap: 2px; vertical-align: middle}
 .plb-squares i {display: block; width: .62rem; height: .62rem; border: 1px solid var(--cv-border)}
 .plb-none {background: none !important}
