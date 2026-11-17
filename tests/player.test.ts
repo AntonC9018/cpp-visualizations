@@ -295,34 +295,58 @@ test('long pane type labels neither overlap nor leave the pane', async () => {
   }
 });
 
-test('static layout links rows and bytes in both themes and initializes lazily', async () => {
+// `struct A { uint8_t f1; int f2; uint8_t f3; }`: padding after f1 and after f3.
+const PADDED_LAYOUT: LayoutTrace = {
+  format: 1,
+  kind: 'layout',
+  records: [
+    {
+      name: 'A',
+      size: 12,
+      alignment: 4,
+      fields: [
+        { name: 'f1', type: 'uint8_t', offset: 0, size: 1, kind: 'int' },
+        { name: 'f2', type: 'int', offset: 4, size: 4, kind: 'int' },
+        { name: 'f3', type: 'uint8_t', offset: 8, size: 1, kind: 'int' },
+      ],
+    },
+  ],
+};
+
+// `struct A { int a; int b; }`: no padding, so no alignment either.
+const PLAIN_LAYOUT: LayoutTrace = {
+  format: 1,
+  kind: 'layout',
+  records: [
+    {
+      name: 'A',
+      size: 8,
+      alignment: 4,
+      fields: [
+        { name: 'a', type: 'int', offset: 0, size: 4, kind: 'int' },
+        { name: 'b', type: 'int', offset: 4, size: 4, kind: 'int' },
+      ],
+    },
+  ],
+};
+
+const linkedBytes = (): Promise<number> => page.locator('.cv-byte.cv-linked').count();
+
+test('static layout links fields, padding and bytes in both themes and initializes lazily', async () => {
   await page.close();
   page = await browser!.newPage({ viewport: { width: 1100, height: 900 } });
-  const layout: LayoutTrace = {
-    format: 1,
-    kind: 'layout',
-    records: [
-      {
-        name: 'A',
-        size: 12,
-        alignment: 4,
-        fields: [
-          { name: 'f1', type: 'uint8_t', offset: 0, size: 1, kind: 'int' },
-          { name: 'f2', type: 'int', offset: 4, size: 4, kind: 'int' },
-          { name: 'f3', type: 'uint8_t', offset: 8, size: 1, kind: 'int' },
-        ],
-      },
-    ],
-  };
   await page.setContent(`<!doctype html><html lang="en" data-theme="dark"><meta charset="utf-8">
     <style>${read('player.css')}</style><details><summary>Answer</summary>
-    <div class="course-visualization"><script type="application/json">${JSON.stringify(layout)}</script>
+    <div class="course-visualization"><script type="application/json">${JSON.stringify(PADDED_LAYOUT)}</script>
     </div></details><script>${read('player.js')}</script>`);
   await page.evaluate(() => window.CourseVisualization!.scan());
   assert.equal(await page.locator('.cv-layout').count(), 0);
   await page.locator('summary').click();
   await page.waitForSelector('.cv-layout');
-  assert.match((await page.locator('.cv-layout-record').textContent()) ?? '', /Padding: ▧ · 6 B/);
+  const text = (await page.locator('.cv-layout-record').textContent()) ?? '';
+  assert.match(text, /padding ×3.*padding ×3/);
+  assert.match(text, /alignof = max\(1, 4, 1\) = 4/);
+  assert.match(text, /padding 6 B/);
   const row = page.locator('.cv-layout-row[data-layout-key="0:1"]');
   const bytes = page.locator('.cv-byte[data-layout-key="0:1"]');
   for (const theme of ['dark', 'light']) {
@@ -334,15 +358,15 @@ test('static layout links rows and bytes in both themes and initializes lazily',
       theme
     );
     await page.mouse.move(1000, 800);
-    await page.locator('.cv-layout').screenshot({ path: `/tmp/issue77-${theme}-idle.png` });
+    await page.locator('.cv-layout').screenshot({ path: `/tmp/layout-${theme}-idle.png` });
     await row.hover();
-    assert.equal(await page.locator('.cv-byte.cv-linked').count(), 4);
-    await page.locator('.cv-layout').screenshot({ path: `/tmp/issue77-${theme}-hover.png` });
+    assert.equal(await linkedBytes(), 4);
+    await page.locator('.cv-layout').screenshot({ path: `/tmp/layout-${theme}-hover.png` });
     await bytes.first().hover();
     assert.equal(await row.evaluate(e => e.classList.contains('cv-linked')), true);
     await row.focus();
     await page.keyboard.press('Enter');
-    assert.equal(await page.locator('.cv-byte.cv-linked').count(), 4);
+    assert.equal(await linkedBytes(), 4);
     await page.keyboard.press('Enter');
     await page.keyboard.press('Escape');
     await page.mouse.move(1000, 800);
@@ -353,12 +377,21 @@ test('static layout links rows and bytes in both themes and initializes lazily',
     document.documentElement.dataset.theme = 'dark';
   });
   assert.equal(await row.evaluate(e => e === document.activeElement), true);
-  await page.locator('.cv-layout-row[data-layout-key="0:all"]').first().hover();
-  assert.equal(await page.locator('.cv-byte.cv-linked').count(), 12);
+  await page.locator('[data-layout-key="0:all"]').first().hover();
+  assert.equal(await linkedBytes(), 12);
+  // One padding row links its own run; the padding total links every padding byte.
+  await page.locator('.cv-layout-padding').first().hover();
+  assert.equal(await linkedBytes(), 3);
+  await page.locator('.cv-layout-fact[data-layout-key="0:pad"]').hover();
+  assert.equal(await linkedBytes(), 6);
+  // alignof links the widest field.
+  await page.locator('.cv-layout-fact[data-layout-key="0:widest"]').hover();
+  assert.equal(await linkedBytes(), 4);
+  assert.equal(await row.evaluate(e => e.classList.contains('cv-linked')), true);
   assert.equal(await page.locator('.cv-controls').count(), 0);
 });
 
-// `struct A { int a; int* p; }`: 8-byte rows are the widest the layout view draws.
+// `struct A { int a; int* p; }`: 8 bytes are the widest field the layout view draws.
 const POINTER_LAYOUT: LayoutTrace = {
   format: 1,
   kind: 'layout',
@@ -386,6 +419,19 @@ const showLayout = async (layout: LayoutTrace, width: number): Promise<void> => 
   await page.waitForSelector('.cv-layout');
 };
 
+test('static layout shows alignment only when it inserted padding', async () => {
+  await showLayout(PLAIN_LAYOUT, 760);
+  const text = (await page.locator('.cv-layout-record').textContent()) ?? '';
+  assert.doesNotMatch(text, /alignof|padding/);
+  assert.equal(await page.locator('.cv-byte-slot').count(), 0);
+  // Offsets mark where each field starts, and the end.
+  assert.deepEqual(await page.locator('.cv-layout-tick').allTextContents(), ['0', '4', '8']);
+
+  await showLayout(PADDED_LAYOUT, 760);
+  assert.equal(await page.locator('.cv-byte-slot').count(), 3);
+  assert.deepEqual(await page.locator('.cv-layout-tick').allTextContents(), ['0', '4', '8', '12']);
+});
+
 test('static layout exposes the locked selection as pressed toggle buttons', async () => {
   await showLayout(POINTER_LAYOUT, 760);
   const pressed = (): Promise<Array<string | undefined>> =>
@@ -395,47 +441,69 @@ test('static layout exposes the locked selection as pressed toggle buttons', asy
   const row = page.locator('.cv-layout-row[data-layout-key="0:1"]');
   assert.equal(await page.locator('.cv-layout-target:not([aria-pressed="false"])').count(), 0);
   await row.click();
-  // The row and the eight bytes of p share the locked key.
-  assert.deepEqual(await pressed(), Array(9).fill('0:1'));
+  assert.deepEqual(await pressed(), ['0:1']);
+  assert.equal(await linkedBytes(), 8);
   await row.click();
   assert.deepEqual(await pressed(), []);
+  // Clicking a byte locks its field, and the field's row shows as pressed.
   await page.locator('.cv-byte[data-layout-key="0:0"]').first().click();
-  assert.deepEqual(await pressed(), Array(5).fill('0:0'));
+  assert.deepEqual(await pressed(), ['0:0']);
   await page.keyboard.press('Escape');
   assert.deepEqual(await pressed(), []);
   assert.equal(await page.locator('.cv-linked').count(), 0);
 });
 
-test('static layout fits 8-byte rows in a narrow host without clipping', async () => {
-  for (const [name, width] of [
-    ['narrow', 224],
-    ['desktop', 760],
+test('static layout fits the tape and field names in a narrow host without clipping', async () => {
+  const node: LayoutTrace = {
+    format: 1,
+    kind: 'layout',
+    records: [
+      {
+        name: 'Node',
+        size: 32,
+        alignment: 8,
+        fields: [
+          { name: 'tag', type: 'uint8_t', offset: 0, size: 1, kind: 'int' },
+          { name: 'id', type: 'uint64_t', offset: 8, size: 8, kind: 'int' },
+          { name: 'flags', type: 'uint8_t', offset: 16, size: 1, kind: 'int' },
+          { name: 'count', type: 'int', offset: 20, size: 4, kind: 'int' },
+          { name: 'next', type: 'Node *', offset: 24, size: 8, kind: 'ptr' },
+        ],
+      },
+    ],
+  };
+  for (const [name, layout, width] of [
+    ['pointer-narrow', POINTER_LAYOUT, 224],
+    ['node-narrow', node, 300],
+    ['node-desktop', node, 760],
   ] as const) {
-    await showLayout(POINTER_LAYOUT, width);
-    const clipped = await page.evaluate(() => {
+    await showLayout(layout, width);
+    const problems = await page.evaluate(() => {
       const host = document.querySelector('.course-visualization')!.getBoundingClientRect();
       const outside = [
-        ...document.querySelectorAll('.cv-layout-target, .cv-layout p, .cv-byte > span'),
+        ...document.querySelectorAll('.cv-layout-target, .cv-layout-label > b, .cv-layout-tick'),
       ].filter(element => {
         const box = element.getBoundingClientRect();
-        const parent = element.parentElement!.getBoundingClientRect();
-        return (
-          box.left < host.left ||
-          box.right > host.right ||
-          (element.tagName === 'SPAN' && (box.left < parent.left || box.right > parent.right))
-        );
+        return box.left < host.left - 0.5 || box.right > host.right + 0.5;
       });
-      const overflowing = [
-        ...document.querySelectorAll('.cv-player, .cv-layout-bytes, .cv-layout-row'),
-      ].filter(element => element.scrollWidth > element.clientWidth);
-      return [...outside, ...overflowing].map(element => element.outerHTML.slice(0, 80));
+      const overflowing = [...document.querySelectorAll('.cv-player')].filter(
+        element => element.scrollWidth > element.clientWidth
+      );
+      // Field names sharing a row must not touch.
+      const names = [...document.querySelectorAll<HTMLElement>('.cv-layout-label')];
+      const overlapping = names.filter((label, i) =>
+        names.slice(i + 1).some(other => {
+          if (other.style.gridRow !== label.style.gridRow) return false;
+          const a = label.firstElementChild!.getBoundingClientRect();
+          const b = other.firstElementChild!.getBoundingClientRect();
+          return a.right > b.left && b.right > a.left;
+        })
+      );
+      return [...outside, ...overflowing, ...overlapping].map(element =>
+        element.outerHTML.slice(0, 80)
+      );
     });
-    assert.deepEqual(clipped, [], `${name}: clipped or overflowing elements`);
-    const [code, memory] = await page
-      .locator('.cv-layout-code, .cv-layout-bytes')
-      .evaluateAll(elements => elements.map(element => element.getBoundingClientRect()));
-    if (name === 'narrow') assert.ok(memory.top >= code.bottom, 'panels stack');
-    else assert.ok(code.width <= 22 * 16 && memory.left >= code.right, 'code panel is capped');
-    await page.locator('.course-visualization').screenshot({ path: `/tmp/issue77-fix-${name}.png` });
+    assert.deepEqual(problems, [], `${name}: clipped, overflowing or overlapping elements`);
+    await page.locator('.course-visualization').screenshot({ path: `/tmp/layout-${name}.png` });
   }
 });

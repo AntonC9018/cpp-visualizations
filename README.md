@@ -158,9 +158,12 @@ execution traces. Plain tags retain the step-through player.
 Both `probe --template layout` and `trace --template layout` use Clang without executing the
 snippet. Plain aggregate fields may be `uint8_t`, `int8_t`, `int`, `size_t`, `uint64_t`
 (including `std::` spellings), or pointers. Unsupported field types are rejected explicitly.
-The slot grid shows byte offsets, padding, field sizes, struct size and alignment. Hover,
-click or keyboard focus links field rows with their bytes; the definition and size rows
-highlight the whole object. Theme changes preserve focus.
+The view lists the fields, then draws the struct's bytes as one tape with each field's name
+above its bytes. Padding appears in the list as `padding ×N` rows and on the tape as hatched
+bytes. Alignment is shown only when it inserted padding: `alignof = max(field sizes)`, slot
+edges on the tape and offsets at each slot; otherwise the offsets mark where fields start.
+Hover, click or keyboard focus links a field's row, name and bytes; `struct` and `sizeof`
+highlight the whole object, `alignof` the widest fields. Theme changes preserve focus.
 
 ## Toolchain and tests
 

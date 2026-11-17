@@ -253,76 +253,150 @@
   .course-visualization .cv-controls { padding: 0.55rem 0.6rem 0.6rem; }
 }
 
-.course-visualization .cv-layout { padding: 1rem; background: var(--cv-bg); }
-.course-visualization .cv-layout-record {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-around;
-  gap: 1.5rem;
-  padding: 0.5rem;
+/* Static struct layout: the field list, a line of facts, then a tape of the struct's bytes. */
+.course-visualization .cv-layout {
+  padding: 1rem;
+  background: var(--cv-bg);
   color: var(--cv-fg);
   font-family: ui-monospace, monospace;
 }
-/* Both panels shrink and stack when the host is narrow; the code panel stays readable
- * on desktop instead of stretching across the row. */
-.course-visualization .cv-layout-code { flex: 1 1 13rem; min-width: 0; max-width: 22rem; }
-.course-visualization .cv-layout-bytes { min-width: 0; max-width: 100%; overflow-x: auto; }
+.course-visualization .cv-layout-record + .cv-layout-record { margin-top: 1.5rem; }
 .course-visualization .cv-layout-target {
-  color: var(--cv-fg);
-  background: var(--cv-panel);
-  font: inherit;
-  border: 1px solid var(--cv-border);
-  cursor: pointer;
   margin: 0;
-}
-.course-visualization .cv-layout-row {
-  display: block;
-  width: 100%;
-  padding: 0.55rem;
+  padding: 1px 0.5rem 1px 0;
+  border: 0;
+  border-radius: 3px;
+  color: var(--cv-fg);
+  background: none;
+  font: inherit;
   text-align: left;
+  cursor: pointer;
 }
-.course-visualization .cv-layout-target small {
-  display: block;
-  font-size: 0.7rem;
-  color: var(--cv-muted);
+.course-visualization .cv-layout-active [data-layout-key]:not(.cv-linked) { opacity: 0.35; }
+.course-visualization .cv-layout-target.cv-linked { background-color: var(--cv-highlight); }
+.course-visualization .cv-layout-target[aria-pressed='true'] {
+  outline: 2px solid var(--cv-read);
+  outline-offset: 1px;
 }
-.course-visualization .cv-layout-memory {
-  --cv-byte-min: 1.7rem;
-  display: grid;
-  grid-template-columns: repeat(var(--cv-slot), minmax(var(--cv-byte-min), 2.6rem));
-  row-gap: 0.5rem;
+.course-visualization .cv-layout-target:focus-visible {
+  outline: 3px solid var(--cv-read);
+  outline-offset: 2px;
 }
-.course-visualization .cv-byte {
-  min-width: 0;
-  padding: 0.4rem 0.1rem;
-  border-color: currentColor;
+.course-visualization .cv-hatch {
+  background: repeating-linear-gradient(135deg, var(--cv-panel) 0 4px, var(--cv-border) 4px 6px);
+}
+.course-visualization .cv-hatch.cv-linked {
+  background: repeating-linear-gradient(135deg, var(--cv-highlight) 0 4px, var(--cv-border) 4px 6px);
 }
 .course-visualization .cv-field-0 { color: var(--cv-field-0); }
 .course-visualization .cv-field-1 { color: var(--cv-field-1); }
 .course-visualization .cv-field-2 { color: var(--cv-field-2); }
 .course-visualization .cv-field-3 { color: var(--cv-field-3); }
-.course-visualization .cv-byte small {
-  font-size: 0.6rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
+
+/* Field list: each field with its colour swatch; padding rows recede as phantom fields. */
+.course-visualization .cv-layout-fields {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  margin-bottom: 0.9rem;
+  font-size: 0.85rem;
+}
+.course-visualization .cv-layout-row.cv-field-0,
+.course-visualization .cv-layout-row.cv-field-1,
+.course-visualization .cv-layout-row.cv-field-2,
+.course-visualization .cv-layout-row.cv-field-3,
+.course-visualization .cv-layout-padding {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding-left: 1.6rem;
+}
+.course-visualization .cv-layout-row > span { color: var(--cv-fg); }
+.course-visualization .cv-layout-row b { color: inherit; }
+.course-visualization .cv-layout-swatch {
+  display: inline-block;
+  width: 0.7rem;
+  height: 0.7rem;
+  flex: none;
+  border-radius: 2px;
+  background: currentColor;
+  vertical-align: -1px;
+}
+.course-visualization .cv-layout-swatch.cv-hatch {
+  border: 1px dashed var(--cv-border);
+  background: transparent;
+}
+.course-visualization .cv-layout-padding { font-style: italic; opacity: 0.6; }
+.course-visualization .cv-layout-padding > span { color: var(--cv-muted); }
+.course-visualization .cv-layout .cv-layout-padding.cv-linked { opacity: 1; }
+.course-visualization .cv-layout-close { color: var(--cv-fg); }
+
+/* Facts: sizeof always; alignof and the padding total only when there is padding. */
+.course-visualization .cv-layout-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem 1rem;
+  align-items: baseline;
+  margin-bottom: 0.6rem;
+  font-size: 0.8rem;
+}
+.course-visualization .cv-layout-fact { color: var(--cv-muted); padding: 0 0.3rem; }
+.course-visualization .cv-layout-fact > b:not([class]) { color: var(--cv-fg); }
+.course-visualization .cv-layout-strong { color: var(--cv-fg); font-weight: 700; }
+.course-visualization .cv-layout-widest { text-decoration: underline; text-underline-offset: 3px; }
+
+/* Tape: up to three rows of field names, the bytes, then offsets. Names and padding blocks
+ * span their bytes' columns; bytes keep their fill when linked and draw separators in the
+ * stage colour, so single bytes stay visible inside a highlighted field. */
+.course-visualization .cv-layout-tape {
+  display: grid;
+  grid-template-columns: repeat(var(--cv-bytes), minmax(0, 1fr));
+  grid-template-rows: auto auto auto 2.2rem auto;
+  row-gap: 2px;
+}
+.course-visualization .cv-layout-label {
+  display: flex;
+  min-width: 0;
+  padding: 2px 3px 3px;
+  border-bottom: 2px solid currentColor;
+  font-size: 0.78rem;
+  line-height: 1.2;
   white-space: nowrap;
 }
-.course-visualization .cv-padding {
-  background: repeating-linear-gradient(135deg, var(--cv-panel) 0 4px, var(--cv-border) 4px 6px);
+.course-visualization .cv-layout-label-end { justify-content: flex-end; }
+.course-visualization .cv-layout-label.cv-linked { background-color: var(--cv-highlight); }
+.course-visualization .cv-layout-gap { grid-row: 4; }
+.course-visualization .cv-byte {
+  grid-row: 4;
+  border-block: 1px solid var(--cv-border);
+  box-shadow: inset 1px 0 0 color-mix(in srgb, var(--cv-bg) 70%, transparent);
+  background-color: color-mix(in srgb, currentColor 32%, var(--cv-bg));
 }
-.course-visualization .cv-layout-active .cv-layout-target:not(.cv-linked) { opacity: 0.4; }
-.course-visualization .cv-layout-target.cv-linked { background-color: var(--cv-highlight); }
-.course-visualization .cv-layout-target:focus-visible {
-  outline: 3px solid var(--cv-read);
-  outline-offset: 2px;
+.course-visualization .cv-byte.cv-linked {
+  background-color: color-mix(in srgb, currentColor 70%, var(--cv-bg));
+  box-shadow: inset 1px 0 0 color-mix(in srgb, var(--cv-bg) 55%, transparent);
+}
+.course-visualization .cv-byte.cv-byte-padding { background-color: transparent; }
+.course-visualization .cv-byte.cv-byte-start { box-shadow: inset 2px 0 0 var(--cv-bg); }
+.course-visualization .cv-byte.cv-byte-slot { box-shadow: inset 2px 0 0 var(--cv-fg); }
+.course-visualization .cv-byte.cv-byte-last { border-right: 1px solid var(--cv-border); }
+.course-visualization .cv-layout-tick {
+  grid-row: 5;
+  justify-self: start;
+  padding: 1px 0 0 3px;
+  border-left: 1px solid var(--cv-muted);
+  color: var(--cv-muted);
+  font-size: 0.7rem;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+.course-visualization .cv-layout-tick-end {
+  justify-self: end;
+  padding: 1px 3px 0 0;
+  border-left: 0;
+  border-right: 1px solid var(--cv-muted);
 }
 
-/* Phones: narrower bytes keep an 8-byte row inside the host; .cv-layout-bytes scrolls
- * horizontally only when even these do not fit. */
 @container (max-width: 22rem) {
   .course-visualization .cv-layout { padding: 0.5rem; }
-  .course-visualization .cv-layout-record { gap: 1rem; padding: 0.25rem; }
-  .course-visualization .cv-layout-memory { --cv-byte-min: 1.25rem; }
-  .course-visualization .cv-byte { font-size: 0.75rem; }
 }

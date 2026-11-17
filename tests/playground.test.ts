@@ -199,7 +199,7 @@ test(
       await page.waitForSelector('.pg-vis-host .cv-layout-record');
       const layoutText = (await page.locator('.pg-vis-host .cv-layout-record').textContent()) ?? '';
       assert.match(layoutText, /struct Packet/);
-      assert.match(layoutText, /Padding: ▧ · 6 B/);
+      assert.match(layoutText, /padding 6 B/);
 
       // Edit code with Ctrl+Enter to test live error reporting, then fix it.
       await page.fill('#pg-source', 'struct Bad { double x; };');
@@ -217,7 +217,7 @@ test(
       assert.equal(await page.evaluate(() => document.documentElement.lang), 'ru');
       assert.match(
         (await page.locator('.pg-vis-host .cv-layout-record').textContent()) ?? '',
-        /Выравнивание: ▧ · 3 B/
+        /выравнивание 3 B/
       );
 
       // Reload the page: custom code, mode, theme, and language persist AND WASM loads from Cache API with 0 fetches!

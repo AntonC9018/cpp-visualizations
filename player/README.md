@@ -172,7 +172,9 @@ contains `name`, `type` (display spelling), `kind` (`int` or `ptr`), `offset`, a
 All sizes and offsets are bytes derived from Clang. Gaps and trailing padding are inferred
 from these ranges. The validator checks record alignment, field sizes, ordering and bounds.
 
-The same global engine lazily creates a static slot grid when the answer opens. Field and
-byte buttons stay in the DOM during theme changes, retaining keyboard focus. Clicking locks
-highlighting; clicking again or Escape clears the lock. Hover and focus link rows to bytes.
-There are no transport controls in this view.
+The same global engine lazily creates the view when the answer opens: a field list with
+`padding ×N` rows, a line of facts, and a tape of bytes with field names stacked above it
+in as few rows as keep them apart. The list rows and facts are buttons and stay in the DOM
+during theme changes, retaining keyboard focus; the tape is hidden from assistive technology
+because the list says the same. Clicking locks highlighting; clicking again or Escape clears
+the lock. There are no transport controls in this view.
