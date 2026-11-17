@@ -1,0 +1,45 @@
+<!doctype html>
+<!-- PROTOTYPE, throwaway: variants of the static struct layout view. `npm run prototype:layout`. -->
+<html lang="en" data-theme="dark">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Struct layout prototype</title>
+<script>
+const query = new URLSearchParams(location.search);
+document.documentElement.dataset.theme = query.get('theme') || 'dark';
+document.documentElement.lang = query.get('lang') || 'en';
+</script>
+<link rel="stylesheet" href="/player/player.css">
+<style>
+:root {color-scheme: dark; --page: #17181c; --text: #dfe3ea; --muted: #9aa1ae; --code: #23262e;
+ --line: #353945}
+:root[data-theme=light] {color-scheme: light; --page: #ffffff; --text: #23262f; --muted: #5d6573;
+ --code: #f4f5f8; --line: #dde1e8}
+* {box-sizing: border-box}
+body {margin: 0; background: var(--page); color: var(--text);
+ font: 16px/1.6 system-ui, -apple-system, 'Segoe UI', sans-serif}
+header {position: sticky; top: 0; z-index: 2; display: flex; gap: 8px; align-items: center;
+ padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--page)}
+header strong {margin-right: auto}
+header button {font: inherit; font-size: 14px; color: inherit; background: var(--code);
+ border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer}
+main {max-width: 45rem; margin: 0 auto; padding: 1rem 1rem 6rem}
+h2 {font-size: 1.35rem; margin: 2.2rem 0 .8rem}
+pre {background: var(--code); border: 1px solid var(--line); border-radius: 6px;
+ padding: .8rem 1rem; overflow-x: auto; font-size: .875rem}
+details {border-left: 3px solid var(--line); padding: .2rem 0 .2rem 1rem; margin: 1rem 0}
+summary {cursor: pointer; font-weight: 600}
+p {color: var(--muted)}
+#proto-question {font-size: 14px; border: 1px dashed var(--line); padding: .5rem .8rem;
+ border-radius: 6px}
+</style>
+<header><strong>Struct layout prototype</strong>
+ <button id="theme" type="button">Theme</button><button id="lang" type="button">Language</button>
+</header>
+<main>
+<p id="proto-question">PROTOTYPE. Question: what should the static struct layout view look like?
+Five variants on lesson-like answers, switch with the bar at the bottom or ← / →.
+A is what got implemented.</p>
+<div id="proto-sections"></div>
+</main>
+<script type="module" src="/src/player/layout_view.prototype.ts"></script>
