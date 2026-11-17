@@ -275,7 +275,8 @@ export function pointerDepth(node: AstNode | null | undefined, records: unknown 
   if (hasRecord(records, recordType)) {
     return 0;
   }
-  const recPtrMatch = /^(\w+|(?:std::)?array<.+>) (\*+)$/.exec(canonicalType(node));
+  const pointerType = canonicalType(node).replace(/^struct /, '');
+  const recPtrMatch = /^(\w+|(?:std::)?array<.+>) (\*+)$/.exec(pointerType);
   if (recPtrMatch && (hasRecord(records, recPtrMatch[1]) || arrayType(recPtrMatch[1]))) {
     return recPtrMatch[2].length;
   }
