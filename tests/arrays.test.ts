@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { applicable } from '../src/node/generate.ts';
 import { Unsupported, trace } from '../src/node/tracing.ts';
 
 test('array initialization and assignment zero-fill with the same compact braces', () => {
@@ -20,6 +21,22 @@ test('array initialization and assignment zero-fill with the same compact braces
   assert.equal(last.stdout, '7 3');
   assert.equal(result.steps[0].pane, 'std::array<int, 3> a = {4}');
   assert.equal(result.steps.find(step => step.line === 3)?.pane, 'a = {}');
+});
+
+test('a temporary on the stack does not split the drawn storage', () => {
+  const source = `
+    std::array<int, 2> arr{ 1, 2 };
+    std::array<int, 2>* p{ &arr };
+    *p = { 3, 4 };
+    std::cout << arr[1];
+  `;
+  const result = trace(source);
+  applicable(result, source);
+  assert.deepEqual(
+    result.variables.map(v => [v.name, v.address]),
+    [['p', 64], ['arr', 72]]
+  );
+  assert.equal(result.steps.at(-1)!.stdout, '4');
 });
 
 test('a whole-array reference and an indexed reference preserve storage identity', () => {

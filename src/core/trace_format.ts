@@ -326,6 +326,20 @@ export function leaves(variables: TraceVariable[]): Record<string, ScalarVariabl
   return result;
 }
 
+/**
+ * Whether storage sits side by side, gaps no wider than alignment padding. A wider gap is
+ * storage the drawing does not show, such as a compiler temporary.
+ */
+export function contiguous(cells: Array<{ address: number; size: number }>): boolean {
+  const sorted = [...cells].sort((a, b) => a.address - b.address);
+  return sorted.every((lower, i) => {
+    const higher = sorted[i + 1];
+    if (!higher) return true;
+    const gap = higher.address - lower.address - lower.size;
+    return 0 <= gap && gap < lower.size;
+  });
+}
+
 export function addresses(variables: TraceVariable[]): Record<string, number> {
   const result: Record<string, number> = {};
   for (const [name, address] of walk(variables)) {

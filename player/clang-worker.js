@@ -634,6 +634,15 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return result;
   }
+  function contiguous(cells) {
+    const sorted = [...cells].sort((a, b) => a.address - b.address);
+    return sorted.every((lower, i) => {
+      const higher = sorted[i + 1];
+      if (!higher) return true;
+      const gap = higher.address - lower.address - lower.size;
+      return 0 <= gap && gap < lower.size;
+    });
+  }
   function addresses(variables) {
     const result = {};
     for (const [name, address] of walk(variables)) {
@@ -2468,15 +2477,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return result;
   }
-  function withoutReferenceSlots(real, variables) {
+  function withoutHiddenSlots(real, variables) {
     const packed = addresses(variables);
     const names = variables.map((v) => v.name);
     const sortedReal = [...names].sort((a, b) => real[a] - real[b]);
     const sortedPacked = [...names].sort((a, b) => packed[a] - packed[b]);
-    if (sortedReal.some((n, i) => n !== sortedPacked[i])) {
-      throw new Unsupported("runtime order of the variables disagrees with their declarations");
-    }
-    return packed;
+    return sortedReal.every((n, i) => n === sortedPacked[i]) ? packed : null;
   }
   function observeExecution(execution, predicted, variables, references) {
     const cells = leaves(variables);
@@ -2933,8 +2939,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       states = predicted;
     }
     const real = addresses$1;
+    const packed = withoutHiddenSlots(real, variables);
     if (Object.keys(references).length > 0) {
-      addresses$1 = withoutReferenceSlots(addresses$1, variables);
+      if (!packed) {
+        throw new Unsupported("runtime order of the variables disagrees with their declarations");
+      }
+      addresses$1 = packed;
+    } else if (packed && !contiguous(variables.map((v) => ({ address: real[v.name], size: v.size })))) {
+      addresses$1 = packed;
     }
     const alignment = Math.max(
       ...Object.values(records).map((r) => r.alignment),

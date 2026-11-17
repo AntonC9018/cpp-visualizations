@@ -6,7 +6,7 @@
 import { readFileSync } from 'node:fs';
 
 import { dumpsSorted } from '../core/json_format.ts';
-import type { AnyTrace, ExecutionTrace, TraceVariable } from '../core/trace_format.ts';
+import { type AnyTrace, type ExecutionTrace, type TraceVariable, contiguous } from '../core/trace_format.ts';
 import {
   DEFAULT_TEMPLATE,
   FLAG_NAMES,
@@ -27,14 +27,8 @@ export const MAX_VARIABLES = 5;
 const DECLARATION = /^\s*(?:const\s+)?(?:int|auto)\b/;
 
 export function checkContiguousStorage(variables: TraceVariable[]): void {
-  const cells = [...variables].sort((a, b) => a.address - b.address);
-  for (let i = 0; i < cells.length - 1; i++) {
-    const lower = cells[i];
-    const higher = cells[i + 1];
-    const gap = higher.address - lower.address - lower.size;
-    if (!(0 <= gap && gap < lower.size)) {
-      throw new Unsupported('noncontiguous storage needs a separate memory-layout visualization');
-    }
+  if (!contiguous(variables)) {
+    throw new Unsupported('noncontiguous storage needs a separate memory-layout visualization');
   }
 }
 

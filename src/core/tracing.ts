@@ -32,6 +32,7 @@ import {
   type TraceOperation,
   UNKNOWN,
   addresses as storageAddresses,
+  contiguous,
   field as traceField,
   leaves,
   reference as traceReference,
@@ -1639,18 +1640,19 @@ export function normalizeAddresses(
   return result;
 }
 
-function withoutReferenceSlots(
+/**
+ * The declared layout, without the slots the program holds but the drawing does not show:
+ * a reference's storage, or a temporary such as the right side of `*p = { 3, 4 }`.
+ */
+function withoutHiddenSlots(
   real: Record<string, number>,
   variables: TraceVariable[]
-): Record<string, number> {
+): Record<string, number> | null {
   const packed = storageAddresses(variables);
   const names = variables.map(v => v.name);
   const sortedReal = [...names].sort((a, b) => real[a] - real[b]);
   const sortedPacked = [...names].sort((a, b) => packed[a] - packed[b]);
-  if (sortedReal.some((n, i) => n !== sortedPacked[i])) {
-    throw new Unsupported('runtime order of the variables disagrees with their declarations');
-  }
-  return packed;
+  return sortedReal.every((n, i) => n === sortedPacked[i]) ? packed : null;
 }
 
 /**
@@ -2206,8 +2208,16 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
     states = predicted;
   }
   const real = addresses;
+  // A reference's slot is always dropped; a gap elsewhere only when the order allows it, and
+  // `applicable` rejects the trace otherwise.
+  const packed = withoutHiddenSlots(real, variables);
   if (Object.keys(references).length > 0) {
-    addresses = withoutReferenceSlots(addresses, variables);
+    if (!packed) {
+      throw new Unsupported('runtime order of the variables disagrees with their declarations');
+    }
+    addresses = packed;
+  } else if (packed && !contiguous(variables.map(v => ({ address: real[v.name], size: v.size })))) {
+    addresses = packed;
   }
   const alignment = Math.max(
     ...Object.values(records).map(r => r.alignment),
