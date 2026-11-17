@@ -3,6 +3,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import type { Flags, Template, TraceSettings } from '../core/settings.ts';
+import { type TraceOf, traceSnippet } from '../core/snippet.ts';
 import type { ExecutionTrace } from '../core/trace_format.ts';
 import {
   Cell,
@@ -56,21 +58,29 @@ export {
   type Value,
 };
 
-export function trace(
+/** Trace with the pinned native Clang, running the snippet under GDB unless `runtime` is off. */
+export function traceNatively<T extends Template>(
   source: string,
-  { runtime = true, types = false }: { runtime?: boolean; types?: boolean } = {}
-): ExecutionTrace {
+  settings: TraceSettings & { template: T },
+  { runtime = true }: { runtime?: boolean } = {}
+): TraceOf[T] {
   const directory = mkdtempSync(join(tmpdir(), 'trace-'));
   try {
-    const frontend = createClangFrontend(directory);
-    return traceWithFrontend(source, {
+    return traceSnippet(source, settings, {
       runtime,
-      types,
-      frontend,
+      frontend: createClangFrontend(directory),
       executor: hooks.execute ?? defaultExecute,
       directory,
     });
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+}
+
+/** An execution trace, with flags given as options. */
+export function trace(
+  source: string,
+  { runtime = true, ...flags }: { runtime?: boolean } & Flags = {}
+): ExecutionTrace {
+  return traceNatively(source, { template: 'expression-timeline', flags }, { runtime });
 }

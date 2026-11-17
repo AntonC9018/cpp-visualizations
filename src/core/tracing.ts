@@ -5,6 +5,7 @@
 // (such as GDB in Node) verifies every live scalar and struct field after every statement.
 
 import { type AstNode, type CompilerFrontend, IllFormed, Unsupported } from './errors.ts';
+import type { Flags } from './settings.ts';
 import {
   type Record as RecordInfo,
   type RecordFieldInfo,
@@ -1981,13 +1982,13 @@ class Renderer {
   }
 }
 
-export interface TraceOptions {
+/**
+ * How to trace, with the flags of `settings.ts`. `types`: the pane and memory carry types, a
+ * conversion is a step of its own, and a last statement whose types do not fit is shown as a
+ * final step that does not run.
+ */
+export interface TraceOptions extends Flags {
   runtime?: boolean;
-  /**
-   * The pane and memory carry types, a conversion is a step of its own, and a last statement
-   * whose types do not fit is shown as a final step that does not run.
-   */
-  types?: boolean;
   frontend: CompilerFrontend;
   executor?: RuntimeExecutor | null;
   directory?: string;

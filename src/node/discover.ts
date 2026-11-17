@@ -3,8 +3,9 @@
 // Being traceable does not make an example worth a trace: a visualization earns its place only
 // where watching memory change is what the example teaches. So nothing is tagged by default;
 // the inventory lists candidates, and `--tag PATH:LINE` tags the ones a reader picked.
-// With `--types`, examples are traced with types, so a last statement whose types do not fit
-// is a candidate too, and the tags ask for types (`<visualization types>`).
+// A flag of `../core/settings.ts` (`--types`) traces the examples with it, and the tags ask for
+// it as an attribute (`<visualization types>`): with types, a last statement whose types do not
+// fit is a candidate too.
 import {
   accessSync,
   constants,
@@ -18,6 +19,7 @@ import {
 import { delimiter, dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { type Flag, type Flags, enabledFlags, isFlag, parseSettings } from '../core/settings.ts';
 import { applicable } from './generate.ts';
 import { Unsupported, trace } from './tracing.ts';
 
@@ -28,8 +30,9 @@ export const CPP_LANGUAGES = new Set(['cpp', 'c++', 'cxx']);
 const OPEN_FENCE = /^ {0,3}(`{3,}|~{3,})([^\n]*)$/;
 const DETAILS = /<\/?details\b[^>]*>|<\/?visualization\b[^>]*>/gi;
 const MENTIONS_TAG = /<\s*\/?\s*visualization\b/i;
-// `types` asks the tracer to show types: for an example that is about them.
-const OPENING = /^<visualization(?:\s+template="([a-z][a-z0-9-]*)")?(\s+types)?\s*>$/;
+// A template override, then the flags the trace is made with, as bare attributes; the tracer
+// checks them, so a tag for another tracer may name its own.
+const OPENING = /^<visualization(?:\s+template="([a-z][a-z0-9-]*)")?((?:\s+[a-z][a-z0-9-]*)*)\s*>$/;
 const CLOSING = /^<\/visualization\s*>$/i;
 const BLOCK_BOUNDARY = /<\/?details\b|^ {0,3}(?:`{3,}|~{3,})/im;
 
@@ -47,8 +50,8 @@ export interface ScannedTag {
   end: number;
   line: number;
   template: string | null;
-  // Whether the example is about types, so the trace shows them.
-  types: boolean;
+  // The flags the trace is made with, as the tag spells them, such as `types`.
+  flags: string[];
   source: ScannedFence;
   bodyStart: number;
   bodyEnd: number;
@@ -81,7 +84,7 @@ function tagProblem(content: string, depth: number, source: ScannedFence | null)
     return 'nested or unclosed visualization comment';
   }
   if (!OPENING.test(content)) {
-    return 'expected <visualization>, optionally with template="name" and then types';
+    return 'expected <visualization>, optionally with template="name" and then bare flags';
   }
   if (depth === 0) {
     return 'visualization must be inside a details block';
@@ -224,7 +227,7 @@ export function scanDocument(text: string, path = '<markdown>'): ScannedDocument
               end: closing[1],
               line: countNewlines(text, comment) + 1,
               template: openMatch?.[1] ?? null,
-              types: Boolean(openMatch?.[2]),
+              flags: (openMatch?.[2] ?? '').split(/\s+/).filter(Boolean),
               source: lastSource,
               bodyStart: finish,
               bodyEnd: closing[0],
@@ -336,8 +339,12 @@ interface CoursePublishingConfig {
 
 export function discover(
   repo: string,
-  { tag = [], types = false }: { tag?: string[]; types?: boolean } = {}
+  { tag = [], flags = {} }: { tag?: string[]; flags?: Flags } = {}
 ): DiscoveryReport {
+  const chosen = enabledFlags(flags);
+  // Untagged examples get the default template, which must take the flags.
+  parseSettings(null, chosen);
+  const attributes = chosen.map(flag => ' ' + flag).join('');
   if (!hasClang()) {
     throw new Error('Clang is required for discovery; put clang++ on PATH or set CLANGXX');
   }
@@ -379,7 +386,7 @@ export function discover(
       }
       if (!cache.has(fence.source)) {
         try {
-          applicable(trace(fence.source, { runtime: false, types }), fence.source);
+          applicable(trace(fence.source, { runtime: false, ...flags }), fence.source);
           cache.set(fence.source, null);
         } catch (exc) {
           if (exc instanceof Unsupported) {
@@ -413,7 +420,7 @@ export function discover(
       insertions.push([
         fence.end,
         `\n<details>\n<summary>${summary}</summary>\n\n` +
-          `<!-- <visualization${types ? ' types' : ''}> -->\n\n` +
+          `<!-- <visualization${attributes}> -->\n\n` +
           `<!-- </visualization> -->\n\n</details>\n` +
           after,
       ]);
@@ -452,7 +459,7 @@ export function main(argv: string[] = process.argv.slice(2)): number {
   let courseRepo = ROOT;
   const tag: string[] = [];
   let reportPath: string | null = null;
-  let types = false;
+  const flags: Flags = {};
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -460,9 +467,9 @@ export function main(argv: string[] = process.argv.slice(2)): number {
       courseRepo = resolve(argv[++i]);
     } else if (arg === '--report') {
       reportPath = resolve(argv[++i]);
-    } else if (arg === '--types') {
-      // Trace with types, and tag for an example that is about them.
-      types = true;
+    } else if (arg.startsWith('--') && isFlag(arg.slice(2))) {
+      // Trace with the flag, and tag for an example that asks for it.
+      flags[arg.slice(2) as Flag] = true;
     } else if (arg === '--tag') {
       while (i + 1 < argv.length && !argv[i + 1].startsWith('--')) {
         tag.push(argv[++i]);
@@ -475,7 +482,7 @@ export function main(argv: string[] = process.argv.slice(2)): number {
 
   let report: DiscoveryReport;
   try {
-    report = discover(resolve(courseRepo), { tag, types });
+    report = discover(resolve(courseRepo), { tag, flags });
   } catch (exc) {
     const message = exc instanceof Error ? exc.message : String(exc);
     console.error(`error: ${message}`);

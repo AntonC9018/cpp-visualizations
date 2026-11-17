@@ -10,6 +10,55 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.name = "Unsupported";
     }
   }
+  class IllFormed extends Unsupported {
+    constructor(diagnostic, offset = null) {
+      super(diagnostic);
+      __publicField(this, "offset");
+      this.name = "IllFormed";
+      this.offset = offset;
+    }
+  }
+  const TEMPLATES = {
+    "expression-timeline": {
+      label: { en: "Execution trace", ru: "Трассировка выполнения" },
+      supports: {
+        en: "Supported: integers, pointers, structs, nested structs, references, and single-value std::cout.",
+        ru: "Поддерживается: целые числа, указатели, структуры, вложенные структуры, ссылки и вывод в std::cout."
+      }
+    },
+    layout: {
+      label: { en: "Struct layout", ru: "Раскладка структур" },
+      supports: {
+        en: "Supported: plain structs with uint8_t, int8_t, int, size_t, uint64_t, and pointers.",
+        ru: "Поддерживается: простые структуры с uint8_t, int8_t, int, size_t, uint64_t и указателями."
+      }
+    }
+  };
+  const DEFAULT_TEMPLATE = "expression-timeline";
+  const FLAGS = {
+    types: {
+      templates: ["expression-timeline"],
+      label: { en: "Types", ru: "Типы" },
+      description: {
+        en: "Show the type of every value, and a last statement whose types do not fit",
+        ru: "Показывать тип каждого значения и последнюю инструкцию с несовместимыми типами"
+      }
+    }
+  };
+  const TEMPLATE_NAMES = Object.keys(TEMPLATES);
+  const FLAG_NAMES = Object.keys(FLAGS);
+  function isTemplate(name) {
+    return Object.hasOwn(TEMPLATES, name);
+  }
+  function takesFlag(template, flag) {
+    return FLAGS[flag].templates.includes(template);
+  }
+  function flagsOf(template) {
+    return FLAG_NAMES.filter((flag) => takesFlag(template, flag));
+  }
+  function flagsFor(template, flags) {
+    return Object.fromEntries(flagsOf(template).filter((flag) => flags[flag]).map((flag) => [flag, true]));
+  }
   const CHAR = 0.602;
   const CODE_SIZE = 25;
   const PANE_SIZE = 30;
@@ -1822,8 +1871,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         }
         this.pending.delete(response.id);
         if (response.type === "error") {
-          const err = response.error.name === "Unsupported" ? new Unsupported(response.error.message) : new Error(response.error.message);
-          err.name = response.error.name;
+          const { name, message } = response.error;
+          const err = name === "IllFormed" ? new IllFormed(message) : name === "Unsupported" ? new Unsupported(message) : new Error(message);
+          err.name = name;
           call.reject(err);
           return;
         }
@@ -1866,12 +1916,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
       return response.load;
     }
-    async trace(source, options = {}) {
+    async trace(source, settings, options = {}) {
       const response = await this.call(
         {
           type: "trace",
           source,
-          mode: options.mode ?? "trace",
+          settings,
           wasmUrl: this.wasmUrl,
           cacheName: this.cacheName
         },
@@ -1908,7 +1958,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   const PRESETS = [
     {
       id: "double-pointer",
-      mode: "trace",
+      settings: { template: "expression-timeline", flags: {} },
       label: { en: "Double pointer (**pp)", ru: "Указатель на указатель (**pp)" },
       source: [
         "int a = 5;",
@@ -1921,7 +1971,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     },
     {
       id: "struct-shallow-copy",
-      mode: "trace",
+      settings: { template: "expression-timeline", flags: {} },
       label: { en: "Struct & shallow pointer copy", ru: "Структура и поверхностное копирование" },
       source: [
         "struct S {",
@@ -1939,7 +1989,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     },
     {
       id: "references",
-      mode: "trace",
+      settings: { template: "expression-timeline", flags: {} },
       label: { en: "References as aliases", ru: "Ссылки как псевдонимы" },
       source: [
         "int a = 10;",
@@ -1952,7 +2002,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     },
     {
       id: "nested-struct",
-      mode: "trace",
+      settings: { template: "expression-timeline", flags: {} },
       label: { en: "Nested struct & designated init", ru: "Вложенная структура и поля" },
       source: [
         "struct N { int f; int g; };",
@@ -1968,8 +2018,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       ].join("\n")
     },
     {
+      id: "type-mismatch",
+      settings: { template: "expression-timeline", flags: { types: true } },
+      label: { en: "Conversions & mismatched types", ru: "Преобразования и несовместимые типы" },
+      source: ["uint8_t a = 200;", "int b = a + a;", "int* p = b;"].join("\n")
+    },
+    {
       id: "layout-padding",
-      mode: "layout",
+      settings: { template: "layout", flags: {} },
       label: { en: "Struct padding & alignment", ru: "Выравнивание и заполнение полей" },
       source: [
         "struct Packet {",
@@ -1981,7 +2037,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     },
     {
       id: "layout-pointers",
-      mode: "layout",
+      settings: { template: "layout", flags: {} },
       label: { en: "64-bit pointer fields layout", ru: "Раскладка полей с указателями" },
       source: [
         "struct Node {",
@@ -1993,13 +2049,52 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       ].join("\n")
     }
   ];
+  const LEGACY_TEMPLATES = { trace: "expression-timeline", layout: "layout" };
+  function templateNamed(name) {
+    if (name === null) return null;
+    return isTemplate(name) ? name : LEGACY_TEMPLATES[name] ?? null;
+  }
+  function matchingPreset(state) {
+    return PRESETS.find((p) => p.source === state.source && p.settings.template === state.template);
+  }
+  function firstPreset(template) {
+    return PRESETS.find((p) => p.settings.template === template) ?? PRESETS[0];
+  }
+  function readState(params) {
+    const preset = PRESETS.find((p) => p.id === params.get("preset"));
+    const template = templateNamed(params.get("template")) ?? templateNamed(params.get("mode")) ?? (preset == null ? void 0 : preset.settings.template) ?? DEFAULT_TEMPLATE;
+    const fallback = preset ?? firstPreset(template);
+    const flags = {};
+    for (const flag of FLAG_NAMES) {
+      if (params.has(flag) ? params.get(flag) === "1" : fallback.settings.flags[flag]) {
+        flags[flag] = true;
+      }
+    }
+    const source = params.has("code") ? params.get("code") ?? "" : fallback.source;
+    return { source, template, flags };
+  }
+  function writeState(params, state) {
+    const preset = matchingPreset(state);
+    if (!preset) {
+      params.set("code", state.source);
+      params.delete("preset");
+    } else {
+      params.delete("code");
+      if (preset === PRESETS[0]) params.delete("preset");
+      else params.set("preset", preset.id);
+    }
+    params.delete("mode");
+    params.set("template", state.template);
+    for (const flag of FLAG_NAMES) {
+      if (state.flags[flag]) params.set(flag, "1");
+      else params.delete(flag);
+    }
+  }
   const CUSTOM_PRESET_ID = "__custom__";
   const UI_COPY = {
     en: {
       title: "C++ Memory & Layout Playground",
       subtitle: "Compiled in-browser with Clang 21 WebAssembly — no backend required.",
-      modeTrace: "Execution trace",
-      modeLayout: "Struct layout",
       presetLabel: "Example",
       customPreset: "Custom code",
       themeDark: "Dark",
@@ -2017,15 +2112,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       readyCached: (sizeMb, ms) => ms !== null ? `Clang WASM ready · cached (${sizeMb} MB, ${ms} ms)` : `Clang WASM ready · cached (${sizeMb} MB)`,
       readyDownloaded: (sizeMb, ms) => ms !== null ? `Clang WASM ready · downloaded & cached (${sizeMb} MB, ${ms} ms)` : `Clang WASM ready · downloaded & cached (${sizeMb} MB)`,
       traceTime: (ms) => `Traced in ${ms} ms`,
-      hintTrace: "Supported: int, int*/int**, structs, nested structs, references, and single-value std::cout.",
-      hintLayout: "Supported: plain structs with uint8_t, int8_t, int, size_t, uint64_t, and pointers.",
       emptyPlaceholder: "Write a C++ snippet on the left and press Visualize."
     },
     ru: {
       title: "Песочница памяти и раскладки C++",
       subtitle: "Компиляция прямо в браузере через Clang 21 WebAssembly — без сервера.",
-      modeTrace: "Трассировка выполнения",
-      modeLayout: "Раскладка структур",
       presetLabel: "Пример",
       customPreset: "Свой код",
       themeDark: "Тёмная",
@@ -2043,8 +2134,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       readyCached: (sizeMb, ms) => ms !== null ? `Clang WASM готов · из кэша (${sizeMb} МБ, ${ms} мс)` : `Clang WASM готов · из кэша (${sizeMb} МБ)`,
       readyDownloaded: (sizeMb, ms) => ms !== null ? `Clang WASM готов · загружен и кэширован (${sizeMb} МБ, ${ms} мс)` : `Clang WASM готов · загружен и кэширован (${sizeMb} МБ)`,
       traceTime: (ms) => `Готово за ${ms} мс`,
-      hintTrace: "Поддерживается: int, int*/int**, структуры, вложенные структуры, ссылки и вывод в std::cout.",
-      hintLayout: "Поддерживается: простые структуры с uint8_t, int8_t, int, size_t, uint64_t и указателями.",
       emptyPlaceholder: "Введите фрагмент C++ слева и нажмите «Визуализировать»."
     }
   };
@@ -2082,13 +2171,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     } else if (!document.documentElement.lang) {
       document.documentElement.lang = "en";
     }
-    const queryPresetId = params.get("preset");
-    const queryPreset = queryPresetId ? PRESETS.find((p) => p.id === queryPresetId) : void 0;
-    const hasQueryCode = params.has("code");
-    const queryCode = params.get("code");
-    const queryMode = params.get("mode");
-    let mode = queryMode === "layout" || queryMode === "trace" ? queryMode : (queryPreset == null ? void 0 : queryPreset.mode) ?? "trace";
-    const initialPreset = queryPreset ?? PRESETS.find((p) => p.mode === mode) ?? PRESETS[0];
+    const state = readState(params);
     const cfg = resolveConfig(root);
     root.innerHTML = `
     <header class="pg-header">
@@ -2097,9 +2180,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         <p class="pg-subtitle"></p>
       </div>
       <div class="pg-header-actions">
-        <div class="pg-segmented" role="group" aria-label="Visualization mode">
-          <button type="button" class="pg-mode-btn" data-mode="trace"></button>
-          <button type="button" class="pg-mode-btn" data-mode="layout"></button>
+        <div class="pg-segmented" role="group" aria-label="Visualization template">
+          ${TEMPLATE_NAMES.map((t) => `<button type="button" class="pg-mode-btn" data-template="${t}"></button>`).join("")}
+        </div>
+        <div class="pg-flags" role="group" aria-label="Trace flags">
+          ${FLAG_NAMES.map((f) => `<button type="button" class="pg-btn pg-flag-btn" data-flag="${f}"></button>`).join("")}
         </div>
         <label class="pg-preset-wrap">
           <span class="pg-preset-label"></span>
@@ -2140,8 +2225,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   `;
     const titleEl = root.querySelector(".pg-title");
     const subtitleEl = root.querySelector(".pg-subtitle");
-    const modeTraceBtn = root.querySelector('[data-mode="trace"]');
-    const modeLayoutBtn = root.querySelector('[data-mode="layout"]');
+    const templateBtns = new Map(
+      TEMPLATE_NAMES.map((t) => [t, root.querySelector(`[data-template="${t}"]`)])
+    );
+    const flagBtns = new Map(
+      FLAG_NAMES.map((f) => [f, root.querySelector(`[data-flag="${f}"]`)])
+    );
     const presetLabelEl = root.querySelector(".pg-preset-label");
     const presetSelect = root.querySelector(".pg-preset-select");
     const langBtn = root.querySelector(".pg-lang-btn");
@@ -2158,7 +2247,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const errorBox = root.querySelector(".pg-error-box");
     const emptyBox = root.querySelector(".pg-empty-box");
     const visHost = root.querySelector(".pg-vis-host");
-    editor.value = hasQueryCode ? queryCode ?? "" : initialPreset.source;
+    editor.value = state.source;
     let currentView = null;
     let lastTrace = null;
     let lastDurationMs = null;
@@ -2172,24 +2261,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       cacheName: cfg.cacheName,
       onProgress: handleProgress
     });
-    function matchingPreset(source = editor.value) {
-      return PRESETS.find((p) => p.source === source && p.mode === mode);
+    function settings() {
+      return { template: state.template, flags: flagsFor(state.template, state.flags) };
     }
     function syncUrl() {
       const url = new URL(window.location.href);
-      const matched = matchingPreset();
-      if (!matched) {
-        url.searchParams.set("code", editor.value);
-        url.searchParams.delete("preset");
-      } else {
-        url.searchParams.delete("code");
-        if (matched.id !== PRESETS[0].id) {
-          url.searchParams.set("preset", matched.id);
-        } else {
-          url.searchParams.delete("preset");
-        }
-      }
-      url.searchParams.set("mode", mode);
+      state.source = editor.value;
+      writeState(url.searchParams, state);
       url.searchParams.set("theme", getTheme());
       url.searchParams.set("lang", getLang());
       window.history.replaceState(null, "", url.pathname + url.search + url.hash);
@@ -2213,7 +2291,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     function populatePresets() {
       const lang = getLang();
       const copy = UI_COPY[lang];
-      const matched = matchingPreset();
+      const matched = matchingPreset({ source: editor.value, template: state.template });
       presetSelect.innerHTML = "";
       if (!matched) {
         const customOpt = document.createElement("option");
@@ -2221,11 +2299,16 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         customOpt.textContent = copy.customPreset;
         presetSelect.append(customOpt);
       }
-      for (const preset of PRESETS) {
-        const opt = document.createElement("option");
-        opt.value = preset.id;
-        opt.textContent = `[${preset.mode === "layout" ? "Layout" : "Trace"}] ${preset.label[lang]}`;
-        presetSelect.append(opt);
+      for (const template of TEMPLATE_NAMES) {
+        const group = document.createElement("optgroup");
+        group.label = TEMPLATES[template].label[lang];
+        for (const preset of PRESETS.filter((p) => p.settings.template === template)) {
+          const opt = document.createElement("option");
+          opt.value = preset.id;
+          opt.textContent = preset.label[lang];
+          group.append(opt);
+        }
+        if (group.children.length) presetSelect.append(group);
       }
       presetSelect.value = matched ? matched.id : CUSTOM_PRESET_ID;
     }
@@ -2235,19 +2318,26 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const copy = UI_COPY[lang];
       titleEl.textContent = copy.title;
       subtitleEl.textContent = copy.subtitle;
-      modeTraceBtn.textContent = copy.modeTrace;
-      modeLayoutBtn.textContent = copy.modeLayout;
-      modeTraceBtn.classList.toggle("is-active", mode === "trace");
-      modeLayoutBtn.classList.toggle("is-active", mode === "layout");
-      modeTraceBtn.setAttribute("aria-pressed", String(mode === "trace"));
-      modeLayoutBtn.setAttribute("aria-pressed", String(mode === "layout"));
+      for (const [template, btn] of templateBtns) {
+        const active = template === state.template;
+        btn.textContent = TEMPLATES[template].label[lang];
+        btn.classList.toggle("is-active", active);
+        btn.setAttribute("aria-pressed", String(active));
+      }
+      for (const [flag, btn] of flagBtns) {
+        const on = Boolean(state.flags[flag]);
+        btn.textContent = FLAGS[flag].label[lang];
+        btn.title = FLAGS[flag].description[lang];
+        btn.hidden = !takesFlag(state.template, flag);
+        btn.setAttribute("aria-pressed", String(on));
+      }
       presetLabelEl.textContent = copy.presetLabel;
       populatePresets();
       langBtn.textContent = copy.langLabel;
       themeBtn.textContent = theme === "dark" ? copy.themeLight : copy.themeDark;
       editorLabelEl.textContent = copy.editorLabel;
       shortcutEl.textContent = copy.shortcut;
-      hintEl.textContent = mode === "trace" ? copy.hintTrace : copy.hintLayout;
+      hintEl.textContent = TEMPLATES[state.template].supports[lang];
       runBtn.textContent = isRunning ? copy.running : copy.run;
       runBtn.disabled = isRunning;
       clearCacheBtn.textContent = copy.clearCache;
@@ -2288,7 +2378,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       renderStrings();
       errorBox.hidden = true;
       try {
-        const result = await client.trace(source, { mode });
+        const result = await client.trace(source, settings());
         if (seq !== activeRunSeq) return;
         lastLoadMeta = result.load;
         lastDurationMs = result.durationMs;
@@ -2309,32 +2399,37 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         }
       }
     }
-    function setMode(nextMode) {
-      if (mode === nextMode) return;
-      mode = nextMode;
-      renderStrings();
-    }
-    function switchMode(nextMode) {
-      const selectedPreset = PRESETS.find((p) => p.id === presetSelect.value);
-      setMode(nextMode);
-      if (selectedPreset && selectedPreset.mode !== nextMode) {
-        const firstForMode = PRESETS.find((p) => p.mode === nextMode);
-        editor.value = firstForMode.source;
-        populatePresets();
+    function setTemplate(template) {
+      if (state.template === template) return;
+      const selected = PRESETS.find((p) => p.id === presetSelect.value);
+      state.template = template;
+      if (selected) {
+        const preset = firstPreset(template);
+        editor.value = preset.source;
+        state.flags = { ...preset.settings.flags };
       }
+      renderStrings();
       syncUrl();
       void run();
     }
-    modeTraceBtn.addEventListener("click", () => {
-      switchMode("trace");
-    });
-    modeLayoutBtn.addEventListener("click", () => {
-      switchMode("layout");
-    });
+    function setFlag(flag, on) {
+      if (Boolean(state.flags[flag]) === on) return;
+      state.flags = { ...state.flags, [flag]: on };
+      renderStrings();
+      syncUrl();
+      void run();
+    }
+    for (const [template, btn] of templateBtns) {
+      btn.addEventListener("click", () => setTemplate(template));
+    }
+    for (const [flag, btn] of flagBtns) {
+      btn.addEventListener("click", () => setFlag(flag, !state.flags[flag]));
+    }
     presetSelect.addEventListener("change", () => {
       const preset = PRESETS.find((p) => p.id === presetSelect.value);
       if (!preset) return;
-      mode = preset.mode;
+      state.template = preset.settings.template;
+      state.flags = { ...preset.settings.flags };
       editor.value = preset.source;
       renderStrings();
       syncUrl();
@@ -2398,7 +2493,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const controller = {
       client,
       run,
-      setMode,
+      setTemplate,
+      setFlag,
       clearCache
     };
     window.CoursePlayground = controller;
