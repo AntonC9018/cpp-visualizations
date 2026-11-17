@@ -58,6 +58,15 @@ test('an array field of pointers has GDB-verified element offsets and targets', 
   assert.equal(result.steps.at(-1)?.values.n, 11);
 });
 
+test('array fields use canonical types for aliases and computed extents', () => {
+  const result = trace(`
+    struct Bytes { array<uint8_t, 1 + 1> elements; };
+    Bytes bytes{};
+    bytes.elements[1] = 7;
+  `);
+  assert.equal(result.steps.at(-1)?.values['bytes.elements.[1]'], 7);
+});
+
 test('a matrix has indexed rows that can be copied or written through a pointer', () => {
   const result = trace(`
     std::array<std::array<int, 2>, 2> matrix{std::array{1, 2}, {3}};

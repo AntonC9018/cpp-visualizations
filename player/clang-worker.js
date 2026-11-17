@@ -479,7 +479,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           size: 0
         };
         if (layoutOnly || nested) {
-          item.type = spelling;
+          item.type = nested ?? spelling;
         }
         fields.push(item);
         recordCanonicals.push(

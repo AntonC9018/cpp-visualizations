@@ -227,7 +227,7 @@ export function layoutsFromFrontend(
         size: 0,
       };
       if (layoutOnly || nested) {
-        item.type = spelling;
+        item.type = nested ?? spelling;
       }
       fields.push(item);
       recordCanonicals.push(
