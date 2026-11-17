@@ -46,7 +46,7 @@ export function displayedType(node: AstNode | null | undefined): string {
   const spelling = typeSpelling(node);
   const canonical = canonicalType(node);
   return displayed(
-    canonical.startsWith('std::array<') || /\b(?:value_type|size_type|const_pointer|pointer)\b/.test(spelling)
+    /^(?:const )?std::array</.test(canonical) || /\b(?:value_type|size_type|const_pointer|pointer)\b/.test(spelling)
       ? canonical
       : spelling
   );

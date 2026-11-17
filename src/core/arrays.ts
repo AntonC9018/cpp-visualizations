@@ -25,9 +25,16 @@ export function operatorName(node: AstNode): string | undefined {
 
 const libraryAlias = /\b(?:value_type|const_pointer|pointer)\b/;
 
+function needsConcreteType(spelling: string): boolean {
+  return libraryAlias.test(spelling) || (
+    /^(?:const )?(?:std::)?array</.test(spelling) &&
+    !arrayType(spelling.replace(/ [*&]+$/, ''))
+  );
+}
+
 /**
- * Clang's JSON stops desugaring at a pointer or reference to a library typedef. Recover
- * those missing element types from the access expression and its local declaration.
+ * Clang's JSON stops desugaring at a pointer or reference to a deduced specialization
+ * or library typedef. Recover its concrete type from the expression or local declaration.
  */
 export function resolveArrayAliases(ast: AstNode): void {
   const locals = new Map<string, string>();
@@ -37,7 +44,7 @@ export function resolveArrayAliases(ast: AstNode): void {
     const type = node.type;
     if (!type) return;
     const spelling = type.desugaredQualType ?? type.qualType ?? '';
-    if (libraryAlias.test(spelling)) {
+    if (needsConcreteType(spelling)) {
       const child = node.inner?.[0];
       let resolved: string | undefined;
       if (
@@ -59,14 +66,16 @@ export function resolveArrayAliases(ast: AstNode): void {
         resolved = id ? locals.get(id)?.replace(/ &$| &&$/, '') : undefined;
       } else {
         const childType = child?.type?.desugaredQualType ?? child?.type?.qualType;
-        if (childType && !libraryAlias.test(childType)) {
+        if (childType && !needsConcreteType(childType)) {
           if (node.kind === 'UnaryOperator' && node.opcode === '&') {
             const pointee = childType.replace(/^([\w: ]+) const$/, 'const $1');
             resolved = pointee.endsWith('*') ? pointee + '*' : pointee + ' *';
           } else if (node.kind === 'VarDecl') {
             resolved = childType + (spelling.endsWith('&') ? ' &' : '');
           } else if (
-            node.kind === 'ImplicitCastExpr' || node.kind === 'ParenExpr' ||
+            (node.kind === 'ImplicitCastExpr' &&
+              (node.castKind === 'NoOp' || node.castKind === 'LValueToRValue')) ||
+            node.kind === 'ParenExpr' ||
             (node.kind === 'InitListExpr' && node.inner?.length === 1)
           ) {
             resolved = childType;

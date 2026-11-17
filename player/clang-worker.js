@@ -241,6 +241,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return (_e = (_d = (_c = (_b = (_a = node.inner) == null ? void 0 : _a[0]) == null ? void 0 : _b.inner) == null ? void 0 : _c[0]) == null ? void 0 : _d.referencedDecl) == null ? void 0 : _e.name;
   }
   const libraryAlias = /\b(?:value_type|const_pointer|pointer)\b/;
+  function needsConcreteType(spelling) {
+    return libraryAlias.test(spelling) || /^(?:const )?(?:std::)?array</.test(spelling) && !arrayType(spelling.replace(/ [*&]+$/, ""));
+  }
   function resolveArrayAliases(ast) {
     const locals = /* @__PURE__ */ new Map();
     function visit(node) {
@@ -250,7 +253,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const type = node.type;
       if (!type) return;
       const spelling = type.desugaredQualType ?? type.qualType ?? "";
-      if (libraryAlias.test(spelling)) {
+      if (needsConcreteType(spelling)) {
         const child = (_a = node.inner) == null ? void 0 : _a[0];
         let resolved;
         if (node.kind === "CXXMemberCallExpr" && (child == null ? void 0 : child.kind) === "MemberExpr" && child.name === "data") {
@@ -267,13 +270,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           resolved = id ? (_e = locals.get(id)) == null ? void 0 : _e.replace(/ &$| &&$/, "") : void 0;
         } else {
           const childType = ((_f = child == null ? void 0 : child.type) == null ? void 0 : _f.desugaredQualType) ?? ((_g = child == null ? void 0 : child.type) == null ? void 0 : _g.qualType);
-          if (childType && !libraryAlias.test(childType)) {
+          if (childType && !needsConcreteType(childType)) {
             if (node.kind === "UnaryOperator" && node.opcode === "&") {
               const pointee = childType.replace(/^([\w: ]+) const$/, "const $1");
               resolved = pointee.endsWith("*") ? pointee + "*" : pointee + " *";
             } else if (node.kind === "VarDecl") {
               resolved = childType + (spelling.endsWith("&") ? " &" : "");
-            } else if (node.kind === "ImplicitCastExpr" || node.kind === "ParenExpr" || node.kind === "InitListExpr" && ((_h = node.inner) == null ? void 0 : _h.length) === 1) {
+            } else if (node.kind === "ImplicitCastExpr" && (node.castKind === "NoOp" || node.castKind === "LValueToRValue") || node.kind === "ParenExpr" || node.kind === "InitListExpr" && ((_h = node.inner) == null ? void 0 : _h.length) === 1) {
               resolved = childType;
             }
           }
@@ -320,7 +323,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const spelling = typeSpelling(node);
     const canonical = canonicalType(node);
     return displayed(
-      canonical.startsWith("std::array<") || /\b(?:value_type|size_type|const_pointer|pointer)\b/.test(spelling) ? canonical : spelling
+      /^(?:const )?std::array</.test(canonical) || /\b(?:value_type|size_type|const_pointer|pointer)\b/.test(spelling) ? canonical : spelling
     );
   }
   function typeName(node) {

@@ -42,6 +42,19 @@ test('a whole-array reference and an indexed reference preserve storage identity
   assert.ok(result.steps.some(s => s.op?.kind === 'deref' && s.pane === 'arr[2] = 12'));
 });
 
+test('deduced arrays can be referenced and addressed', () => {
+  const result = trace(`
+    std::array a{1, 2};
+    auto& ref = a;
+    auto p{&ref};
+    (*p)[1] = 8;
+  `);
+  const last = result.steps.at(-1)!;
+  assert.equal(last.refs?.ref, 'a');
+  assert.equal(last.targets.p, 'a');
+  assert.equal(last.values['a.[1]'], 8);
+});
+
 test('an array field of pointers has GDB-verified element offsets and targets', () => {
   const result = trace(`
     struct Box { int guard; std::array<int*, 2> ptrs; };
