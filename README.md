@@ -63,6 +63,14 @@ value, or pointers to one. A nested struct is copied, assigned and initialized a
 struct frames, a nested struct as a frame inside its owner's, per-field colours and separate
 arc endpoints for objects and fields.
 
+Execution traces support `std::array<T, N>` with 1–32 elements per dimension and up to
+64 scalar cells per array. Elements may be supported integers, pointers, structs, or arrays.
+Arrays can be struct fields. The tracer handles aggregate initialization, copies, assignments,
+indexed reads and writes, `.size()`, and `.data()` for obtaining a pointer to the first element.
+References can bind to an array or an element. The player draws an indexed frame, walks through
+nested accesses, and shows an element's address while a pointer targets it or the expression
+takes its address. The array variable's starting address is always shown.
+
 A reference (`int& c = a;`, `auto&`, `const int&`, to a variable, a field, a struct, a pointer or
 what a pointer points to) is another name for storage, as the lessons put it. Binding it is one
 step; wherever its name is used afterwards, the name first becomes what it stands for
@@ -105,7 +113,7 @@ respaces it, and so is a typed one (`A{ 1, 2 }`); a designated list evaluates to
 A struct value with a type of its own keeps it in the pane: a typed literal, and a struct that
 is read (`b = a` becomes `b = A{1, 2}`).
 
-Pointer arithmetic/comparison, arrays, rvalue references, references bound to temporaries,
+Pointer arithmetic/comparison, C arrays, rvalue references, references bound to temporaries,
 casts other than `static_cast` between integers, a conversion inside a struct's braces,
 heap allocation,
 other field types, methods, inheritance, bitfields, default member initializers, empty structs,

@@ -5,6 +5,8 @@
 // evaluation. The compiler-backed tracer (`tracing.ts`) emits the format directly.
 // `player/README.md` documents every field.
 
+import { arrayType, codeName, elementLabel } from './arrays.ts';
+
 export const FORMAT = 1;
 export type ScalarKind = 'int' | 'ptr';
 export const SCALAR_KINDS: readonly ScalarKind[] = ['int', 'ptr'];
@@ -401,7 +403,9 @@ function checkSpan(value: unknown, text: string, where: string, empty = false): 
 function checkFields(owner: Record<string, any>, here: string): void {
   check(typeof owner.type === 'string' && owner.type.length > 0, here, 'type must be a name');
   const fields = owner.fields;
+  const array = arrayType(owner.type);
   check(Array.isArray(fields) && fields.length > 0, `${here}.fields`, 'expected a nonempty list');
+  if (array) check(fields.length === array.count, here, 'array extent must match its fields');
   const seen = new Set<string>();
   let end = 0;
   for (let position = 0; position < fields.length; position++) {
@@ -410,7 +414,16 @@ function checkFields(owner: Record<string, any>, here: string): void {
     const nested = isPlainObject(item) && item.kind === STRUCT;
     const req = ['name', 'offset', 'size', 'kind', 'color', ...(nested ? ['type', 'fields'] : [])];
     checkKeys(item, spot, req);
-    check(IDENTIFIER.test(String(item.name)), spot, 'name is not an identifier');
+    if (array) {
+      check(item.name === elementLabel(position), spot, 'invalid array element name');
+      check(
+        item.size * array.count === owner.size && item.offset === position * item.size,
+        spot,
+        'array elements must be contiguous and equally sized'
+      );
+    } else {
+      check(IDENTIFIER.test(String(item.name)), spot, 'name is not an identifier');
+    }
     check(!seen.has(item.name), spot, `duplicate field ${pyRepr(item.name)}`);
     seen.add(item.name);
     check(
@@ -687,7 +700,7 @@ function checkReferenceOp(
     const [start, end] = span;
     check(previous.pane.slice(start, end) === name, `${where}.span`, 'does not cover the name');
     const replaced = replacement(previous.pane, step.pane, span, where);
-    check(replaced === target, where, `the replacement ${pyRepr(replaced)} is not ${pyRepr(target)}`);
+    check(replaced === codeName(target), where, `the replacement ${pyRepr(replaced)} is not ${pyRepr(target)}`);
     return;
   }
   check(step.pane === previous.pane, where, 'a bind does not change the pane');
@@ -697,7 +710,7 @@ function checkReferenceOp(
     `${name} must become bound to ${target}`
   );
   for (const [key, text] of [
-    ['span', target],
+    ['span', codeName(target)],
     ['destination', name],
   ] as const) {
     const [start, end] = checkSpan(op[key], step.pane, `${where}.${key}`);
@@ -722,7 +735,7 @@ function unchangedPane(
   );
   if (kind === 'write') {
     const [dStart, dEnd] = checkSpan(op.destination, step.pane, `${where}.destination`);
-    check(step.pane.slice(dStart, dEnd) === op.name, `${where}.destination`, 'does not cover the name');
+    check(step.pane.slice(dStart, dEnd) === codeName(op.name), `${where}.destination`, 'does not cover the name');
   } else {
     const printed = step.stdout.slice(previous.stdout.length);
     check(
@@ -799,7 +812,7 @@ function checkOperation(
   if (['read', 'addr', 'deref', 'eval', 'convert'].includes(kind)) {
     const span = checkSpan(op.span, previous.pane, `${where}.span`);
     const replaced = replacement(previous.pane, step.pane, span, where);
-    const expected = kind === 'deref' ? op.target : op.value;
+    const expected = kind === 'deref' ? codeName(op.target) : op.value;
     check(replaced === expected, where, `the replacement ${pyRepr(replaced)} is not ${pyRepr(expected)}`);
     if (kind === 'convert') {
       check(convertedFrom(previous, span) === op.from, `${where}.from`, 'is not the type of the converted value');

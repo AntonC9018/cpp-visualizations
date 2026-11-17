@@ -8,13 +8,15 @@ import type {
   TraceStep,
   TraceVariable,
 } from '../core/trace_format.ts';
+import { chainDelay } from './storage_path.ts';
 import { T, TYPE_COLOURS } from './constants.ts';
 
 export const stores = (op: TraceOperation): boolean =>
   op.kind === 'write' || op.kind === 'bind';
 
 export const departure = (op: TraceOperation): number =>
-  stores(op) ? T.writeHold : op.kind === 'print' ? 0.2 : T.prepare;
+  (stores(op) ? T.writeHold : op.kind === 'print' ? 0.2 : T.prepare) +
+  (op.kind === 'read' || op.kind === 'write' ? chainDelay(op.name) : 0);
 
 export function arrival(op: TraceOperation): number {
   if (op.kind === 'deref') return T.prepare + T.follow;

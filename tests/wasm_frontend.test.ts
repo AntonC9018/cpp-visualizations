@@ -204,6 +204,9 @@ describe('ClangWasmParityTests', { skip: !existsSync(WASM_PATH) }, () => {
     }
 
     const moreTraces = [
+      'std::array<std::array<int, 2>, 2> a{std::array{1, 2}, {3}}; auto& r=a[1]; r[0]=7;',
+      'struct A { int i; }; std::array<A, 2> a{}; a[0]=A{4}; auto p=a.data(); p->i=7;',
+      'struct S { std::array<int*, 2> f; }; int n{1}; S s{{&n}}; auto p=s.f.data(); **p=7;',
       'int a{}; std::cout << a;',
       'struct A { int f1; int f2; }; A a{ 1, 2 }; A b = A{ .f2 = 5 }; b = a;',
       'int x{ 0 }; int* px{ &x }; int* py{ px }; *px = 1; std::cout << *py;',

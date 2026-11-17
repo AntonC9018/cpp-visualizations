@@ -1,4 +1,5 @@
 // SVG scene rendering for code, tether, pointer arcs, memory cells, evaluation pane, and stdout.
+import { arrayType } from '../core/arrays.ts';
 import type { Span, TraceStep } from '../core/trace_format.ts';
 import {
   CELL,
@@ -12,6 +13,7 @@ import {
   KEYWORDS,
   LABEL,
   PANE_SIZE,
+  setPaneSize,
   type Palette,
   type PlayerStrings,
   T,
@@ -29,6 +31,7 @@ import {
   typeLabelWidth,
   valueCentre,
 } from './geometry.ts';
+import { CHAIN_LEAD, chainOf, paneLevels, walkWindows } from './storage_path.ts';
 import { type PreparedModel, arrival, copies, copyBegin, departure, stores } from './model.ts';
 import {
   animateAttr,
@@ -399,15 +402,51 @@ function memory(c: SceneContext): string {
   const live = (l: { name: string }): boolean => values[l.name] !== null || writing.has(l.name);
   let out = '';
 
-  for (const [x, w] of g.gaps) {
+  for (const [x, w, y] of g.gaps) {
     out +=
-      `<rect x="${round(x + 3)}" y="${g.memY + 3}" width="${round(w - 6)}" ` +
+      `<rect x="${round(x + 3)}" y="${y + 3}" width="${round(w - 6)}" ` +
       `height="58" fill="none" stroke="${P.gapStroke}" stroke-dasharray="5 5"/>`;
   }
+  const arrays = new Set(g.groups.filter(s => arrayType(s.type ?? '')).map(s => s.name));
+  const inArray = (name: string): boolean => [...arrays].some(a => name.startsWith(a + '.'));
+  // An element shows its address while something points at it, or at what starts with it.
+  const startsAt = (target: string, cell: { name: string; address: number }): boolean =>
+    target === cell.name ||
+    (cell.name.startsWith(target + '.') && g.box(target)?.address === cell.address);
+  const pointed = (shown: TraceStep | null, cell: { name: string; address: number }): boolean =>
+    Boolean(shown && Object.values(shown.targets).some(t => startsAt(t, cell)));
+  // Once `&` has taken an address, it stays shown until the statement ends.
+  const taking = (i: number, cell: { name: string; address: number }): boolean => {
+    const steps = c.m.steps;
+    for (let j = i; j >= 0 && steps[j].line === steps[Math.max(i, 0)].line; j--) {
+      const o = steps[j].op;
+      if (o?.kind === 'addr' && startsAt(o.name, cell)) return true;
+    }
+    return false;
+  };
+  // A variable's start address always shows, even when an array starts it.
+  const startsVariable = (cell: { name: string; address: number }): boolean =>
+    g.box(cell.name.split('.')[0])?.address === cell.address;
+  const addressOf = (cell: Geometry['leaves'][number], on: boolean): string => {
+    const label = text(cell.x + 3, cell.y - 12, cell.address, 16, on ? P.muted : P.grey);
+    if (startsVariable(cell)) return label;
+    const now = pointed(step, cell) || taking(c.index, cell);
+    const before = c.animate ? pointed(prev, cell) || taking(c.index - 1, cell) : now;
+    if (now && before) return label;
+    // `&` shows the address as it starts taking it; a pointer's write, as the value lands.
+    const appear = op?.kind === 'addr' ? 0 : at;
+    if (now) return `<g opacity="0">${fade(0, 1, 0.3, appear)}${label}</g>`;
+    if (before) return `<g>${fade(1, 0, 0.3, at)}${label}</g>`;
+    return '';
+  };
   for (const s of g.groups) {
+    if (arrays.has(s.name) && s.parent) {
+      out += arrayRow(c, s, g.cellsOf(s.name).some(live));
+      continue;
+    }
     const on = g.cellsOf(s.name).some(live);
     const f = frameOf(s);
-    const color = on ? s.fieldColor || s.color : null;
+    const color = on ? (s.label.startsWith('[') ? s.color : s.fieldColor || s.color) : null;
     out += dim(
       c,
       s.top,
@@ -435,9 +474,15 @@ function memory(c: SceneContext): string {
   for (const cell of g.leaves) {
     const on = live(cell);
     const changing = writing.has(cell.name);
-    const color = cell.fieldColor || cell.color;
-    let markup = text(cell.x + 3, cell.y - 12, cell.address, 16, on ? P.muted : P.grey);
-    markup += cell.group
+    const element = cell.label.startsWith('[') && inArray(cell.name);
+    const color = element ? cell.color : cell.fieldColor || cell.color;
+    let markup = inArray(cell.name)
+      ? addressOf(cell, on)
+      : text(cell.x + 3, cell.y - 12, cell.address, 16, on ? P.muted : P.grey);
+    if (element) markup += arrayIndex(c, cell, on, color);
+    markup += element
+      ? ''
+      : cell.group
       ? text(
           cell.x + cell.w / 2,
           cell.y + cell.h + 28,
@@ -487,7 +532,7 @@ function memory(c: SceneContext): string {
     out += dim(c, cell.group || cell.name, markup);
   }
   if (op && (op.kind === 'read' || op.kind === 'write')) {
-    out += `<g>${fade(1, 0, 0.35, at + 0.15)}${outline(c, g.box(op.name)!, op.kind === 'write' ? P.write : P.read)}</g>`;
+    out += chainHighlight(c, op, at);
   }
   if (op && op.kind === 'deref') {
     out += `<g opacity="0">${fade(0, 1, 0.2, at - 0.15)}${outline(c, g.box(op.target)!, P.fg)}</g>`;
@@ -504,6 +549,62 @@ function memory(c: SceneContext): string {
     out += dim(c, label.name, typeLabel(c, label.cx, label.top, label.type, LABEL.memory, color));
   }
   return out + tags(c, at);
+}
+
+// a row of a 2D array, a frame in the array's colour named by its index.
+function arrayRow(c: SceneContext, s: Geometry['groups'][number], on: boolean): string {
+  const { g, P } = c;
+  const color = on ? s.color : P.deadStroke;
+  const f = frameOf(s);
+  return dim(
+    c,
+    s.top,
+    rect(f.x, f.y, f.w, f.h, 'none', color, 6, FRAME.stroke) +
+      text(s.x + s.w / 2, f.y + f.h + 24, s.label, Math.min(g.fieldSize, 22), on ? color : P.grey, 'middle')
+  );
+}
+
+function arrayIndex(c: SceneContext, cell: Geometry['leaves'][number], on: boolean, color: string): string {
+  const { g, P } = c;
+  return text(cell.x + cell.w / 2, cell.y + cell.h + 28, cell.label, g.fieldSize, on ? color : P.grey, 'middle');
+}
+
+/** reading or writing `a.f[0]` outlines `a`, then `a.f`, then `a.f[0]`. */
+function chainHighlight(c: SceneContext, op: { kind: 'read' | 'write'; name: string }, at: number): string {
+  const { g, P } = c;
+  const color = op.kind === 'write' ? P.write : P.read;
+  const levels = chainOf(op.name);
+  const windows = walkWindows(levels.length, at + 0.15, CHAIN_LEAD);
+  return levels
+    .map((level, k) => {
+      const box = g.box(level);
+      if (!box) return '';
+      const [begin, leave] = windows[k];
+      const hidden = begin > 0;
+      const appear = hidden ? fade(0, 1, 0.15, begin) : '';
+      // A light wash in the highlight colour: stronger on a cell than across a whole frame.
+      const r = g.isStruct(box) ? frameOf(box) : box;
+      const wash = `<g opacity="${g.isStruct(box) ? 0.1 : 0.22}">${rect(r.x + 3, r.y + 3, r.w - 6, r.h - 6, color, 'none', g.isStruct(box) ? 8 : 0)}</g>`;
+      return `<g opacity="${hidden ? 0 : 1}">${appear}${fade(1, 0, 0.25, leave)}${wash}${outline(c, box, color)}</g>`;
+    })
+    .join('');
+}
+
+/** the pane's highlight box grows along the chain, `a` → `a.f` → `a.f[0]`. */
+function walkBoxes(
+  levels: string[] | null,
+  end: number,
+  box: (chars: number) => string,
+  whole: string
+): string {
+  if (!levels) return whole;
+  const windows = walkWindows(levels.length, end);
+  return levels
+    .map((level, k) => {
+      const [begin, leave] = windows[k];
+      return `<g opacity="0">${fade(0, 1, 0.15, begin)}${fade(1, 0, 0.2, leave)}${box(level.length)}</g>`;
+    })
+    .join('');
 }
 
 function valueBox(
@@ -556,7 +657,7 @@ function transfers(c: SceneContext): string {
       c,
       op.value,
       P.read,
-      `M ${p(sx, sy)} C ${p(side, sy)}, ${p(side, g.memY + CELL)}, ${p(side, below)} ` +
+      `M ${p(sx, sy)} C ${p(side, sy)}, ${p(side, cell.y + CELL)}, ${p(side, below)} ` +
         `C ${p(side, ty)}, ${p(dx, ty - 60)}, ${p(dx, ty)}`,
       begin,
       T.travel,
@@ -661,7 +762,12 @@ function paneBody(c: SceneContext, copying: boolean): string {
           ? [P.write, P.writeFill]
           : [P.fg, P.derefFill];
     out += exprBackground(c, tx, ty, step.expr, prev.expr, at + 0.1);
-    out += `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.2, at - 0.1)}${markBox(sx, ty, e - s, stroke, fill)}</g>`;
+    out += walkBoxes(
+      op.kind === 'read' ? paneLevels(op.name, before.slice(s, e)) : null,
+      at - 0.1,
+      chars => markBox(sx, ty, chars, stroke, fill),
+      `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.2, at - 0.1)}${markBox(sx, ty, e - s, stroke, fill)}</g>`
+    );
     out += paneText(c, tx, ty, before, 0, s, prev.expr);
     let old = paneText(c, sx, ty, before, s, e, prev.expr);
     let fresh = paneText(c, sx, ty, step.pane, s, s + length, step.expr);
@@ -702,10 +808,14 @@ function paneBody(c: SceneContext, copying: boolean): string {
         2
       ) +
       '</g>';
-    out +=
-      `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.3, at + 0.4)}` +
-      rect(tx + ns * EVAL_CHAR - 3, ty - 32, (ne - ns) * EVAL_CHAR + 6 - tight, 42, 'none', P.write, 6, 2) +
-      '</g>';
+    const destination = (chars: number): string =>
+      rect(tx + ns * EVAL_CHAR - 3, ty - 32, chars * EVAL_CHAR + 6 - tight, 42, 'none', P.write, 6, 2);
+    out += walkBoxes(
+      paneLevels(op.name, step.pane.slice(ns, ne)),
+      at + 0.4,
+      destination,
+      `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.3, at + 0.4)}${destination(ne - ns)}</g>`
+    );
     out += paneText(c, tx, ty, step.pane, 0, step.pane.length, step.expr);
     if (inContext(step, op.destination)) {
       out +=
@@ -765,6 +875,7 @@ function output(c: SceneContext): string {
 }
 
 export function scene(c: SceneContext): string {
+  setPaneSize(c.g.paneSize);
   const { step, prev, animate } = c;
   const lineChanged = animate && prev !== null && prev.line !== step.line;
   const copying = animate && copies(c.m.steps, c.index);

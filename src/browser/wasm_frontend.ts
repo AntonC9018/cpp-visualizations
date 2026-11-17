@@ -4,11 +4,13 @@ import { extractEnumConstantSizes } from '../core/records.ts';
 import type { Template, TraceSettings } from '../core/settings.ts';
 import { type TraceOf, traceSnippet } from '../core/snippet.ts';
 import { extractMainAstFromStdout } from '../core/tracing.ts';
+import { ARRAY_PREAMBLE } from './array_header.ts';
 import { runWasiModule } from './wasi.ts';
 
 
 export function createWasmClangFrontend(module: WebAssembly.Module): CompilerFrontend {
   return {
+    arrayPreamble: ARRAY_PREAMBLE,
     mainAst(program: string): AstNode {
       const result = runWasiModule(module, {
         args: [

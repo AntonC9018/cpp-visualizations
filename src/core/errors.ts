@@ -63,11 +63,13 @@ export interface AstType {
 }
 
 export interface AstReferencedDecl {
+  id?: string;
   kind?: string;
   name?: string;
 }
 
 export interface AstNode {
+  id?: string;
   kind?: string;
   name?: string;
   value?: string;
@@ -86,9 +88,12 @@ export interface AstNode {
   loc?: AstRangeEndpoint;
   referencedDecl?: AstReferencedDecl;
   inner?: AstNode[];
+  array_filler?: AstNode[];
 }
 
 export interface CompilerFrontend {
+  /** Declaration text for frontends that cannot include the native <array> header. */
+  arrayPreamble?: string;
   mainAst(program: string): AstNode;
   recordLayoutsDump(program: string): string;
   typeSizes(types: string[]): Record<string, number>;

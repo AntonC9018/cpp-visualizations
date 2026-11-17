@@ -214,6 +214,49 @@ test('a bare std::endl prints a visible newline glyph in both languages and them
   assert.deepEqual(errors, []);
 });
 
+test('generated array frames show an element address only when used', async () => {
+  const generated = traceSource(`
+    std::array<int, 3> a{1, 2, 3};
+    auto& row = a;
+    int& last = row[2];
+    int* p = &row[2];
+    last = 7;
+    p = nullptr;
+  `, { runtime: false });
+  const start = generated.variables.find(v => v.name === 'a')!.address;
+  const address = start + 8;
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  for (const width of [1100, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.setContent(PAGE.replace(trace, JSON.stringify(generated).replace(/</g, '\\u003c')));
+    await page.evaluate(() => window.CourseVisualization!.scan());
+    const snapshots = await page.evaluate(({ address, start }) => {
+      const playerEl = (document.querySelector('.course-visualization') as PlayerElement).cvPlayer;
+      return playerEl.m.steps.map((_, index) => {
+        playerEl.settle(index);
+        if (/NaN|undefined/.test(playerEl.svg.innerHTML)) {
+          throw new Error(`invalid geometry at step ${index}`);
+        }
+        const labels = [...playerEl.svg.querySelectorAll('text')];
+        const addresses = labels.filter(label => label.getAttribute('font-size') === '16');
+        return {
+          start: addresses.some(label => label.textContent === String(start)),
+          element: addresses.some(label => label.textContent === String(address)),
+          lastIndex: labels.some(label => label.textContent === '[2]'),
+        };
+      });
+    }, { address, start });
+    const addressTaken = generated.steps.findIndex(s => s.op?.kind === 'addr');
+    const writing = generated.steps.findIndex(s => s.line === 4 && s.op?.kind === 'write');
+    assert.deepEqual(snapshots[0], { start: true, element: false, lastIndex: true });
+    assert.equal(snapshots[addressTaken].element, true);
+    assert.equal(snapshots[writing].element, true);
+    assert.equal(snapshots.at(-1)?.element, false);
+  }
+  assert.deepEqual(errors, []);
+});
+
 // A typed trace: two conversions, then a statement whose types do not fit.
 test('a typed trace labels types and shows a mismatch in both languages and themes', async () => {
   const generated = JSON.parse(

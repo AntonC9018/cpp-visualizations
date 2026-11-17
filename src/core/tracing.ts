@@ -4,6 +4,7 @@
 // predicts each statement's effects without executing arbitrary C++. An optional `RuntimeExecutor`
 // (such as GDB in Node) verifies every live scalar and struct field after every statement.
 
+import { arrayType, codeName, elementLabel, operatorName, resolveArrayAliases } from './arrays.ts';
 import { type AstNode, type CompilerFrontend, IllFormed, Unsupported } from './errors.ts';
 import type { Flags } from './settings.ts';
 import {
@@ -13,7 +14,7 @@ import {
   displayed,
   displayedType,
   layoutsFromFrontend,
-  typeName,
+  recordName,
   typeSpelling,
 } from './records.ts';
 import {
@@ -270,12 +271,12 @@ export function pointerDepth(node: AstNode | null | undefined, records: unknown 
   if (intMatch && integerNamed(intMatch[2], records) && !(intMatch[1] && intMatch[3])) {
     return (intMatch[3] || '').length;
   }
-  const recordType = typeName(node);
+  const recordType = recordName(node);
   if (hasRecord(records, recordType)) {
     return 0;
   }
-  const recPtrMatch = /^(\w+) (\*+)$/.exec(qualified);
-  if (recPtrMatch && hasRecord(records, recPtrMatch[1])) {
+  const recPtrMatch = /^(\w+|(?:std::)?array<.+>) (\*+)$/.exec(canonicalType(node));
+  if (recPtrMatch && (hasRecord(records, recPtrMatch[1]) || arrayType(recPtrMatch[1]))) {
     return recPtrMatch[2].length;
   }
   if (qualified.includes('&')) {
@@ -503,7 +504,8 @@ export type Reduction = { readonly span: Span; readonly type: string } & (
   | { readonly kind: 'read'; readonly name: string; readonly record: string | null }
   | { readonly kind: 'addr'; readonly name: string }
   | { readonly kind: 'deref'; readonly name: string; readonly value: Pointer | null }
-  | { readonly kind: 'alias'; readonly name: string; readonly spelling: string }
+  | { readonly kind: 'alias'; readonly name: string; readonly target: string }
+  | { readonly kind: 'select'; readonly name: string }
   | { readonly kind: 'eval'; readonly value: Value; readonly record: string | null }
   | { readonly kind: 'convert'; readonly value: number; readonly source: string }
 );
@@ -557,7 +559,7 @@ function filled(item: RecordInfo | RecordFieldInfo, records: Record<string, Reco
 }
 
 function operandIsPointer(node: AstNode | null | undefined): boolean {
-  return (node?.type?.qualType ?? '').includes('*');
+  return canonicalType(node).endsWith('*');
 }
 
 function rejectPointerOperator(node: AstNode | null | undefined): void {
@@ -598,7 +600,9 @@ class Evaluator {
   /** A brace list inside another one is part of its value, not an evaluation of its own. */
   private absorb(child: AstNode | undefined, value: Value): void {
     const last = this.reductions[this.reductions.length - 1];
-    if (child?.kind === 'InitListExpr' && last?.kind === 'eval' && last.value === value) {
+    const list = child?.kind === 'InitListExpr' ||
+      (child?.kind === 'CXXFunctionalCastExpr' && arrayType(canonicalType(child)));
+    if (list && last?.kind === 'eval' && last.value === value) {
       this.reductions.pop();
     }
   }
@@ -619,7 +623,7 @@ class Evaluator {
       declaration.kind === 'VarDecl' &&
       Object.hasOwn(this.references, name)
     ) {
-      this.reduce(node, { kind: 'alias', name, spelling: this.references[name] });
+      this.reduce(node, { kind: 'alias', name, target: this.references[name] });
       return this.references[name];
     }
     if (
@@ -632,6 +636,33 @@ class Evaluator {
     return name;
   }
 
+  private arrayAccess(node: AstNode): { object: AstNode; array: NonNullable<ReturnType<typeof arrayType>>; member: AstNode | null; args: AstNode[] } | null {
+    const [callee, ...operands] = node.inner ?? [];
+    if (node.kind === 'CXXOperatorCallExpr' && operatorName(node) === 'operator[]') {
+      const [object, ...args] = operands;
+      const array = arrayType(canonicalType(object));
+      if (array && args.length === 1) return { object, array, member: null, args };
+    }
+    if (node.kind === 'CXXMemberCallExpr' && callee?.kind === 'MemberExpr') {
+      const [object] = callee.inner ?? [];
+      const array = arrayType(canonicalType(object).replace(/ \*$/, ''));
+      if (array && object) return { object, array, member: callee, args: operands };
+    }
+    return null;
+  }
+
+  private arrayObject(object: AstNode, arrow = false): string {
+    const base = object.kind === 'ImplicitCastExpr' && object.castKind === 'NoOp'
+      ? object.inner![0] : object;
+    if (!arrow) return this.lvalue(base);
+    const [value, via] = this.rvalue(base);
+    const pointer = asPointer(value);
+    if (via === null || pointer.target === null) {
+      throw new Unsupported('array member access requires a non-null pointer variable');
+    }
+    return pointer.target;
+  }
+
   lvalue(node: AstNode, outer: AstNode | null = null): string {
     const kind = node?.kind;
     const children = node?.inner ?? [];
@@ -640,6 +671,19 @@ class Evaluator {
     }
     if (kind === 'DeclRefExpr') {
       return this.variable(node);
+    }
+    const access = this.arrayAccess(node);
+    if (access && !access.member) {
+      const owner = this.arrayObject(access.object);
+      const indexNode = access.args[0];
+      // The library takes size_t. A negative index is outside the array before conversion.
+      const index = this.integerOperand(indexNode.castKind === 'IntegralCast' ? indexNode.inner![0] : indexNode);
+      if (index < 0 || index >= access.array.count) {
+        throw new Unsupported(`std::array index ${index} is out of bounds`);
+      }
+      const name = `${owner}.${elementLabel(index)}`;
+      this.reduce(outer ?? node, { kind: 'select', name });
+      return name;
     }
     if (kind === 'MemberExpr' && children.length === 1) {
       if (node.isArrow) {
@@ -722,24 +766,45 @@ class Evaluator {
       }
       return [this.convert(node, operand), null];
     }
+    const access = this.arrayAccess(node);
+    if (access?.member && access.args.length === 0) {
+      const { object, array, member } = access;
+      if (member.name === 'data' || member.name === 'size') {
+        const owner = this.arrayObject(object, member.isArrow);
+        if (member.name === 'size') {
+          this.reduce(node, { kind: 'eval', value: array.count, record: null });
+          return [array.count, null];
+        }
+        const name = `${owner}.${elementLabel(0)}`;
+        pointerDepth(node, this.records);
+        this.reduce(node, { kind: 'addr', name });
+        return [new Pointer(name), null];
+      }
+    }
     const depth = pointerDepth(node, this.records);
-    const record = !depth ? getRecord(this.records, typeName(node)) : null;
+    const record = !depth ? getRecord(this.records, recordName(node)) : null;
     if (record) {
+      const array = arrayType(record.name);
+      const displayRecord = array ? null : record.name;
       if (kind === 'CXXFunctionalCastExpr' && children.length === 1) {
         const [value] = this.rvalue(children[0]);
         this.absorb(children[0], value);
-        this.reduce(node, { kind: 'eval', value, record: record.name });
+        this.reduce(node, { kind: 'eval', value, record: displayRecord });
         return [value, null];
       }
       if (kind === 'InitListExpr') {
         const value: State = {};
-        const limit = Math.min(record.fields.length, children.length);
-        for (let i = 0; i < limit; i++) {
-          const item = record.fields[i];
-          const child = children[i];
-          if (child?.kind === 'ImplicitValueInitExpr') {
+        // The semantic list for std::array contains one backing C array. Clang's
+        // JSON puts a filler followed by the explicit items in array_filler when short.
+        const storage = array ? children[0] : null;
+        const elements = array
+          ? (storage?.array_filler?.slice(1) ?? storage?.inner ?? [])
+          : children;
+        for (const [i, item] of record.fields.entries()) {
+          const child = elements[i];
+          if (!child || child.kind === 'ImplicitValueInitExpr') {
             value[item.name] = filled(item, this.records, true);
-          } else if (child?.castKind === 'IntegralCast') {
+          } else if (!array && child.castKind === 'IntegralCast') {
             // The list is one typed value: a part of it has no label to change.
             throw new Unsupported("a conversion inside a struct's braces is not supported");
           } else {
@@ -762,6 +827,7 @@ class Evaluator {
       if (
         kind === 'DeclRefExpr' ||
         kind === 'MemberExpr' ||
+        (access && !access.member) ||
         (kind === 'UnaryOperator' && node.opcode === '*')
       ) {
         const name = this.lvalue(node);
@@ -769,7 +835,7 @@ class Evaluator {
         if (Object.values(flatten({ [name]: value })).some(item => item === null)) {
           throw new Unsupported(`reading uninitialized struct ${name}`);
         }
-        this.reduce(node, { kind: 'read', name, record: record.name });
+        this.reduce(node, { kind: 'read', name, record: displayRecord });
         return [value, name];
       }
     }
@@ -783,7 +849,8 @@ class Evaluator {
     if (kind === 'ParenExpr' && children.length === 1) {
       [value] = this.rvalue(children[0]);
     } else if (kind === 'UnaryOperator' && node.opcode === '&' && children.length === 1) {
-      if (children[0]?.kind !== 'DeclRefExpr' && children[0]?.kind !== 'MemberExpr') {
+      if (children[0]?.kind !== 'DeclRefExpr' && children[0]?.kind !== 'MemberExpr' &&
+          !this.arrayAccess(stripParentheses(children[0]))) {
         throw new Unsupported('only the address of a variable is supported');
       }
       const name = this.lvalue(children[0]);
@@ -1004,7 +1071,8 @@ function typedParts(node: AstNode, locate: (item: AstNode) => Span, names: Set<s
   if (local || node.kind === 'IntegerLiteral' || node.kind === 'CXXNullPtrLiteralExpr') {
     return [[locate(node), displayedType(node)]];
   }
-  return (node.inner ?? []).flatMap(child => typedParts(child, locate, names));
+  const children = node.array_filler?.slice(1) ?? node.inner ?? [];
+  return children.flatMap(child => typedParts(child, locate, names));
 }
 
 function compareTyped([a, at]: Typed, [b, bt]: Typed): number {
@@ -1149,7 +1217,8 @@ function analyzeStatement(
       pointer = pointerDepth(variable, records) > 0;
       size = pointer ? POINTER_SIZE : (integerType(variable)?.size ?? null);
     }
-    record = !pointer && Object.hasOwn(records, typeName(variable)) ? typeName(variable) : null;
+    const aggregate = recordName(variable);
+    record = !reference && !pointer && Object.hasOwn(records, aggregate) ? aggregate : null;
     declared = variable.name ?? null;
     if (
       !declared ||
@@ -1207,7 +1276,8 @@ function analyzeStatement(
     (cur.kind === 'BinaryOperator' && cur.opcode === '=') ||
     (cur.kind === 'CXXOperatorCallExpr' &&
       (cur.inner ?? []).length === 3 &&
-      Object.hasOwn(records, typeName(cur)))
+      operatorName(cur) === 'operator=' &&
+      Object.hasOwn(records, recordName(cur)))
   ) {
     const inner = cur.inner!;
     left = inner[inner.length - 2];
@@ -1259,12 +1329,33 @@ function analyzeStatement(
 
   const [first, last] = whole ? [start, bounds(cur)[1]] : bounds(root);
   const span: Span = [mapping[first - start], mapping[last - start]];
-  const [prefix, suffix] = paneParts(source, span, emptyInitializer);
+  let [prefix, suffix] = paneParts(source, span, emptyInitializer);
+  let removed = 0;
+  if (record && arrayType(record)) {
+    if (prefix.trimEnd().endsWith(declared!)) prefix = prefix.trimEnd() + ' = ';
+    // Long template spellings stay in the source, where they do not crowd the pane.
+    const name = mapping[nameOffset! - start];
+    if (name > 21) {
+      removed = name;
+      prefix = prefix.slice(removed);
+    }
+  }
   const text = source.slice(span[0], span[1]);
+  const written = prefix + text + suffix;
+  // Array brace lists use the same compact spacing in initializers and assignments.
+  const braceSpaces = arrayType(canonicalType(root))
+    ? [...written.matchAll(/(?<=\{) +| +(?=\})/g)]
+    : [];
+  const pane = braceSpaces.length ? written.replace(/(?<=\{) +| +(?=\})/g, '') : written;
+
+  function paneOffset(at: number): number {
+    return at - braceSpaces.reduce((total, space) =>
+      total + Math.max(0, Math.min(space[0].length, at - space.index)), 0);
+  }
 
   function toPane(offset: number): number {
     const position = mapping[offset - start];
-    return position < span[0] ? position : position - span[0] + prefix.length;
+    return paneOffset(position < span[0] ? position - removed : position - span[0] + prefix.length);
   }
 
   function locate(item: AstNode): Span {
@@ -1279,8 +1370,8 @@ function analyzeStatement(
     return new Statement({
       source,
       span,
-      pane: prefix + text + suffix,
-      expr: [prefix.length, prefix.length + text.length],
+      pane,
+      expr: [paneOffset(prefix.length), paneOffset(prefix.length + text.length)],
       result: locate(root),
       outputSuffix: outSuffix,
       printed,
@@ -1300,8 +1391,8 @@ function analyzeStatement(
     return new Statement({
       source,
       span,
-      pane: prefix + text + suffix,
-      expr: [prefix.length, prefix.length + text.length],
+      pane,
+      expr: [paneOffset(prefix.length), paneOffset(prefix.length + text.length)],
       result: locate(root),
       reductions: evaluator.reductions,
       declared,
@@ -1343,8 +1434,8 @@ function analyzeStatement(
   return new Statement({
     source,
     span,
-    pane: prefix + text + suffix,
-    expr: [prefix.length, prefix.length + text.length],
+    pane,
+    expr: [paneOffset(prefix.length), paneOffset(prefix.length + text.length)],
     result: locate(root),
     value,
     reductions: evaluator.reductions,
@@ -1354,7 +1445,8 @@ function analyzeStatement(
     pointer,
     record,
     outputSuffix: outSuffix,
-    temporary: evaluator.temporary,
+    // Copies into arrays and their elements can use a short-lived RHS aggregate.
+    temporary: evaluator.temporary && !target?.includes('.[') && !arrayType(canonicalType(left)),
     typed,
     slot,
     type: declared ? displayedType(variable) : null,
@@ -1379,7 +1471,16 @@ export function storeResult(statement: Statement, state: State): State {
   return after;
 }
 
-const PREAMBLE = '#include <iostream>\n#include <cstdint>\nusing namespace std;\nint main() {\n';
+const HEADERS = '#include <iostream>\n#include <cstdint>\n';
+const MAIN = 'using namespace std;\nint main() {\n';
+
+export function arrayHeader(source: string, frontend?: CompilerFrontend): string {
+  return /\barray\b/.test(source) ? (frontend?.arrayPreamble ?? '#include <array>\n') : '';
+}
+
+function preamble(source: string, frontend: CompilerFrontend): string {
+  return HEADERS + arrayHeader(source, frontend) + MAIN;
+}
 
 // Clang's ways of saying that a value of one type cannot be stored where another is needed.
 // After an alias Clang adds what it stands for, `'size_t *' (aka 'unsigned long *')`.
@@ -1423,9 +1524,9 @@ const leading = (text: string): number => text.length - text.trimStart().length;
  * when the slot is a struct; everything before the value, up to the previous statement, is
  * the slot. Any other error, or one that is not in the last statement, stays unsupported.
  */
-function cutMismatch(body: string, error: IllFormed): [string, Mismatch] {
+function cutMismatch(body: string, error: IllFormed, prefixLength: number): [string, Mismatch] {
   const found = MISMATCHES.map(pattern => pattern.exec(error.message)).find(Boolean)?.groups;
-  let at = error.offset === null ? -1 : error.offset - PREAMBLE.length;
+  let at = error.offset === null ? -1 : error.offset - prefixLength;
   if (!found || at < 0 || at >= body.length) throw error;
   const end = body.indexOf(';', at);
   let start = Math.max(lastBefore(body, ';', at), lastBefore(body, '}', at)) + 1;
@@ -1467,8 +1568,9 @@ export function analyzeWithFrontend(
   source: string,
   frontend: CompilerFrontend
 ): [Statement[], Record<string, RecordInfo>] {
-  const program = PREAMBLE + source + '\n}\n';
+  const program = preamble(source, frontend) + source + '\n}\n';
   const ast = frontend.mainAst(program);
+  resolveArrayAliases(ast);
   const records = layoutsFromFrontend(ast, program, frontend);
   const statements: Statement[] = [];
   let state: State = {};
@@ -1868,12 +1970,16 @@ class Renderer {
         text = String(this.addresses[reduction.name]);
         op = { kind: 'addr', name: reduction.name, value: text };
       } else if (reduction.kind === 'alias') {
-        text = reduction.spelling;
-        op = { kind: 'alias', name: reduction.name, target: text };
+        text = codeName(reduction.target);
+        op = { kind: 'alias', name: reduction.name, target: reduction.target };
+      } else if (reduction.kind === 'select') {
+        text = codeName(reduction.name);
+        op = { kind: 'eval', value: text };
       } else if (reduction.kind === 'deref') {
         // Only a pointer that is not null is ever dereferenced.
-        text = (reduction.value ?? asPointer(load(before, reduction.name))).target!;
-        op = { kind: 'deref', target: text, via: reduction.name };
+        const target = (reduction.value ?? asPointer(load(before, reduction.name))).target!;
+        text = codeName(target);
+        op = { kind: 'deref', target, via: reduction.name };
       } else if (reduction.kind === 'convert' && this.types) {
         text = this.show(reduction.value);
         op = { kind: 'convert', value: text, from: reduction.source, to: reduction.type };
@@ -2011,7 +2117,7 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
   } catch (error) {
     if (!types || !(error instanceof IllFormed)) throw error;
     // A last statement whose types do not fit is shown, not run: the rest is traced.
-    [body, mismatch] = cutMismatch(body, error);
+    [body, mismatch] = cutMismatch(body, error, preamble(body, frontend).length);
     [statements, records] = analyzeWithFrontend(body, frontend);
   }
   const predicted: State[] = [];
