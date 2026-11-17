@@ -1,5 +1,5 @@
 // SVG and SMIL animation markup helpers for the browser player.
-import { CHAR, EASE, EVAL_CHAR } from './constants.ts';
+import { CHAR, EASE } from './constants.ts';
 
 export const round = (value: number): number => Math.round(value * 100) / 100;
 
@@ -94,12 +94,12 @@ export const pulse = (begin: number): string =>
 export const markBox = (
   x: number,
   y: number,
-  length: number,
+  width: number,
   stroke: string,
   fill: string
 ): string =>
   `<rect x="${round(x - 3)}" y="${round(y - 32)}" ` +
-  `width="${round(length * EVAL_CHAR + 6)}" height="42" rx="6" fill="${fill}" stroke="${stroke}" stroke-width="2"/>`;
+  `width="${round(width + 6)}" height="42" rx="6" fill="${fill}" stroke="${stroke}" stroke-width="2"/>`;
 
 // Starts `from` units right of its place and slides home after `begin`.
 export const settle = (markup: string, from: number, begin: number): string =>

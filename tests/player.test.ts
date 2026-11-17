@@ -10,6 +10,7 @@ import { type Browser, type Page, chromium } from 'playwright';
 import type { ExecutionTrace, LayoutTrace } from '../src/core/trace_format.ts';
 import { trace as traceSource } from '../src/node/tracing.ts';
 import type {} from '../src/player/index.ts';
+import type { Geometry } from '../src/player/geometry.ts';
 
 const player = new URL('../player/', import.meta.url);
 const read = (name: string): string => readFileSync(new URL(name, player), 'utf8');
@@ -25,6 +26,7 @@ interface PlayerElement extends HTMLElement {
     index: number;
     m: { steps: unknown[] };
     svg: SVGSVGElement;
+    g: Geometry;
     settle(step: number): void;
     inspect(step: number, progress: number): void;
     end(): void;
@@ -212,6 +214,111 @@ test('a bare std::endl prints a visible newline glyph in both languages and them
     assert.ok(settled.includes('2'), 'the earlier output stays');
   }
   assert.deepEqual(errors, []);
+});
+
+test('generated array frames show an element address only when used', async () => {
+  const generated = traceSource(`
+    std::array<int, 3> a{1, 2, 3};
+    auto& row = a;
+    int& last = row[2];
+    int* p = &row[2];
+    last = 7;
+    p = nullptr;
+  `, { runtime: false });
+  const start = generated.variables.find(v => v.name === 'a')!.address;
+  const address = start + 8;
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  for (const width of [1100, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.setContent(PAGE.replace(trace, JSON.stringify(generated).replace(/</g, '\\u003c')));
+    await page.evaluate(() => window.CourseVisualization!.scan());
+    const snapshots = await page.evaluate(({ address, start }) => {
+      const playerEl = (document.querySelector('.course-visualization') as PlayerElement).cvPlayer;
+      return playerEl.m.steps.map((_, index) => {
+        playerEl.settle(index);
+        if (/NaN|undefined/.test(playerEl.svg.innerHTML)) {
+          throw new Error(`invalid geometry at step ${index}`);
+        }
+        const labels = [...playerEl.svg.querySelectorAll('text')];
+        const addresses = labels.filter(label => label.getAttribute('font-size') === '16');
+        return {
+          start: addresses.some(label => label.textContent === String(start)),
+          element: addresses.some(label => label.textContent === String(address)),
+          lastIndex: labels.some(label => label.textContent === '[2]'),
+        };
+      });
+    }, { address, start });
+    const addressTaken = generated.steps.findIndex(s => s.op?.kind === 'addr');
+    const writing = generated.steps.findIndex(s => s.line === 4 && s.op?.kind === 'write');
+    assert.deepEqual(snapshots[0], { start: true, element: false, lastIndex: true });
+    assert.equal(snapshots[addressTaken].element, true);
+    assert.equal(snapshots[writing].element, true);
+    assert.equal(snapshots.at(-1)?.element, false);
+  }
+  assert.deepEqual(errors, []);
+});
+
+test('the player wraps a long statement only as its available width shrinks', async () => {
+  const generated = traceSource(`
+    std::array<std::array<int, 2>, 3> arr{
+        std::array{1, 2}, {3, 4}, {5, 6},
+    };
+    arr[2][1] = 8;
+  `, { runtime: false });
+  await page.setViewportSize({ width: 1500, height: 900 });
+  await page.setContent(PAGE.replace(trace, JSON.stringify(generated).replace(/</g, '\\u003c')));
+  await page.evaluate(() => window.CourseVisualization!.scan());
+  await page.evaluate(() => {
+    const root = document.querySelector('.course-visualization') as PlayerElement;
+    root.cvPlayer.end();
+  });
+
+  const rowCount = () => page.evaluate(() => {
+    const root = document.querySelector('.course-visualization') as PlayerElement;
+    return root.cvPlayer.g.codeRows[0].length;
+  });
+  assert.equal(await rowCount(), 1);
+
+  // Both widths use the side-by-side layout. Wrapping must still respond to the resize.
+  await page.setViewportSize({ width: 820, height: 900 });
+  await page.waitForFunction(() => {
+    const { g } = (document.querySelector('.course-visualization') as PlayerElement).cvPlayer;
+    return !g.stacked && g.codeRows[0].length > 1;
+  });
+  const spacing = await page.evaluate(() => {
+    const p = (document.querySelector('.course-visualization') as PlayerElement).cvPlayer;
+    const rows = p.g.codeRows[0];
+    return {
+      continuation: rows[1].y - rows[0].y,
+      nextStatement: p.g.lineY(1) - rows.at(-1)!.y,
+      valid: !/NaN|undefined/.test(p.svg.innerHTML),
+    };
+  });
+  assert.ok(spacing.continuation < spacing.nextStatement);
+  assert.ok(spacing.valid);
+  assert.equal(await index(), generated.steps.length - 1);
+  await page.focus('.cv-line[data-line="0"]');
+  await page.keyboard.press('Enter');
+  assert.equal(await index(), 0);
+});
+
+test('a pointer to a narrow array element lands on its cell', async () => {
+  const generated = traceSource(
+    'std::array<uint8_t, 32> a; a[0] = 1; auto p = &a[1];',
+    { runtime: false }
+  );
+  await page.setContent(PAGE.replace(trace, JSON.stringify(generated).replace(/</g, '\\u003c')));
+  await page.evaluate(() => window.CourseVisualization!.scan());
+  const landing = await page.evaluate(() => {
+    const playerEl = (document.querySelector('.course-visualization') as PlayerElement).cvPlayer;
+    playerEl.end();
+    const cell = playerEl.g.box('a.[1]')!;
+    const arrow = playerEl.svg.querySelector('path[d="M -11 -6.5 L 0 0 L -11 6.5 Z"]')!;
+    const transform = arrow.getAttribute('transform')!;
+    return { x: Number(/^translate\(([^ ]+)/.exec(transform)![1]), left: cell.x, right: cell.x + cell.w };
+  });
+  assert.ok(landing.left <= landing.x && landing.x <= landing.right, JSON.stringify(landing));
 });
 
 // A typed trace: two conversions, then a statement whose types do not fit.

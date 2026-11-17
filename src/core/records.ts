@@ -1,5 +1,6 @@
 // Clang-backed aggregate record validation and layout extraction (isomorphic core).
 
+import { arrayType, checkArrayExtent, elementLabel } from './arrays.ts';
 import { type AstNode, type CompilerFrontend, Unsupported } from './errors.ts';
 import type { ScalarKind } from './trace_format.ts';
 
@@ -42,7 +43,13 @@ export function displayed(spelling: string): string {
 }
 
 export function displayedType(node: AstNode | null | undefined): string {
-  return displayed(typeSpelling(node));
+  const spelling = typeSpelling(node);
+  const canonical = canonicalType(node);
+  return displayed(
+    /^(?:const )?std::array</.test(canonical) || /\b(?:value_type|size_type|const_pointer|pointer)\b/.test(spelling)
+      ? canonical
+      : spelling
+  );
 }
 
 export function typeName(node: AstNode | null | undefined): string {
@@ -51,7 +58,14 @@ export function typeName(node: AstNode | null | undefined): string {
 
 export function canonicalType(node: AstNode | null | undefined): string {
   const qualified = node?.type ?? {};
-  return qualified.desugaredQualType ?? qualified.qualType ?? '';
+  const spelling = qualified.desugaredQualType ?? qualified.qualType ?? '';
+  return spelling.replace(/^([\w: ]+) const$/, 'const $1');
+}
+
+export function recordName(node: AstNode | null | undefined): string {
+  const canonical = canonicalType(node);
+  return arrayType(canonical)?.name ??
+    (/^value_type$/.test(typeName(node)) ? canonical.replace(/^const /, '') : typeName(node));
 }
 
 const LAYOUT_SPELLINGS = [
@@ -120,7 +134,23 @@ export function layoutsFromFrontend(
       }
     }
   }
-  if (Object.keys(definitions).length === 0) {
+  const arrayTypes = new Set<string>();
+  if (!layoutOnly) {
+    function collectType(spelling: string): void {
+      const array = arrayType(spelling);
+      if (!array || arrayTypes.has(array.name)) return;
+      checkArrayExtent(array.count, array.count);
+      arrayTypes.add(array.name);
+      collectType(array.element);
+    }
+    function collect(node: AstNode): void {
+      collectType(canonicalType(node));
+      for (const child of node.inner ?? []) collect(child);
+      for (const child of node.array_filler ?? []) collect(child);
+    }
+    collect(ast);
+  }
+  if (Object.keys(definitions).length === 0 && arrayTypes.size === 0) {
     return {};
   }
   for (const [name, node] of Object.entries(definitions)) {
@@ -138,6 +168,7 @@ export function layoutsFromFrontend(
       let allowed = qualified === 'int' || /^int \*+$/.test(qualified);
       allowed ||= Object.keys(definitions).some(record => qualified === `${record} *`);
       allowed ||= Object.hasOwn(definitions, qualified) && qualified !== name;
+      allowed ||= arrayTypes.has(recordName(child));
       if (layoutOnly) {
         allowed = LAYOUT_SPELLINGS.includes(qualified) && BUILTIN_INTEGERS.includes(canonical);
         allowed ||= /^(?:const )?[\w:]+ \*+$/.test(qualified);
@@ -157,12 +188,18 @@ export function layoutsFromFrontend(
 
   const dumpOutput = frontend.recordLayoutsDump(program);
   const records: Record<string, RecordLayout> = {};
+  const arrayLayouts = new Map<string, { size: number; alignment: number }>();
   const canonicals: Record<string, (string | null)[]> = {};
   for (const block of dumpOutput.split('*** Dumping AST Record Layout')) {
-    const header = /^\s*0 \| struct (\w+)\s*$/m.exec(block);
-    if (!header || !Object.hasOwn(definitions, header[1])) continue;
-    const name = header[1];
+    const header = /^\s*0 \| struct (\S[^\n]*)$/m.exec(block);
+    if (!header) continue;
+    const name = header[1].trimEnd();
     const sizes = /\[sizeof=(\d+), dsize=\d+, align=(\d+),/.exec(block);
+    const array = arrayType(name);
+    if (array && arrayTypes.has(array.name) && sizes) {
+      arrayLayouts.set(array.name, { size: Number(sizes[1]), alignment: Number(sizes[2]) });
+    }
+    if (!Object.hasOwn(definitions, name)) continue;
     const rows = [...block.matchAll(/^\s*(\d+) \|   (\S.*?) (\w+)\s*$/gm)];
     const nodes = (definitions[name].inner ?? []).filter(c => c.kind === 'FieldDecl');
     if (
@@ -179,7 +216,10 @@ export function layoutsFromFrontend(
       const member = rows[i][3];
       const node = nodes[i];
       const spelling = typeSpelling(node);
-      const nested = !layoutOnly && Object.hasOwn(definitions, spelling) ? spelling : null;
+      const nestedName = recordName(node);
+      const nested = !layoutOnly && (Object.hasOwn(definitions, nestedName) || arrayTypes.has(nestedName))
+        ? nestedName
+        : null;
       const item: RecordFieldInfo = {
         name: member,
         offset,
@@ -187,7 +227,7 @@ export function layoutsFromFrontend(
         size: 0,
       };
       if (layoutOnly || nested) {
-        item.type = spelling;
+        item.type = nested ?? spelling;
       }
       fields.push(item);
       recordCanonicals.push(
@@ -217,9 +257,50 @@ export function layoutsFromFrontend(
     ),
   ].sort();
 
-  const sizesMap = frontend.typeSizes(types);
+  const sizesMap = types.length ? frontend.typeSizes(types) : {};
+  const leafCounts = new Map<string, number>();
+  function countCells(name: string): number {
+    const known = leafCounts.get(name);
+    if (known !== undefined) return known;
+    const array = arrayType(name);
+    if (array) {
+      const layout = arrayLayouts.get(name);
+      if (!layout || layout.size % array.count !== 0) {
+        throw new Unsupported(`Clang omitted a contiguous layout for ${name}`);
+      }
+      const nested = arrayType(array.element) || Object.hasOwn(records, array.element);
+      const integer = /^(?:(?:signed|unsigned) char|(?:unsigned )?(?:short|int|long(?: long)?))$/;
+      const pointee = /^(.*) \*+$/.exec(array.element)?.[1];
+      const pointer = pointee !== undefined && (
+        integer.test(pointee) || Object.hasOwn(records, pointee) || Boolean(arrayType(pointee))
+      );
+      if (!nested && !pointer && !integer.test(array.element)) {
+        throw new Unsupported(`unsupported std::array element type ${array.element}`);
+      }
+      const count = array.count * (nested ? countCells(array.element) : 1);
+      checkArrayExtent(array.count, count);
+      const size = layout.size / array.count;
+      const fields: RecordFieldInfo[] = Array.from({ length: array.count }, (_, index) => ({
+        name: elementLabel(index),
+        offset: index * size,
+        kind: nested ? 'struct' : pointer ? 'ptr' : 'int',
+        ...(nested ? { type: array.element } : {}),
+        size,
+      }));
+      records[name] = new RecordLayout(name, layout.size, layout.alignment, fields);
+      leafCounts.set(name, count);
+      return count;
+    }
+    const count = records[name].fields.reduce(
+      (total, field) => total + (field.kind === 'struct' ? countCells(field.type!) : 1), 0
+    );
+    leafCounts.set(name, count);
+    return count;
+  }
+  for (const name of arrayTypes) countCells(name);
   for (const [name, record] of Object.entries(records)) {
     const recCanonicals = canonicals[name];
+    if (!recCanonicals) continue;
     for (let i = 0; i < record.fields.length; i++) {
       const item = record.fields[i];
       const canonical = recCanonicals[i];

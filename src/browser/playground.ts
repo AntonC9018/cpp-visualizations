@@ -232,7 +232,6 @@ export function initPlayground(root: HTMLElement): PlaygroundController {
         </div>
         <textarea id="pg-source" class="pg-editor" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea>
         <div class="pg-editor-foot">
-          <p class="pg-hint"></p>
           <button type="button" class="pg-btn pg-btn-primary pg-run-btn"></button>
         </div>
       </section>
@@ -263,7 +262,6 @@ export function initPlayground(root: HTMLElement): PlaygroundController {
   const editorLabelEl = root.querySelector('.pg-editor-label') as HTMLLabelElement;
   const shortcutEl = root.querySelector('.pg-shortcut') as HTMLSpanElement;
   const editor = root.querySelector('#pg-source') as HTMLTextAreaElement;
-  const hintEl = root.querySelector('.pg-hint') as HTMLParagraphElement;
   const runBtn = root.querySelector('.pg-run-btn') as HTMLButtonElement;
   const errorBox = root.querySelector('.pg-error-box') as HTMLDivElement;
   const emptyBox = root.querySelector('.pg-empty-box') as HTMLDivElement;
@@ -372,7 +370,6 @@ export function initPlayground(root: HTMLElement): PlaygroundController {
     themeBtn.textContent = theme === 'dark' ? copy.themeLight : copy.themeDark;
     editorLabelEl.textContent = copy.editorLabel;
     shortcutEl.textContent = copy.shortcut;
-    hintEl.textContent = TEMPLATES[state.template].supports[lang];
     runBtn.textContent = isRunning ? copy.running : copy.run;
     runBtn.disabled = isRunning;
     clearCacheBtn.textContent = copy.clearCache;

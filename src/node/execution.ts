@@ -6,6 +6,7 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
+  arrayHeader,
   Cell,
   type CellInput,
   Execution,
@@ -46,7 +47,14 @@ class Checkpoint(gdb.Breakpoint):
                     continue
                 object_address, object_size = int(value.address), int(value.type.sizeof)
                 for part in member.split('.') if member else ():
-                    value = value[part]
+                    if part.startswith('['):
+                        storage = [field for field in value.type.strip_typedefs().fields()
+                                   if field.type.strip_typedefs().code == gdb.TYPE_CODE_ARRAY]
+                        if len(storage) != 1:
+                            raise RuntimeError("no unique array storage for " + name)
+                        value = value[storage[0].name][int(part[1:-1])]
+                    else:
+                        value = value[part]
                 kind = value.type.strip_typedefs().code
                 if value.address is None or kind not in (gdb.TYPE_CODE_INT, gdb.TYPE_CODE_PTR):
                     raise RuntimeError("unsupported storage for " + name)
@@ -84,12 +92,13 @@ export function execute(
     const statement = statements[index];
     const scope = expected[index];
     body.push(statement);
-    const args = [String(index), ...scope.map(([name]) => `&${name}`)];
+    const owners = new Set(scope.map(([name]) => name.split('.')[0]));
+    const args = [String(index), ...Array.from(owners, name => `&${name}`)];
     body.push(`__course_checkpoint(${args.join(', ')});`);
   }
   const path = join(directory, 'runtime.cpp');
   const binary = join(directory, 'runtime');
-  writeFileSync(path, PROGRAM + body.join('\n') + '\n}\n');
+  writeFileSync(path, arrayHeader(statements.join('\n')) + PROGRAM + body.join('\n') + '\n}\n');
   const compilation = run([
     tool('CLANGXX', 'clang++'),
     '-std=c++20',

@@ -2,9 +2,10 @@
 
 export const CHAR = 0.602; // monospace advance, in em
 export const CODE_SIZE = 25;
-export const PANE_SIZE = 30;
+export const CODE_GUTTER = 62;
+export const PANE_MAX = 30;
+export const PANE_MIN = 24;
 export const CODE_CHAR = CODE_SIZE * CHAR;
-export const EVAL_CHAR = PANE_SIZE * CHAR;
 export const LINE = 56;
 export const CELL = 64;
 export const MARGIN = 28;

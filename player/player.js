@@ -5,9 +5,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   "use strict";
   const CHAR = 0.602;
   const CODE_SIZE = 25;
-  const PANE_SIZE = 30;
+  const CODE_GUTTER = 62;
+  const PANE_MAX = 30;
+  const PANE_MIN = 24;
   const CODE_CHAR = CODE_SIZE * CHAR;
-  const EVAL_CHAR = PANE_SIZE * CHAR;
   const LINE = 56;
   const CELL = 64;
   const MARGIN = 28;
@@ -168,7 +169,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return element.replace(/\/>$/, ">" + animations + "</" + tag + ">");
   };
   const pulse = (begin) => `<animateTransform attributeName="transform" type="scale" values="1;1.14;1" keyTimes="0;0.45;1" calcMode="spline" keySplines="0.4 0 0.2 1;0.4 0 0.2 1" begin="${round(begin)}s" dur="0.65s" fill="freeze"/>`;
-  const markBox = (x, y, length, stroke, fill) => `<rect x="${round(x - 3)}" y="${round(y - 32)}" width="${round(length * EVAL_CHAR + 6)}" height="42" rx="6" fill="${fill}" stroke="${stroke}" stroke-width="2"/>`;
+  const markBox = (x, y, width, stroke, fill) => `<rect x="${round(x - 3)}" y="${round(y - 32)}" width="${round(width + 6)}" height="42" rx="6" fill="${fill}" stroke="${stroke}" stroke-width="2"/>`;
   const settle = (markup, from, begin) => from ? `<g transform="translate(${round(from)} 0)"><animateTransform attributeName="transform" type="translate" from="${round(from)} 0" to="0 0" begin="${round(begin)}s" dur="0.3s" ${EASE} fill="freeze"/>${markup}</g>` : markup;
   const glide = (markup, dx, begin, dur) => dx ? `<g><animateTransform attributeName="transform" type="translate" from="0 0" to="${round(dx)} 0" begin="${round(begin)}s" dur="${dur}s" ${EASE} fill="freeze"/>${markup}</g>` : markup;
   const scaleAbout = (markup, x, y, from, to, begin, dur) => `<g transform="translate(${round(x)} ${round(y)})"><g transform="scale(${from})"><animateTransform attributeName="transform" type="scale" from="${from}" to="${to}" begin="${round(begin)}s" dur="${dur}s" ${EASE} fill="freeze"/><g transform="translate(${round(-x)} ${round(-y)})">${markup}</g></g></g>`;
@@ -415,6 +416,73 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       document.removeEventListener("keydown", this.escape);
     }
   }
+  function wrapLine(source, columns) {
+    var _a;
+    if (source.length <= columns) return [{ start: 0, end: source.length, indent: 0 }];
+    const breaks = [];
+    let braces = 0;
+    let templates = 0;
+    const tokens = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|<<|>>|->|::|\w+|[ \t]+|./g;
+    for (const { 0: token, index } of source.matchAll(tokens)) {
+      const at = index + token.length;
+      if (token === "<") templates++;
+      if (token === ">" || token === ">>") templates = Math.max(0, templates - token.length);
+      if (token === "{") braces++;
+      if (token === "}") braces = Math.max(0, braces - 1);
+      if (!/^[ \t]+$|^[,<{]$/.test(token)) continue;
+      if (/^\s*[;,)\]}]/.test(source.slice(at))) continue;
+      const penalty = templates * 8 + Math.max(0, braces - 1) * 6 - (token === "{" && braces === 1 ? 6 : 0);
+      breaks.push({ at, penalty });
+    }
+    const rows = [];
+    let start = 0;
+    while (start < source.length) {
+      const indent = rows.length ? 2 : 0;
+      const limit = start + columns - indent;
+      let end = source.length;
+      if (limit < source.length) {
+        let best = -Infinity;
+        end = ((_a = breaks.find((point) => point.at > limit)) == null ? void 0 : _a.at) ?? source.length;
+        for (const point of breaks) {
+          if (point.at <= start) continue;
+          if (point.at > limit) break;
+          const score = point.at - point.penalty;
+          if (score >= best) {
+            best = score;
+            end = point.at;
+          }
+        }
+      }
+      const stop = start + source.slice(start, end).trimEnd().length;
+      if (stop > start) rows.push({ start, end: stop, indent });
+      start = end;
+      while (source[start] === " " || source[start] === "	") start++;
+    }
+    return rows.length ? rows : [{ start: 0, end: 0, indent: 0 }];
+  }
+  const CONTINUATION = 33;
+  const CODE_INSET = CODE_GUTTER + 30;
+  function codeLayout(source, columns = Infinity) {
+    const rows = source.map((line) => wrapLine(line, columns));
+    const longest = Math.max(...rows.flatMap((line) => line.map((row) => row.end - row.start + row.indent)));
+    const continuations = rows.reduce((count, line) => count + line.length - 1, 0);
+    return {
+      rows,
+      width: Math.max(300, CODE_INSET + longest * CODE_CHAR),
+      height: 44 + source.length * LINE + continuations * CONTINUATION
+    };
+  }
+  function columnsForCode(width) {
+    return Math.max(12, Math.floor((width - CODE_INSET) / CODE_CHAR));
+  }
+  function placeCodeRows(rows, firstY) {
+    let y = firstY;
+    return rows.map((line) => line.map((row, i) => {
+      const placed = { ...row, y };
+      y += i + 1 < line.length ? CONTINUATION : LINE;
+      return placed;
+    }));
+  }
   const frameOf = (s) => ({
     x: s.x - FRAME.side,
     y: s.y - FRAME.top - s.rise * RISE.top,
@@ -426,11 +494,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   const PANE_LABEL_MIN = 14;
   const PANE_LABEL_GAP = 6;
   const paneLabelWidth = (label) => typeLabelWidth(label.type, label.size);
-  function paneLabels(step) {
+  function paneLabels(step, paneChar) {
     const labels = [];
     const centres = [];
     for (const part of step.types ?? []) {
-      const cx = (part.span[0] + part.span[1]) / 2 * EVAL_CHAR;
+      const cx = (part.span[0] + part.span[1]) / 2 * paneChar;
       const last = labels[labels.length - 1];
       const label = {
         type: part.type,
@@ -466,11 +534,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return labels;
   }
-  function paneLabelExtent(m) {
+  function paneLabelExtent(m, paneChar) {
     let rows = 0;
     let right = 0;
     for (const step of m.typed ? m.steps : []) {
-      for (const label of paneLabels(step)) {
+      for (const label of paneLabels(step, paneChar)) {
         rows = Math.max(rows, label.row + 1);
         right = Math.max(right, label.cx + paneLabelWidth(label) / 2);
       }
@@ -525,12 +593,17 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     for (const { cell, ends } of ports.values()) {
       const side = (end) => end.other < centre(cell) ? 0 : 1;
       ends.sort((p, q) => side(p) - side(q) || q.other - p.other);
-      const spread = 20 * (ends.length - 1);
-      const low = g.isStruct(cell) ? cell.x + 12 : cell.x + 3 + labelWidth(cell) + 14;
-      const high = cell.x + cell.w - 12;
-      const first = Math.min(Math.max(centre(cell) - spread / 2, low), Math.max(low, high - spread));
+      const margin = Math.min(12, cell.w / 2);
+      const left = cell.x + margin;
+      const high = cell.x + cell.w - margin;
+      const clearance = cell.x + 3 + labelWidth(cell) + 14;
+      const intervals = ends.length - 1;
+      const low = !g.isStruct(cell) && clearance + 20 * intervals <= high ? Math.max(left, clearance) : left;
+      const spacing = intervals ? Math.min(20, (high - low) / intervals) : 0;
+      const spread = spacing * intervals;
+      const first = Math.min(Math.max(centre(cell) - spread / 2, low), high - spread);
       ends.forEach((end, i) => {
-        end.l[end.key] = first + i * 20;
+        end.l[end.key] = first + i * spacing;
       });
     }
     const range = (l) => [
@@ -580,35 +653,45 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const height = Math.max(0, ...m.tops.map((item) => sink(item) + below(item.name)));
     return { tags: tags2, drop, height };
   }
-  function placement(m, byte) {
+  const WRAP_HEIGHT_FACTOR = 1.5;
+  function placement(m, byte, rowOf) {
     const spans = /* @__PURE__ */ new Map();
     const gaps = [];
-    const unused = (x, bytes) => {
-      if (bytes > 0) gaps.push([x, bytes * byte]);
+    let row = 0;
+    const unused = (x2, bytes) => {
+      if (bytes > 0) gaps.push([x2, bytes * byte, row]);
       return Math.max(0, bytes) * byte;
     };
-    const put = (item, x) => {
+    const put = (item, x2) => {
       let w = item.size * byte;
       if (item.children) {
         let address2 = item.address;
         w = 0;
         for (const child of item.children) {
-          w += unused(x + w, child.address - address2);
+          w += unused(x2 + w, child.address - address2);
           const pad = child.children ? NEST : 0;
-          w += pad + put(child, x + w + pad) + pad;
+          w += pad + put(child, x2 + w + pad) + pad;
           address2 = child.address + child.size;
         }
-        w += unused(x + w, item.address + item.size - address2);
+        w += unused(x2 + w, item.address + item.size - address2);
       }
-      spans.set(item.name, [x, w]);
+      spans.set(item.name, [x2, w]);
       return w;
     };
     let width = 0;
+    let x = 0;
     let address = null;
     for (const item of m.tops) {
-      if (address !== null) width += unused(width, item.address - address) + GAP;
-      width += put(item, width);
+      const r = (rowOf == null ? void 0 : rowOf.get(item.name)) ?? 0;
+      if (r !== row) {
+        row = r;
+        x = 0;
+        address = null;
+      }
+      if (address !== null) x += unused(x, item.address - address) + GAP;
+      x += put(item, x);
       address = item.address + item.size;
+      width = Math.max(width, x);
     }
     return { spans, gaps, width };
   }
@@ -620,11 +703,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     m.source.forEach((source, i) => {
       for (const match of source.matchAll(word)) {
         const idx = match.index ?? 0;
+        const row = g.codeRows[i].find((row2) => row2.start <= idx && idx < row2.end);
+        if (!row) continue;
         targets.push({
           type: match[1],
           underline: true,
-          x: g.code.x + 62 + idx * CODE_CHAR,
-          y: g.lineY(i) - CODE_SIZE * 0.85,
+          x: g.code.x + CODE_GUTTER + (row.indent + idx - row.start) * CODE_CHAR,
+          y: row.y - CODE_SIZE * 0.85,
           w: match[1].length * CODE_CHAR,
           h: CODE_SIZE * 1.2
         });
@@ -636,51 +721,122 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return targets;
   }
   function labelSize(boxes, label, size) {
-    const sorted = [...boxes].sort((a, b) => a.x - b.x);
+    const sorted = [...boxes].sort((a, b) => a.y - b.y || a.x - b.x);
     let current = size;
     for (let i = 1; i < sorted.length; i++) {
       const a = sorted[i - 1];
       const b = sorted[i];
+      if (a.y !== b.y) continue;
       const room = b.x + b.w / 2 - (a.x + a.w / 2) - 8;
       const half = (label(a).length + label(b).length) * CHAR / 2;
       if (half * current > room) current = room / half;
     }
     return current;
   }
-  function geometry(m, P, stacked) {
+  const COLUMN_GAP = 56;
+  const STACK_TETHER_WIDTH = 30;
+  function geometry(m, P, stacked, viewport) {
     const isStruct = (c) => Boolean(c.fields);
-    const longest = Math.max(...m.source.map((line) => line.length));
-    let codeW = Math.max(300, 62 + longest * CODE_CHAR + 30);
-    const codeH = 44 + m.source.length * LINE;
-    const first = m.tops[0];
-    const last = m.tops[m.tops.length - 1];
-    const fixed = GAP * (m.tops.length - 1) + 2 * NEST * m.groups.filter((s) => s.parent).length;
+    const unwrapped = codeLayout(m.source);
+    const targetCodeSize = stacked ? 12 : 13;
+    const canvasBudget = viewport > 0 ? viewport * CODE_SIZE / targetCodeSize : Infinity;
+    const codeByColumns = /* @__PURE__ */ new Map();
+    const fitCode = (budget) => {
+      if (unwrapped.width <= budget + CODE_CHAR) return unwrapped;
+      const columns = columnsForCode(budget);
+      let layout = codeByColumns.get(columns);
+      if (!layout) {
+        layout = codeLayout(m.source, columns);
+        codeByColumns.set(columns, layout);
+      }
+      return layout;
+    };
+    const stackedCodeBudget = canvasBudget - 2 * MARGIN - STACK_TETHER_WIDTH;
+    const initialCode = stacked ? fitCode(stackedCodeBudget) : unwrapped;
     const widest = m.leaves.some((leaf) => leaf.size < 4) ? NARROW_BYTE : MAX_BYTE;
-    const placed = placement(
-      m,
-      Math.min(widest, (MEMORY_WIDTH - fixed) / (last.address + last.size - first.address))
-    );
-    const memoryW = placed.width;
     const rise = m.rise;
+    const structs = m.groups.length > 0;
     const paneChars = Math.max(...m.steps.map((step) => step.pane.length));
     const finalStdout = m.steps[m.steps.length - 1].stdout;
     const outputLines = finalStdout ? finalStdout.replace(/\n$/, "").split("\n") : [];
     const outputChars = Math.max(0, ...outputLines.map((line) => line.length));
-    const labelExtent = paneLabelExtent(m);
-    let columnW = Math.max(
-      360,
-      memoryW + 48,
-      paneChars * EVAL_CHAR + 48,
-      labelExtent.right + 24 - PANE_LABEL_LEFT,
-      (P.outputLabel.length + 1) * 26 * CHAR + outputChars * EVAL_CHAR + 48
-    );
+    const canWrap = !stacked && m.tops.length > 1 && !m.typed && m.references.length === 0 && m.steps.every((step) => Object.keys(step.targets).length === 0);
+    const pitch = (structs ? CELL + FRAME.bottom + 32 : CELL + 34) + rise * RISE.bottom + (structs ? FRAME.top : 0) + 30 + rise * RISE.top;
+    const plan = (rows2) => {
+      const rowOf2 = /* @__PURE__ */ new Map();
+      rows2.forEach((row, r) => row.forEach((i) => rowOf2.set(m.tops[i].name, r)));
+      const byteFor = (budget) => Math.min(
+        widest,
+        ...rows2.map((row) => {
+          const items = row.map((i) => m.tops[i]);
+          const bytes = items[items.length - 1].address + items[items.length - 1].size - items[0].address;
+          const nested = m.groups.filter((s) => s.parent && rowOf2.get(s.top) === rowOf2.get(items[0].name));
+          return Math.max(1, (budget - GAP * (items.length - 1) - 2 * NEST * nested.length) / bytes);
+        })
+      );
+      const natural = placement(m, byteFor(MEMORY_WIDTH), rowOf2).width;
+      const paneSize = Math.max(
+        PANE_MIN,
+        Math.min(PANE_MAX, Math.floor((Math.max(360, natural + 48) - 48) / (paneChars * CHAR)))
+      );
+      const paneChar = paneSize * CHAR;
+      const labelExtent2 = paneLabelExtent(m, paneChar);
+      const others = Math.max(
+        360,
+        paneChars * paneChar + 48,
+        labelExtent2.right + 24 - PANE_LABEL_LEFT,
+        (P.outputLabel.length + 1) * 26 * CHAR + outputChars * paneChar + 48,
+        stacked ? initialCode.width : 0
+      );
+      const byte = byteFor(Math.max(MEMORY_WIDTH, others - 48));
+      const placed2 = placement(m, byte, rowOf2);
+      const columnW2 = Math.max(others, placed2.width + 48);
+      const codeBudget = stacked ? Math.max(columnW2, stackedCodeBudget) : canvasBudget - (columnW2 + COLUMN_GAP + 2 * MARGIN);
+      const code22 = fitCode(codeBudget);
+      const width2 = code22.width + COLUMN_GAP + columnW2;
+      return { rows: rows2, rowOf: rowOf2, code: code22, paneSize, paneChar, labelExtent: labelExtent2, placed: placed2, columnW: columnW2, width: width2, cell: byte / width2 };
+    };
+    const partitions = (n, count) => {
+      if (count === 1) return [[Array.from({ length: n }, (_, i) => i)]];
+      const out2 = [];
+      const cut = (from, left, acc) => {
+        if (left === 1) {
+          out2.push([...acc, Array.from({ length: n - from }, (_, i) => from + i)]);
+          return;
+        }
+        for (let to = from + 1; to <= n - left + 1; to++) {
+          cut(to, left - 1, [...acc, Array.from({ length: to - from }, (_, i) => from + i)]);
+        }
+      };
+      cut(0, count, []);
+      return out2;
+    };
+    const single = plan(partitions(m.tops.length, 1)[0]);
+    const baseH = (structs ? FRAME.top : 0) + 30 + rise * RISE.top + pitch + 132;
+    const limit = Math.max(single.code.height, baseH) * WRAP_HEIGHT_FACTOR;
+    let chosen = single;
+    for (let count = 2; canWrap && count <= Math.min(3, m.tops.length); count++) {
+      if (baseH + (count - 1) * pitch > limit) break;
+      for (const rows2 of partitions(m.tops.length, count)) {
+        const candidate = plan(rows2);
+        if (candidate.width <= single.width + 1 && candidate.cell > chosen.cell * 1.1) chosen = candidate;
+      }
+    }
+    const { labelExtent } = chosen;
+    const placed = chosen.placed;
+    const rowOf = chosen.rowOf;
+    const extraRows = chosen.rows.length - 1;
+    const rowY = (name) => (rowOf.get(name.split(".")[0]) ?? 0) * pitch;
+    const { rows, height: codeH } = chosen.code;
+    let codeW = chosen.code.width;
+    let columnW = chosen.columnW;
     if (stacked) codeW = columnW = Math.max(codeW, columnW);
     const atLeaf = (memX2, memY2, c) => {
       const span = placed.spans.get(c.name);
       return {
         ...c,
         x: memX2 + span[0],
-        y: memY2,
+        y: memY2 + rowY(c.name),
         w: span[1],
         h: CELL,
         color: "",
@@ -692,7 +848,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       return {
         ...c,
         x: memX2 + span[0],
-        y: memY2,
+        y: memY2 + rowY(c.name),
         w: span[1],
         h: CELL,
         color: "",
@@ -714,7 +870,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         level = Math.max(level, l.level);
       }
     }
-    const structs = m.groups.length > 0;
     const room = (level >= 0 ? FRAME.top + 84 + level * 40 + 10 : (structs ? FRAME.top : 0) + 30) + rise * RISE.top;
     const tagged = tagRows(m, probe.box);
     const typeRow = typeRows(m, probe.box);
@@ -722,7 +877,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const labelRise = m.typed ? labelHeight + 6 : 0;
     const named = (structs ? CELL + FRAME.bottom + 32 : CELL + 34) + rise * RISE.bottom + tagged.height;
     const names = named + typeRow.height;
-    const paneTop = room + names + 56;
+    const paneTop = room + names + extraRows * pitch + 56;
     const paneH = 76 + labelRise;
     const outputTop = paneTop + paneH + 60;
     const columnH = outputLines.length ? outputTop + (outputLines.length - 1) * 36 + 14 : paneTop + paneH;
@@ -736,12 +891,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       codeY = MARGIN;
       columnX = MARGIN;
       columnY = codeY + codeH + 24;
-      width = MARGIN + columnW + 30 + MARGIN;
+      width = MARGIN + columnW + STACK_TETHER_WIDTH + MARGIN;
       height = columnY + columnH + MARGIN;
     } else {
       const content = Math.max(codeH, columnH);
       codeY = MARGIN + (content - codeH) / 2;
-      columnX = codeX + codeW + 56;
+      columnX = codeX + codeW + COLUMN_GAP;
       columnY = MARGIN + (content - columnH) / 2;
       width = columnX + columnW + MARGIN;
       height = MARGIN + content + MARGIN;
@@ -754,8 +909,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const below = pane2.y - 56;
     const out = [columnX + 24, columnY + outputTop];
     const code2 = { x: codeX, y: codeY, w: codeW, h: codeH };
-    const lineY = (i) => code2.y + 50 + i * LINE;
-    const gaps = placed.gaps.map(([x, w]) => [memX + x, w]);
+    const codeRows = placeCodeRows(rows, code2.y + 50);
+    const lineY = (i) => codeRows[i][0].y;
+    const gaps = placed.gaps.map(([x, w, row]) => [
+      memX + x,
+      w,
+      memY + row * pitch
+    ]);
     const colour2 = (list, i, count) => list[i % count];
     const leaves = m.leaves.map((l) => ({
       ...atLeaf(memX, memY, l),
@@ -789,6 +949,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const owner = (token) => groups.find((s) => s.name === token) || leaves.find((l) => !l.group && l.name === token) || tags2.find((t) => t.name === token);
     const field = (token) => leaves.find((l) => l.group && l.label === token) || groups.find((s) => s.parent && s.label === token);
     const g = {
+      paneSize: chosen.paneSize,
+      paneChar: chosen.paneChar,
       stacked,
       isStruct,
       rise,
@@ -803,6 +965,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       below,
       out,
       lineY,
+      codeRows,
       gaps,
       leaves,
       groups,
@@ -831,8 +994,41 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     g.typeTargets = typeTargets(m, g);
     return g;
   }
+  function arrayType(spelling) {
+    var _a;
+    const type = spelling.replace(/\b(?:struct|class) /g, "").replace(/^const /, "");
+    const match = /^(?:std::)?array<(.+), (\d+)>$/.exec(type);
+    if (!match) return null;
+    const element = ((_a = arrayType(match[1])) == null ? void 0 : _a.name) ?? match[1];
+    const count = Number(match[2]);
+    return { name: `std::array<${element}, ${count}>`, element, count };
+  }
+  function codeName(path) {
+    return path.replaceAll(".[", "[");
+  }
+  const CHAIN_STEP = 0.7;
+  const CHAIN_LEAD = 0.35;
+  function chainOf(name) {
+    const parts = name.split(".");
+    return parts.map((_, i) => parts.slice(0, i + 1).join("."));
+  }
+  function chainDelay(name) {
+    const count = name ? chainOf(name).length : 1;
+    return count > 1 ? (count - 1) * CHAIN_STEP + CHAIN_LEAD : 0;
+  }
+  function paneLevels(name, spelled) {
+    const levels = chainOf(name).map(codeName);
+    return levels.length > 1 && levels.every((level) => spelled.startsWith(level)) ? levels : null;
+  }
+  function walkWindows(count, end, offset = 0) {
+    const start = count > 1 ? offset : 0;
+    return Array.from({ length: count }, (_, k) => [
+      start + k * CHAIN_STEP,
+      k === count - 1 ? end : start + (k + 1) * CHAIN_STEP
+    ]);
+  }
   const stores = (op) => op.kind === "write" || op.kind === "bind";
-  const departure = (op) => stores(op) ? T.writeHold : op.kind === "print" ? 0.2 : T.prepare;
+  const departure = (op) => (stores(op) ? T.writeHold : op.kind === "print" ? 0.2 : T.prepare) + (op.kind === "read" || op.kind === "write" ? chainDelay(op.name) : 0);
   function arrival(op) {
     if (op.kind === "deref") return T.prepare + T.follow;
     if (op.kind === "eval" || op.kind === "alias" || op.kind === "convert") return T.evaluate;
@@ -972,7 +1168,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return active;
   }
-  function colored(c, x, y, value, size = PANE_SIZE, mute = true, member = false) {
+  function colored(c, x, y, value, size = c.g.paneSize, mute = true, member = false) {
     let out = "";
     let cx = x;
     let isMember = member;
@@ -989,23 +1185,23 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }
   function paneText(c, x, y, pane2, a, b, expr) {
     const member = /(\.|->)$/.test(pane2.slice(0, a));
-    if (!expr) return colored(c, x, y, pane2.slice(a, b), PANE_SIZE, true, member);
+    if (!expr) return colored(c, x, y, pane2.slice(a, b), c.g.paneSize, true, member);
     const cuts = [a, Math.min(b, Math.max(a, expr[0])), Math.min(b, Math.max(a, expr[1])), b];
     let out = "";
     for (let i = 0; i < 3; i++) {
       const [from, to] = [cuts[i], cuts[i + 1]];
       if (from >= to) continue;
-      const px = x + (from - a) * EVAL_CHAR;
+      const px = x + (from - a) * c.g.paneChar;
       const part = pane2.slice(from, to);
-      out += i === 1 ? colored(c, px, y, part, PANE_SIZE, true, /(\.|->)$/.test(pane2.slice(0, from))) : text(px, y, part, PANE_SIZE, c.P.context);
+      out += i === 1 ? colored(c, px, y, part, c.g.paneSize, true, /(\.|->)$/.test(pane2.slice(0, from))) : text(px, y, part, c.g.paneSize, c.P.context);
     }
     return out;
   }
   function exprBackground(c, x, y, expr, from = null, begin = 0) {
     if (!expr || expr[0] === expr[1]) return "";
     const box = (e) => [
-      x + e[0] * EVAL_CHAR - 4,
-      (e[1] - e[0]) * EVAL_CHAR + 8
+      x + e[0] * c.g.paneChar - 4,
+      (e[1] - e[0]) * c.g.paneChar + 8
     ];
     const [bx, bw] = box(expr);
     if (from && from[1] > from[0] && (from[0] !== expr[0] || from[1] !== expr[1])) {
@@ -1039,13 +1235,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const { P } = c;
     const op = step.op;
     const clash = (op == null ? void 0 : op.kind) === "clash";
-    const labels = paneLabels(step).map((label) => ({ ...label, cx: x + label.cx }));
+    const labels = paneLabels(step, c.g.paneChar).map((label) => ({ ...label, cx: x + label.cx }));
     const opStart = op && "span" in op ? op.span[0] : void 0;
     const value = labels.find((label) => !label.slot && label.start === opStart);
     const slot = labels.find((label) => label.slot);
     let out = "";
     for (const part of step.types ?? []) {
-      out += `<path d="M ${round(x + part.span[0] * EVAL_CHAR)} ${y + 14} H ${round(x + part.span[1] * EVAL_CHAR)}" stroke="${typeColour(c, part.type)}" stroke-width="3" stroke-linecap="round"/>`;
+      out += `<path d="M ${round(x + part.span[0] * c.g.paneChar)} ${y + 14} H ${round(x + part.span[1] * c.g.paneChar)}" stroke="${typeColour(c, part.type)}" stroke-width="3" stroke-linecap="round"/>`;
     }
     for (const label of labels) {
       const top = labelTop(y, label);
@@ -1072,31 +1268,56 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const { m, g, P, step, op } = c;
     const x = g.code.x;
     let out = rect(x, g.code.y, g.code.w, g.code.h, P.panel);
-    const box = (line) => {
+    const boxes = (line) => {
       const source = m.source[line];
-      const span2 = m.spans[line] || [0, source.replace(/;\s*$/, "").length];
-      return [
-        x + 62 + span2[0] * CODE_CHAR - 3,
-        g.lineY(line) - 30,
-        (span2[1] - span2[0]) * CODE_CHAR + 6
-      ];
+      const span = m.spans[line] || [0, source.replace(/;\s*$/, "").length];
+      const rows = g.codeRows[line];
+      const wrapped = rows.length > 1;
+      return rows.flatMap((row) => {
+        const start = Math.max(span[0], row.start);
+        const end = Math.min(span[1], row.end);
+        if (start >= end) return [];
+        return [[
+          x + CODE_GUTTER + (row.indent + start - row.start) * CODE_CHAR - 3,
+          row.y - (wrapped ? 24 : 30),
+          (end - start) * CODE_CHAR + 6,
+          wrapped ? 31 : 40
+        ]];
+      });
     };
     const y = g.lineY(step.line);
-    const [bx, by, bw] = box(step.line);
+    const spans = boxes(step.line);
     const stripeColour = (op == null ? void 0 : op.kind) === "clash" ? P.error : (op == null ? void 0 : op.kind) === "write" ? P.write : P.read;
-    let stripe = rect(x + 8, y - 32, 4, 44, stripeColour, "none", 0);
-    let span = rect(bx, by, bw, 40, P.highlight, "none", 6);
+    const continuationHeight = g.codeRows[step.line].at(-1).y - y;
+    let stripe = rect(x + 8, y - 32, 4, 44 + continuationHeight, stripeColour, "none", 0);
+    let highlight = spans.map(([x2, y2, w, h]) => rect(x2, y2, w, h, P.highlight, "none", 6)).join("");
     if (oldLine !== null) {
-      const [ox, oy, ow] = box(oldLine);
+      const prev = boxes(oldLine);
       stripe = animated(stripe, animateAttr("y", g.lineY(oldLine) - 32, y - 32));
-      span = animated(
-        span,
-        animateAttr("x", ox, bx) + animateAttr("y", oy, by) + animateAttr("width", ow, bw)
-      );
+      if (prev.length === 1 && spans.length === 1) {
+        const [ox, oy, ow, oh] = prev[0];
+        const [nx, ny, nw, nh] = spans[0];
+        highlight = animated(
+          highlight,
+          animateAttr("x", ox, nx) + animateAttr("y", oy, ny) + animateAttr("width", ow, nw) + animateAttr("height", oh, nh)
+        );
+      }
     }
-    out += stripe + span;
+    out += stripe + highlight;
     m.source.forEach((source, i) => {
-      out += text(x + 22, g.lineY(i), i + 1, 18, P.muted) + colored(c, x + 62, g.lineY(i), source, CODE_SIZE, /^\s*struct\b/.test(source));
+      out += text(x + 22, g.lineY(i), i + 1, 18, P.muted);
+      const definition = /^\s*struct\b/.test(source);
+      for (const row of g.codeRows[i]) {
+        out += colored(
+          c,
+          x + CODE_GUTTER + row.indent * CODE_CHAR,
+          row.y,
+          source.slice(row.start, row.end),
+          CODE_SIZE,
+          definition,
+          /(?:\.|->)\s*$/.test(source.slice(0, row.start))
+        );
+      }
     });
     for (const t of g.typeTargets) {
       if (t.underline) {
@@ -1126,6 +1347,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       target.setAttribute("x", String(g.code.x + 12));
       target.setAttribute("y", String(g.lineY(i) - 34));
       target.setAttribute("width", String(round(g.code.w - 24)));
+      target.setAttribute("height", String(48 + g.codeRows[i].at(-1).y - g.lineY(i)));
     });
   }
   function linkMarkup(c, l, { grow = null, fadeOut = null } = {}) {
@@ -1200,13 +1422,44 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const writing = new Set(op && op.kind === "write" ? g.cellsOf(op.name).map((l) => l.name) : []);
     const live = (l) => values[l.name] !== null || writing.has(l.name);
     let out = "";
-    for (const [x, w] of g.gaps) {
-      out += `<rect x="${round(x + 3)}" y="${g.memY + 3}" width="${round(w - 6)}" height="58" fill="none" stroke="${P.gapStroke}" stroke-dasharray="5 5"/>`;
+    for (const [x, w, y] of g.gaps) {
+      out += `<rect x="${round(x + 3)}" y="${y + 3}" width="${round(w - 6)}" height="58" fill="none" stroke="${P.gapStroke}" stroke-dasharray="5 5"/>`;
     }
+    const arrays = new Set(g.groups.filter((s) => arrayType(s.type ?? "")).map((s) => s.name));
+    const inArray = (name) => [...arrays].some((a) => name.startsWith(a + "."));
+    const startsAt = (target, cell) => {
+      var _a;
+      return target === cell.name || cell.name.startsWith(target + ".") && ((_a = g.box(target)) == null ? void 0 : _a.address) === cell.address;
+    };
+    const pointed = (shown, cell) => Boolean(shown && Object.values(shown.targets).some((t) => startsAt(t, cell)));
+    const taking = (i, cell) => {
+      const steps = c.m.steps;
+      for (let j = i; j >= 0 && steps[j].line === steps[Math.max(i, 0)].line; j--) {
+        const o = steps[j].op;
+        if ((o == null ? void 0 : o.kind) === "addr" && startsAt(o.name, cell)) return true;
+      }
+      return false;
+    };
+    const startsVariable = (cell) => {
+      var _a;
+      return ((_a = g.box(cell.name.split(".")[0])) == null ? void 0 : _a.address) === cell.address;
+    };
+    const addressOf = (cell, on) => {
+      const label = text(cell.x + 3, cell.y - 12, cell.address, 16, on ? P.muted : P.grey);
+      if (startsVariable(cell)) return label;
+      const now = pointed(step, cell) || taking(c.index, cell);
+      const before = c.animate ? pointed(prev, cell) || taking(c.index - 1, cell) : now;
+      if (now && before) return label;
+      const appear = (op == null ? void 0 : op.kind) === "addr" ? 0 : at;
+      if (now) return `<g opacity="0">${fade(0, 1, 0.3, appear)}${label}</g>`;
+      if (before) return `<g>${fade(1, 0, 0.3, at)}${label}</g>`;
+      return "";
+    };
     for (const s of g.groups) {
       const on = g.cellsOf(s.name).some(live);
       const f = frameOf(s);
-      const color = on ? s.fieldColor || s.color : null;
+      const arrayGroup = arrays.has(s.name) || s.label.startsWith("[");
+      const color = on ? arrayGroup ? s.color : s.fieldColor || s.color : null;
       out += dim(
         c,
         s.top,
@@ -1228,20 +1481,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     for (const cell of g.leaves) {
       const on = live(cell);
       const changing = writing.has(cell.name);
-      const color = cell.fieldColor || cell.color;
-      let markup = text(cell.x + 3, cell.y - 12, cell.address, 16, on ? P.muted : P.grey);
-      markup += cell.group ? text(
+      const element = cell.label.startsWith("[") && inArray(cell.name);
+      const color = element ? cell.color : cell.fieldColor || cell.color;
+      let markup = inArray(cell.name) ? addressOf(cell, on) : text(cell.x + 3, cell.y - 12, cell.address, 16, on ? P.muted : P.grey);
+      markup += text(
         cell.x + cell.w / 2,
-        cell.y + cell.h + 28,
+        cell.y + cell.h + (cell.group ? 28 : 34),
         cell.label,
-        g.fieldSize,
-        on ? color : P.grey,
-        "middle"
-      ) : text(
-        cell.x + cell.w / 2,
-        cell.y + cell.h + 34,
-        cell.label,
-        g.nameSize,
+        cell.group ? g.fieldSize : g.nameSize,
         on ? color : P.grey,
         "middle"
       );
@@ -1276,7 +1523,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       out += dim(c, cell.group || cell.name, markup);
     }
     if (op && (op.kind === "read" || op.kind === "write")) {
-      out += `<g>${fade(1, 0, 0.35, at + 0.15)}${outline(c, g.box(op.name), op.kind === "write" ? P.write : P.read)}</g>`;
+      out += chainHighlight(c, op, at);
     }
     if (op && op.kind === "deref") {
       out += `<g opacity="0">${fade(0, 1, 0.2, at - 0.15)}${outline(c, g.box(op.target), P.fg)}</g>`;
@@ -1294,9 +1541,33 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return out + tags(c, at);
   }
+  function chainHighlight(c, op, at) {
+    const { g, P } = c;
+    const color = op.kind === "write" ? P.write : P.read;
+    const levels = chainOf(op.name);
+    const windows = walkWindows(levels.length, at + 0.15, CHAIN_LEAD);
+    return levels.map((level, k) => {
+      const box = g.box(level);
+      if (!box) return "";
+      const [begin, leave] = windows[k];
+      const hidden = begin > 0;
+      const appear = hidden ? fade(0, 1, 0.15, begin) : "";
+      const r = g.isStruct(box) ? frameOf(box) : box;
+      const wash = `<g opacity="${g.isStruct(box) ? 0.1 : 0.22}">${rect(r.x + 3, r.y + 3, r.w - 6, r.h - 6, color, "none", g.isStruct(box) ? 8 : 0)}</g>`;
+      return `<g opacity="${hidden ? 0 : 1}">${appear}${fade(1, 0, 0.25, leave)}${wash}${outline(c, box, color)}</g>`;
+    }).join("");
+  }
+  function walkBoxes(levels, end, box, whole) {
+    if (!levels) return whole;
+    const windows = walkWindows(levels.length, end);
+    return levels.map((level, k) => {
+      const [begin, leave] = windows[k];
+      return `<g opacity="0">${fade(0, 1, 0.15, begin)}${fade(1, 0, 0.2, leave)}${box(level.length)}</g>`;
+    }).join("");
+  }
   function valueBox(c, value, color, path, begin, travel, end) {
-    const half = Math.max(28, String(value).length * EVAL_CHAR / 2 + 12);
-    return `<g opacity="0">${fade(0, 0.55, 0.25, begin)}${fade(0.55, 0, 0.2, end - 0.2)}<path d="${path}" fill="none" stroke="${color}" stroke-width="3"/></g><g opacity="0">${fade(0, 1, 0.12, begin)}${hide(end)}` + rect(-half, -25, 2 * half, 50, c.P.panel, color, 9) + text(0, 11, value, PANE_SIZE, c.P.fg, "middle") + `<animateMotion begin="${round(begin)}s" dur="${travel}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
+    const half = Math.max(28, String(value).length * c.g.paneChar / 2 + 12);
+    return `<g opacity="0">${fade(0, 0.55, 0.25, begin)}${fade(0.55, 0, 0.2, end - 0.2)}<path d="${path}" fill="none" stroke="${color}" stroke-width="3"/></g><g opacity="0">${fade(0, 1, 0.12, begin)}${hide(end)}` + rect(-half, -25, 2 * half, 50, c.P.panel, color, 9) + text(0, 11, value, c.g.paneSize, c.P.fg, "middle") + `<animateMotion begin="${round(begin)}s" dur="${travel}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
   }
   function transfers(c) {
     const { g, P, op } = c;
@@ -1305,7 +1576,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const begin = departure(op);
     const ty = g.ty - 11;
     const below = g.below;
-    const spanCentre = (span) => g.tx + (span[0] + span[1]) / 2 * EVAL_CHAR;
+    const spanCentre = (span) => g.tx + (span[0] + span[1]) / 2 * c.g.paneChar;
     const p = (...values) => values.map(round).join(" ");
     if (op.kind === "read") {
       const [sx, sy] = valueCentre(g.box(op.name));
@@ -1329,7 +1600,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         c,
         op.value,
         P.read,
-        `M ${p(sx, sy)} C ${p(side, sy)}, ${p(side, g.memY + CELL)}, ${p(side, below)} C ${p(side, ty)}, ${p(dx, ty - 60)}, ${p(dx, ty)}`,
+        `M ${p(sx, sy)} C ${p(side, sy)}, ${p(side, cell.y + CELL)}, ${p(side, below)} C ${p(side, ty)}, ${p(dx, ty - 60)}, ${p(dx, ty)}`,
         begin,
         T.travel,
         at
@@ -1382,15 +1653,15 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const ty = g.ty;
     let out = `<g class="cv-pane">${rect(g.pane.x, g.pane.y, g.pane.w, g.pane.h, P.pane)}</g>`;
     if (copying) {
-      const sx = g.code.x + 62;
+      const sx = g.code.x + CODE_GUTTER;
       const sy = g.lineY(step.line);
       const begin = copyBegin(c.m.steps, c.index);
       const total = begin + T.copyTravel;
       if (prev && prev.line !== step.line) {
         out += `<g>${fade(1, 0, 0.3, begin + 0.2)}${settledPane(c, prev, tx, ty)}</g>`;
       }
-      const scale = CODE_SIZE / PANE_SIZE;
-      out += `<g><animateMotion dur="${round(total)}s" path="M ${round(sx)} ${sy} L ${tx} ${ty}" keyPoints="0;0;1" keyTimes="0;${(begin / total).toFixed(4)};1" calcMode="spline" keySplines="0 0 1 1;0.4 0 0.2 1" fill="freeze"/><g transform="scale(${scale})"><animateTransform attributeName="transform" type="scale" from="${scale}" to="1" begin="${begin}s" dur="${T.copyTravel}s" ${EASE} fill="freeze"/><g opacity="0">${fade(0, 1, 0.15, begin - 0.15)}${fade(1, 0, 0.12, total)}` + rect(-8, -36, step.pane.length * EVAL_CHAR + 16, 48, P.highlight, P.read, 7, 2) + "</g>" + settledPane(c, step, 0, 0) + "</g></g>";
+      const scale = CODE_SIZE / c.g.paneSize;
+      out += `<g><animateMotion dur="${round(total)}s" path="M ${round(sx)} ${sy} L ${tx} ${ty}" keyPoints="0;0;1" keyTimes="0;${(begin / total).toFixed(4)};1" calcMode="spline" keySplines="0 0 1 1;0.4 0 0.2 1" fill="freeze"/><g transform="scale(${scale})"><animateTransform attributeName="transform" type="scale" from="${scale}" to="1" begin="${begin}s" dur="${T.copyTravel}s" ${EASE} fill="freeze"/><g opacity="0">${fade(0, 1, 0.15, begin - 0.15)}${fade(1, 0, 0.12, total)}` + rect(-8, -36, step.pane.length * c.g.paneChar + 16, 48, P.highlight, P.read, 7, 2) + "</g>" + settledPane(c, step, 0, 0) + "</g></g>";
       return out;
     }
     if (op && prev && (op.kind === "read" || op.kind === "addr" || op.kind === "deref" || op.kind === "eval" || op.kind === "alias" || op.kind === "convert")) {
@@ -1398,23 +1669,28 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const [s, e] = op.span;
       const length = step.pane.length - before.length + (e - s);
       const at = arrival(op);
-      const dx = (length - (e - s)) * EVAL_CHAR;
-      const sx = tx + s * EVAL_CHAR;
+      const dx = (length - (e - s)) * c.g.paneChar;
+      const sx = tx + s * c.g.paneChar;
       const [stroke, fill] = op.kind === "read" || op.kind === "addr" ? [P.read, P.readFill] : op.kind === "convert" ? [P.write, P.writeFill] : [P.fg, P.derefFill];
       out += exprBackground(c, tx, ty, step.expr, prev.expr, at + 0.1);
-      out += `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.2, at - 0.1)}${markBox(sx, ty, e - s, stroke, fill)}</g>`;
+      out += walkBoxes(
+        op.kind === "read" ? paneLevels(op.name, before.slice(s, e)) : null,
+        at - 0.1,
+        (chars) => markBox(sx, ty, chars * c.g.paneChar, stroke, fill),
+        `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.2, at - 0.1)}${markBox(sx, ty, (e - s) * c.g.paneChar, stroke, fill)}</g>`
+      );
       out += paneText(c, tx, ty, before, 0, s, prev.expr);
       let old = paneText(c, sx, ty, before, s, e, prev.expr);
       let fresh = paneText(c, sx, ty, step.pane, s, s + length, step.expr);
-      const middle = sx + (e - s) * EVAL_CHAR / 2;
+      const middle = sx + (e - s) * c.g.paneChar / 2;
       if (op.kind === "eval" || op.kind === "convert") {
         old = scaleAbout(old, middle, ty - 11, 1, 0.45, 0.15, at - 0.15);
-        fresh = scaleAbout(fresh, sx + length * EVAL_CHAR / 2, ty - 11, 0.45, 1, at, 0.25);
+        fresh = scaleAbout(fresh, sx + length * c.g.paneChar / 2, ty - 11, 0.45, 1, at, 0.25);
       }
       out += `<g>${hide(at)}${old}</g>`;
-      out += `<g opacity="0">${show(at)}${settle(fresh, (e - s - length) / 2 * EVAL_CHAR, at + 0.1)}</g>`;
+      out += `<g opacity="0">${show(at)}${settle(fresh, (e - s - length) / 2 * c.g.paneChar, at + 0.1)}</g>`;
       return out + glide(
-        paneText(c, tx + e * EVAL_CHAR, ty, before, e, before.length, prev.expr),
+        paneText(c, tx + e * c.g.paneChar, ty, before, e, before.length, prev.expr),
         dx,
         at + 0.1,
         0.3
@@ -1427,19 +1703,25 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const [ns, ne] = op.destination;
       const tight = ne === vs ? 4 : 0;
       out += `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.2, at + 0.15)}` + rect(
-        tx + vs * EVAL_CHAR - 3 + tight,
+        tx + vs * c.g.paneChar - 3 + tight,
         ty - 32,
-        (ve - vs) * EVAL_CHAR + 6 - tight,
+        (ve - vs) * c.g.paneChar + 6 - tight,
         42,
         P.writeFill,
         P.write,
         6,
         2
       ) + "</g>";
-      out += `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.3, at + 0.4)}` + rect(tx + ns * EVAL_CHAR - 3, ty - 32, (ne - ns) * EVAL_CHAR + 6 - tight, 42, "none", P.write, 6, 2) + "</g>";
+      const destination = (chars) => rect(tx + ns * c.g.paneChar - 3, ty - 32, chars * c.g.paneChar + 6 - tight, 42, "none", P.write, 6, 2);
+      out += walkBoxes(
+        paneLevels(op.name, step.pane.slice(ns, ne)),
+        at + 0.4,
+        destination,
+        `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.3, at + 0.4)}${destination(ne - ns)}</g>`
+      );
       out += paneText(c, tx, ty, step.pane, 0, step.pane.length, step.expr);
       if (inContext(step, op.destination)) {
-        out += `<g opacity="0">${fade(0, 1, 0.2)}${fade(1, 0, 0.35, at + 0.15)}` + colored(c, tx + ns * EVAL_CHAR, ty, step.pane.slice(ns, ne)) + "</g>";
+        out += `<g opacity="0">${fade(0, 1, 0.2)}${fade(1, 0, 0.35, at + 0.15)}` + colored(c, tx + ns * c.g.paneChar, ty, step.pane.slice(ns, ne)) + "</g>";
       }
       return out;
     }
@@ -1447,8 +1729,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const at = arrival(op);
       const [vs, ve] = op.span;
       const [ns, ne] = op.destination;
-      out += `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.2, at + 0.15)}${markBox(tx + ns * EVAL_CHAR, ty, ne - ns, P.fg, P.derefFill)}</g>`;
-      out += `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.3, at + 0.4)}` + rect(tx + vs * EVAL_CHAR - 3, ty - 32, (ve - vs) * EVAL_CHAR + 6, 42, "none", P.fg, 6, 2) + "</g>";
+      out += `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.2, at + 0.15)}${markBox(tx + ns * c.g.paneChar, ty, (ne - ns) * c.g.paneChar, P.fg, P.derefFill)}</g>`;
+      out += `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.3, at + 0.4)}` + rect(tx + vs * c.g.paneChar - 3, ty - 32, (ve - vs) * c.g.paneChar + 6, 42, "none", P.fg, 6, 2) + "</g>";
     }
     return out + paneText(c, tx, ty, step.pane, 0, step.pane.length, step.expr);
   }
@@ -1462,14 +1744,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const shown = printing && prev ? prev.stdout : step.stdout;
     let out = (printing && (!prev || !prev.stdout) ? `<g opacity="0">${fade(0, 1, 0.25)}` : "<g>") + text(ox, oy, label, 26, P.muted) + "</g>";
     shown.split("\n").forEach((line, i) => {
-      out += text(vx, oy + i * 36, line, PANE_SIZE, P.fg);
+      out += text(vx, oy + i * 36, line, c.g.paneSize, P.fg);
     });
     if (printing && op.kind === "print") {
       const lines = shown.split("\n");
-      const x = vx + lines[lines.length - 1].length * EVAL_CHAR;
+      const x = vx + lines[lines.length - 1].length * c.g.paneChar;
       const y = oy + (lines.length - 1) * 36;
-      const sx = g.tx + (op.span[0] + op.span[1]) / 2 * EVAL_CHAR;
-      const w = op.value.length * EVAL_CHAR;
+      const sx = g.tx + (op.span[0] + op.span[1]) / 2 * c.g.paneChar;
+      const w = op.value.length * c.g.paneChar;
       const p = (...values) => values.map(round).join(" ");
       out += valueBox(
         c,
@@ -1480,7 +1762,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         0.7,
         0.9
       );
-      out += `<g opacity="0">${show(0.9)}${text(x, y, op.value, PANE_SIZE, P.fg)}</g>`;
+      out += `<g opacity="0">${show(0.9)}${text(x, y, op.value, c.g.paneSize, P.fg)}</g>`;
     }
     return out;
   }
@@ -1531,6 +1813,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       __publicField(this, "status");
       __publicField(this, "typeBox");
       __publicField(this, "stacked");
+      __publicField(this, "layoutWidth");
       __publicField(this, "observer", null);
       __publicField(this, "P");
       __publicField(this, "g");
@@ -1602,7 +1885,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.stacked = null;
       if (window.ResizeObserver) {
         this.observer = new ResizeObserver(() => {
-          if (this.arrangement() !== this.stacked) this.refresh();
+          if (this.root.clientWidth !== this.layoutWidth) this.refresh();
         });
         this.observer.observe(root);
       }
@@ -1688,10 +1971,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         box.style.top = `${top >= 4 ? top : stage.top - view.top + (hit.y + hit.h) * scale + 6}px`;
       }
     }
-    arrangement() {
-      const width = this.root.clientWidth;
-      return width > 0 && width < STACK_BELOW;
-    }
     theme() {
       this.root.dataset.cvTheme = themeName();
       const style = getComputedStyle(this.root);
@@ -1705,6 +1984,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       P.fields = Array.from({ length: FIELD_COLOURS }, (_, i) => read("field-" + i) || "#808080");
       P.types = Array.from({ length: TYPE_COLOURS }, (_, i) => read("type-" + i) || "#808080");
       this.P = P;
+      this.layoutWidth = void 0;
     }
     refresh() {
       this.theme();
@@ -1712,11 +1992,18 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       if (this.animated) this.seek(this.elapsed);
     }
     render(animate) {
-      this.stacked = this.arrangement();
+      const width = this.root.clientWidth;
+      if (width !== this.layoutWidth) {
+        this.stacked = width > 0 && width < STACK_BELOW;
+        this.g = geometry(this.m, this.P, this.stacked, width);
+        this.layoutWidth = width;
+        this.shownType = null;
+        this.typeBox.hidden = true;
+      }
       const steps = this.m.steps;
       const step = steps[this.index];
       const prev = this.index ? steps[this.index - 1] : null;
-      const g = this.g = geometry(this.m, this.P, this.stacked);
+      const g = this.g;
       const now = activeVariables(this.m, this.index);
       const before = animate && this.index ? activeVariables(this.m, this.index - 1) : now;
       const begin = /* @__PURE__ */ new Map();

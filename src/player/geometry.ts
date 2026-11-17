@@ -1,16 +1,18 @@
 // Geometry and layout calculation for memory cells, struct frames, pointer arcs, and reference tags.
 import type { TraceStep } from '../core/trace_format.ts';
+import { type CodeRow, codeLayout, columnsForCode, placeCodeRows } from './code_layout.ts';
 import {
   CELL,
   CHAR,
   CODE_CHAR,
+  CODE_GUTTER,
   CODE_SIZE,
-  EVAL_CHAR,
+  PANE_MAX,
+  PANE_MIN,
   FIELD_COLOURS,
   FRAME,
   GAP,
   LABEL,
-  LINE,
   MARGIN,
   MAX_BYTE,
   MEMORY_WIDTH,
@@ -82,6 +84,8 @@ export interface TypeTarget extends PlacedRect {
 
 export interface Geometry {
   stacked: boolean;
+  paneSize: number;
+  paneChar: number;
   isStruct(c: { fields?: unknown }): c is PlacedGroup;
   rise: number;
   width: number;
@@ -95,7 +99,8 @@ export interface Geometry {
   below: number;
   out: [number, number];
   lineY(i: number): number;
-  gaps: Array<[number, number]>;
+  codeRows: CodeRow[][];
+  gaps: Array<[number, number, number]>;
   leaves: PlacedLeaf[];
   groups: PlacedGroup[];
   box(name: string): PlacedBox | undefined;
@@ -150,11 +155,11 @@ const paneLabelWidth = (label: PaneLabel): number => typeLabelWidth(label.type, 
  * collide, or that the pane's left edge pushes into its neighbour, keeps its size and takes the
  * first row above where it fits.
  */
-export function paneLabels(step: TraceStep): PaneLabel[] {
+export function paneLabels(step: TraceStep, paneChar: number): PaneLabel[] {
   const labels: PaneLabel[] = [];
   const centres: number[] = [];
   for (const part of step.types ?? []) {
-    const cx = ((part.span[0] + part.span[1]) / 2) * EVAL_CHAR;
+    const cx = ((part.span[0] + part.span[1]) / 2) * paneChar;
     const last = labels[labels.length - 1];
     const label: PaneLabel = {
       type: part.type,
@@ -194,11 +199,11 @@ export function paneLabels(step: TraceStep): PaneLabel[] {
 }
 
 /** The rows and the right edge the labels of every step need, relative to the pane's text. */
-function paneLabelExtent(m: PreparedModel): { rows: number; right: number } {
+function paneLabelExtent(m: PreparedModel, paneChar: number): { rows: number; right: number } {
   let rows = 0;
   let right = 0;
   for (const step of m.typed ? m.steps : []) {
-    for (const label of paneLabels(step)) {
+    for (const label of paneLabels(step, paneChar)) {
       rows = Math.max(rows, label.row + 1);
       right = Math.max(right, label.cx + paneLabelWidth(label) / 2);
     }
@@ -281,13 +286,20 @@ export function links(g: LinkProbe, step: TraceStep): PointerLink[] {
   for (const { cell, ends } of ports.values()) {
     const side = (end: { other: number }): number => (end.other < centre(cell) ? 0 : 1);
     ends.sort((p, q) => side(p) - side(q) || q.other - p.other);
-    const spread = 20 * (ends.length - 1);
-    // Arc ends keep clear of the cell's address label.
-    const low = g.isStruct(cell) ? cell.x + 12 : cell.x + 3 + labelWidth(cell) + 14;
-    const high = cell.x + cell.w - 12;
-    const first = Math.min(Math.max(centre(cell) - spread / 2, low), Math.max(low, high - spread));
+    const margin = Math.min(12, cell.w / 2);
+    const left = cell.x + margin;
+    const high = cell.x + cell.w - margin;
+    const clearance = cell.x + 3 + labelWidth(cell) + 14;
+    const intervals = ends.length - 1;
+    // Fit every port on the cell, leaving room for its address when possible.
+    const low = !g.isStruct(cell) && clearance + 20 * intervals <= high
+      ? Math.max(left, clearance)
+      : left;
+    const spacing = intervals ? Math.min(20, (high - low) / intervals) : 0;
+    const spread = spacing * intervals;
+    const first = Math.min(Math.max(centre(cell) - spread / 2, low), high - spread);
     ends.forEach((end, i) => {
-      end.l[end.key] = first + i * 20;
+      end.l[end.key] = first + i * spacing;
     });
   }
   const range = (l: PointerLink): [number, number] => [
@@ -357,14 +369,18 @@ function tagRows(
   return { tags, drop, height };
 }
 
+const WRAP_HEIGHT_FACTOR = 1.5;
+
 function placement(
   m: PreparedModel,
-  byte: number
-): { spans: Map<string, [number, number]>; gaps: Array<[number, number]>; width: number } {
+  byte: number,
+  rowOf?: Map<string, number>
+): { spans: Map<string, [number, number]>; gaps: Array<[number, number, number]>; width: number } {
   const spans = new Map<string, [number, number]>();
-  const gaps: Array<[number, number]> = [];
+  const gaps: Array<[number, number, number]> = [];
+  let row = 0;
   const unused = (x: number, bytes: number): number => {
-    if (bytes > 0) gaps.push([x, bytes * byte]);
+    if (bytes > 0) gaps.push([x, bytes * byte, row]);
     return Math.max(0, bytes) * byte;
   };
   const put = (item: ModelItem, x: number): number => {
@@ -384,18 +400,26 @@ function placement(
     return w;
   };
   let width = 0;
+  let x = 0;
   let address: number | null = null;
   for (const item of m.tops) {
-    if (address !== null) width += unused(width, item.address - address) + GAP;
-    width += put(item, width);
+    const r = rowOf?.get(item.name) ?? 0;
+    if (r !== row) {
+      row = r;
+      x = 0;
+      address = null;
+    }
+    if (address !== null) x += unused(x, item.address - address) + GAP;
+    x += put(item, x);
     address = item.address + item.size;
+    width = Math.max(width, x);
   }
   return { spans, gaps, width };
 }
 
 function typeTargets(
   m: PreparedModel,
-  g: { code: PlacedRect; lineY(i: number): number; groups: PlacedGroup[] }
+  g: { code: PlacedRect; codeRows: CodeRow[][]; groups: PlacedGroup[] }
 ): TypeTarget[] {
   const names = Object.keys(m.types);
   if (!names.length) return [];
@@ -404,11 +428,13 @@ function typeTargets(
   m.source.forEach((source, i) => {
     for (const match of source.matchAll(word)) {
       const idx = match.index ?? 0;
+      const row = g.codeRows[i].find(row => row.start <= idx && idx < row.end);
+      if (!row) continue;
       targets.push({
         type: match[1],
         underline: true,
-        x: g.code.x + 62 + idx * CODE_CHAR,
-        y: g.lineY(i) - CODE_SIZE * 0.85,
+        x: g.code.x + CODE_GUTTER + (row.indent + idx - row.start) * CODE_CHAR,
+        y: row.y - CODE_SIZE * 0.85,
         w: match[1].length * CODE_CHAR,
         h: CODE_SIZE * 1.2,
       });
@@ -425,11 +451,13 @@ function labelSize<T extends PlacedRect>(
   label: (b: T) => string,
   size: number
 ): number {
-  const sorted = [...boxes].sort((a, b) => a.x - b.x);
+  // Only neighbours on one row of memory can collide.
+  const sorted = [...boxes].sort((a, b) => a.y - b.y || a.x - b.x);
   let current = size;
   for (let i = 1; i < sorted.length; i++) {
     const a = sorted[i - 1];
     const b = sorted[i];
+    if (a.y !== b.y) continue;
     const room = b.x + b.w / 2 - (a.x + a.w / 2) - 8;
     const half = ((label(a).length + label(b).length) * CHAR) / 2;
     if (half * current > room) current = room / half;
@@ -437,34 +465,133 @@ function labelSize<T extends PlacedRect>(
   return current;
 }
 
-export function geometry(m: PreparedModel, P: Palette, stacked: boolean): Geometry {
-  const isStruct = (c: { fields?: unknown }): c is PlacedGroup => Boolean(c.fields);
-  const longest = Math.max(...m.source.map(line => line.length));
-  let codeW = Math.max(300, 62 + longest * CODE_CHAR + 30);
-  const codeH = 44 + m.source.length * LINE;
+const COLUMN_GAP = 56;
+const STACK_TETHER_WIDTH = 30;
 
-  const first = m.tops[0];
-  const last = m.tops[m.tops.length - 1];
-  const fixed = GAP * (m.tops.length - 1) + 2 * NEST * m.groups.filter(s => s.parent).length;
+export function geometry(
+  m: PreparedModel, P: Palette, stacked: boolean, viewport: number
+): Geometry {
+  const isStruct = (c: { fields?: unknown }): c is PlacedGroup => Boolean(c.fields);
+  const unwrapped = codeLayout(m.source);
+  // Preserve the natural line when it fits near the target size in CSS pixels.
+  const targetCodeSize = stacked ? 12 : 13;
+  const canvasBudget = viewport > 0 ? viewport * CODE_SIZE / targetCodeSize : Infinity;
+  const codeByColumns = new Map<number, ReturnType<typeof codeLayout>>();
+  const fitCode = (budget: number) => {
+    if (unwrapped.width <= budget + CODE_CHAR) return unwrapped;
+    const columns = columnsForCode(budget);
+    let layout = codeByColumns.get(columns);
+    if (!layout) {
+      layout = codeLayout(m.source, columns);
+      codeByColumns.set(columns, layout);
+    }
+    return layout;
+  };
+  const stackedCodeBudget = canvasBudget - 2 * MARGIN - STACK_TETHER_WIDTH;
+  const initialCode = stacked ? fitCode(stackedCodeBudget) : unwrapped;
+
   const widest = m.leaves.some(leaf => leaf.size < 4) ? NARROW_BYTE : MAX_BYTE;
-  const placed = placement(
-    m,
-    Math.min(widest, (MEMORY_WIDTH - fixed) / (last.address + last.size - first.address))
-  );
-  const memoryW = placed.width;
   const rise = m.rise;
+  const structs = m.groups.length > 0;
   const paneChars = Math.max(...m.steps.map(step => step.pane.length));
   const finalStdout = m.steps[m.steps.length - 1].stdout;
   const outputLines = finalStdout ? finalStdout.replace(/\n$/, '').split('\n') : [];
   const outputChars = Math.max(0, ...outputLines.map(line => line.length));
-  const labelExtent = paneLabelExtent(m);
-  let columnW = Math.max(
-    360,
-    memoryW + 48,
-    paneChars * EVAL_CHAR + 48,
-    labelExtent.right + 24 - PANE_LABEL_LEFT,
-    (P.outputLabel.length + 1) * 26 * CHAR + outputChars * EVAL_CHAR + 48
-  );
+
+  // Memory may wrap onto more rows, between top-level variables, to use the height
+  // the code beside it leaves empty. Only where nothing would cross rows: no pointers or
+  // references, and no type labels.
+  const canWrap =
+    !stacked &&
+    m.tops.length > 1 &&
+    !m.typed &&
+    m.references.length === 0 &&
+    m.steps.every(step => Object.keys(step.targets).length === 0);
+  const pitch =
+    (structs ? CELL + FRAME.bottom + 32 : CELL + 34) +
+    rise * RISE.bottom +
+    (structs ? FRAME.top : 0) +
+    30 +
+    rise * RISE.top;
+  const plan = (rows: number[][]) => {
+    const rowOf = new Map<string, number>();
+    rows.forEach((row, r) => row.forEach(i => rowOf.set(m.tops[i].name, r)));
+    const byteFor = (budget: number): number =>
+      Math.min(
+        widest,
+        ...rows.map(row => {
+          const items = row.map(i => m.tops[i]);
+          const bytes = items[items.length - 1].address + items[items.length - 1].size - items[0].address;
+          const nested = m.groups.filter(s => s.parent && rowOf.get(s.top) === rowOf.get(items[0].name));
+          return Math.max(1, (budget - GAP * (items.length - 1) - 2 * NEST * nested.length) / bytes);
+        })
+      );
+    // The pane's text shrinks (down to PANE_MIN) rather than widen the drawing past what
+    // memory and the other parts need: a long pane line otherwise shrinks code and memory too.
+    const natural = placement(m, byteFor(MEMORY_WIDTH), rowOf).width;
+    const paneSize = Math.max(
+      PANE_MIN,
+      Math.min(PANE_MAX, Math.floor((Math.max(360, natural + 48) - 48) / (paneChars * CHAR)))
+    );
+    const paneChar = paneSize * CHAR;
+    const labelExtent = paneLabelExtent(m, paneChar);
+    // Everything but memory: the column is at least this wide whatever memory does.
+    const others = Math.max(
+      360,
+      paneChars * paneChar + 48,
+      labelExtent.right + 24 - PANE_LABEL_LEFT,
+      (P.outputLabel.length + 1) * 26 * CHAR + outputChars * paneChar + 48,
+      stacked ? initialCode.width : 0
+    );
+    // Memory takes the width the rest of the column already has, never less than its budget.
+    const byte = byteFor(Math.max(MEMORY_WIDTH, others - 48));
+    const placed = placement(m, byte, rowOf);
+    const columnW = Math.max(others, placed.width + 48);
+    // Fit the source after reserving space for memory and the expression pane.
+    const codeBudget = stacked
+      ? Math.max(columnW, stackedCodeBudget)
+      : canvasBudget - (columnW + COLUMN_GAP + 2 * MARGIN);
+    const code = fitCode(codeBudget);
+    const width = code.width + COLUMN_GAP + columnW;
+    return { rows, rowOf, code, paneSize, paneChar, labelExtent, placed, columnW, width, cell: byte / width };
+  };
+  const partitions = (n: number, count: number): number[][][] => {
+    if (count === 1) return [[Array.from({ length: n }, (_, i) => i)]];
+    const out: number[][][] = [];
+    const cut = (from: number, left: number, acc: number[][]): void => {
+      if (left === 1) {
+        out.push([...acc, Array.from({ length: n - from }, (_, i) => from + i)]);
+        return;
+      }
+      for (let to = from + 1; to <= n - left + 1; to++) {
+        cut(to, left - 1, [...acc, Array.from({ length: to - from }, (_, i) => from + i)]);
+      }
+    };
+    cut(0, count, []);
+    return out;
+  };
+  const single = plan(partitions(m.tops.length, 1)[0]);
+  // A row more is worth it while the column stays within WRAP_HEIGHT_FACTOR (half again) of the taller of the code
+  // and the unwrapped column, and the drawing gets no wider (so code does not shrink); the
+  // layout with the largest drawn cells wins.
+  const baseH = (structs ? FRAME.top : 0) + 30 + rise * RISE.top + pitch + 132;
+  const limit = Math.max(single.code.height, baseH) * WRAP_HEIGHT_FACTOR;
+  let chosen = single;
+  for (let count = 2; canWrap && count <= Math.min(3, m.tops.length); count++) {
+    if (baseH + (count - 1) * pitch > limit) break;
+    for (const rows of partitions(m.tops.length, count)) {
+      const candidate = plan(rows);
+      if (candidate.width <= single.width + 1 && candidate.cell > chosen.cell * 1.1) chosen = candidate;
+    }
+  }
+  const { labelExtent } = chosen;
+  const placed = chosen.placed;
+  const rowOf = chosen.rowOf;
+  const extraRows = chosen.rows.length - 1;
+  const rowY = (name: string): number => (rowOf.get(name.split('.')[0]) ?? 0) * pitch;
+  const { rows, height: codeH } = chosen.code;
+  let codeW = chosen.code.width;
+  let columnW = chosen.columnW;
   if (stacked) codeW = columnW = Math.max(codeW, columnW);
 
   const atLeaf = (memX: number, memY: number, c: ModelLeaf): PlacedLeaf => {
@@ -472,7 +599,7 @@ export function geometry(m: PreparedModel, P: Palette, stacked: boolean): Geomet
     return {
       ...c,
       x: memX + span[0],
-      y: memY,
+      y: memY + rowY(c.name),
       w: span[1],
       h: CELL,
       color: '',
@@ -484,7 +611,7 @@ export function geometry(m: PreparedModel, P: Palette, stacked: boolean): Geomet
     return {
       ...c,
       x: memX + span[0],
-      y: memY,
+      y: memY + rowY(c.name),
       w: span[1],
       h: CELL,
       color: '',
@@ -507,7 +634,6 @@ export function geometry(m: PreparedModel, P: Palette, stacked: boolean): Geomet
       level = Math.max(level, l.level);
     }
   }
-  const structs = m.groups.length > 0;
   const room =
     (level >= 0 ? FRAME.top + 84 + level * 40 + 10 : (structs ? FRAME.top : 0) + 30) +
     rise * RISE.top;
@@ -519,7 +645,7 @@ export function geometry(m: PreparedModel, P: Palette, stacked: boolean): Geomet
   const named =
     (structs ? CELL + FRAME.bottom + 32 : CELL + 34) + rise * RISE.bottom + tagged.height;
   const names = named + typeRow.height;
-  const paneTop = room + names + 56;
+  const paneTop = room + names + extraRows * pitch + 56;
   const paneH = 76 + labelRise;
   const outputTop = paneTop + paneH + 60;
   const columnH = outputLines.length
@@ -536,12 +662,12 @@ export function geometry(m: PreparedModel, P: Palette, stacked: boolean): Geomet
     codeY = MARGIN;
     columnX = MARGIN;
     columnY = codeY + codeH + 24;
-    width = MARGIN + columnW + 30 + MARGIN;
+    width = MARGIN + columnW + STACK_TETHER_WIDTH + MARGIN;
     height = columnY + columnH + MARGIN;
   } else {
     const content = Math.max(codeH, columnH);
     codeY = MARGIN + (content - codeH) / 2;
-    columnX = codeX + codeW + 56;
+    columnX = codeX + codeW + COLUMN_GAP;
     columnY = MARGIN + (content - columnH) / 2;
     width = columnX + columnW + MARGIN;
     height = MARGIN + content + MARGIN;
@@ -555,8 +681,13 @@ export function geometry(m: PreparedModel, P: Palette, stacked: boolean): Geomet
   const below = pane.y - 56;
   const out: [number, number] = [columnX + 24, columnY + outputTop];
   const code: PlacedRect = { x: codeX, y: codeY, w: codeW, h: codeH };
-  const lineY = (i: number): number => code.y + 50 + i * LINE;
-  const gaps: Array<[number, number]> = placed.gaps.map(([x, w]) => [memX + x, w]);
+  const codeRows = placeCodeRows(rows, code.y + 50);
+  const lineY = (i: number): number => codeRows[i][0].y;
+  const gaps: Array<[number, number, number]> = placed.gaps.map(([x, w, row]) => [
+    memX + x,
+    w,
+    memY + row * pitch,
+  ]);
   const colour = (list: string[], i: number, count: number): string => list[i % count];
 
   const leaves: PlacedLeaf[] = m.leaves.map(l => ({
@@ -601,6 +732,8 @@ export function geometry(m: PreparedModel, P: Palette, stacked: boolean): Geomet
     groups.find(s => s.parent && s.label === token);
 
   const g: Geometry = {
+    paneSize: chosen.paneSize,
+    paneChar: chosen.paneChar,
     stacked,
     isStruct,
     rise,
@@ -615,6 +748,7 @@ export function geometry(m: PreparedModel, P: Palette, stacked: boolean): Geomet
     below,
     out,
     lineY,
+    codeRows,
     gaps,
     leaves,
     groups,
