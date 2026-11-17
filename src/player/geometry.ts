@@ -284,13 +284,20 @@ export function links(g: LinkProbe, step: TraceStep): PointerLink[] {
   for (const { cell, ends } of ports.values()) {
     const side = (end: { other: number }): number => (end.other < centre(cell) ? 0 : 1);
     ends.sort((p, q) => side(p) - side(q) || q.other - p.other);
-    const spread = 20 * (ends.length - 1);
-    // Arc ends keep clear of the cell's address label.
-    const low = g.isStruct(cell) ? cell.x + 12 : cell.x + 3 + labelWidth(cell) + 14;
-    const high = cell.x + cell.w - 12;
-    const first = Math.min(Math.max(centre(cell) - spread / 2, low), Math.max(low, high - spread));
+    const margin = Math.min(12, cell.w / 2);
+    const left = cell.x + margin;
+    const high = cell.x + cell.w - margin;
+    const clearance = cell.x + 3 + labelWidth(cell) + 14;
+    const intervals = ends.length - 1;
+    // Fit every port on the cell, leaving room for its address when possible.
+    const low = !g.isStruct(cell) && clearance + 20 * intervals <= high
+      ? Math.max(left, clearance)
+      : left;
+    const spacing = intervals ? Math.min(20, (high - low) / intervals) : 0;
+    const spread = spacing * intervals;
+    const first = Math.min(Math.max(centre(cell) - spread / 2, low), high - spread);
     ends.forEach((end, i) => {
-      end.l[end.key] = first + i * 20;
+      end.l[end.key] = first + i * spacing;
     });
   }
   const range = (l: PointerLink): [number, number] => [

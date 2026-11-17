@@ -53,6 +53,11 @@ struct's frame, which grows to hold them. Every live pointer keeps an arc above 
 pointer's colour, from its cell to the pointee. Arcs to a whole struct end on its frame; arcs
 to a field reach the field cell. Ends sharing a cell spread apart and never cross.
 
+A `std::array` is a frame with indexed elements in one colour. Its starting address is shown
+for a top-level variable, and further element addresses appear as pointers target them or the
+expression takes their address. A nested access highlights the next part of the expression,
+then the corresponding memory, before continuing down the path.
+
 A step's operation animates from the previous pane to the new one. Reads are blue, writes
 yellow; a dereference selects its target with a neutral outline, and that target brightens just
 before the followed arc arrives. Values land in the centre of the token they replace and cut
@@ -96,6 +101,10 @@ span      = [start, end)  — character offsets
 - A *leaf* is a cell holding a value: a scalar by name, a struct field as `variable.field`.
   A struct field nests: its `offset` is relative to the struct that holds it, and its leaves
   are named by path (`outer.inner.x`).
+- A `std::array` uses the aggregate storage shape with a canonical `std::array<T, N>` type
+  and contiguous fields named `[0]` through `[N-1]`. In storage maps and operation targets,
+  dots separate all path components (`matrix.[0].[1]`). The pane spells the same access
+  as C++ (`matrix[0][1]`), including when an alias or dereference substitutes its target.
 - `references` are names without storage. `refs` maps each reference bound so far to the
   variable or leaf it names; it only ever grows, by a `bind`.
 - A scalar's `type` is its declared type as the lessons write it (`int*`, `uint8_t`); the

@@ -437,13 +437,10 @@ function memory(c: SceneContext): string {
     return '';
   };
   for (const s of g.groups) {
-    if (arrays.has(s.name) && s.parent) {
-      out += arrayRow(c, s, g.cellsOf(s.name).some(live));
-      continue;
-    }
     const on = g.cellsOf(s.name).some(live);
     const f = frameOf(s);
-    const color = on ? (s.label.startsWith('[') ? s.color : s.fieldColor || s.color) : null;
+    const arrayGroup = arrays.has(s.name) || s.label.startsWith('[');
+    const color = on ? (arrayGroup ? s.color : s.fieldColor || s.color) : null;
     out += dim(
       c,
       s.top,
@@ -476,26 +473,14 @@ function memory(c: SceneContext): string {
     let markup = inArray(cell.name)
       ? addressOf(cell, on)
       : text(cell.x + 3, cell.y - 12, cell.address, 16, on ? P.muted : P.grey);
-    if (element) markup += arrayIndex(c, cell, on, color);
-    markup += element
-      ? ''
-      : cell.group
-      ? text(
-          cell.x + cell.w / 2,
-          cell.y + cell.h + 28,
-          cell.label,
-          g.fieldSize,
-          on ? color : P.grey,
-          'middle'
-        )
-      : text(
-          cell.x + cell.w / 2,
-          cell.y + cell.h + 34,
-          cell.label,
-          g.nameSize,
-          on ? color : P.grey,
-          'middle'
-        );
+    markup += text(
+      cell.x + cell.w / 2,
+      cell.y + cell.h + (cell.group ? 28 : 34),
+      cell.label,
+      cell.group ? g.fieldSize : g.nameSize,
+      on ? color : P.grey,
+      'middle'
+    );
     markup += rect(cell.x, cell.y, cell.w, cell.h, on ? P.panel : P.deadFill, 'none', 0);
     markup += rect(
       cell.x + 1.5,
@@ -548,25 +533,7 @@ function memory(c: SceneContext): string {
   return out + tags(c, at);
 }
 
-// a row of a 2D array, a frame in the array's colour named by its index.
-function arrayRow(c: SceneContext, s: Geometry['groups'][number], on: boolean): string {
-  const { g, P } = c;
-  const color = on ? s.color : P.deadStroke;
-  const f = frameOf(s);
-  return dim(
-    c,
-    s.top,
-    rect(f.x, f.y, f.w, f.h, 'none', color, 6, FRAME.stroke) +
-      text(s.x + s.w / 2, f.y + f.h + 24, s.label, Math.min(g.fieldSize, 22), on ? color : P.grey, 'middle')
-  );
-}
-
-function arrayIndex(c: SceneContext, cell: Geometry['leaves'][number], on: boolean, color: string): string {
-  const { g, P } = c;
-  return text(cell.x + cell.w / 2, cell.y + cell.h + 28, cell.label, g.fieldSize, on ? color : P.grey, 'middle');
-}
-
-/** reading or writing `a.f[0]` outlines `a`, then `a.f`, then `a.f[0]`. */
+/** Reading or writing `a.f[0]` outlines `a`, then `a.f`, then `a.f[0]`. */
 function chainHighlight(c: SceneContext, op: { kind: 'read' | 'write'; name: string }, at: number): string {
   const { g, P } = c;
   const color = op.kind === 'write' ? P.write : P.read;
@@ -587,7 +554,7 @@ function chainHighlight(c: SceneContext, op: { kind: 'read' | 'write'; name: str
     .join('');
 }
 
-/** the pane's highlight box grows along the chain, `a` → `a.f` → `a.f[0]`. */
+/** The pane's highlight box grows along the chain, `a` → `a.f` → `a.f[0]`. */
 function walkBoxes(
   levels: string[] | null,
   end: number,

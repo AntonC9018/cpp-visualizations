@@ -581,12 +581,17 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     for (const { cell, ends } of ports.values()) {
       const side = (end) => end.other < centre(cell) ? 0 : 1;
       ends.sort((p, q) => side(p) - side(q) || q.other - p.other);
-      const spread = 20 * (ends.length - 1);
-      const low = g.isStruct(cell) ? cell.x + 12 : cell.x + 3 + labelWidth(cell) + 14;
-      const high = cell.x + cell.w - 12;
-      const first = Math.min(Math.max(centre(cell) - spread / 2, low), Math.max(low, high - spread));
+      const margin = Math.min(12, cell.w / 2);
+      const left = cell.x + margin;
+      const high = cell.x + cell.w - margin;
+      const clearance = cell.x + 3 + labelWidth(cell) + 14;
+      const intervals = ends.length - 1;
+      const low = !g.isStruct(cell) && clearance + 20 * intervals <= high ? Math.max(left, clearance) : left;
+      const spacing = intervals ? Math.min(20, (high - low) / intervals) : 0;
+      const spread = spacing * intervals;
+      const first = Math.min(Math.max(centre(cell) - spread / 2, low), high - spread);
       ends.forEach((end, i) => {
-        end.l[end.key] = first + i * 20;
+        end.l[end.key] = first + i * spacing;
       });
     }
     const range = (l) => [
@@ -1390,13 +1395,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       return "";
     };
     for (const s of g.groups) {
-      if (arrays.has(s.name) && s.parent) {
-        out += arrayRow(c, s, g.cellsOf(s.name).some(live));
-        continue;
-      }
       const on = g.cellsOf(s.name).some(live);
       const f = frameOf(s);
-      const color = on ? s.label.startsWith("[") ? s.color : s.fieldColor || s.color : null;
+      const arrayGroup = arrays.has(s.name) || s.label.startsWith("[");
+      const color = on ? arrayGroup ? s.color : s.fieldColor || s.color : null;
       out += dim(
         c,
         s.top,
@@ -1421,19 +1423,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const element = cell.label.startsWith("[") && inArray(cell.name);
       const color = element ? cell.color : cell.fieldColor || cell.color;
       let markup = inArray(cell.name) ? addressOf(cell, on) : text(cell.x + 3, cell.y - 12, cell.address, 16, on ? P.muted : P.grey);
-      if (element) markup += arrayIndex(c, cell, on, color);
-      markup += element ? "" : cell.group ? text(
+      markup += text(
         cell.x + cell.w / 2,
-        cell.y + cell.h + 28,
+        cell.y + cell.h + (cell.group ? 28 : 34),
         cell.label,
-        g.fieldSize,
-        on ? color : P.grey,
-        "middle"
-      ) : text(
-        cell.x + cell.w / 2,
-        cell.y + cell.h + 34,
-        cell.label,
-        g.nameSize,
+        cell.group ? g.fieldSize : g.nameSize,
         on ? color : P.grey,
         "middle"
       );
@@ -1485,20 +1479,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       out += dim(c, label.name, typeLabel(c, label.cx, label.top, label.type, LABEL.memory, color));
     }
     return out + tags(c, at);
-  }
-  function arrayRow(c, s, on) {
-    const { g, P } = c;
-    const color = on ? s.color : P.deadStroke;
-    const f = frameOf(s);
-    return dim(
-      c,
-      s.top,
-      rect(f.x, f.y, f.w, f.h, "none", color, 6, FRAME.stroke) + text(s.x + s.w / 2, f.y + f.h + 24, s.label, Math.min(g.fieldSize, 22), on ? color : P.grey, "middle")
-    );
-  }
-  function arrayIndex(c, cell, on, color) {
-    const { g, P } = c;
-    return text(cell.x + cell.w / 2, cell.y + cell.h + 28, cell.label, g.fieldSize, on ? color : P.grey, "middle");
   }
   function chainHighlight(c, op, at) {
     const { g, P } = c;

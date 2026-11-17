@@ -10,6 +10,7 @@ import { type Browser, type Page, chromium } from 'playwright';
 import type { ExecutionTrace, LayoutTrace } from '../src/core/trace_format.ts';
 import { trace as traceSource } from '../src/node/tracing.ts';
 import type {} from '../src/player/index.ts';
+import type { Geometry } from '../src/player/geometry.ts';
 
 const player = new URL('../player/', import.meta.url);
 const read = (name: string): string => readFileSync(new URL(name, player), 'utf8');
@@ -25,6 +26,7 @@ interface PlayerElement extends HTMLElement {
     index: number;
     m: { steps: unknown[] };
     svg: SVGSVGElement;
+    g: Geometry;
     settle(step: number): void;
     inspect(step: number, progress: number): void;
     end(): void;
@@ -255,6 +257,24 @@ test('generated array frames show an element address only when used', async () =
     assert.equal(snapshots.at(-1)?.element, false);
   }
   assert.deepEqual(errors, []);
+});
+
+test('a pointer to a narrow array element lands on its cell', async () => {
+  const generated = traceSource(
+    'std::array<uint8_t, 32> a; a[0] = 1; auto p = &a[1];',
+    { runtime: false }
+  );
+  await page.setContent(PAGE.replace(trace, JSON.stringify(generated).replace(/</g, '\\u003c')));
+  await page.evaluate(() => window.CourseVisualization!.scan());
+  const landing = await page.evaluate(() => {
+    const playerEl = (document.querySelector('.course-visualization') as PlayerElement).cvPlayer;
+    playerEl.end();
+    const cell = playerEl.g.box('a.[1]')!;
+    const arrow = playerEl.svg.querySelector('path[d="M -11 -6.5 L 0 0 L -11 6.5 Z"]')!;
+    const transform = arrow.getAttribute('transform')!;
+    return { x: Number(/^translate\(([^ ]+)/.exec(transform)![1]), left: cell.x, right: cell.x + cell.w };
+  });
+  assert.ok(landing.left <= landing.x && landing.x <= landing.right, JSON.stringify(landing));
 });
 
 // A typed trace: two conversions, then a statement whose types do not fit.
