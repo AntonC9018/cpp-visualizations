@@ -53,7 +53,9 @@ function link(root: HTMLElement): void {
   const apply = (k: string | null): void => {
     root.classList.toggle('pl-active', k !== null);
     for (const el of root.querySelectorAll<HTMLElement>('[data-k]')) {
-      const on = k !== null && (k === 'all' || el.dataset.k === k);
+      // data-also lists the groups an element belongs to: "pad" (any padding), "w" (widest).
+      const also = (el.dataset.also || '').split(' ');
+      const on = k !== null && (k === 'all' || el.dataset.k === k || also.includes(k));
       el.classList.toggle('pl-on', on);
       el.setAttribute('aria-pressed', String(locked !== null && el.dataset.k === locked));
     }
@@ -115,32 +117,65 @@ function variantA(host: HTMLElement, trace: LayoutTrace): void {
 
 // --- B: one horizontal tape of bytes, fields bracketed above, offsets below ------------------
 
+// alignof ideas, switched by ?align= from the header.
+const ALIGN_IDEAS: Record<string, string> = {
+  '1': 'max() formula',
+  '2': '= sizeof(widest)',
+  '3': 'size column + marker',
+  '4': 'slot brace under tape',
+};
+const alignIdea = (): string => {
+  const a = new URLSearchParams(location.search).get('align') ?? '1';
+  return a in ALIGN_IDEAS ? a : '1';
+};
+
 function variantB(host: HTMLElement, trace: LayoutTrace): void {
   const r = trace.records[0];
   const ss = spans(r);
+  const idea = alignIdea();
   // Alignment is only worth showing when it changed something.
   const padded = padBytes(r) > 0;
+  const widest = Math.max(...r.fields.map(f => f.size));
+  const isWide = (fi: number): boolean => padded && r.fields[fi].size === widest;
+  const wideFields = r.fields.filter((_, fi) => isWide(fi));
+  const groups = (s: Span): string =>
+    s.kind === 'pad' ? ' data-also="pad"' : isWide(s.fi) ? ' data-also="w"' : '';
+  const key = (s: Span): string => (s.kind === 'pad' ? `pad:${s.offset}` : String(s.fi));
   const col = (s: Span): string => `grid-column:${s.offset + 1} / span ${s.size}`;
-  const fields = r.fields
-    .map(
-      (f, fi) =>
-        `<button type="button" data-k="${fi}" class="plb-field ${colour(fi)}">` +
-        `<i></i><span>${esc(f.type)} <b>${esc(f.name)}</b>;</span></button>`
-    )
+
+  const rows = ss
+    .map(s => {
+      if (s.kind === 'pad')
+        return (
+          `<button type="button" data-k="${key(s)}"${groups(s)} class="plb-field plb-phantom">` +
+          `<i class="pl-hatch"></i><span>/* ${s.size} B ${t('padding', 'выравнивания')} */</span>` +
+          (idea === '3' ? `<em>${s.size} B</em>` : '') + `</button>`
+        );
+      const f = s.field!;
+      const marker =
+        idea === '3'
+          ? `<em>${f.size} B${isWide(s.fi) ? ` <strong>◂ alignof</strong>` : ''}</em>`
+          : '';
+      return (
+        `<button type="button" data-k="${key(s)}"${groups(s)} class="plb-field ${colour(s.fi)}">` +
+        `<i></i><span>${esc(f.type)} <b>${esc(f.name)}</b>;</span>${marker}</button>`
+      );
+    })
     .join('');
   const labels = ss
     .map((s, i) => {
+      // One hatched block per padding run, under its byte cells, so the stripes tile.
       if (s.kind === 'pad')
-        return `<button type="button" data-k="pad" class="plb-label plb-r3" style="${col(s)}">${s.size} B</button>`;
+        return `<span data-k="${key(s)}"${groups(s)} class="plb-padblock pl-hatch" style="${col(s)}"></span>`;
       const row = s.size < 3 && i % 2 ? 2 : 1;
-      return `<button type="button" data-k="${k(s)}" class="plb-label plb-r${row} ${colour(s.fi)}" style="${col(s)}"><b>${esc(s.field!.name)}</b></button>`;
+      return `<button type="button" data-k="${key(s)}"${groups(s)} class="plb-label plb-r${row} ${colour(s.fi)}" style="${col(s)}"><b>${esc(s.field!.name)}</b></button>`;
     })
     .join('');
   const cells = Array.from({ length: r.size }, (_, o) => {
     const s = ss.find(x => o >= x.offset && o < x.offset + x.size)!;
     const edge = padded && o % r.alignment === 0 ? ' plb-slot' : '';
     const start = s.offset === o ? ' plb-start' : '';
-    return `<span data-k="${k(s)}" class="plb-byte${edge}${start} ${s.kind === 'pad' ? 'pl-hatch' : colour(s.fi)}" style="grid-column:${o + 1}"></span>`;
+    return `<span data-k="${key(s)}"${groups(s)} class="plb-byte${edge}${start} ${s.kind === 'pad' ? 'plb-padbyte' : colour(s.fi)}" style="grid-column:${o + 1}"></span>`;
   }).join('');
   // Offsets: at slot edges when alignment matters, otherwise where each field starts.
   const marks = padded
@@ -149,18 +184,46 @@ function variantB(host: HTMLElement, trace: LayoutTrace): void {
   const ticks = marks
     .map(
       o =>
-        `<span class="plb-tick" style="grid-column:${Math.min(o + 1, r.size)};${o === r.size ? 'justify-self:end;transform:translateX(30%)' : ''}">${o}</span>`
+        o === r.size
+          ? `<span class="plb-tick plb-tick-end" style="grid-column:${r.size}">${o}</span>`
+          : `<span class="plb-tick" style="grid-column:${o + 1}">${o}</span>`
     )
     .join('');
-  const facts = padded
-    ? `<span>alignof ${r.alignment}</span><button type="button" data-k="pad" class="plb-pad"><i class="pl-hatch"></i> ${t('padding', 'выравнивание')} ${padBytes(r)} B</button>`
+
+  // The alignof fact, one way per idea. data-k="w" links it to the widest field(s).
+  const wideName = wideFields
+    .map(f => `<b class="${colour(r.fields.indexOf(f))}">${esc(f.name)}</b>`)
+    .join(', ');
+  const wideType = esc(wideFields[0]?.type ?? '');
+  let alignFact = '';
+  let brace = '';
+  if (padded) {
+    if (idea === '1') {
+      const args = r.fields
+        .map((f, fi) => `<b class="${colour(fi)}${isWide(fi) ? ' plb-max' : ''}">${f.size}</b>`)
+        .join(', ');
+      alignFact = `<button type="button" data-k="w" class="plb-align">alignof = max(${args}) = <b>${r.alignment}</b></button>`;
+    } else if (idea === '2') {
+      alignFact = `<button type="button" data-k="w" class="plb-align">alignof <b>${r.alignment}</b> = sizeof(${wideType}) ← ${wideName}</button>`;
+    } else if (idea === '3') {
+      alignFact = `<button type="button" data-k="w" class="plb-align">alignof <b>${r.alignment}</b></button>`;
+    } else {
+      alignFact = `<button type="button" data-k="w" class="plb-align">alignof <b>${r.alignment}</b></button>`;
+      const fi = r.fields.indexOf(wideFields[0]);
+      brace =
+        `<button type="button" data-k="w" class="plb-brace ${colour(fi)}" style="grid-column:1 / span ${r.alignment}">` +
+        `<span>${t('slot', 'слот')} = alignof = sizeof(${wideType}) = ${r.alignment}</span></button>`;
+    }
+  }
+  const padFact = padded
+    ? `<button type="button" data-k="pad" class="plb-pad"><i class="pl-hatch"></i> ${t('padding', 'выравнивание')} ${padBytes(r)} B</button>`
     : '';
   shell(
     host,
     'plb',
-    `<div class="plb-fields"><button type="button" data-k="all" class="plb-struct">struct <b>${esc(r.name)}</b> {</button>${fields}<span class="plb-close">};</span></div>` +
-      `<div class="plb-head"><button type="button" data-k="all">sizeof ${r.size}</button>${facts}</div>` +
-      `<div class="plb-tape" style="--n:${r.size}">${labels}${cells}${ticks}</div>`
+    `<div class="plb-fields${idea === '3' ? ' plb-sizes' : ''}"><button type="button" data-k="all" class="plb-struct">struct <b>${esc(r.name)}</b> {</button>${rows}<span class="plb-close">};</span></div>` +
+      `<div class="plb-head"><button type="button" data-k="all">sizeof ${r.size}</button>${alignFact}${padFact}</div>` +
+      `<div class="plb-tape" style="--n:${r.size}">${labels}${cells}${ticks}${brace}</div>`
   );
   link(host.lastElementChild as HTMLElement);
 }
@@ -338,6 +401,26 @@ function setParam(name: string, value: string): void {
   history.replaceState(null, '', url);
 }
 
+const ideas = document.createElement('span');
+ideas.className = 'pl-ideas';
+const drawIdeas = (): void => {
+  ideas.innerHTML =
+    'alignof idea: ' +
+    Object.entries(ALIGN_IDEAS)
+      .map(([a, name]) => `<button type="button" data-align="${a}" title="${name}" aria-pressed="${a === alignIdea()}">${a}</button>`)
+      .join('') +
+    ` <small>${ALIGN_IDEAS[alignIdea()]}</small>`;
+};
+ideas.addEventListener('click', e => {
+  const a = ((e.target as Element).closest('[data-align]') as HTMLElement | null)?.dataset.align;
+  if (!a) return;
+  setParam('align', a);
+  drawIdeas();
+  render();
+});
+drawIdeas();
+document.querySelector('header strong')!.after(ideas);
+
 const bar = document.createElement('div');
 bar.className = 'pl-switch';
 bar.innerHTML = '<button type="button" data-go="-1">←</button><span id="pl-switch-label"></span><button type="button" data-go="1">→</button>';
@@ -374,6 +457,10 @@ style.textContent = `
 .pl-switch button {all: unset; cursor: pointer; padding: 2px 10px; border-radius: 999px;
   background: #fff3}
 .pl-switch span {overflow: hidden; text-overflow: ellipsis}
+.pl-ideas {font-size: 13px; color: var(--muted); margin-right: auto}
+.pl-ideas button {font: inherit; color: inherit; background: var(--code); margin-left: 3px;
+  border: 1px solid var(--line); border-radius: 4px; padding: 0 7px; cursor: pointer}
+.pl-ideas button[aria-pressed=true] {background: #ff3e9a; color: #fff; border-color: #ff3e9a}
 
 .course-visualization .pl {background: var(--cv-bg); color: var(--cv-fg); padding: 1rem;
   font-family: ui-monospace, monospace}
@@ -426,6 +513,37 @@ style.textContent = `
 .course-visualization .pl .plb-byte.plb-slot {box-shadow: inset 2px 0 0 var(--cv-fg)}
 .plb-byte:last-of-type {border-right: 1px solid var(--cv-border)}
 .plb-tick {grid-row: 5; font-size: .7rem; color: var(--cv-muted); transform: translateX(-30%)}
+
+/* B, round 4 */
+.plb-padblock {grid-row: 3}
+.course-visualization .pl .plb-byte.plb-padbyte {background-color: transparent; color: var(--cv-muted)}
+.course-visualization .pl .plb-tick {transform: none; justify-self: start; padding: 1px 0 0 3px;
+  border-left: 1px solid var(--cv-muted); line-height: 1.1; white-space: nowrap}
+.course-visualization .pl .plb-tick-end {justify-self: end; padding: 1px 3px 0 0; border-left: 0;
+  border-right: 1px solid var(--cv-muted)}
+
+/* B, round 3 */
+.course-visualization .pl .plb-phantom {opacity: .55; font-style: italic}
+.course-visualization .pl.pl-active .plb-phantom.pl-on {opacity: 1}
+.course-visualization .pl .plb-phantom span {color: var(--cv-muted)}
+.plb-phantom i {background-color: transparent; border: 1px dashed var(--cv-border)}
+.plb-sizes {display: grid !important; grid-template-columns: max-content}
+.plb-field em {margin-left: auto; padding-left: 1.5rem; font-style: normal; font-size: .75rem;
+  color: var(--cv-muted)}
+.plb-field em strong {color: var(--cv-fg); font-weight: 700}
+.course-visualization .pl .plb-align {font-weight: 400 !important; color: var(--cv-muted) !important}
+.plb-align b {color: var(--cv-fg)}
+.plb-align b[class*=cv-field] {color: currentColor}
+.course-visualization .plb-align .cv-field-0 {color: var(--cv-field-0)}
+.course-visualization .plb-align .cv-field-1 {color: var(--cv-field-1)}
+.course-visualization .plb-align .cv-field-2 {color: var(--cv-field-2)}
+.course-visualization .plb-align .cv-field-3 {color: var(--cv-field-3)}
+.plb-max {text-decoration: underline; text-underline-offset: 3px}
+.plb-tape {grid-template-rows: auto auto 2.2rem auto auto auto}
+.course-visualization .pl .plb-brace {grid-row: 6; margin-top: .3rem; padding-top: .35rem;
+  border: 2px solid currentColor; border-bottom: 0; border-radius: 6px 6px 0 0; height: 1.6rem;
+  font-size: .72rem; white-space: nowrap; overflow: visible; text-align: left; padding-left: .3rem}
+.plb-brace span {color: var(--cv-fg)}
 
 /* C */
 .plc-line {display: flex; align-items: center; width: 100%; gap: 1rem; padding: 1px .4rem;
