@@ -5,6 +5,7 @@ import {
   CELL,
   CHAR,
   CODE_CHAR,
+  CODE_GUTTER,
   CODE_SIZE,
   DIM,
   EASE,
@@ -239,33 +240,57 @@ function code(c: SceneContext, oldLine: number | null): string {
   const { m, g, P, step, op } = c;
   const x = g.code.x;
   let out = rect(x, g.code.y, g.code.w, g.code.h, P.panel);
-  const box = (line: number): [number, number, number] => {
+  const boxes = (line: number): [number, number, number, number][] => {
     const source = m.source[line];
     const span = m.spans[line] || [0, source.replace(/;\s*$/, '').length];
-    return [
-      x + 62 + span[0] * CODE_CHAR - 3,
-      g.lineY(line) - 30,
-      (span[1] - span[0]) * CODE_CHAR + 6,
-    ];
+    const rows = g.codeRows[line];
+    const wrapped = rows.length > 1;
+    return rows.flatMap(row => {
+      const start = Math.max(span[0], row.start);
+      const end = Math.min(span[1], row.end);
+      if (start >= end) return [];
+      return [[
+        x + CODE_GUTTER + (row.indent + start - row.start) * CODE_CHAR - 3,
+        row.y - (wrapped ? 24 : 30),
+        (end - start) * CODE_CHAR + 6,
+        wrapped ? 31 : 40,
+      ]];
+    });
   };
   const y = g.lineY(step.line);
-  const [bx, by, bw] = box(step.line);
+  const spans = boxes(step.line);
   const stripeColour = op?.kind === 'clash' ? P.error : op?.kind === 'write' ? P.write : P.read;
-  let stripe = rect(x + 8, y - 32, 4, 44, stripeColour, 'none', 0);
-  let span = rect(bx, by, bw, 40, P.highlight, 'none', 6);
+  const continuationHeight = g.codeRows[step.line].at(-1)!.y - y;
+  let stripe = rect(x + 8, y - 32, 4, 44 + continuationHeight, stripeColour, 'none', 0);
+  let highlight = spans
+    .map(([x, y, w, h]) => rect(x, y, w, h, P.highlight, 'none', 6))
+    .join('');
   if (oldLine !== null) {
-    const [ox, oy, ow] = box(oldLine);
+    const prev = boxes(oldLine);
     stripe = animated(stripe, animateAttr('y', g.lineY(oldLine) - 32, y - 32));
-    span = animated(
-      span,
-      animateAttr('x', ox, bx) + animateAttr('y', oy, by) + animateAttr('width', ow, bw)
-    );
+    if (prev.length === 1 && spans.length === 1) {
+      const [ox, oy, ow, oh] = prev[0];
+      const [nx, ny, nw, nh] = spans[0];
+      highlight = animated(highlight,
+        animateAttr('x', ox, nx) + animateAttr('y', oy, ny) +
+        animateAttr('width', ow, nw) + animateAttr('height', oh, nh));
+    }
   }
-  out += stripe + span;
+  out += stripe + highlight;
   m.source.forEach((source, i) => {
-    out +=
-      text(x + 22, g.lineY(i), i + 1, 18, P.muted) +
-      colored(c, x + 62, g.lineY(i), source, CODE_SIZE, /^\s*struct\b/.test(source));
+    out += text(x + 22, g.lineY(i), i + 1, 18, P.muted);
+    const definition = /^\s*struct\b/.test(source);
+    for (const row of g.codeRows[i]) {
+      out += colored(
+        c,
+        x + CODE_GUTTER + row.indent * CODE_CHAR,
+        row.y,
+        source.slice(row.start, row.end),
+        CODE_SIZE,
+        definition,
+        /(?:\.|->)\s*$/.test(source.slice(0, row.start))
+      );
+    }
   });
   for (const t of g.typeTargets) {
     if (t.underline) {
@@ -307,6 +332,7 @@ export function placeLineTargets(g: Geometry, targets: Element[]): void {
     target.setAttribute('x', String(g.code.x + 12));
     target.setAttribute('y', String(g.lineY(i) - 34));
     target.setAttribute('width', String(round(g.code.w - 24)));
+    target.setAttribute('height', String(48 + g.codeRows[i].at(-1)!.y - g.lineY(i)));
   });
 }
 
@@ -683,7 +709,7 @@ function paneBody(c: SceneContext, copying: boolean): string {
   const ty = g.ty;
   let out = `<g class="cv-pane">${rect(g.pane.x, g.pane.y, g.pane.w, g.pane.h, P.pane)}</g>`;
   if (copying) {
-    const sx = g.code.x + 62;
+    const sx = g.code.x + CODE_GUTTER;
     const sy = g.lineY(step.line);
     const begin = copyBegin(c.m.steps, c.index);
     const total = begin + T.copyTravel;

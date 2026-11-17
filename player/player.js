@@ -5,6 +5,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   "use strict";
   const CHAR = 0.602;
   const CODE_SIZE = 25;
+  const CODE_GUTTER = 62;
   const PANE_MAX = 30;
   const PANE_MIN = 24;
   const CODE_CHAR = CODE_SIZE * CHAR;
@@ -415,6 +416,73 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       document.removeEventListener("keydown", this.escape);
     }
   }
+  function wrapLine(source, columns) {
+    var _a;
+    if (source.length <= columns) return [{ start: 0, end: source.length, indent: 0 }];
+    const breaks = [];
+    let braces = 0;
+    let templates = 0;
+    const tokens = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|<<|>>|->|::|\w+|[ \t]+|./g;
+    for (const { 0: token, index } of source.matchAll(tokens)) {
+      const at = index + token.length;
+      if (token === "<") templates++;
+      if (token === ">" || token === ">>") templates = Math.max(0, templates - token.length);
+      if (token === "{") braces++;
+      if (token === "}") braces = Math.max(0, braces - 1);
+      if (!/^[ \t]+$|^[,<{]$/.test(token)) continue;
+      if (/^\s*[;,)\]}]/.test(source.slice(at))) continue;
+      const penalty = templates * 8 + Math.max(0, braces - 1) * 6 - (token === "{" && braces === 1 ? 6 : 0);
+      breaks.push({ at, penalty });
+    }
+    const rows = [];
+    let start = 0;
+    while (start < source.length) {
+      const indent = rows.length ? 2 : 0;
+      const limit = start + columns - indent;
+      let end = source.length;
+      if (limit < source.length) {
+        let best = -Infinity;
+        end = ((_a = breaks.find((point) => point.at > limit)) == null ? void 0 : _a.at) ?? source.length;
+        for (const point of breaks) {
+          if (point.at <= start) continue;
+          if (point.at > limit) break;
+          const score = point.at - point.penalty;
+          if (score >= best) {
+            best = score;
+            end = point.at;
+          }
+        }
+      }
+      const stop = start + source.slice(start, end).trimEnd().length;
+      if (stop > start) rows.push({ start, end: stop, indent });
+      start = end;
+      while (source[start] === " " || source[start] === "	") start++;
+    }
+    return rows.length ? rows : [{ start: 0, end: 0, indent: 0 }];
+  }
+  const CONTINUATION = 33;
+  const CODE_INSET = CODE_GUTTER + 30;
+  function codeLayout(source, columns = Infinity) {
+    const rows = source.map((line) => wrapLine(line, columns));
+    const longest = Math.max(...rows.flatMap((line) => line.map((row) => row.end - row.start + row.indent)));
+    const continuations = rows.reduce((count, line) => count + line.length - 1, 0);
+    return {
+      rows,
+      width: Math.max(300, CODE_INSET + longest * CODE_CHAR),
+      height: 44 + source.length * LINE + continuations * CONTINUATION
+    };
+  }
+  function columnsForCode(width) {
+    return Math.max(12, Math.floor((width - CODE_INSET) / CODE_CHAR));
+  }
+  function placeCodeRows(rows, firstY) {
+    let y = firstY;
+    return rows.map((line) => line.map((row, i) => {
+      const placed = { ...row, y };
+      y += i + 1 < line.length ? CONTINUATION : LINE;
+      return placed;
+    }));
+  }
   const frameOf = (s) => ({
     x: s.x - FRAME.side,
     y: s.y - FRAME.top - s.rise * RISE.top,
@@ -635,11 +703,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     m.source.forEach((source, i) => {
       for (const match of source.matchAll(word)) {
         const idx = match.index ?? 0;
+        const row = g.codeRows[i].find((row2) => row2.start <= idx && idx < row2.end);
+        if (!row) continue;
         targets.push({
           type: match[1],
           underline: true,
-          x: g.code.x + 62 + idx * CODE_CHAR,
-          y: g.lineY(i) - CODE_SIZE * 0.85,
+          x: g.code.x + CODE_GUTTER + (row.indent + idx - row.start) * CODE_CHAR,
+          y: row.y - CODE_SIZE * 0.85,
           w: match[1].length * CODE_CHAR,
           h: CODE_SIZE * 1.2
         });
@@ -663,11 +733,26 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return current;
   }
-  function geometry(m, P, stacked) {
+  const COLUMN_GAP = 56;
+  const STACK_TETHER_WIDTH = 30;
+  function geometry(m, P, stacked, viewport) {
     const isStruct = (c) => Boolean(c.fields);
-    const longest = Math.max(...m.source.map((line) => line.length));
-    let codeW = Math.max(300, 62 + longest * CODE_CHAR + 30);
-    const codeH = 44 + m.source.length * LINE;
+    const unwrapped = codeLayout(m.source);
+    const targetCodeSize = stacked ? 12 : 13;
+    const canvasBudget = viewport > 0 ? viewport * CODE_SIZE / targetCodeSize : Infinity;
+    const codeByColumns = /* @__PURE__ */ new Map();
+    const fitCode = (budget) => {
+      if (unwrapped.width <= budget + CODE_CHAR) return unwrapped;
+      const columns = columnsForCode(budget);
+      let layout = codeByColumns.get(columns);
+      if (!layout) {
+        layout = codeLayout(m.source, columns);
+        codeByColumns.set(columns, layout);
+      }
+      return layout;
+    };
+    const stackedCodeBudget = canvasBudget - 2 * MARGIN - STACK_TETHER_WIDTH;
+    const initialCode = stacked ? fitCode(stackedCodeBudget) : unwrapped;
     const widest = m.leaves.some((leaf) => leaf.size < 4) ? NARROW_BYTE : MAX_BYTE;
     const rise = m.rise;
     const structs = m.groups.length > 0;
@@ -677,12 +762,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const outputChars = Math.max(0, ...outputLines.map((line) => line.length));
     const canWrap = !stacked && m.tops.length > 1 && !m.typed && m.references.length === 0 && m.steps.every((step) => Object.keys(step.targets).length === 0);
     const pitch = (structs ? CELL + FRAME.bottom + 32 : CELL + 34) + rise * RISE.bottom + (structs ? FRAME.top : 0) + 30 + rise * RISE.top;
-    const plan = (rows) => {
+    const plan = (rows2) => {
       const rowOf2 = /* @__PURE__ */ new Map();
-      rows.forEach((row, r) => row.forEach((i) => rowOf2.set(m.tops[i].name, r)));
+      rows2.forEach((row, r) => row.forEach((i) => rowOf2.set(m.tops[i].name, r)));
       const byteFor = (budget) => Math.min(
         widest,
-        ...rows.map((row) => {
+        ...rows2.map((row) => {
           const items = row.map((i) => m.tops[i]);
           const bytes = items[items.length - 1].address + items[items.length - 1].size - items[0].address;
           const nested = m.groups.filter((s) => s.parent && rowOf2.get(s.top) === rowOf2.get(items[0].name));
@@ -701,13 +786,15 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         paneChars * paneChar + 48,
         labelExtent2.right + 24 - PANE_LABEL_LEFT,
         (P.outputLabel.length + 1) * 26 * CHAR + outputChars * paneChar + 48,
-        stacked ? codeW : 0
+        stacked ? initialCode.width : 0
       );
       const byte = byteFor(Math.max(MEMORY_WIDTH, others - 48));
       const placed2 = placement(m, byte, rowOf2);
       const columnW2 = Math.max(others, placed2.width + 48);
-      const width2 = codeW + 56 + columnW2;
-      return { rows, rowOf: rowOf2, paneSize, paneChar, labelExtent: labelExtent2, placed: placed2, columnW: columnW2, width: width2, cell: byte / width2 };
+      const codeBudget = stacked ? Math.max(columnW2, stackedCodeBudget) : canvasBudget - (columnW2 + COLUMN_GAP + 2 * MARGIN);
+      const code22 = fitCode(codeBudget);
+      const width2 = code22.width + COLUMN_GAP + columnW2;
+      return { rows: rows2, rowOf: rowOf2, code: code22, paneSize, paneChar, labelExtent: labelExtent2, placed: placed2, columnW: columnW2, width: width2, cell: byte / width2 };
     };
     const partitions = (n, count) => {
       if (count === 1) return [[Array.from({ length: n }, (_, i) => i)]];
@@ -726,12 +813,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     };
     const single = plan(partitions(m.tops.length, 1)[0]);
     const baseH = (structs ? FRAME.top : 0) + 30 + rise * RISE.top + pitch + 132;
-    const limit = Math.max(codeH, baseH) * WRAP_HEIGHT_FACTOR;
+    const limit = Math.max(single.code.height, baseH) * WRAP_HEIGHT_FACTOR;
     let chosen = single;
     for (let count = 2; canWrap && count <= Math.min(3, m.tops.length); count++) {
       if (baseH + (count - 1) * pitch > limit) break;
-      for (const rows of partitions(m.tops.length, count)) {
-        const candidate = plan(rows);
+      for (const rows2 of partitions(m.tops.length, count)) {
+        const candidate = plan(rows2);
         if (candidate.width <= single.width + 1 && candidate.cell > chosen.cell * 1.1) chosen = candidate;
       }
     }
@@ -740,6 +827,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const rowOf = chosen.rowOf;
     const extraRows = chosen.rows.length - 1;
     const rowY = (name) => (rowOf.get(name.split(".")[0]) ?? 0) * pitch;
+    const { rows, height: codeH } = chosen.code;
+    let codeW = chosen.code.width;
     let columnW = chosen.columnW;
     if (stacked) codeW = columnW = Math.max(codeW, columnW);
     const atLeaf = (memX2, memY2, c) => {
@@ -802,12 +891,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       codeY = MARGIN;
       columnX = MARGIN;
       columnY = codeY + codeH + 24;
-      width = MARGIN + columnW + 30 + MARGIN;
+      width = MARGIN + columnW + STACK_TETHER_WIDTH + MARGIN;
       height = columnY + columnH + MARGIN;
     } else {
       const content = Math.max(codeH, columnH);
       codeY = MARGIN + (content - codeH) / 2;
-      columnX = codeX + codeW + 56;
+      columnX = codeX + codeW + COLUMN_GAP;
       columnY = MARGIN + (content - columnH) / 2;
       width = columnX + columnW + MARGIN;
       height = MARGIN + content + MARGIN;
@@ -820,7 +909,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const below = pane2.y - 56;
     const out = [columnX + 24, columnY + outputTop];
     const code2 = { x: codeX, y: codeY, w: codeW, h: codeH };
-    const lineY = (i) => code2.y + 50 + i * LINE;
+    const codeRows = placeCodeRows(rows, code2.y + 50);
+    const lineY = (i) => codeRows[i][0].y;
     const gaps = placed.gaps.map(([x, w, row]) => [
       memX + x,
       w,
@@ -875,6 +965,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       below,
       out,
       lineY,
+      codeRows,
       gaps,
       leaves,
       groups,
@@ -1177,31 +1268,56 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const { m, g, P, step, op } = c;
     const x = g.code.x;
     let out = rect(x, g.code.y, g.code.w, g.code.h, P.panel);
-    const box = (line) => {
+    const boxes = (line) => {
       const source = m.source[line];
-      const span2 = m.spans[line] || [0, source.replace(/;\s*$/, "").length];
-      return [
-        x + 62 + span2[0] * CODE_CHAR - 3,
-        g.lineY(line) - 30,
-        (span2[1] - span2[0]) * CODE_CHAR + 6
-      ];
+      const span = m.spans[line] || [0, source.replace(/;\s*$/, "").length];
+      const rows = g.codeRows[line];
+      const wrapped = rows.length > 1;
+      return rows.flatMap((row) => {
+        const start = Math.max(span[0], row.start);
+        const end = Math.min(span[1], row.end);
+        if (start >= end) return [];
+        return [[
+          x + CODE_GUTTER + (row.indent + start - row.start) * CODE_CHAR - 3,
+          row.y - (wrapped ? 24 : 30),
+          (end - start) * CODE_CHAR + 6,
+          wrapped ? 31 : 40
+        ]];
+      });
     };
     const y = g.lineY(step.line);
-    const [bx, by, bw] = box(step.line);
+    const spans = boxes(step.line);
     const stripeColour = (op == null ? void 0 : op.kind) === "clash" ? P.error : (op == null ? void 0 : op.kind) === "write" ? P.write : P.read;
-    let stripe = rect(x + 8, y - 32, 4, 44, stripeColour, "none", 0);
-    let span = rect(bx, by, bw, 40, P.highlight, "none", 6);
+    const continuationHeight = g.codeRows[step.line].at(-1).y - y;
+    let stripe = rect(x + 8, y - 32, 4, 44 + continuationHeight, stripeColour, "none", 0);
+    let highlight = spans.map(([x2, y2, w, h]) => rect(x2, y2, w, h, P.highlight, "none", 6)).join("");
     if (oldLine !== null) {
-      const [ox, oy, ow] = box(oldLine);
+      const prev = boxes(oldLine);
       stripe = animated(stripe, animateAttr("y", g.lineY(oldLine) - 32, y - 32));
-      span = animated(
-        span,
-        animateAttr("x", ox, bx) + animateAttr("y", oy, by) + animateAttr("width", ow, bw)
-      );
+      if (prev.length === 1 && spans.length === 1) {
+        const [ox, oy, ow, oh] = prev[0];
+        const [nx, ny, nw, nh] = spans[0];
+        highlight = animated(
+          highlight,
+          animateAttr("x", ox, nx) + animateAttr("y", oy, ny) + animateAttr("width", ow, nw) + animateAttr("height", oh, nh)
+        );
+      }
     }
-    out += stripe + span;
+    out += stripe + highlight;
     m.source.forEach((source, i) => {
-      out += text(x + 22, g.lineY(i), i + 1, 18, P.muted) + colored(c, x + 62, g.lineY(i), source, CODE_SIZE, /^\s*struct\b/.test(source));
+      out += text(x + 22, g.lineY(i), i + 1, 18, P.muted);
+      const definition = /^\s*struct\b/.test(source);
+      for (const row of g.codeRows[i]) {
+        out += colored(
+          c,
+          x + CODE_GUTTER + row.indent * CODE_CHAR,
+          row.y,
+          source.slice(row.start, row.end),
+          CODE_SIZE,
+          definition,
+          /(?:\.|->)\s*$/.test(source.slice(0, row.start))
+        );
+      }
     });
     for (const t of g.typeTargets) {
       if (t.underline) {
@@ -1231,6 +1347,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       target.setAttribute("x", String(g.code.x + 12));
       target.setAttribute("y", String(g.lineY(i) - 34));
       target.setAttribute("width", String(round(g.code.w - 24)));
+      target.setAttribute("height", String(48 + g.codeRows[i].at(-1).y - g.lineY(i)));
     });
   }
   function linkMarkup(c, l, { grow = null, fadeOut = null } = {}) {
@@ -1536,7 +1653,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const ty = g.ty;
     let out = `<g class="cv-pane">${rect(g.pane.x, g.pane.y, g.pane.w, g.pane.h, P.pane)}</g>`;
     if (copying) {
-      const sx = g.code.x + 62;
+      const sx = g.code.x + CODE_GUTTER;
       const sy = g.lineY(step.line);
       const begin = copyBegin(c.m.steps, c.index);
       const total = begin + T.copyTravel;
@@ -1696,6 +1813,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       __publicField(this, "status");
       __publicField(this, "typeBox");
       __publicField(this, "stacked");
+      __publicField(this, "layoutWidth");
       __publicField(this, "observer", null);
       __publicField(this, "P");
       __publicField(this, "g");
@@ -1767,7 +1885,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.stacked = null;
       if (window.ResizeObserver) {
         this.observer = new ResizeObserver(() => {
-          if (this.arrangement() !== this.stacked) this.refresh();
+          if (this.root.clientWidth !== this.layoutWidth) this.refresh();
         });
         this.observer.observe(root);
       }
@@ -1853,10 +1971,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         box.style.top = `${top >= 4 ? top : stage.top - view.top + (hit.y + hit.h) * scale + 6}px`;
       }
     }
-    arrangement() {
-      const width = this.root.clientWidth;
-      return width > 0 && width < STACK_BELOW;
-    }
     theme() {
       this.root.dataset.cvTheme = themeName();
       const style = getComputedStyle(this.root);
@@ -1870,6 +1984,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       P.fields = Array.from({ length: FIELD_COLOURS }, (_, i) => read("field-" + i) || "#808080");
       P.types = Array.from({ length: TYPE_COLOURS }, (_, i) => read("type-" + i) || "#808080");
       this.P = P;
+      this.layoutWidth = void 0;
     }
     refresh() {
       this.theme();
@@ -1877,11 +1992,18 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       if (this.animated) this.seek(this.elapsed);
     }
     render(animate) {
-      this.stacked = this.arrangement();
+      const width = this.root.clientWidth;
+      if (width !== this.layoutWidth) {
+        this.stacked = width > 0 && width < STACK_BELOW;
+        this.g = geometry(this.m, this.P, this.stacked, width);
+        this.layoutWidth = width;
+        this.shownType = null;
+        this.typeBox.hidden = true;
+      }
       const steps = this.m.steps;
       const step = steps[this.index];
       const prev = this.index ? steps[this.index - 1] : null;
-      const g = this.g = geometry(this.m, this.P, this.stacked);
+      const g = this.g;
       const now = activeVariables(this.m, this.index);
       const before = animate && this.index ? activeVariables(this.m, this.index - 1) : now;
       const begin = /* @__PURE__ */ new Map();

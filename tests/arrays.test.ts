@@ -97,6 +97,17 @@ test('a matrix has indexed rows that can be copied or written through a pointer'
     s.pane === 'matrix[1][0] = 8'));
 });
 
+test('a long array type stays in the source and in the optional pane label', () => {
+  const source = 'std::array<std::array<int, 2>, 2> matrix{}; matrix[1][0] = 7;';
+  const untyped = trace(source, { runtime: false });
+  const typed = trace(source, { runtime: false, types: true });
+  assert.match(untyped.source[0], /^std::array<std::array<int, 2>, 2> matrix/);
+  assert.equal(untyped.steps[0].pane, 'matrix = {}');
+  assert.equal(typed.steps[0].pane, 'matrix = {}');
+  const slot = typed.steps[0].types?.find(part => part.slot);
+  assert.match(slot?.type ?? '', /^array<std::array<int, 2>, 2>$/);
+});
+
 test('an array of structs supports aggregate writes and independent copies', () => {
   const result = trace(`
     struct Item { int a; int b; };

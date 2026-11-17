@@ -1,9 +1,11 @@
 // Geometry and layout calculation for memory cells, struct frames, pointer arcs, and reference tags.
 import type { TraceStep } from '../core/trace_format.ts';
+import { type CodeRow, codeLayout, columnsForCode, placeCodeRows } from './code_layout.ts';
 import {
   CELL,
   CHAR,
   CODE_CHAR,
+  CODE_GUTTER,
   CODE_SIZE,
   PANE_MAX,
   PANE_MIN,
@@ -11,7 +13,6 @@ import {
   FRAME,
   GAP,
   LABEL,
-  LINE,
   MARGIN,
   MAX_BYTE,
   MEMORY_WIDTH,
@@ -98,6 +99,7 @@ export interface Geometry {
   below: number;
   out: [number, number];
   lineY(i: number): number;
+  codeRows: CodeRow[][];
   gaps: Array<[number, number, number]>;
   leaves: PlacedLeaf[];
   groups: PlacedGroup[];
@@ -417,7 +419,7 @@ function placement(
 
 function typeTargets(
   m: PreparedModel,
-  g: { code: PlacedRect; lineY(i: number): number; groups: PlacedGroup[] }
+  g: { code: PlacedRect; codeRows: CodeRow[][]; groups: PlacedGroup[] }
 ): TypeTarget[] {
   const names = Object.keys(m.types);
   if (!names.length) return [];
@@ -426,11 +428,13 @@ function typeTargets(
   m.source.forEach((source, i) => {
     for (const match of source.matchAll(word)) {
       const idx = match.index ?? 0;
+      const row = g.codeRows[i].find(row => row.start <= idx && idx < row.end);
+      if (!row) continue;
       targets.push({
         type: match[1],
         underline: true,
-        x: g.code.x + 62 + idx * CODE_CHAR,
-        y: g.lineY(i) - CODE_SIZE * 0.85,
+        x: g.code.x + CODE_GUTTER + (row.indent + idx - row.start) * CODE_CHAR,
+        y: row.y - CODE_SIZE * 0.85,
         w: match[1].length * CODE_CHAR,
         h: CODE_SIZE * 1.2,
       });
@@ -461,11 +465,30 @@ function labelSize<T extends PlacedRect>(
   return current;
 }
 
-export function geometry(m: PreparedModel, P: Palette, stacked: boolean): Geometry {
+const COLUMN_GAP = 56;
+const STACK_TETHER_WIDTH = 30;
+
+export function geometry(
+  m: PreparedModel, P: Palette, stacked: boolean, viewport: number
+): Geometry {
   const isStruct = (c: { fields?: unknown }): c is PlacedGroup => Boolean(c.fields);
-  const longest = Math.max(...m.source.map(line => line.length));
-  let codeW = Math.max(300, 62 + longest * CODE_CHAR + 30);
-  const codeH = 44 + m.source.length * LINE;
+  const unwrapped = codeLayout(m.source);
+  // Preserve the natural line when it fits near the target size in CSS pixels.
+  const targetCodeSize = stacked ? 12 : 13;
+  const canvasBudget = viewport > 0 ? viewport * CODE_SIZE / targetCodeSize : Infinity;
+  const codeByColumns = new Map<number, ReturnType<typeof codeLayout>>();
+  const fitCode = (budget: number) => {
+    if (unwrapped.width <= budget + CODE_CHAR) return unwrapped;
+    const columns = columnsForCode(budget);
+    let layout = codeByColumns.get(columns);
+    if (!layout) {
+      layout = codeLayout(m.source, columns);
+      codeByColumns.set(columns, layout);
+    }
+    return layout;
+  };
+  const stackedCodeBudget = canvasBudget - 2 * MARGIN - STACK_TETHER_WIDTH;
+  const initialCode = stacked ? fitCode(stackedCodeBudget) : unwrapped;
 
   const widest = m.leaves.some(leaf => leaf.size < 4) ? NARROW_BYTE : MAX_BYTE;
   const rise = m.rise;
@@ -518,15 +541,19 @@ export function geometry(m: PreparedModel, P: Palette, stacked: boolean): Geomet
       paneChars * paneChar + 48,
       labelExtent.right + 24 - PANE_LABEL_LEFT,
       (P.outputLabel.length + 1) * 26 * CHAR + outputChars * paneChar + 48,
-      stacked ? codeW : 0
+      stacked ? initialCode.width : 0
     );
     // Memory takes the width the rest of the column already has, never less than its budget.
     const byte = byteFor(Math.max(MEMORY_WIDTH, others - 48));
     const placed = placement(m, byte, rowOf);
     const columnW = Math.max(others, placed.width + 48);
-    const width = codeW + 56 + columnW;
-    // Drawn sizes follow 1 / width; a byte's drawn width follows byte / width.
-    return { rows, rowOf, paneSize, paneChar, labelExtent, placed, columnW, width, cell: byte / width };
+    // Fit the source after reserving space for memory and the expression pane.
+    const codeBudget = stacked
+      ? Math.max(columnW, stackedCodeBudget)
+      : canvasBudget - (columnW + COLUMN_GAP + 2 * MARGIN);
+    const code = fitCode(codeBudget);
+    const width = code.width + COLUMN_GAP + columnW;
+    return { rows, rowOf, code, paneSize, paneChar, labelExtent, placed, columnW, width, cell: byte / width };
   };
   const partitions = (n: number, count: number): number[][][] => {
     if (count === 1) return [[Array.from({ length: n }, (_, i) => i)]];
@@ -548,7 +575,7 @@ export function geometry(m: PreparedModel, P: Palette, stacked: boolean): Geomet
   // and the unwrapped column, and the drawing gets no wider (so code does not shrink); the
   // layout with the largest drawn cells wins.
   const baseH = (structs ? FRAME.top : 0) + 30 + rise * RISE.top + pitch + 132;
-  const limit = Math.max(codeH, baseH) * WRAP_HEIGHT_FACTOR;
+  const limit = Math.max(single.code.height, baseH) * WRAP_HEIGHT_FACTOR;
   let chosen = single;
   for (let count = 2; canWrap && count <= Math.min(3, m.tops.length); count++) {
     if (baseH + (count - 1) * pitch > limit) break;
@@ -562,6 +589,8 @@ export function geometry(m: PreparedModel, P: Palette, stacked: boolean): Geomet
   const rowOf = chosen.rowOf;
   const extraRows = chosen.rows.length - 1;
   const rowY = (name: string): number => (rowOf.get(name.split('.')[0]) ?? 0) * pitch;
+  const { rows, height: codeH } = chosen.code;
+  let codeW = chosen.code.width;
   let columnW = chosen.columnW;
   if (stacked) codeW = columnW = Math.max(codeW, columnW);
 
@@ -633,12 +662,12 @@ export function geometry(m: PreparedModel, P: Palette, stacked: boolean): Geomet
     codeY = MARGIN;
     columnX = MARGIN;
     columnY = codeY + codeH + 24;
-    width = MARGIN + columnW + 30 + MARGIN;
+    width = MARGIN + columnW + STACK_TETHER_WIDTH + MARGIN;
     height = columnY + columnH + MARGIN;
   } else {
     const content = Math.max(codeH, columnH);
     codeY = MARGIN + (content - codeH) / 2;
-    columnX = codeX + codeW + 56;
+    columnX = codeX + codeW + COLUMN_GAP;
     columnY = MARGIN + (content - columnH) / 2;
     width = columnX + columnW + MARGIN;
     height = MARGIN + content + MARGIN;
@@ -652,7 +681,8 @@ export function geometry(m: PreparedModel, P: Palette, stacked: boolean): Geomet
   const below = pane.y - 56;
   const out: [number, number] = [columnX + 24, columnY + outputTop];
   const code: PlacedRect = { x: codeX, y: codeY, w: codeW, h: codeH };
-  const lineY = (i: number): number => code.y + 50 + i * LINE;
+  const codeRows = placeCodeRows(rows, code.y + 50);
+  const lineY = (i: number): number => codeRows[i][0].y;
   const gaps: Array<[number, number, number]> = placed.gaps.map(([x, w, row]) => [
     memX + x,
     w,
@@ -718,6 +748,7 @@ export function geometry(m: PreparedModel, P: Palette, stacked: boolean): Geomet
     below,
     out,
     lineY,
+    codeRows,
     gaps,
     leaves,
     groups,

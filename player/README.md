@@ -58,6 +58,10 @@ for a top-level variable, and further element addresses appear as pointers targe
 expression takes their address. A nested access highlights the next part of the expression,
 then the corresponding memory, before continuing down the path.
 
+The code panel keeps a statement on one row when it fits at a readable size. It uses the
+space available alongside memory and the evaluation pane, then wraps longer statements with
+indented continuations and tighter spacing within the same statement.
+
 A step's operation animates from the previous pane to the new one. Reads are blue, writes
 yellow; a dereference selects its target with a neutral outline, and that target brightens just
 before the followed arc arrives. Values land in the centre of the token they replace and cut

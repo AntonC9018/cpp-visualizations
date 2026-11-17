@@ -259,6 +259,50 @@ test('generated array frames show an element address only when used', async () =
   assert.deepEqual(errors, []);
 });
 
+test('the player wraps a long statement only as its available width shrinks', async () => {
+  const generated = traceSource(`
+    std::array<std::array<int, 2>, 3> arr{
+        std::array{1, 2}, {3, 4}, {5, 6},
+    };
+    arr[2][1] = 8;
+  `, { runtime: false });
+  await page.setViewportSize({ width: 1500, height: 900 });
+  await page.setContent(PAGE.replace(trace, JSON.stringify(generated).replace(/</g, '\\u003c')));
+  await page.evaluate(() => window.CourseVisualization!.scan());
+  await page.evaluate(() => {
+    const root = document.querySelector('.course-visualization') as PlayerElement;
+    root.cvPlayer.end();
+  });
+
+  const rowCount = () => page.evaluate(() => {
+    const root = document.querySelector('.course-visualization') as PlayerElement;
+    return root.cvPlayer.g.codeRows[0].length;
+  });
+  assert.equal(await rowCount(), 1);
+
+  // Both widths use the side-by-side layout. Wrapping must still respond to the resize.
+  await page.setViewportSize({ width: 820, height: 900 });
+  await page.waitForFunction(() => {
+    const { g } = (document.querySelector('.course-visualization') as PlayerElement).cvPlayer;
+    return !g.stacked && g.codeRows[0].length > 1;
+  });
+  const spacing = await page.evaluate(() => {
+    const p = (document.querySelector('.course-visualization') as PlayerElement).cvPlayer;
+    const rows = p.g.codeRows[0];
+    return {
+      continuation: rows[1].y - rows[0].y,
+      nextStatement: p.g.lineY(1) - rows.at(-1)!.y,
+      valid: !/NaN|undefined/.test(p.svg.innerHTML),
+    };
+  });
+  assert.ok(spacing.continuation < spacing.nextStatement);
+  assert.ok(spacing.valid);
+  assert.equal(await index(), generated.steps.length - 1);
+  await page.focus('.cv-line[data-line="0"]');
+  await page.keyboard.press('Enter');
+  assert.equal(await index(), 0);
+});
+
 test('a pointer to a narrow array element lands on its cell', async () => {
   const generated = traceSource(
     'std::array<uint8_t, 32> a; a[0] = 1; auto p = &a[1];',

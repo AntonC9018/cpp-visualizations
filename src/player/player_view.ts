@@ -46,6 +46,7 @@ export class Player {
   status!: HTMLDivElement;
   typeBox!: HTMLDivElement;
   stacked: boolean | null;
+  private layoutWidth: number | undefined;
   observer: ResizeObserver | null = null;
   P!: Palette;
   g!: Geometry;
@@ -140,7 +141,7 @@ export class Player {
     this.stacked = null;
     if (window.ResizeObserver) {
       this.observer = new ResizeObserver(() => {
-        if (this.arrangement() !== this.stacked) this.refresh();
+        if (this.root.clientWidth !== this.layoutWidth) this.refresh();
       });
       this.observer.observe(root);
     }
@@ -245,11 +246,6 @@ export class Player {
     }
   }
 
-  arrangement(): boolean {
-    const width = this.root.clientWidth;
-    return width > 0 && width < STACK_BELOW;
-  }
-
   theme(): void {
     this.root.dataset.cvTheme = themeName();
     const style = getComputedStyle(this.root);
@@ -263,6 +259,7 @@ export class Player {
     P.fields = Array.from({ length: FIELD_COLOURS }, (_, i) => read('field-' + i) || '#808080');
     P.types = Array.from({ length: TYPE_COLOURS }, (_, i) => read('type-' + i) || '#808080');
     this.P = P as Palette;
+    this.layoutWidth = undefined;
   }
 
   refresh(): void {
@@ -272,11 +269,18 @@ export class Player {
   }
 
   render(animate: boolean): void {
-    this.stacked = this.arrangement();
+    const width = this.root.clientWidth;
+    if (width !== this.layoutWidth) {
+      this.stacked = width > 0 && width < STACK_BELOW;
+      this.g = geometry(this.m, this.P, this.stacked, width);
+      this.layoutWidth = width;
+      this.shownType = null;
+      this.typeBox.hidden = true;
+    }
     const steps = this.m.steps;
     const step = steps[this.index];
     const prev = this.index ? steps[this.index - 1] : null;
-    const g = (this.g = geometry(this.m, this.P, this.stacked));
+    const g = this.g;
     const now = activeVariables(this.m, this.index);
     const before = animate && this.index ? activeVariables(this.m, this.index - 1) : now;
     const begin = new Map<string, number>();
