@@ -184,7 +184,7 @@ describe('WasiAndCacheTests', () => {
         const layout = nodeLayout.trace(preset.source);
         validate(layout);
       } else {
-        const trace = nodeTracing.trace(preset.source, { runtime: true });
+        const trace = nodeTracing.trace(preset.source, { runtime: true, types: preset.types });
         validate(trace);
       }
     }
@@ -206,9 +206,13 @@ describe('ClangWasmParityTests', { skip: !existsSync(WASM_PATH) }, () => {
         const nativeOut = traceLayout(preset.source, nativeFrontend);
         assert.equal(dumpsSorted(wasmOut), dumpsSorted(nativeOut), `layout parity for ${preset.id}`);
       } else {
-        const wasmOut = traceWithWasmModule(preset.source, wasmModule, { mode: 'trace' });
+        const wasmOut = traceWithWasmModule(preset.source, wasmModule, {
+          mode: 'trace',
+          types: preset.types,
+        });
         const nativeOut = traceWithFrontend(preset.source, {
           runtime: false,
+          types: preset.types,
           frontend: nativeFrontend,
         });
         assert.equal(dumpsSorted(wasmOut), dumpsSorted(nativeOut), `trace parity for ${preset.id}`);

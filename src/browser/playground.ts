@@ -13,6 +13,8 @@ export interface PlaygroundPreset {
   mode: TraceMode;
   label: { en: string; ru: string };
   source: string;
+  /** Trace with types, as a tag with the `types` attribute does. */
+  types?: boolean;
 }
 
 export const PRESETS: readonly PlaygroundPreset[] = [
@@ -78,6 +80,13 @@ export const PRESETS: readonly PlaygroundPreset[] = [
     ].join('\n'),
   },
   {
+    id: 'type-mismatch',
+    mode: 'trace',
+    types: true,
+    label: { en: 'Conversions & mismatched types', ru: 'Преобразования и несовместимые типы' },
+    source: ['uint8_t a = 200;', 'int b = a + a;', 'int* p = b;'].join('\n'),
+  },
+  {
     id: 'layout-padding',
     mode: 'layout',
     label: { en: 'Struct padding & alignment', ru: 'Выравнивание и заполнение полей' },
@@ -111,6 +120,8 @@ interface UiCopy {
   subtitle: string;
   modeTrace: string;
   modeLayout: string;
+  types: string;
+  typesTitle: string;
   presetLabel: string;
   customPreset: string;
   themeDark: string;
@@ -139,6 +150,8 @@ const UI_COPY: Record<'en' | 'ru', UiCopy> = {
     subtitle: 'Compiled in-browser with Clang 21 WebAssembly — no backend required.',
     modeTrace: 'Execution trace',
     modeLayout: 'Struct layout',
+    types: 'Types',
+    typesTitle: 'Show the type of every value, and a last statement whose types do not fit',
     presetLabel: 'Example',
     customPreset: 'Custom code',
     themeDark: 'Dark',
@@ -176,6 +189,8 @@ const UI_COPY: Record<'en' | 'ru', UiCopy> = {
     subtitle: 'Компиляция прямо в браузере через Clang 21 WebAssembly — без сервера.',
     modeTrace: 'Трассировка выполнения',
     modeLayout: 'Раскладка структур',
+    types: 'Типы',
+    typesTitle: 'Показывать тип каждого значения и последнюю инструкцию с несовместимыми типами',
     presetLabel: 'Пример',
     customPreset: 'Свой код',
     themeDark: 'Тёмная',
@@ -221,6 +236,7 @@ export interface PlaygroundController {
   client: ClangWasmClient;
   run(): Promise<void>;
   setMode(mode: TraceMode): void;
+  setTypes(types: boolean): void;
   clearCache(): Promise<boolean>;
 }
 
@@ -294,6 +310,7 @@ export function initPlayground(root: HTMLElement): PlaygroundController {
       ? queryMode
       : (queryPreset?.mode ?? 'trace');
   const initialPreset = queryPreset ?? PRESETS.find(p => p.mode === mode) ?? PRESETS[0];
+  let types = params.has('types') ? params.get('types') === '1' : (initialPreset.types ?? false);
 
   const cfg = resolveConfig(root);
 
@@ -308,6 +325,7 @@ export function initPlayground(root: HTMLElement): PlaygroundController {
           <button type="button" class="pg-mode-btn" data-mode="trace"></button>
           <button type="button" class="pg-mode-btn" data-mode="layout"></button>
         </div>
+        <button type="button" class="pg-btn pg-types-btn"></button>
         <label class="pg-preset-wrap">
           <span class="pg-preset-label"></span>
           <select class="pg-preset-select"></select>
@@ -350,6 +368,7 @@ export function initPlayground(root: HTMLElement): PlaygroundController {
   const subtitleEl = root.querySelector('.pg-subtitle') as HTMLParagraphElement;
   const modeTraceBtn = root.querySelector('[data-mode="trace"]') as HTMLButtonElement;
   const modeLayoutBtn = root.querySelector('[data-mode="layout"]') as HTMLButtonElement;
+  const typesBtn = root.querySelector('.pg-types-btn') as HTMLButtonElement;
   const presetLabelEl = root.querySelector('.pg-preset-label') as HTMLSpanElement;
   const presetSelect = root.querySelector('.pg-preset-select') as HTMLSelectElement;
   const langBtn = root.querySelector('.pg-lang-btn') as HTMLButtonElement;
@@ -403,6 +422,8 @@ export function initPlayground(root: HTMLElement): PlaygroundController {
       }
     }
     url.searchParams.set('mode', mode);
+    if (types) url.searchParams.set('types', '1');
+    else url.searchParams.delete('types');
     url.searchParams.set('theme', getTheme());
     url.searchParams.set('lang', getLang());
     window.history.replaceState(null, '', url.pathname + url.search + url.hash);
@@ -460,6 +481,11 @@ export function initPlayground(root: HTMLElement): PlaygroundController {
     modeLayoutBtn.classList.toggle('is-active', mode === 'layout');
     modeTraceBtn.setAttribute('aria-pressed', String(mode === 'trace'));
     modeLayoutBtn.setAttribute('aria-pressed', String(mode === 'layout'));
+    typesBtn.textContent = copy.types;
+    typesBtn.title = copy.typesTitle;
+    typesBtn.hidden = mode !== 'trace';
+    typesBtn.classList.toggle('is-active', types);
+    typesBtn.setAttribute('aria-pressed', String(types));
 
     presetLabelEl.textContent = copy.presetLabel;
     populatePresets();
@@ -518,7 +544,7 @@ export function initPlayground(root: HTMLElement): PlaygroundController {
     errorBox.hidden = true;
 
     try {
-      const result = await client.trace(source, { mode });
+      const result = await client.trace(source, { mode, types });
       if (seq !== activeRunSeq) return;
       lastLoadMeta = result.load;
       lastDurationMs = result.durationMs;
@@ -546,12 +572,19 @@ export function initPlayground(root: HTMLElement): PlaygroundController {
     renderStrings();
   }
 
+  function setTypes(nextTypes: boolean): void {
+    if (types === nextTypes) return;
+    types = nextTypes;
+    renderStrings();
+  }
+
   function switchMode(nextMode: TraceMode): void {
     const selectedPreset = PRESETS.find(p => p.id === presetSelect.value);
     setMode(nextMode);
     if (selectedPreset && selectedPreset.mode !== nextMode) {
       const firstForMode = PRESETS.find(p => p.mode === nextMode)!;
       editor.value = firstForMode.source;
+      types = firstForMode.types ?? false;
       populatePresets();
     }
     syncUrl();
@@ -566,10 +599,17 @@ export function initPlayground(root: HTMLElement): PlaygroundController {
     switchMode('layout');
   });
 
+  typesBtn.addEventListener('click', () => {
+    setTypes(!types);
+    syncUrl();
+    void run();
+  });
+
   presetSelect.addEventListener('change', () => {
     const preset = PRESETS.find(p => p.id === presetSelect.value);
     if (!preset) return;
     mode = preset.mode;
+    types = preset.types ?? false;
     editor.value = preset.source;
     renderStrings();
     syncUrl();
@@ -642,6 +682,7 @@ export function initPlayground(root: HTMLElement): PlaygroundController {
     client,
     run,
     setMode,
+    setTypes,
     clearCache,
   };
   window.CoursePlayground = controller;

@@ -177,6 +177,23 @@ test(
       });
       assert.equal(wasmFetchPaths.length, 1);
 
+      // The type-mismatch preset traces with types: the last statement is shown, not an error.
+      await page.selectOption('.pg-preset-select', 'type-mismatch');
+      await page.waitForFunction(
+        () => (document.querySelector('.pg-types-btn') as HTMLElement | null)?.getAttribute('aria-pressed') === 'true'
+      );
+      await page.waitForFunction(
+        () => (document.querySelector('.pg-vis-host .cv-stage')?.textContent || '').includes('uint8_t')
+      );
+      assert.equal(await page.locator('.pg-error-box').isHidden(), true);
+      assert.match(page.url(), /[?&]types=1/);
+
+      // Without types, the same mismatch is a compile error.
+      await page.click('.pg-types-btn');
+      await page.waitForSelector('.pg-error-box:not([hidden])');
+      assert.match((await page.locator('.pg-error-box').textContent()) ?? '', /IllFormed/);
+      assert.doesNotMatch(page.url(), /[?&]types=/);
+
       // Switch to Struct layout preset -> renders Layout grid cleanly.
       await page.selectOption('.pg-preset-select', 'layout-padding');
       await page.waitForSelector('.pg-vis-host .cv-layout-record');

@@ -9,20 +9,19 @@ import {
   loadWasmModule,
   resolveWasmUrl,
 } from './cache.ts';
-import { type TraceMode, traceWithWasmModule } from './wasm_frontend.ts';
+import { type TraceRequestOptions, traceWithWasmModule } from './wasm_frontend.ts';
 
 export type WasmLoadMetadata = Omit<WasmLoadResult, 'module'>;
 
 export type WorkerRequest =
   | { id: number; type: 'init'; wasmUrl?: string; cacheName?: string }
-  | {
+  | ({
       id: number;
       type: 'trace';
       source: string;
-      mode?: TraceMode;
       wasmUrl?: string;
       cacheName?: string;
-    }
+    } & TraceRequestOptions)
   | { id: number; type: 'clear-cache'; wasmUrl?: string; cacheName?: string };
 
 export type WorkerResponse =
@@ -104,7 +103,8 @@ async function handleRequest(request: WorkerRequest): Promise<void> {
       const { module, meta } = await ensureLoaded(request.id, request.wasmUrl, request.cacheName);
       const start = performance.now();
       const trace = traceWithWasmModule(request.source, module, {
-        mode: request.mode ?? 'trace',
+        mode: request.mode,
+        types: request.types,
       });
       const durationMs = Math.round(performance.now() - start);
       workerSelf.postMessage({

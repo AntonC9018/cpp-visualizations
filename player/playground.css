@@ -149,6 +149,22 @@ body {
   filter: brightness(1.07);
 }
 
+.pg-btn[hidden] {
+  display: none;
+}
+
+.pg-types-btn[aria-pressed='true'] {
+  background: var(--pg-accent);
+  border-color: var(--pg-accent);
+  color: var(--pg-accent-text);
+  font-weight: 650;
+}
+
+.pg-types-btn[aria-pressed='true']:hover:not(:disabled) {
+  background: var(--pg-accent);
+  filter: brightness(1.07);
+}
+
 .pg-btn-subtle {
   font-size: 0.78rem;
   padding: 0.25rem 0.6rem;

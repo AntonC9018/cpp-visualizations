@@ -1,8 +1,8 @@
 // Main-thread RPC client wrapping the Clang WASM Web Worker.
-import { Unsupported } from '../core/errors.ts';
+import { IllFormed, Unsupported } from '../core/errors.ts';
 import type { AnyTrace } from '../core/trace_format.ts';
 import { DEFAULT_CACHE_NAME, DEFAULT_WASM_URL, type WasmLoadProgress } from './cache.ts';
-import type { TraceMode } from './wasm_frontend.ts';
+import type { TraceRequestOptions } from './wasm_frontend.ts';
 import type { WasmLoadMetadata, WorkerRequest, WorkerResponse } from './worker.ts';
 
 export interface ClangWasmClientOptions {
@@ -60,11 +60,14 @@ export class ClangWasmClient {
 
       this.pending.delete(response.id);
       if (response.type === 'error') {
+        const { name, message } = response.error;
         const err =
-          response.error.name === 'Unsupported'
-            ? new Unsupported(response.error.message)
-            : new Error(response.error.message);
-        err.name = response.error.name;
+          name === 'IllFormed'
+            ? new IllFormed(message)
+            : name === 'Unsupported'
+              ? new Unsupported(message)
+              : new Error(message);
+        err.name = name;
         call.reject(err);
         return;
       }
@@ -91,7 +94,7 @@ export class ClangWasmClient {
   private call(
     request:
       | { type: 'init'; wasmUrl?: string; cacheName?: string }
-      | { type: 'trace'; source: string; mode?: TraceMode; wasmUrl?: string; cacheName?: string }
+      | ({ type: 'trace'; source: string; wasmUrl?: string; cacheName?: string } & TraceRequestOptions)
       | { type: 'clear-cache'; wasmUrl?: string; cacheName?: string },
     onProgress?: (progress: WasmLoadProgress) => void
   ): Promise<WorkerResponse> {
@@ -121,13 +124,14 @@ export class ClangWasmClient {
 
   async trace(
     source: string,
-    options: { mode?: TraceMode; onProgress?: (progress: WasmLoadProgress) => void } = {}
+    options: TraceRequestOptions & { onProgress?: (progress: WasmLoadProgress) => void } = {}
   ): Promise<ClientTraceResult> {
     const response = await this.call(
       {
         type: 'trace',
         source,
         mode: options.mode ?? 'trace',
+        types: options.types ?? false,
         wasmUrl: this.wasmUrl,
         cacheName: this.cacheName,
       },

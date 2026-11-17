@@ -3033,12 +3033,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
     };
   }
-  function traceWithWasmModule(source, module, { mode = "trace" } = {}) {
+  function traceWithWasmModule(source, module, { mode = "trace", types = false } = {}) {
     const frontend = createWasmClangFrontend(module);
     if (mode === "layout") {
       return traceLayout(source, frontend);
     }
-    return traceWithFrontend(source, { runtime: false, frontend });
+    return traceWithFrontend(source, { runtime: false, types, frontend });
   }
   const workerSelf = self;
   let activeKey = null;
@@ -3093,7 +3093,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         const { module, meta } = await ensureLoaded(request.id, request.wasmUrl, request.cacheName);
         const start = performance.now();
         const trace = traceWithWasmModule(request.source, module, {
-          mode: request.mode ?? "trace"
+          mode: request.mode,
+          types: request.types
         });
         const durationMs = Math.round(performance.now() - start);
         workerSelf.postMessage({

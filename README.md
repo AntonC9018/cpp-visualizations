@@ -196,6 +196,11 @@ sources with:
 ./wasm/build.sh
 ```
 
+The playground runs the same tracer as `generate.mjs trace`, only without GDB; the compiler
+under it is Clang built to WASM instead of the native one, and both give the same AST.
+The **Types** toggle (`?types=1`) traces as `--types` and a tag's `types` attribute do, so a
+last statement whose types do not fit is shown rather than reported as an error.
+
 Override the compiler binary URL via `?wasm=https://.../clang-trace-frontend.wasm`,
 `data-wasm-url` on `#playground-root`, or `window.CoursePlaygroundConfig.wasmUrl`.
 

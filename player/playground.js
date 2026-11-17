@@ -10,6 +10,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.name = "Unsupported";
     }
   }
+  class IllFormed extends Unsupported {
+    constructor(diagnostic, offset = null) {
+      super(diagnostic);
+      __publicField(this, "offset");
+      this.name = "IllFormed";
+      this.offset = offset;
+    }
+  }
   const CHAR = 0.602;
   const CODE_SIZE = 25;
   const PANE_SIZE = 30;
@@ -1822,8 +1830,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         }
         this.pending.delete(response.id);
         if (response.type === "error") {
-          const err = response.error.name === "Unsupported" ? new Unsupported(response.error.message) : new Error(response.error.message);
-          err.name = response.error.name;
+          const { name, message } = response.error;
+          const err = name === "IllFormed" ? new IllFormed(message) : name === "Unsupported" ? new Unsupported(message) : new Error(message);
+          err.name = name;
           call.reject(err);
           return;
         }
@@ -1872,6 +1881,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           type: "trace",
           source,
           mode: options.mode ?? "trace",
+          types: options.types ?? false,
           wasmUrl: this.wasmUrl,
           cacheName: this.cacheName
         },
@@ -1968,6 +1978,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       ].join("\n")
     },
     {
+      id: "type-mismatch",
+      mode: "trace",
+      types: true,
+      label: { en: "Conversions & mismatched types", ru: "Преобразования и несовместимые типы" },
+      source: ["uint8_t a = 200;", "int b = a + a;", "int* p = b;"].join("\n")
+    },
+    {
       id: "layout-padding",
       mode: "layout",
       label: { en: "Struct padding & alignment", ru: "Выравнивание и заполнение полей" },
@@ -2000,6 +2017,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       subtitle: "Compiled in-browser with Clang 21 WebAssembly — no backend required.",
       modeTrace: "Execution trace",
       modeLayout: "Struct layout",
+      types: "Types",
+      typesTitle: "Show the type of every value, and a last statement whose types do not fit",
       presetLabel: "Example",
       customPreset: "Custom code",
       themeDark: "Dark",
@@ -2026,6 +2045,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       subtitle: "Компиляция прямо в браузере через Clang 21 WebAssembly — без сервера.",
       modeTrace: "Трассировка выполнения",
       modeLayout: "Раскладка структур",
+      types: "Типы",
+      typesTitle: "Показывать тип каждого значения и последнюю инструкцию с несовместимыми типами",
       presetLabel: "Пример",
       customPreset: "Свой код",
       themeDark: "Тёмная",
@@ -2089,6 +2110,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const queryMode = params.get("mode");
     let mode = queryMode === "layout" || queryMode === "trace" ? queryMode : (queryPreset == null ? void 0 : queryPreset.mode) ?? "trace";
     const initialPreset = queryPreset ?? PRESETS.find((p) => p.mode === mode) ?? PRESETS[0];
+    let types = params.has("types") ? params.get("types") === "1" : initialPreset.types ?? false;
     const cfg = resolveConfig(root);
     root.innerHTML = `
     <header class="pg-header">
@@ -2101,6 +2123,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           <button type="button" class="pg-mode-btn" data-mode="trace"></button>
           <button type="button" class="pg-mode-btn" data-mode="layout"></button>
         </div>
+        <button type="button" class="pg-btn pg-types-btn"></button>
         <label class="pg-preset-wrap">
           <span class="pg-preset-label"></span>
           <select class="pg-preset-select"></select>
@@ -2142,6 +2165,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const subtitleEl = root.querySelector(".pg-subtitle");
     const modeTraceBtn = root.querySelector('[data-mode="trace"]');
     const modeLayoutBtn = root.querySelector('[data-mode="layout"]');
+    const typesBtn = root.querySelector(".pg-types-btn");
     const presetLabelEl = root.querySelector(".pg-preset-label");
     const presetSelect = root.querySelector(".pg-preset-select");
     const langBtn = root.querySelector(".pg-lang-btn");
@@ -2190,6 +2214,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         }
       }
       url.searchParams.set("mode", mode);
+      if (types) url.searchParams.set("types", "1");
+      else url.searchParams.delete("types");
       url.searchParams.set("theme", getTheme());
       url.searchParams.set("lang", getLang());
       window.history.replaceState(null, "", url.pathname + url.search + url.hash);
@@ -2241,6 +2267,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       modeLayoutBtn.classList.toggle("is-active", mode === "layout");
       modeTraceBtn.setAttribute("aria-pressed", String(mode === "trace"));
       modeLayoutBtn.setAttribute("aria-pressed", String(mode === "layout"));
+      typesBtn.textContent = copy.types;
+      typesBtn.title = copy.typesTitle;
+      typesBtn.hidden = mode !== "trace";
+      typesBtn.classList.toggle("is-active", types);
+      typesBtn.setAttribute("aria-pressed", String(types));
       presetLabelEl.textContent = copy.presetLabel;
       populatePresets();
       langBtn.textContent = copy.langLabel;
@@ -2288,7 +2319,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       renderStrings();
       errorBox.hidden = true;
       try {
-        const result = await client.trace(source, { mode });
+        const result = await client.trace(source, { mode, types });
         if (seq !== activeRunSeq) return;
         lastLoadMeta = result.load;
         lastDurationMs = result.durationMs;
@@ -2314,12 +2345,18 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       mode = nextMode;
       renderStrings();
     }
+    function setTypes(nextTypes) {
+      if (types === nextTypes) return;
+      types = nextTypes;
+      renderStrings();
+    }
     function switchMode(nextMode) {
       const selectedPreset = PRESETS.find((p) => p.id === presetSelect.value);
       setMode(nextMode);
       if (selectedPreset && selectedPreset.mode !== nextMode) {
         const firstForMode = PRESETS.find((p) => p.mode === nextMode);
         editor.value = firstForMode.source;
+        types = firstForMode.types ?? false;
         populatePresets();
       }
       syncUrl();
@@ -2331,10 +2368,16 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     modeLayoutBtn.addEventListener("click", () => {
       switchMode("layout");
     });
+    typesBtn.addEventListener("click", () => {
+      setTypes(!types);
+      syncUrl();
+      void run();
+    });
     presetSelect.addEventListener("change", () => {
       const preset = PRESETS.find((p) => p.id === presetSelect.value);
       if (!preset) return;
       mode = preset.mode;
+      types = preset.types ?? false;
       editor.value = preset.source;
       renderStrings();
       syncUrl();
@@ -2399,6 +2442,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       client,
       run,
       setMode,
+      setTypes,
       clearCache
     };
     window.CoursePlayground = controller;

@@ -8,6 +8,12 @@ import { runWasiModule } from './wasi.ts';
 
 export type TraceMode = 'trace' | 'layout';
 
+/** How to trace a snippet; `types` applies to execution traces only, as the tag's attribute. */
+export interface TraceRequestOptions {
+  mode?: TraceMode;
+  types?: boolean;
+}
+
 export function createWasmClangFrontend(module: WebAssembly.Module): CompilerFrontend {
   return {
     mainAst(program: string): AstNode {
@@ -57,11 +63,11 @@ export function createWasmClangFrontend(module: WebAssembly.Module): CompilerFro
 export function traceWithWasmModule(
   source: string,
   module: WebAssembly.Module,
-  { mode = 'trace' }: { mode?: TraceMode } = {}
+  { mode = 'trace', types = false }: TraceRequestOptions = {}
 ): AnyTrace {
   const frontend = createWasmClangFrontend(module);
   if (mode === 'layout') {
     return traceLayout(source, frontend);
   }
-  return traceWithFrontend(source, { runtime: false, frontend });
+  return traceWithFrontend(source, { runtime: false, types, frontend });
 }
