@@ -615,7 +615,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   ];
   const valueCentre = (c) => [
     c.x + c.w / 2,
-    c.y + 32
+    c.y + c.h / 2
   ];
   function links(g, step) {
     const list = g.leaves.filter((l) => l.kind === "ptr" && step.targets[l.name] && g.box(step.targets[l.name])).map((l) => ({
@@ -783,7 +783,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }
   const COLUMN_GAP = 56;
   const STACK_TETHER_WIDTH = 30;
-  function geometry(m, P, stacked, viewport) {
+  function geometry(m, P, stacked, viewport, options = {}) {
+    const cellH = options.cellHeight ?? CELL;
+    const extraMemBottom = options.extraMemBottom ?? 0;
+    const extraPaneHeight = options.extraPaneHeight ?? 0;
+    const minByteWidth = options.minByteWidth ?? 0;
     const isStruct = (c) => Boolean(c.fields);
     const unwrapped = codeLayout(m.source);
     const targetCodeSize = stacked ? 12 : 13;
@@ -801,26 +805,29 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     };
     const stackedCodeBudget = canvasBudget - 2 * MARGIN - STACK_TETHER_WIDTH;
     const initialCode = stacked ? fitCode(stackedCodeBudget) : unwrapped;
-    const widest = m.leaves.some((leaf) => leaf.size < 4) ? NARROW_BYTE : MAX_BYTE;
+    const widest = Math.max(minByteWidth, m.leaves.some((leaf) => leaf.size < 4) ? NARROW_BYTE : MAX_BYTE);
     const rise = m.rise;
     const structs = m.groups.length > 0;
     const paneChars = Math.max(...m.steps.map((step) => step.pane.length));
     const finalStdout = m.steps[m.steps.length - 1].stdout;
     const outputLines = finalStdout ? finalStdout.replace(/\n$/, "").split("\n") : [];
     const outputChars = Math.max(0, ...outputLines.map((line) => line.length));
-    const canWrap = !stacked && m.tops.length > 1 && !m.typed && m.references.length === 0 && m.steps.every((step) => Object.keys(step.targets).length === 0);
-    const pitch = (structs ? CELL + FRAME.bottom + 32 : CELL + 34) + rise * RISE.bottom + (structs ? FRAME.top : 0) + 30 + rise * RISE.top;
+    const canWrap = !stacked && !options.skipWrap && m.tops.length > 1 && !m.typed && m.references.length === 0 && m.steps.every((step) => Object.keys(step.targets).length === 0);
+    const pitch = (structs ? cellH + FRAME.bottom + 32 : cellH + 34) + extraMemBottom + rise * RISE.bottom + (structs ? FRAME.top : 0) + 30 + rise * RISE.top;
     const plan = (rows2) => {
       const rowOf2 = /* @__PURE__ */ new Map();
       rows2.forEach((row, r) => row.forEach((i) => rowOf2.set(m.tops[i].name, r)));
-      const byteFor = (budget) => Math.min(
-        widest,
-        ...rows2.map((row) => {
-          const items = row.map((i) => m.tops[i]);
-          const bytes = items[items.length - 1].address + items[items.length - 1].size - items[0].address;
-          const nested = m.groups.filter((s) => s.parent && rowOf2.get(s.top) === rowOf2.get(items[0].name));
-          return Math.max(1, (budget - GAP * (items.length - 1) - 2 * NEST * nested.length) / bytes);
-        })
+      const byteFor = (budget) => Math.max(
+        minByteWidth,
+        Math.min(
+          widest,
+          ...rows2.map((row) => {
+            const items = row.map((i) => m.tops[i]);
+            const bytes = items[items.length - 1].address + items[items.length - 1].size - items[0].address;
+            const nested = m.groups.filter((s) => s.parent && rowOf2.get(s.top) === rowOf2.get(items[0].name));
+            return Math.max(1, (budget - GAP * (items.length - 1) - 2 * NEST * nested.length) / bytes);
+          })
+        )
       );
       const natural = placement(m, byteFor(MEMORY_WIDTH), rowOf2).width;
       const paneSize = Math.max(
@@ -831,6 +838,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const labelExtent2 = paneLabelExtent(m, paneChar);
       const others = Math.max(
         360,
+        options.minColumnWidth ?? 0,
         paneChars * paneChar + 48,
         labelExtent2.right + 24 - PANE_LABEL_LEFT,
         (P.outputLabel.length + 1) * 26 * CHAR + outputChars * paneChar + 48,
@@ -886,7 +894,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         x: memX2 + span[0],
         y: memY2 + rowY(c.name),
         w: span[1],
-        h: CELL,
+        h: cellH,
         color: "",
         fieldColor: null
       };
@@ -898,7 +906,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         x: memX2 + span[0],
         y: memY2 + rowY(c.name),
         w: span[1],
-        h: CELL,
+        h: cellH,
         color: "",
         fieldColor: null
       };
@@ -923,10 +931,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const typeRow = typeRows(m, probe.box);
     const labelHeight = m.typed ? LABEL.rise + Math.max(0, labelExtent.rows - 1) * LABEL.row : 0;
     const labelRise = m.typed ? labelHeight + 6 : 0;
-    const named = (structs ? CELL + FRAME.bottom + 32 : CELL + 34) + rise * RISE.bottom + tagged.height;
+    const named = (structs ? cellH + FRAME.bottom + 32 : cellH + 34) + extraMemBottom + rise * RISE.bottom + tagged.height;
     const names = named + typeRow.height;
     const paneTop = room + names + extraRows * pitch + 56;
-    const paneH = 76 + labelRise;
+    const paneH = 76 + labelRise + extraPaneHeight;
     const outputTop = paneTop + paneH + 60;
     const columnH = outputLines.length ? outputTop + (outputLines.length - 1) * 36 + 14 : paneTop + paneH;
     const codeX = MARGIN;
@@ -1836,10 +1844,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return format(S[op.kind], op);
   }
   class Player {
-    constructor(host, trace) {
+    constructor(host, trace, hooks) {
       __publicField(this, "host");
       __publicField(this, "m");
       __publicField(this, "S");
+      __publicField(this, "hooks");
       __publicField(this, "index");
       __publicField(this, "elapsed");
       __publicField(this, "duration");
@@ -1869,6 +1878,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.host = host;
       this.m = prepare(trace);
       this.S = strings();
+      this.hooks = hooks;
       this.index = 0;
       this.elapsed = 0;
       this.duration = 0;
@@ -2040,10 +2050,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       if (this.animated) this.seek(this.elapsed);
     }
     render(animate) {
+      var _a, _b, _c;
       const width = this.root.clientWidth;
       if (width !== this.layoutWidth) {
         this.stacked = width > 0 && width < STACK_BELOW;
-        this.g = geometry(this.m, this.P, this.stacked, width);
+        this.g = ((_a = this.hooks) == null ? void 0 : _a.geometry) ? this.hooks.geometry(this.m, this.P, this.stacked, width) : geometry(this.m, this.P, this.stacked, width);
         this.layoutWidth = width;
         this.shownType = null;
         this.typeBox.hidden = true;
@@ -2073,11 +2084,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.animated = animate;
       this.svg.setAttribute("viewBox", `0 0 ${Math.ceil(g.width)} ${Math.ceil(g.height)}`);
       this.svg.style.maxWidth = `${Math.ceil(g.width * MAX_SCALE)}px`;
-      this.scene.innerHTML = `<rect width="100%" height="100%" fill="${this.P.bg}"/>` + scene(c);
+      const body = ((_b = this.hooks) == null ? void 0 : _b.scene) ? this.hooks.scene(c) : scene(c);
+      this.scene.innerHTML = `<rect width="100%" height="100%" fill="${this.P.bg}"/>` + body;
       placeLineTargets(g, this.lines);
       this.finishPaths();
       this.seek(0);
-      this.update(describe(c));
+      this.update(((_c = this.hooks) == null ? void 0 : _c.describe) ? this.hooks.describe(c) : describe(c));
     }
     finishPaths() {
       for (const path of this.scene.querySelectorAll(
@@ -2154,12 +2166,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.render(false);
     }
     start(index, autoplay = false) {
+      var _a;
       this.stop();
       this.pristine = false;
       this.continuous = autoplay;
       this.index = index;
       this.elapsed = 0;
-      this.duration = stepSeconds(this.m.steps, index);
+      this.duration = ((_a = this.hooks) == null ? void 0 : _a.stepSeconds) ? this.hooks.stepSeconds(this.m.steps, index) : stepSeconds(this.m.steps, index);
       this.render(true);
       if (this.duration > 0 || autoplay) this.resume();
     }

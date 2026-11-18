@@ -82,6 +82,15 @@ export interface TypeTarget extends PlacedRect {
   underline?: boolean;
 }
 
+export interface GeometryOptions {
+  minByteWidth?: number;
+  minColumnWidth?: number;
+  cellHeight?: number;
+  extraPaneHeight?: number;
+  extraMemBottom?: number;
+  skipWrap?: boolean;
+}
+
 export interface Geometry {
   stacked: boolean;
   paneSize: number;
@@ -244,7 +253,7 @@ export const labelCentre = (c: PlacedRect & { address: number }): [number, numbe
 
 export const valueCentre = (c: PlacedRect): [number, number] => [
   c.x + c.w / 2,
-  c.y + 32,
+  c.y + c.h / 2,
 ];
 
 interface LinkProbe {
@@ -469,8 +478,16 @@ const COLUMN_GAP = 56;
 const STACK_TETHER_WIDTH = 30;
 
 export function geometry(
-  m: PreparedModel, P: Palette, stacked: boolean, viewport: number
+  m: PreparedModel,
+  P: Palette,
+  stacked: boolean,
+  viewport: number,
+  options: GeometryOptions = {}
 ): Geometry {
+  const cellH = options.cellHeight ?? CELL;
+  const extraMemBottom = options.extraMemBottom ?? 0;
+  const extraPaneHeight = options.extraPaneHeight ?? 0;
+  const minByteWidth = options.minByteWidth ?? 0;
   const isStruct = (c: { fields?: unknown }): c is PlacedGroup => Boolean(c.fields);
   const unwrapped = codeLayout(m.source);
   // Preserve the natural line when it fits near the target size in CSS pixels.
@@ -490,7 +507,7 @@ export function geometry(
   const stackedCodeBudget = canvasBudget - 2 * MARGIN - STACK_TETHER_WIDTH;
   const initialCode = stacked ? fitCode(stackedCodeBudget) : unwrapped;
 
-  const widest = m.leaves.some(leaf => leaf.size < 4) ? NARROW_BYTE : MAX_BYTE;
+  const widest = Math.max(minByteWidth, m.leaves.some(leaf => leaf.size < 4) ? NARROW_BYTE : MAX_BYTE);
   const rise = m.rise;
   const structs = m.groups.length > 0;
   const paneChars = Math.max(...m.steps.map(step => step.pane.length));
@@ -503,12 +520,14 @@ export function geometry(
   // references, and no type labels.
   const canWrap =
     !stacked &&
+    !options.skipWrap &&
     m.tops.length > 1 &&
     !m.typed &&
     m.references.length === 0 &&
     m.steps.every(step => Object.keys(step.targets).length === 0);
   const pitch =
-    (structs ? CELL + FRAME.bottom + 32 : CELL + 34) +
+    (structs ? cellH + FRAME.bottom + 32 : cellH + 34) +
+    extraMemBottom +
     rise * RISE.bottom +
     (structs ? FRAME.top : 0) +
     30 +
@@ -517,14 +536,17 @@ export function geometry(
     const rowOf = new Map<string, number>();
     rows.forEach((row, r) => row.forEach(i => rowOf.set(m.tops[i].name, r)));
     const byteFor = (budget: number): number =>
-      Math.min(
-        widest,
-        ...rows.map(row => {
-          const items = row.map(i => m.tops[i]);
-          const bytes = items[items.length - 1].address + items[items.length - 1].size - items[0].address;
-          const nested = m.groups.filter(s => s.parent && rowOf.get(s.top) === rowOf.get(items[0].name));
-          return Math.max(1, (budget - GAP * (items.length - 1) - 2 * NEST * nested.length) / bytes);
-        })
+      Math.max(
+        minByteWidth,
+        Math.min(
+          widest,
+          ...rows.map(row => {
+            const items = row.map(i => m.tops[i]);
+            const bytes = items[items.length - 1].address + items[items.length - 1].size - items[0].address;
+            const nested = m.groups.filter(s => s.parent && rowOf.get(s.top) === rowOf.get(items[0].name));
+            return Math.max(1, (budget - GAP * (items.length - 1) - 2 * NEST * nested.length) / bytes);
+          })
+        )
       );
     // The pane's text shrinks (down to PANE_MIN) rather than widen the drawing past what
     // memory and the other parts need: a long pane line otherwise shrinks code and memory too.
@@ -538,6 +560,7 @@ export function geometry(
     // Everything but memory: the column is at least this wide whatever memory does.
     const others = Math.max(
       360,
+      options.minColumnWidth ?? 0,
       paneChars * paneChar + 48,
       labelExtent.right + 24 - PANE_LABEL_LEFT,
       (P.outputLabel.length + 1) * 26 * CHAR + outputChars * paneChar + 48,
@@ -601,7 +624,7 @@ export function geometry(
       x: memX + span[0],
       y: memY + rowY(c.name),
       w: span[1],
-      h: CELL,
+      h: cellH,
       color: '',
       fieldColor: null,
     };
@@ -613,7 +636,7 @@ export function geometry(
       x: memX + span[0],
       y: memY + rowY(c.name),
       w: span[1],
-      h: CELL,
+      h: cellH,
       color: '',
       fieldColor: null,
     };
@@ -643,10 +666,13 @@ export function geometry(
   const labelHeight = m.typed ? LABEL.rise + Math.max(0, labelExtent.rows - 1) * LABEL.row : 0;
   const labelRise = m.typed ? labelHeight + 6 : 0;
   const named =
-    (structs ? CELL + FRAME.bottom + 32 : CELL + 34) + rise * RISE.bottom + tagged.height;
+    (structs ? cellH + FRAME.bottom + 32 : cellH + 34) +
+    extraMemBottom +
+    rise * RISE.bottom +
+    tagged.height;
   const names = named + typeRow.height;
   const paneTop = room + names + extraRows * pitch + 56;
-  const paneH = 76 + labelRise;
+  const paneH = 76 + labelRise + extraPaneHeight;
   const outputTop = paneTop + paneH + 60;
   const columnH = outputLines.length
     ? outputTop + (outputLines.length - 1) * 36 + 14

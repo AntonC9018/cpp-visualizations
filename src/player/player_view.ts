@@ -21,10 +21,18 @@ import { type PreparedModel, activeVariables, arrival, prepare, stepSeconds } fr
 import { type SceneContext, describe, lineTargets, placeLineTargets, scene } from './scene.ts';
 import { esc } from './svg.ts';
 
+export interface PlayerHooks {
+  geometry?: (m: PreparedModel, P: Palette, stacked: boolean, width: number) => Geometry;
+  scene?: (c: SceneContext) => string;
+  stepSeconds?: (steps: ExecutionTrace['steps'], i: number) => number;
+  describe?: (c: SceneContext) => string;
+}
+
 export class Player {
   host: HTMLElement;
   m: PreparedModel;
   S: PlayerStrings;
+  hooks?: PlayerHooks;
   index: number;
   elapsed: number;
   duration: number;
@@ -52,10 +60,11 @@ export class Player {
   g!: Geometry;
   shownType: TypeTarget | null;
 
-  constructor(host: HTMLElement, trace: ExecutionTrace) {
+  constructor(host: HTMLElement, trace: ExecutionTrace, hooks?: PlayerHooks) {
     this.host = host;
     this.m = prepare(trace);
     this.S = strings();
+    this.hooks = hooks;
     this.index = 0;
     this.elapsed = 0;
     this.duration = 0;
@@ -272,7 +281,9 @@ export class Player {
     const width = this.root.clientWidth;
     if (width !== this.layoutWidth) {
       this.stacked = width > 0 && width < STACK_BELOW;
-      this.g = geometry(this.m, this.P, this.stacked, width);
+      this.g = this.hooks?.geometry
+        ? this.hooks.geometry(this.m, this.P, this.stacked, width)
+        : geometry(this.m, this.P, this.stacked, width);
       this.layoutWidth = width;
       this.shownType = null;
       this.typeBox.hidden = true;
@@ -302,11 +313,12 @@ export class Player {
     this.animated = animate;
     this.svg.setAttribute('viewBox', `0 0 ${Math.ceil(g.width)} ${Math.ceil(g.height)}`);
     this.svg.style.maxWidth = `${Math.ceil(g.width * MAX_SCALE)}px`;
-    this.scene.innerHTML = `<rect width="100%" height="100%" fill="${this.P.bg}"/>` + scene(c);
+    const body = this.hooks?.scene ? this.hooks.scene(c) : scene(c);
+    this.scene.innerHTML = `<rect width="100%" height="100%" fill="${this.P.bg}"/>` + body;
     placeLineTargets(g, this.lines);
     this.finishPaths();
     this.seek(0);
-    this.update(describe(c));
+    this.update(this.hooks?.describe ? this.hooks.describe(c) : describe(c));
   }
 
   finishPaths(): void {
@@ -393,7 +405,9 @@ export class Player {
     this.continuous = autoplay;
     this.index = index;
     this.elapsed = 0;
-    this.duration = stepSeconds(this.m.steps, index);
+    this.duration = this.hooks?.stepSeconds
+      ? this.hooks.stepSeconds(this.m.steps, index)
+      : stepSeconds(this.m.steps, index);
     this.render(true);
     if (this.duration > 0 || autoplay) this.resume();
   }

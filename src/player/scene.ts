@@ -864,6 +864,26 @@ function output(c: SceneContext): string {
   return out;
 }
 
+export {
+  arrows,
+  code,
+  dim,
+  exprBackground,
+  labelTop,
+  memory,
+  output,
+  pane,
+  paneBody,
+  paneText,
+  paneTypes,
+  settledPane,
+  tether,
+  transfers,
+  typeColour,
+  typeLabel,
+  valueBox,
+};
+
 export function scene(c: SceneContext): string {
   const { step, prev, animate } = c;
   const lineChanged = animate && prev !== null && prev.line !== step.line;
