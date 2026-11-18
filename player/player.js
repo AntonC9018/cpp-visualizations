@@ -76,6 +76,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       byteOrder: "Memory byte order",
       littleEndian: "Little-endian (least significant byte first)",
       bigEndian: "Big-endian (most significant byte first)",
+      littleEndianShort: "Little-endian",
+      bigEndianShort: "Big-endian",
       scrub: "Execution step",
       output: "Output:",
       stage: "Code, memory and expression evaluation",
@@ -105,6 +107,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       byteOrder: "Порядок байтов в памяти",
       littleEndian: "Little-endian (младший байт первым)",
       bigEndian: "Big-endian (старший байт первым)",
+      littleEndianShort: "Little-endian",
+      bigEndianShort: "Big-endian",
       scrub: "Шаг выполнения",
       output: "Вывод:",
       stage: "Код, память и вычисление выражения",
@@ -1866,7 +1870,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       root.setAttribute("role", "group");
       root.setAttribute("aria-label", this.m.trace.title || S.stage);
       const button = (action, label, iconName, extra = "") => `<button type="button" class="cv-button${extra}" data-action="${action}" aria-label="${esc(label)}" title="${esc(label)}">${icon(iconName)}<span class="cv-label">${esc(label)}</span></button>`;
-      const endianToggle = ((_a = this.hooks) == null ? void 0 : _a.endian) ? `<div class="cv-endian" role="group" aria-label="${esc(S.byteOrder)}"><button type="button" data-endian="le" aria-pressed="${this.littleEndian}" title="${esc(S.littleEndian)}">LE</button><button type="button" data-endian="be" aria-pressed="${!this.littleEndian}" title="${esc(S.bigEndian)}">BE</button></div>` : "";
+      const endianToggle = ((_a = this.hooks) == null ? void 0 : _a.endian) ? `<button type="button" class="cv-button cv-endian" data-endian-toggle role="switch" aria-checked="${this.littleEndian}" aria-label="${esc(S.byteOrder)}" title="${esc(this.littleEndian ? S.littleEndian : S.bigEndian)}"><span class="cv-endian-opt" data-endian-side="le" data-active="${this.littleEndian}">${esc(S.littleEndianShort)}</span><span class="cv-switch" aria-hidden="true"><span class="cv-switch-thumb"></span></span><span class="cv-endian-opt" data-endian-side="be" data-active="${!this.littleEndian}">${esc(S.bigEndianShort)}</span></button>` : "";
       root.innerHTML = `<div class="cv-view"><svg class="cv-stage" role="group" aria-label="${esc(S.stage)}" xmlns="http://www.w3.org/2000/svg"><g class="cv-scene" aria-hidden="true"></g><g class="cv-lines">${lineTargets(this.m, S)}</g></svg><div class="cv-type" aria-hidden="true" hidden></div></div><div class="cv-controls"><div class="cv-transport">` + button("play", S.play, "play", " cv-primary") + button("back", S.back, "back") + button("next", S.next, "next") + button("replay", S.replay, "replay", " cv-icon-only") + `<select class="cv-speed" aria-label="${esc(S.speed)}" title="${esc(S.speed)}">` + [0.5, 1, 1.5, 2].map((v) => `<option value="${v}"${v === 1 ? " selected" : ""}>${v}×</option>`).join("") + "</select>" + endianToggle + button("reset", S.reset, "reset", " cv-reset") + `</div><div class="cv-progress"><input class="cv-scrub" type="range" min="0" max="${this.m.steps.length - 1}" value="0" step="1" aria-label="${esc(S.scrub)}"><span class="cv-count"></span></div></div><div class="cv-status" aria-live="polite"></div>`;
       this.host.append(root);
       this.root = root;
@@ -1883,17 +1887,17 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         if (target && target.dataset.action) {
           this.invokeAction(target.dataset.action);
         }
-        const endianBtn = (_b = event.target) == null ? void 0 : _b.closest("[data-endian]");
-        if (endianBtn && endianBtn.dataset.endian) {
-          const nextLe = endianBtn.dataset.endian === "le";
-          if (nextLe !== this.littleEndian) {
-            this.littleEndian = nextLe;
-            for (const btn of root.querySelectorAll("[data-endian]")) {
-              btn.setAttribute("aria-pressed", String(btn.dataset.endian === "le" === nextLe));
-            }
-            (_e = (_d = (_c = this.hooks) == null ? void 0 : _c.endian) == null ? void 0 : _d.onChange) == null ? void 0 : _e.call(_d, nextLe);
-            this.refresh();
+        const endianBtn = (_b = event.target) == null ? void 0 : _b.closest("[data-endian-toggle]");
+        if (endianBtn) {
+          const nextLe = !this.littleEndian;
+          this.littleEndian = nextLe;
+          endianBtn.setAttribute("aria-checked", String(nextLe));
+          endianBtn.title = nextLe ? S.littleEndian : S.bigEndian;
+          for (const opt of endianBtn.querySelectorAll("[data-endian-side]")) {
+            opt.dataset.active = String(opt.dataset.endianSide === "le" === nextLe);
           }
+          (_e = (_d = (_c = this.hooks) == null ? void 0 : _c.endian) == null ? void 0 : _d.onChange) == null ? void 0 : _e.call(_d, nextLe);
+          this.refresh();
         }
       });
       root.querySelector(".cv-speed").addEventListener("change", (event) => {

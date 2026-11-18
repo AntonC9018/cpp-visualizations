@@ -76,6 +76,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       byteOrder: "Memory byte order",
       littleEndian: "Little-endian (least significant byte first)",
       bigEndian: "Big-endian (most significant byte first)",
+      littleEndianShort: "Little-endian",
+      bigEndianShort: "Big-endian",
       scrub: "Execution step",
       output: "Output:",
       stage: "Code, memory and expression evaluation",
@@ -105,6 +107,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       byteOrder: "Порядок байтов в памяти",
       littleEndian: "Little-endian (младший байт первым)",
       bigEndian: "Big-endian (старший байт первым)",
+      littleEndianShort: "Little-endian",
+      bigEndianShort: "Big-endian",
       scrub: "Шаг выполнения",
       output: "Вывод:",
       stage: "Код, память и вычисление выражения",
@@ -1623,7 +1627,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       root.setAttribute("role", "group");
       root.setAttribute("aria-label", this.m.trace.title || S.stage);
       const button = (action, label, iconName, extra = "") => `<button type="button" class="cv-button${extra}" data-action="${action}" aria-label="${esc(label)}" title="${esc(label)}">${icon(iconName)}<span class="cv-label">${esc(label)}</span></button>`;
-      const endianToggle = ((_a = this.hooks) == null ? void 0 : _a.endian) ? `<div class="cv-endian" role="group" aria-label="${esc(S.byteOrder)}"><button type="button" data-endian="le" aria-pressed="${this.littleEndian}" title="${esc(S.littleEndian)}">LE</button><button type="button" data-endian="be" aria-pressed="${!this.littleEndian}" title="${esc(S.bigEndian)}">BE</button></div>` : "";
+      const endianToggle = ((_a = this.hooks) == null ? void 0 : _a.endian) ? `<button type="button" class="cv-button cv-endian" data-endian-toggle role="switch" aria-checked="${this.littleEndian}" aria-label="${esc(S.byteOrder)}" title="${esc(this.littleEndian ? S.littleEndian : S.bigEndian)}"><span class="cv-endian-opt" data-endian-side="le" data-active="${this.littleEndian}">${esc(S.littleEndianShort)}</span><span class="cv-switch" aria-hidden="true"><span class="cv-switch-thumb"></span></span><span class="cv-endian-opt" data-endian-side="be" data-active="${!this.littleEndian}">${esc(S.bigEndianShort)}</span></button>` : "";
       root.innerHTML = `<div class="cv-view"><svg class="cv-stage" role="group" aria-label="${esc(S.stage)}" xmlns="http://www.w3.org/2000/svg"><g class="cv-scene" aria-hidden="true"></g><g class="cv-lines">${lineTargets(this.m, S)}</g></svg><div class="cv-type" aria-hidden="true" hidden></div></div><div class="cv-controls"><div class="cv-transport">` + button("play", S.play, "play", " cv-primary") + button("back", S.back, "back") + button("next", S.next, "next") + button("replay", S.replay, "replay", " cv-icon-only") + `<select class="cv-speed" aria-label="${esc(S.speed)}" title="${esc(S.speed)}">` + [0.5, 1, 1.5, 2].map((v) => `<option value="${v}"${v === 1 ? " selected" : ""}>${v}×</option>`).join("") + "</select>" + endianToggle + button("reset", S.reset, "reset", " cv-reset") + `</div><div class="cv-progress"><input class="cv-scrub" type="range" min="0" max="${this.m.steps.length - 1}" value="0" step="1" aria-label="${esc(S.scrub)}"><span class="cv-count"></span></div></div><div class="cv-status" aria-live="polite"></div>`;
       this.host.append(root);
       this.root = root;
@@ -1640,17 +1644,17 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         if (target && target.dataset.action) {
           this.invokeAction(target.dataset.action);
         }
-        const endianBtn = (_b = event.target) == null ? void 0 : _b.closest("[data-endian]");
-        if (endianBtn && endianBtn.dataset.endian) {
-          const nextLe = endianBtn.dataset.endian === "le";
-          if (nextLe !== this.littleEndian) {
-            this.littleEndian = nextLe;
-            for (const btn of root.querySelectorAll("[data-endian]")) {
-              btn.setAttribute("aria-pressed", String(btn.dataset.endian === "le" === nextLe));
-            }
-            (_e = (_d = (_c = this.hooks) == null ? void 0 : _c.endian) == null ? void 0 : _d.onChange) == null ? void 0 : _e.call(_d, nextLe);
-            this.refresh();
+        const endianBtn = (_b = event.target) == null ? void 0 : _b.closest("[data-endian-toggle]");
+        if (endianBtn) {
+          const nextLe = !this.littleEndian;
+          this.littleEndian = nextLe;
+          endianBtn.setAttribute("aria-checked", String(nextLe));
+          endianBtn.title = nextLe ? S.littleEndian : S.bigEndian;
+          for (const opt of endianBtn.querySelectorAll("[data-endian-side]")) {
+            opt.dataset.active = String(opt.dataset.endianSide === "le" === nextLe);
           }
+          (_e = (_d = (_c = this.hooks) == null ? void 0 : _c.endian) == null ? void 0 : _d.onChange) == null ? void 0 : _e.call(_d, nextLe);
+          this.refresh();
         }
       });
       root.querySelector(".cv-speed").addEventListener("change", (event) => {
@@ -2155,7 +2159,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return out;
   }
-  function memoryWithByteHex(c, decimalBelow) {
+  function memoryWithByteHex(c) {
     const { g, P, step, prev, op } = c;
     const littleEndian = c.littleEndian ?? true;
     const values = op && op.kind === "write" && prev ? prev.values : step.values;
@@ -2180,18 +2184,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
       markup += rect(cell.x, cell.y, cell.w, cell.h, on ? P.panel : P.deadFill, "none", 0);
       const divStroke = on ? P.gapStroke : P.deadStroke;
-      if (decimalBelow) {
-        for (let i = 1; i < cell.size; i++) {
-          const lx = round(cell.x + i * bw);
-          markup += `<line x1="${lx}" y1="${cell.y + 3}" x2="${lx}" y2="${cell.y + cell.h - 3}" stroke="${divStroke}" stroke-width="1.3" stroke-dasharray="4 3"/>`;
-        }
-      } else {
-        const splitY = cell.y + 52;
-        markup += `<line x1="${cell.x + 2}" y1="${splitY}" x2="${cell.x + cell.w - 2}" y2="${splitY}" stroke="${divStroke}" stroke-width="1.3"/>`;
-        for (let i = 1; i < cell.size; i++) {
-          const lx = round(cell.x + i * bw);
-          markup += `<line x1="${lx}" y1="${splitY}" x2="${lx}" y2="${cell.y + cell.h - 2}" stroke="${divStroke}" stroke-width="1.3"/>`;
-        }
+      const splitY = cell.y + 52;
+      markup += `<line x1="${cell.x + 2}" y1="${splitY}" x2="${cell.x + cell.w - 2}" y2="${splitY}" stroke="${divStroke}" stroke-width="1.3"/>`;
+      for (let i = 1; i < cell.size; i++) {
+        const lx = round(cell.x + i * bw);
+        markup += `<line x1="${lx}" y1="${splitY}" x2="${lx}" y2="${cell.y + cell.h - 2}" stroke="${divStroke}" stroke-width="1.3"/>`;
       }
       markup += rect(
         cell.x + 1.5,
@@ -2207,24 +2204,17 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         const bytesOf = (v) => littleEndian ? toBytesLSB(v, cell.size) : toBytesMSB(v, cell.size);
         const renderCellBody = (val) => {
           if (typeof val !== "number") {
-            if (decimalBelow) {
-              return text(cell.x + cell.w / 2, cell.y + cell.h / 2 + 9, String(val), 26, P.grey, "middle");
-            }
             return text(cell.x + cell.w / 2, cell.y + 36, String(val), 26, P.grey, "middle");
           }
           const bytes = bytesOf(val);
           let body = "";
-          if (!decimalBelow) {
-            const dec = String(val);
-            const decSize = Math.min(28, (cell.w - 14) / (dec.length * CHAR));
-            body += text(cell.x + cell.w / 2, cell.y + 36, dec, round(decSize), P.fg, "middle");
-          }
-          const hexY = decimalBelow ? cell.y + cell.h / 2 + 7 : cell.y + 76;
-          const hexSize = decimalBelow ? 17.5 : 14.5;
+          const dec = String(val);
+          const decSize = Math.min(28, (cell.w - 14) / (dec.length * CHAR));
+          body += text(cell.x + cell.w / 2, cell.y + 36, dec, round(decSize), P.fg, "middle");
+          const hexY = cell.y + 75;
           for (let i = 0; i < cell.size; i++) {
             const bx = cell.x + i * bw + bw / 2;
-            const b = bytes[i];
-            body += text(bx, hexY, hexByte(b), hexSize, b !== 0 ? color : P.muted, "middle");
+            body += text(bx, hexY, hexByte(bytes[i]), 13.5, P.muted, "middle");
           }
           return body;
         };
@@ -2239,27 +2229,22 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           markup += renderCellBody(shownVal);
         }
       }
+      if (cell.size > 1) {
+        const ay = cell.y + cell.h + 9;
+        const dir = littleEndian ? 1 : -1;
+        const xLow = cell.x + (littleEndian ? bw / 2 : cell.w - bw / 2);
+        const xHigh = cell.x + (littleEndian ? cell.w - bw / 2 : bw / 2);
+        const arrowCol = on ? P.muted : P.deadStroke;
+        markup += `<g opacity="0.65"><circle cx="${round(xLow)}" cy="${ay}" r="1.8" fill="${arrowCol}"/><line x1="${round(xLow)}" y1="${ay}" x2="${round(xHigh - 5 * dir)}" y2="${ay}" stroke="${arrowCol}" stroke-width="1.3"/><path d="M -6.5 -3 L 0 0 L -6.5 3 Z" fill="${arrowCol}" transform="translate(${round(xHigh)} ${ay}) rotate(${littleEndian ? 0 : 180})"/></g>`;
+      }
       markup += text(
         cell.x + cell.w / 2,
-        cell.y + cell.h + 34,
+        cell.y + cell.h + 36,
         cell.label,
         g.nameSize,
         on ? color : P.grey,
         "middle"
       );
-      if (decimalBelow) {
-        const decLabel = on && typeof shownVal === "number" ? `= ${shownVal}` : on && shownVal === "?" ? "= ?" : "";
-        if (decLabel) {
-          markup += text(
-            cell.x + cell.w / 2,
-            cell.y + cell.h + 62,
-            decLabel,
-            20,
-            on ? P.fg : P.grey,
-            "middle"
-          );
-        }
-      }
       out += dim(c, cell.group || cell.name, markup);
     }
     return out + drawTypeLabels(c, live);
@@ -2270,7 +2255,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   const NIB_GAP = 8;
   const BIT_FONT = 18;
   const BIT_STEP = BIT_FONT * CHAR;
-  function drawLab3ByteColumn(x, yBits, yHex, byteVal, bitColor, hexColor, mutedColor, signBitHighlight) {
+  function drawLab3ByteColumn(x, yBits, yHex, byteVal, bitColor, hexColor, signBitHighlight) {
     const [hi, lo] = nibbles(byteVal);
     const hex = hexByte(byteVal);
     const hiCx = x + NIBBLE_W / 2;
@@ -2279,27 +2264,33 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     if (signBitHighlight) {
       const signBitCx = hiCx - 1.55 * BIT_STEP;
       const restCx = hiCx + 0.55 * BIT_STEP;
-      bitsMarkup += rect(signBitCx - 6.2, yBits - 18, 12.4, 23, signBitHighlight.fill, signBitHighlight.stroke, 3.5, 1.8) + text(signBitCx, yBits, hi[0], BIT_FONT, signBitHighlight.text, "middle") + text(restCx, yBits, hi.slice(1), BIT_FONT, hi === "0000" ? mutedColor : bitColor, "middle");
+      bitsMarkup += rect(signBitCx - 6.2, yBits - 18, 12.4, 23, signBitHighlight.fill, signBitHighlight.stroke, 3.5, 1.8) + text(signBitCx, yBits, hi[0], BIT_FONT, signBitHighlight.text, "middle") + text(restCx, yBits, hi.slice(1), BIT_FONT, bitColor, "middle");
     } else {
-      bitsMarkup += text(hiCx, yBits, hi, BIT_FONT, hi === "0000" ? mutedColor : bitColor, "middle");
+      bitsMarkup += text(hiCx, yBits, hi, BIT_FONT, bitColor, "middle");
     }
-    return bitsMarkup + text(loCx, yBits, lo, BIT_FONT, lo === "0000" ? mutedColor : bitColor, "middle") + text(hiCx, yHex, hex[0], 20, hex[0] === "0" ? mutedColor : hexColor, "middle") + text(loCx, yHex, hex[1], 20, hex[1] === "0" ? mutedColor : hexColor, "middle");
+    return bitsMarkup + text(loCx, yBits, lo, BIT_FONT, bitColor, "middle") + text(hiCx, yHex, hex[0], 20, hexColor, "middle") + text(loCx, yHex, hex[1], 20, hexColor, "middle");
   }
   function arrowheadAt(tipX, tipY, dx, dy, color) {
     const deg = round(Math.atan2(dy, dx) * 180 / Math.PI);
     return `<path d="M -8.5 -4.2 L 0 0 L -8.5 4.2 Z" fill="${color}" transform="translate(${round(tipX)} ${round(tipY)}) rotate(${deg})"/>`;
   }
-  function workbenchClean(c, signExtStyle) {
+  function pillBadge(cx, topY, label, fill, stroke, textColor, size = 14) {
+    const w = Math.max(24, label.length * size * CHAR + 14);
+    const h = size + 8;
+    return rect(cx - w / 2, topY, w, h, fill, stroke, h / 2, 1.5) + text(cx, topY + size + 1.5, label, size, textColor, "middle");
+  }
+  function workbenchClean(c, variant) {
     const act = activeBitAction(c);
     if (!act) return "";
     const { g, P, animate } = c;
     const cardX = g.tx - 6;
-    const cardY = g.ty + 20;
+    const cardY = g.ty + 18;
     const cardW = g.pane.w - 36;
-    const cardH = 108;
-    const yBits = cardY + 54;
-    const yHex = cardY + 86;
-    const yRes = cardY + 68;
+    const cardH = 128;
+    const yTag = cardY + 11;
+    const yBits = cardY + 72;
+    const yHex = cardY + 104;
+    const yRes = cardY + 86;
     const rightAnchor = cardX + 16 + 4 * BYTE_W + 3 * BYTE_GAP;
     const slotX = (bytesFromLSB) => rightAnchor - (bytesFromLSB + 1) * BYTE_W - bytesFromLSB * BYTE_GAP;
     let out = rect(cardX, cardY, cardW, cardH, P.panel, P.gapStroke, 8, 1.5);
@@ -2315,14 +2306,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           const bx = slotX(lsbPos);
           const dropped = lsbPos >= toBytes.length;
           if (dropped) {
-            const settled = `<g opacity="0.48">` + drawLab3ByteColumn(bx, yBits, yHex, fromBytes[idx], P.error, P.error, P.error) + `<line x1="${bx + 6}" y1="${yBits - 16}" x2="${bx + BYTE_W - 6}" y2="${yHex + 6}" stroke="${P.error}" stroke-width="2"/></g>`;
+            const settled = `<g opacity="0.48">` + drawLab3ByteColumn(bx, yBits, yHex, fromBytes[idx], P.error, P.error) + `<line x1="${bx + 6}" y1="${yBits - 16}" x2="${bx + BYTE_W - 6}" y2="${yHex + 6}" stroke="${P.error}" stroke-width="2"/></g>`;
             if (animate) {
-              out += `<g>${hide(0.55)}${drawLab3ByteColumn(bx, yBits, yHex, fromBytes[idx], P.fg, fromCol, P.muted)}</g><g opacity="0">${show(0.55)}<animateTransform attributeName="transform" type="translate" from="0 -6" to="0 0" begin="0.55s" dur="0.35s" fill="freeze"/>${settled}</g>`;
+              out += `<g>${hide(0.55)}${drawLab3ByteColumn(bx, yBits, yHex, fromBytes[idx], P.fg, fromCol)}</g><g opacity="0">${show(0.55)}<animateTransform attributeName="transform" type="translate" from="0 -6" to="0 0" begin="0.55s" dur="0.35s" fill="freeze"/>${settled}</g>`;
             } else {
               out += settled;
             }
           } else {
-            out += drawLab3ByteColumn(bx, yBits, yHex, fromBytes[idx], P.fg, toCol, toCol);
+            out += drawLab3ByteColumn(bx, yBits, yHex, fromBytes[idx], P.fg, toCol);
           }
         }
         out += `<line x1="${round(cutX)}" y1="${cardY + 14}" x2="${round(cutX)}" y2="${cardY + cardH - 12}" stroke="${P.error}" stroke-width="2.2" stroke-dasharray="5 4"/>`;
@@ -2335,6 +2326,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         const srcTopPos = fromBytes.length - 1;
         const srcX = slotX(srcTopPos);
         const signBitCx = srcX + NIBBLE_W / 2 - 1.55 * BIT_STEP;
+        const srcTag = `${act.fromType} · signed`;
+        const srcCenter = (srcX + rightAnchor) / 2;
+        const srcPillW = srcTag.length * 14 * CHAR + 14;
+        const srcPillCx = Math.min(srcCenter, rightAnchor - srcPillW / 2);
+        out += pillBadge(srcPillCx, yTag, srcTag, extFill, extStroke, extText, 14);
         for (let idx = 0; idx < fromBytes.length; idx++) {
           const lsbPos = fromBytes.length - 1 - idx;
           const bx = slotX(lsbPos);
@@ -2346,7 +2342,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
             fromBytes[idx],
             P.fg,
             toCol,
-            P.muted,
             isTopSrc ? { fill: extFill, stroke: extStroke, text: extText } : void 0
           );
           if (animate && isTopSrc) {
@@ -2367,14 +2362,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           const k = lsbPos - fromBytes.length;
           const arcDelay = 0.22 + k * 0.22;
           const fillDelay = arcDelay + 0.42;
-          const extByte = drawLab3ByteColumn(bx, yBits, yHex, byteVal, extText, extText, extText);
+          const extByte = drawLab3ByteColumn(bx, yBits, yHex, byteVal, extText, extText);
           if (animate) {
-            if (signExtStyle === "arcs") {
-              const sy = yBits - 20;
+            if (variant === "A") {
+              const sy = yBits - 21;
               const tipX = dstCx;
               const tipY = yBits - 21;
               const ctrlX = signBitCx * 0.28 + dstCx * 0.72;
-              const apex = cardY + 4 + k * 1.5;
+              const apex = cardY + 34 + k * 1.5;
               const dx = tipX - ctrlX;
               const dy = tipY - apex;
               const len = Math.hypot(dx, dy) || 1;
@@ -2386,8 +2381,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
             } else {
               const prevOriginX = k === 0 ? signBitCx : slotX(lsbPos - 1) + NIBBLE_W / 2 - 1.55 * BIT_STEP;
               const dstLeftBitX = bx + NIBBLE_W / 2 - 1.55 * BIT_STEP;
-              const yTop = cardY + 18;
-              const tipY = yBits - 20;
+              const yTop = cardY + 42;
+              const tipY = yBits - 21;
               const d = `M ${round(prevOriginX)} ${tipY} L ${round(prevOriginX)} ${yTop} L ${round(dstLeftBitX)} ${yTop} L ${round(dstLeftBitX)} ${tipY - 5}`;
               animArrows += `<path d="${d}" fill="none" stroke="${extStroke}" stroke-width="2" stroke-linejoin="round" data-grow="${round(arcDelay)}"/>`;
               animArrows += `<g opacity="0">${show(fillDelay - 0.08)}${arrowheadAt(dstLeftBitX, tipY, 0, 1, extStroke)}</g>`;
@@ -2402,6 +2397,55 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         }
         out += text(rightAnchor + 22, yRes, `→ ${act.afterVal}`, 26, toCol);
       } else if (act.kind === "zero-extend") {
+        const wallX = slotX(fromBytes.length - 1) - BYTE_GAP / 2;
+        const srcStartX = slotX(fromBytes.length - 1);
+        const srcTag = `${act.fromType} · unsigned`;
+        const srcPillW = srcTag.length * 14 * CHAR + 14;
+        const srcPillCx = Math.min((srcStartX + rightAnchor) / 2, rightAnchor - srcPillW / 2);
+        out += pillBadge(srcPillCx, yTag, srcTag, P.bg, fromCol, fromCol, 14);
+        out += `<line x1="${round(wallX)}" y1="${yBits - 20}" x2="${round(wallX)}" y2="${yHex + 6}" stroke="${P.muted}" stroke-width="1.6" stroke-dasharray="4 4"/>`;
+        const extCount = toBytes.length - fromBytes.length;
+        const extLeftX = slotX(toBytes.length - 1);
+        const extRightX = slotX(fromBytes.length) + BYTE_W;
+        const extMidCx = (extLeftX + extRightX) / 2;
+        if (variant === "A") {
+          const padChip = pillBadge(extMidCx, yTag, "0 fill", P.bg, P.grey, P.muted, 13.5);
+          out += animate ? `<g opacity="0">${fade(0, 1, 0.25, 0.1)}${padChip}</g>` : padChip;
+          if (animate) {
+            let drops = "";
+            const fadeAt = 0.22 + Math.max(0, extCount - 1) * 0.16 + 0.72;
+            for (let lsbPos = fromBytes.length; lsbPos < toBytes.length; lsbPos++) {
+              const dstCx = slotX(lsbPos) + BYTE_W / 2;
+              const k = toBytes.length - 1 - lsbPos;
+              const delay = 0.22 + k * 0.14;
+              const sy = yTag + 24;
+              const tipY = yBits - 21;
+              const d = `M ${round(dstCx)} ${sy} L ${round(dstCx)} ${tipY - 5}`;
+              drops += `<path d="${d}" fill="none" stroke="${P.grey}" stroke-width="1.8" data-grow="${round(delay)}"/>`;
+              drops += `<g opacity="0">${show(delay + 0.32)}${arrowheadAt(dstCx, tipY, 0, 1, P.grey)}</g>`;
+            }
+            out += `<g>${fade(1, 0, 0.3, fadeAt)}${drops}</g>`;
+          }
+        } else {
+          const padChip = pillBadge(extLeftX + 26, yTag, "0", P.bg, P.grey, P.muted, 14);
+          out += animate ? `<g opacity="0">${fade(0, 1, 0.25, 0.1)}${padChip}</g>` : padChip;
+          if (animate) {
+            const yBar = cardY + 42;
+            const xStart = extLeftX + 26;
+            const tipY = yBits - 21;
+            let feed = "";
+            const fadeAt = 0.22 + Math.max(0, extCount - 1) * 0.16 + 0.75;
+            for (let lsbPos = fromBytes.length; lsbPos < toBytes.length; lsbPos++) {
+              const dstCx = slotX(lsbPos) + BYTE_W / 2;
+              const k = toBytes.length - 1 - lsbPos;
+              const delay = 0.22 + k * 0.15;
+              const d = k === 0 ? `M ${round(xStart)} ${yTag + 22} L ${round(xStart)} ${yBar} L ${round(dstCx)} ${yBar} L ${round(dstCx)} ${tipY - 5}` : `M ${round(slotX(lsbPos + 1) + BYTE_W / 2)} ${yBar} L ${round(dstCx)} ${yBar} L ${round(dstCx)} ${tipY - 5}`;
+              feed += `<path d="${d}" fill="none" stroke="${P.grey}" stroke-width="1.8" stroke-linejoin="round" data-grow="${round(delay)}"/>`;
+              feed += `<g opacity="0">${show(delay + 0.34)}${arrowheadAt(dstCx, tipY, 0, 1, P.grey)}</g>`;
+            }
+            out += `<g>${fade(1, 0, 0.3, fadeAt)}${feed}</g>`;
+          }
+        }
         for (let idx = 0; idx < toBytes.length; idx++) {
           const lsbPos = toBytes.length - 1 - idx;
           const bx = slotX(lsbPos);
@@ -2412,13 +2456,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
             yHex,
             toBytes[idx],
             isExt ? P.grey : P.fg,
-            isExt ? P.grey : toCol,
-            P.muted
+            isExt ? P.grey : toCol
           );
           if (animate && isExt) {
-            out += `<g opacity="0">${fade(0, 0.72, 0.35, 0.3)}${block}</g>`;
+            out += `<g opacity="0">${fade(0, 0.78, 0.35, 0.45)}${block}</g>`;
           } else if (isExt) {
-            out += `<g opacity="0.72">${block}</g>`;
+            out += `<g opacity="0.78">${block}</g>`;
           } else {
             out += block;
           }
@@ -2427,7 +2470,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       } else {
         for (let idx = 0; idx < toBytes.length; idx++) {
           const lsbPos = toBytes.length - 1 - idx;
-          out += drawLab3ByteColumn(slotX(lsbPos), yBits, yHex, toBytes[idx], P.fg, toCol, P.muted);
+          out += drawLab3ByteColumn(slotX(lsbPos), yBits, yHex, toBytes[idx], P.fg, toCol);
         }
         out += text(rightAnchor + 22, yRes, `→ ${act.afterVal}`, 26, toCol);
       }
@@ -2438,9 +2481,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const afterBytes = toBytesMSB(act.afterVal, act.info.bytes);
       for (let idx = 0; idx < afterBytes.length; idx++) {
         const bx = slotX(afterBytes.length - 1 - idx);
-        const afterBlock = drawLab3ByteColumn(bx, yBits, yHex, afterBytes[idx], P.write, P.write, P.muted);
+        const afterBlock = drawLab3ByteColumn(bx, yBits, yHex, afterBytes[idx], P.write, P.write);
         if (animate) {
-          out += `<g>${hide(0.45)}${drawLab3ByteColumn(bx, yBits, yHex, beforeBytes[idx], P.fg, P.fg, P.muted)}</g><g opacity="0">${show(0.45)}${afterBlock}</g>`;
+          out += `<g>${hide(0.45)}${drawLab3ByteColumn(bx, yBits, yHex, beforeBytes[idx], P.fg, P.fg)}</g><g opacity="0">${show(0.45)}${afterBlock}</g>`;
         } else {
           out += afterBlock;
         }
@@ -2453,7 +2496,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const col = typeColour(c, act.type);
       for (let idx = 0; idx < bytes.length; idx++) {
         const bx = slotX(bytes.length - 1 - idx);
-        out += drawLab3ByteColumn(bx, yBits, yHex, bytes[idx], P.fg, col, P.muted);
+        out += drawLab3ByteColumn(bx, yBits, yHex, bytes[idx], P.fg, col);
       }
       out += text(rightAnchor + 22, yRes, `= ${act.value}`, 26, col);
     }
@@ -2461,14 +2504,17 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }
   function hooksFor(variant, littleEndian, onEndianChange) {
     const geomOpts = {
-      A: { minByteWidth: 66, minColumnWidth: 680, cellHeight: 88, extraPaneHeight: 116, skipWrap: true },
-      B: { minByteWidth: 66, minColumnWidth: 680, cellHeight: 72, extraMemBottom: 34, extraPaneHeight: 116, skipWrap: true }
+      minByteWidth: 66,
+      minColumnWidth: 680,
+      cellHeight: 88,
+      extraPaneHeight: 136,
+      skipWrap: true
     };
     return {
       stackBelow: 900,
       maxScale: 0.78,
       endian: { littleEndian, onChange: onEndianChange },
-      geometry: (m, P, stacked, width) => geometry(m, P, stacked, width, geomOpts[variant]),
+      geometry: (m, P, stacked, width) => geometry(m, P, stacked, width, geomOpts),
       stepSeconds: castStepSeconds,
       describe: castDescribe,
       scene: (c) => {
@@ -2476,27 +2522,27 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         const lineChanged = animate && prev !== null && prev.line !== step.line;
         const copying = animate && copies(c.m.steps, c.index);
         const oldLine = lineChanged && prev ? prev.line : null;
-        return code(c, oldLine) + tether(c, oldLine) + arrows(c) + memoryWithByteHex(c, variant === "B") + pane(c, copying) + workbenchClean(c, variant === "B" ? "cascade" : "arcs") + output(c) + transfers(c);
+        return code(c, oldLine) + tether(c, oldLine) + arrows(c) + memoryWithByteHex(c) + pane(c, copying) + workbenchClean(c, variant) + output(c) + transfers(c);
       }
     };
   }
   const VARIANTS = {
     A: {
-      name: "Two-tier memory + curved arc bit-copy",
-      claim: "Overall decimal on top with smaller per-byte hex below, paired with curved bit-copy arcs that fade away after extension.",
+      name: "MSB-arc copy vs top-drop `0 fill`",
+      claim: "Pairs `type · signed` (boxed MSB + curved copy arcs) against `type · unsigned` (unboxed MSB + wall + external `0 fill` drops).",
       points: [
-        "Use each player’s LE / BE toggle to flip memory byte order between little-endian and big-endian without changing the expression pane.",
-        "Signed widening copies the highlighted MSB (`1` in amber for negatives, `0` in blue for positives) with curved arcs that fade out once complete.",
-        "Unsigned widening stays quiet muted zero-padding."
+        "Signed widening (`int8_t · signed`) boxes the sign bit (`1` amber / `0` blue) and fans curved arcs to upper bytes before fading out.",
+        "Unsigned widening (`uint8_t · unsigned`) keeps the source MSB unboxed behind a dashed barrier and drops external `0`s straight into upper bytes.",
+        "Memory uses the locked two-tier cell (decimal top, subtle grey byte hex bottom) with the Little-endian / Big-endian player switch."
       ]
     },
     B: {
-      name: "Byte-hex cells (`= decimal` below) + cascade bit-copy",
-      claim: "Full-height compact byte-hex compartments with `= decimal` below the variable name, paired with stepped cascade bit-copying.",
+      name: "Stepped cascade copy vs left-feed `0` rail",
+      claim: "Contrasts a byte-by-byte stepped cascade from the boxed sign bit against an external `0` rail blocked from the unsigned source.",
       points: [
-        "Use each player’s LE / BE toggle to flip memory byte order; memory shows smaller byte hex inside cells and `= val` underneath.",
-        "Signed widening copies the highlighted MSB (`1` or `0`) via stepped horizontal links that fade out once complete, keeping the color coding.",
-        "Compare cell hierarchy and cascade arrows against A’s two-tier cells and curved arcs."
+        "Signed widening (`int8_t · signed`) steps leftward byte-by-byte from the boxed MSB (`1` or `0`) and fades arrows away leaving the color coding.",
+        "Unsigned widening (`uint8_t · unsigned`) blocks the source MSB with a dashed barrier and feeds `0` across upper bytes from an external `0` pill.",
+        "Compare stepped cascade + left-feed `0` rail against A’s curved arcs + top-drop `0 fill`."
       ]
     }
   };
