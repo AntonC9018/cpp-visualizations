@@ -5,7 +5,7 @@
 // byte. The pane adds a workbench under the expression: the value's bits above their hex, most
 // significant bit left. Narrowing strikes out the dropped bytes; widening a signed value carries
 // its sign bit along arcs into the new bytes, and widening an unsigned one fades in zeros.
-import type { ExecutionTrace } from '../core/trace_format.ts';
+import { type ExecutionTrace, convertOperand } from '../core/trace_format.ts';
 import { type Integer, integerLiteral, integerSpelled } from '../core/integers.ts';
 import { CHAR, EASE, T } from './constants.ts';
 import { type PreparedModel, arrival, copies, copyBegin, stepSeconds } from './model.ts';
@@ -26,8 +26,8 @@ import { fade, hide, pulse, rect, round, show, text } from './svg.ts';
 import type { TraceView } from './views.ts';
 
 /** The integer type of a spelling; a valid bits trace types every part with an integer. */
-function integerOf(spelling: string | undefined): Integer {
-  return integerSpelled(spelling ?? 'int') ?? integerSpelled('int')!;
+function integerOf(m: PreparedModel, spelling: string | undefined): Integer {
+  return integerSpelled(spelling ?? 'int', m.trace.integers) ?? integerSpelled('int')!;
 }
 
 /** The bytes of `value` in `bytes` bytes, most significant first. */
@@ -73,12 +73,6 @@ type BitAction =
 
 type Step = ExecutionTrace['steps'][number];
 
-/** The text of the typed part of `step` inside `span`, of type `type`, if there is one. */
-function typedText(step: Step, span: [number, number], type: string): string | null {
-  const part = step.types?.find(t => !t.slot && t.type === type && t.span[0] >= span[0] && t.span[1] <= span[1]);
-  return part ? step.pane.slice(...part.span) : null;
-}
-
 /** The operand of a `~` the step evaluates, if it is one. */
 function invertedOperand(prev: Step | null, step: Step): bigint | null {
   if (step.op?.kind !== 'eval' || !prev) return null;
@@ -87,23 +81,22 @@ function invertedOperand(prev: Step | null, step: Step): bigint | null {
 }
 
 /** Sign-bit copies a convert makes: one per byte a signed value widens into. */
-function signCopies(step: Step): number {
+function signCopies(m: PreparedModel, step: Step): number {
   const { op } = step;
   if (op?.kind !== 'convert') return 0;
-  const from = integerOf(op.from);
-  return from.signed ? Math.max(0, integerOf(op.to).size - from.size) : 0;
+  const from = integerOf(m, op.from);
+  return from.signed ? Math.max(0, integerOf(m, op.to).size - from.size) : 0;
 }
 
 function activeBitAction(c: SceneContext): BitAction | null {
   const { step, prev, m } = c;
   const op = step.op;
   if (op?.kind === 'convert') {
-    const written = prev ? (typedText(prev, op.span, op.from) ?? prev.pane.slice(...op.span)) : op.value;
-    const beforeVal = integerLiteral(written);
+    const beforeVal = prev ? convertOperand(prev, op) : null;
     const afterVal = integerLiteral(op.value);
     if (beforeVal === null || afterVal === null) return null;
-    const fromInfo = integerOf(op.from);
-    const toInfo = integerOf(op.to);
+    const fromInfo = integerOf(m, op.from);
+    const toInfo = integerOf(m, op.to);
     let kind: 'narrow' | 'zero-extend' | 'sign-extend' | 'reinterpret' = 'reinterpret';
     let signBit: 0 | 1 | undefined;
     if (toInfo.size < fromInfo.size) {
@@ -118,21 +111,21 @@ function activeBitAction(c: SceneContext): BitAction | null {
     }
     return { kind, signBit, fromType: op.from, toType: op.to, fromInfo, toInfo, beforeVal, afterVal };
   }
-  if (op?.kind === 'eval') {
+  if (op?.kind === 'eval' || op?.kind === 'print') {
     const value = integerLiteral(op.value);
     const type = step.types?.find(t => !t.slot && t.span[0] === op.span[0])?.type;
     if (value === null || !type) return null;
     const beforeVal = invertedOperand(prev, step);
     if (beforeVal !== null) {
-      return { kind: 'invert', type, info: integerOf(type), beforeVal, afterVal: value };
+      return { kind: 'invert', type, info: integerOf(m, type), beforeVal, afterVal: value };
     }
-    return { kind: 'value', type, info: integerOf(type), value };
+    return { kind: 'value', type, info: integerOf(m, type), value };
   }
   if (op && (op.kind === 'read' || op.kind === 'write')) {
     const value = integerLiteral(op.value);
     if (value === null) return null;
     const type = m.leaves.find(l => l.name === op.name)?.type ?? 'int';
-    return { kind: 'value', type, info: integerOf(type), value };
+    return { kind: 'value', type, info: integerOf(m, type), value };
   }
   // A statement with a single literal shows it before anything happens to it.
   const literals = op === null ? (step.types ?? []).filter(t => !t.slot) : [];
@@ -140,7 +133,7 @@ function activeBitAction(c: SceneContext): BitAction | null {
     const value = integerLiteral(step.pane.slice(...literals[0].span));
     if (value !== null) {
       const { type } = literals[0];
-      return { kind: 'value', type, info: integerOf(type), value };
+      return { kind: 'value', type, info: integerOf(m, type), value };
     }
   }
   return null;
@@ -151,10 +144,11 @@ const TRAVEL = 0.55;
 /** Seconds from the start of the sign copies until their arcs have faded. */
 const signSeconds = (copies: number): number => (copies - 1) * STAGGER + TRAVEL + 0.7;
 
-function bitStepSeconds(steps: ExecutionTrace['steps'], i: number): number {
+function bitStepSeconds(m: PreparedModel, i: number): number {
+  const { steps } = m;
   const step = steps[i];
   if (step.op?.kind === 'convert' || invertedOperand(steps[i - 1] ?? null, step) !== null) {
-    const copies = signCopies(step);
+    const copies = signCopies(m, step);
     const signDone = copies > 0 ? arrival(step.op!) + signSeconds(copies) : 0;
     return step.hold + Math.max(2.1, signDone);
   }
@@ -305,10 +299,17 @@ const BYTE_W = 2 * NIBBLE_W + NIB_GAP;
 const BYTE_GAP = 26;
 const CARD_PAD = 12;
 
-/** What the workbench must hold for a trace: its widest integer and its longest result. */
+/** Each farther sign-bit arc peaks this much higher than the one before. */
+const ARC_RISE = 9;
+/** Arcs that fit between the expression and the card without moving it. */
+const ROOMY_ARCS = 3;
+
+/** What the workbench must hold for a trace: its widest integer, longest result, most arcs. */
 interface WorkbenchExtent {
   bytes: number;
   labelChars: number;
+  /** How far the card moves down so the tallest arc stays under the expression. */
+  drop: number;
 }
 
 const extents = new WeakMap<PreparedModel, WorkbenchExtent>();
@@ -318,13 +319,15 @@ function workbenchExtent(m: PreparedModel): WorkbenchExtent {
   if (extent) return extent;
   const sizes = m.leaves.map(l => l.size);
   let labelChars = 0;
+  let arcs = 0;
   for (const step of m.steps) {
-    for (const part of step.types ?? []) sizes.push(integerOf(part.type).size);
+    arcs = Math.max(arcs, signCopies(m, step));
+    for (const part of step.types ?? []) sizes.push(integerOf(m, part.type).size);
     const { op } = step;
-    if (op?.kind === 'convert') sizes.push(integerOf(op.from).size, integerOf(op.to).size);
+    if (op?.kind === 'convert') sizes.push(integerOf(m, op.from).size, integerOf(m, op.to).size);
     if (op && 'value' in op) labelChars = Math.max(labelChars, op.value.length + 2);
   }
-  extent = { bytes: Math.max(1, ...sizes), labelChars };
+  extent = { bytes: Math.max(1, ...sizes), labelChars, drop: Math.max(0, arcs - ROOMY_ARCS) * ARC_RISE };
   extents.set(m, extent);
   return extent;
 }
@@ -382,7 +385,7 @@ function workbench(c: SceneContext): string {
   const { g, P, animate, op } = c;
   // Bytes sit in fixed right-aligned slots; the card hugs the bytes and the result beside them.
   // The space above the card is left for the sign-extension arcs.
-  const cardTop = g.ty + 56;
+  const cardTop = g.ty + 56 + workbenchExtent(c.m).drop;
   const yBits = cardTop + CARD_PAD + BOX_TOP;
   const yHex = yBits + 34;
   const yRes = yBits + 16;
@@ -531,7 +534,7 @@ function workbench(c: SceneContext): string {
       const tipX = bx + BYTE_W / 2;
       const tipY = yBits - BIT_FONT - 2;
       // Flat nested parabolas: the farther the byte, the higher the arc, so they never cross.
-      const peakY = startY - 16 - k * 9;
+      const peakY = startY - 16 - k * ARC_RISE;
       const ctrlX = (msbX + tipX) / 2;
       const ctrlY = 2 * peakY - (startY + tipY) / 2;
       const dx = tipX - ctrlX;
@@ -579,13 +582,13 @@ function bitsScene(c: SceneContext): string {
 export const BITS_VIEW: TraceView = {
   geometry(m) {
     // The memory column also holds the workbench: its slots, the result and the card.
-    const { bytes, labelChars } = workbenchExtent(m);
+    const { bytes, labelChars, drop } = workbenchExtent(m);
     const workbench = 12 + slotsWidth(bytes) + RESULT_GAP + labelWidth(labelChars) + CARD_PAD + 28;
     return {
       minByteWidth: 66,
       minColumnWidth: Math.max(680, Math.ceil(workbench)),
       cellHeight: BITS_CELL,
-      extraPaneHeight: 120,
+      extraPaneHeight: 120 + drop,
       skipWrap: true,
     };
   },

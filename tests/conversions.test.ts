@@ -260,6 +260,15 @@ describe('BitsTests', () => {
     );
   });
 
+  test('bits_carry_the_integer_aliases_clang_resolved', () => {
+    const t = bits('std::streamsize a{ 3 }; int b{ static_cast<int>(a) };');
+    assert.deepEqual(t.integers, { streamsize: 'long' });
+    assert.equal(bits('int8_t a{ -3 };').integers, undefined);
+    assert.throws(() => validate({ ...t, integers: { streamsize: 'double' } }), FormatError);
+    const { integers: _, ...unresolved } = t;
+    assert.throws(() => validate(unresolved), FormatError);
+  });
+
   test('integer_literals_parse_as_cpp_spells_them', () => {
     const cases: [string, bigint | null][] = [
       ['42', 42n],
@@ -274,6 +283,8 @@ describe('BitsTests', () => {
       ['7LLu', 7n],
       ['08', null],
       ["1'", null],
+      ["0x'F", null],
+      ["1''0", null],
       ['abc', null],
       ['1.5', null],
     ];
@@ -292,6 +303,7 @@ describe('BitsTests', () => {
     assert.throws(() => validate(withStep(step => (step.op.value = 'minus three'))), FormatError);
     assert.throws(() => validate(withStep(step => (step.op.to = 'double'))), FormatError);
     assert.throws(() => validate(withStep(step => (step.types[0].type = 'bool'))), FormatError);
+    assert.throws(() => validate(withStep(step => (step.op.value = '-4'))), FormatError);
   });
 
   test('a_bits_trace_with_a_pointer_is_invalid', () => {

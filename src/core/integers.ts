@@ -92,10 +92,17 @@ const ALIASES: Readonly<Record<string, string>> = Object.freeze({
   'unsigned long long int': 'unsigned long long',
 });
 
-/** The integer type a spelling names (`uint8_t`, `const int`, `std::size_t`), if any. */
-export function integerSpelled(spelling: string): Integer | null {
-  const name = spelling.replace(/^const /, '').replace(/^std::/, '');
-  const canonical = Object.hasOwn(ALIASES, name) ? ALIASES[name] : name;
+/** A type spelling without `const` and `std::`: how aliases are looked up. */
+export const bareSpelling = (spelling: string): string => spelling.replace(/^const /, '').replace(/^std::/, '');
+
+/**
+ * The integer type a spelling names (`uint8_t`, `const int`, `std::size_t`), if any. `aliases`
+ * maps further bare spellings to the builtin names Clang resolved them to (`streamsize`: `long`).
+ */
+export function integerSpelled(spelling: string, aliases: Readonly<Record<string, string>> = {}): Integer | null {
+  const name = bareSpelling(spelling);
+  const known = Object.hasOwn(ALIASES, name) ? ALIASES[name] : name;
+  const canonical = Object.hasOwn(INTEGERS, known) || !Object.hasOwn(aliases, name) ? known : aliases[name];
   return Object.hasOwn(INTEGERS, canonical) ? INTEGERS[canonical] : null;
 }
 
@@ -107,7 +114,7 @@ export function integerLiteral(spelling: string): bigint | null {
   const match = spelling
     .trim()
     .match(/^([-+]?)\s*(0[xX][0-9a-fA-F']+|0[bB][01']+|0[0-7']*|[1-9][0-9']*)(?:[uU](?:ll|LL|[lLzZ])?|(?:ll|LL|[lLzZ])[uU]?)?$/);
-  if (!match || match[2].endsWith("'")) return null;
+  if (!match || /^0[xXbB]'|''|'$/.test(match[2])) return null;
   const digits = match[2].replaceAll("'", '');
   const octal = /^0[0-7]+$/.test(digits) ? `0o${digits.slice(1)}` : digits;
   const value = BigInt(octal);

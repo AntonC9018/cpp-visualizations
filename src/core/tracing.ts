@@ -6,7 +6,7 @@
 
 import { arrayType, codeName, elementLabel, operatorName, resolveArrayAliases } from './arrays.ts';
 import { type AstNode, type CompilerFrontend, IllFormed, Unsupported } from './errors.ts';
-import { Integer, integerSpelled } from './integers.ts';
+import { INTEGERS, Integer, bareSpelling, integerSpelled } from './integers.ts';
 import type { Flags } from './settings.ts';
 import {
   type Record as RecordInfo,
@@ -1507,10 +1507,27 @@ function cutMismatch(body: string, error: IllFormed, prefixLength: number): [str
   ];
 }
 
+/**
+ * The integer aliases the program spells that the builtin table does not know (`streamsize`),
+ * by bare spelling, with the builtin type Clang resolved each to.
+ */
+function integerAliases(node: AstNode, found: Record<string, string> = {}): Record<string, string> {
+  if (node.type) {
+    const name = bareSpelling(displayedType(node));
+    const canonical = bareSpelling(canonicalType(node));
+    if (!integerSpelled(name) && Object.hasOwn(INTEGERS, canonical)) found[name] = canonical;
+  }
+  for (const child of node.inner ?? []) {
+    if (child) integerAliases(child, found);
+  }
+  return found;
+}
+
+/** The program's statements, its records and the integer aliases it spells. */
 export function analyzeWithFrontend(
   source: string,
   frontend: CompilerFrontend
-): [Statement[], Record<string, RecordInfo>] {
+): [Statement[], Record<string, RecordInfo>, Record<string, string>] {
   const program = preamble(source, frontend) + source + '\n}\n';
   const ast = frontend.mainAst(program);
   resolveArrayAliases(ast);
@@ -1554,7 +1571,7 @@ export function analyzeWithFrontend(
   if (Object.keys(state).length === 0) {
     throw new Unsupported('a variable timeline requires at least one variable');
   }
-  return [statements, records];
+  return [statements, records, integerAliases(ast)];
 }
 
 // Memory -----------------------------------------------------------------------------------
@@ -2058,13 +2075,14 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
   let mismatch: Mismatch | null = null;
   let statements: Statement[];
   let records: Record<string, RecordInfo>;
+  let aliases: Record<string, string>;
   try {
-    [statements, records] = analyzeWithFrontend(body, frontend);
+    [statements, records, aliases] = analyzeWithFrontend(body, frontend);
   } catch (error) {
     if (!types || !(error instanceof IllFormed)) throw error;
     // A last statement whose types do not fit is shown, not run: the rest is traced.
     [body, mismatch] = cutMismatch(body, error, preamble(body, frontend).length);
-    [statements, records] = analyzeWithFrontend(body, frontend);
+    [statements, records, aliases] = analyzeWithFrontend(body, frontend);
   }
   const predicted: State[] = [];
   let state: State = {};
@@ -2218,6 +2236,20 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
   }
   if (bits) {
     result.bits = true;
+    // Only the aliases the trace spells, so it stays independent of the preamble.
+    const spelled = new Set(
+      [
+        ...variables.map(v => (v.kind === 'int' ? v.type : undefined)),
+        ...renderer.steps.flatMap(step => [
+          ...(step.types ?? []).map(part => part.type),
+          ...(step.op?.kind === 'convert' ? [step.op.from, step.op.to] : []),
+        ]),
+      ]
+        .filter((type): type is string => Boolean(type))
+        .map(bareSpelling)
+    );
+    const used = Object.entries(aliases).filter(([name]) => spelled.has(name));
+    if (used.length > 0) result.integers = Object.fromEntries(used);
   }
   try {
     validate(result);

@@ -6,7 +6,7 @@
 // `player/README.md` documents every field.
 
 import { arrayType, codeName, elementLabel } from './arrays.ts';
-import { integerLiteral, integerSpelled } from './integers.ts';
+import { INTEGERS, integerLiteral, integerSpelled } from './integers.ts';
 
 export const FORMAT = 1;
 export type ScalarKind = 'int' | 'ptr';
@@ -200,6 +200,8 @@ export interface ExecutionTrace {
   types?: Record<string, string>;
   /** Draw integers as bytes and bits; every variable is then a typed integer. */
   bits?: true;
+  /** In a bits trace, integer aliases the builtin table lacks, by bare spelling: `{streamsize: "long"}`. */
+  integers?: Record<string, string>;
   variables: TraceVariable[];
   references?: TraceReference[];
   steps: TraceStep[];
@@ -953,7 +955,7 @@ export function validate(trace: unknown): asserts trace is AnyTrace {
     trace,
     'trace',
     ['format', 'source', 'variables', 'steps'],
-    ['title', 'spans', 'types', 'bits', 'references']
+    ['title', 'spans', 'types', 'bits', 'integers', 'references']
   );
   check(trace.format === FORMAT, 'trace.format', `expected ${FORMAT}`);
   const { source } = trace;
@@ -991,11 +993,21 @@ export function validate(trace: unknown): asserts trace is AnyTrace {
   }
   const variables = trace.variables as TraceVariable[];
   const cells = checkVariables(variables, 'trace.variables');
+  const aliases: Record<string, string> = trace.integers ?? {};
+  if (Object.hasOwn(trace, 'integers')) {
+    check(
+      trace.bits === true &&
+        isPlainObject(aliases) &&
+        Object.values(aliases).every(name => typeof name === 'string' && Object.hasOwn(INTEGERS, name)),
+      'trace.integers',
+      'expected builtin integer types by alias, in a bits trace'
+    );
+  }
   if (Object.hasOwn(trace, 'bits')) {
     check(trace.bits === true, 'trace.bits', 'expected true');
     check(
       !Object.hasOwn(trace, 'references') &&
-        variables.every(v => v.kind === 'int' && integerSpelled(v.type ?? '')?.size === v.size),
+        variables.every(v => v.kind === 'int' && integerSpelled(v.type ?? '', aliases)?.size === v.size),
       'trace.bits',
       'expected only integer variables, each with its type'
     );
@@ -1076,7 +1088,7 @@ export function validate(trace: unknown): asserts trace is AnyTrace {
       checkChanges(step, previous, storage, where);
     }
     if (trace.bits) {
-      checkBitsStep(step as TraceStep, where);
+      checkBitsStep(step as TraceStep, previous as TraceStep | null, aliases, where);
     }
     check(
       index === steps.length - 1 || step.op?.kind !== 'clash',
@@ -1087,21 +1099,45 @@ export function validate(trace: unknown): asserts trace is AnyTrace {
   }
 }
 
-/** A bits trace types every part with an integer and converts integer to integer. */
-function checkBitsStep(step: TraceStep, where: string): void {
+/**
+ * A bits trace types every part with an integer, and a conversion's value is its operand
+ * converted, so the bits drawn agree with it.
+ */
+function checkBitsStep(
+  step: TraceStep,
+  previous: TraceStep | null,
+  aliases: Record<string, string>,
+  where: string
+): void {
   check(
-    (step.types ?? []).every(part => integerSpelled(part.type) !== null),
+    (step.types ?? []).every(part => integerSpelled(part.type, aliases) !== null),
     `${where}.types`,
     'expected integer types in a bits trace'
   );
   const { op } = step;
-  if (op?.kind === 'convert') {
-    check(
-      integerSpelled(op.from) !== null && integerSpelled(op.to) !== null && integerLiteral(op.value) !== null,
-      `${where}.op`,
-      'expected an integer value converted between integer types in a bits trace'
-    );
-  }
+  if (op?.kind !== 'convert') return;
+  const from = integerSpelled(op.from, aliases);
+  const to = integerSpelled(op.to, aliases);
+  const value = integerLiteral(op.value);
+  check(
+    from !== null && to !== null && value !== null,
+    `${where}.op`,
+    'expected an integer value converted between integer types in a bits trace'
+  );
+  const operand = previous && convertOperand(previous, op);
+  check(
+    operand !== null && to!.wrap(operand) === value,
+    `${where}.op.value`,
+    `expected the operand converted to ${op.to}`
+  );
+}
+
+/** The value a conversion converts: its typed part of type `from` in the previous pane. */
+export function convertOperand(previous: TraceStep, op: ConvertOperation): bigint | null {
+  const part = previous.types?.find(
+    t => !t.slot && t.type === op.from && t.span[0] >= op.span[0] && t.span[1] <= op.span[1]
+  );
+  return integerLiteral(previous.pane.slice(...(part?.span ?? op.span)));
 }
 
 // Hand-written traces --------------------------------------------------------------------------

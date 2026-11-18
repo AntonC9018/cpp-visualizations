@@ -472,6 +472,19 @@ test('a bits trace reads hex literals and fits eight bytes in a narrow player', 
   assert.deepEqual(errors, []);
 });
 
+test('a bits trace keeps the value in the workbench while printing it', async () => {
+  const bits = traceSource('int a{ 7 }; std::cout << a;', { runtime: false, bits: true });
+  await page.setContent(PAGE.replace(trace, JSON.stringify(bits).replace(/</g, '\\u003c')));
+  await page.evaluate(() => window.CourseVisualization!.scan());
+  await page.waitForSelector('.cv-player');
+  const print = bits.steps.findIndex(step => step.op?.kind === 'print');
+  const shown = await page.locator('.course-visualization').evaluate((h: PlayerElement, step) => {
+    h.cvPlayer.settle(step);
+    return [...h.cvPlayer.svg.querySelectorAll('.cv-bit-byte')].map(g => g.getAttribute('data-bits')!);
+  }, print);
+  assert.deepEqual(shown, ['00000000', '00000000', '00000000', '00000111']);
+});
+
 test('a trace without bits has no byte order switch', async () => {
   await page.waitForSelector('.cv-player');
   assert.equal(await page.locator('.cv-endian').count(), 0);

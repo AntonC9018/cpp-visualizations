@@ -420,7 +420,7 @@ export class Player {
     this.continuous = autoplay;
     this.index = index;
     this.elapsed = 0;
-    this.duration = this.view.stepSeconds(this.m.steps, index);
+    this.duration = this.view.stepSeconds(this.m, index);
     this.render(true);
     if (this.duration > 0 || autoplay) this.resume();
   }

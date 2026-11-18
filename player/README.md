@@ -86,6 +86,7 @@ red, blue), each at least 3:1 against the stage. Reads use `#2f64d6` on `#d9e5ff
 trace     = {format: 1, source: [line…], variables: [variable…], steps: [step…],
              title?: text, spans?: [span | null per source line],
              types?: {struct name: definition text}, bits?: true,
+             integers?: {alias: builtin integer type},
              references?: [{name, color}…]}
 variable  = {name, address, size, kind: "int" | "ptr", color, type?}
           | {name, address, size, kind: "struct", color, type, fields: [field…]}
@@ -114,7 +115,10 @@ span      = [start, end)  — character offsets
   the byte order of a Little-endian / Big-endian switch the player adds, and the pane shows the
   value's bits above their hex. Narrowing strikes out the dropped bytes; widening a signed value
   carries its sign bit into the new bytes, widening an unsigned one fills zeros. Every variable
-  is then a typed integer, and there are no references.
+  is then a typed integer, and there are no references. Every typed part is an integer, and a
+  `convert` value is its operand converted to `to`.
+- `integers`, in a `bits` trace only, names the builtin type behind each alias the trace spells
+  that the player does not know (`{"streamsize": "long"}`), as Clang resolved it.
 - `references` are names without storage. `refs` maps each reference bound so far to the
   variable or leaf it names; it only ever grows, by a `bind`.
 - A scalar's `type` is its declared type as the lessons write it (`int*`, `uint8_t`); the
