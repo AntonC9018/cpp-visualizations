@@ -326,8 +326,7 @@ function memoryWithByteHex(c: SceneContext): string {
       const arrowCol = on ? P.fg : P.deadStroke;
       markup +=
         `<g opacity="${on ? '0.82' : '0.55'}">` +
-        `<circle cx="${round(xLow)}" cy="${ay}" r="2.8" fill="${arrowCol}"/>` +
-        `<line x1="${round(xLow)}" y1="${ay}" x2="${round(xHigh - 7 * dir)}" y2="${ay}" stroke="${arrowCol}" stroke-width="2"/>` +
+        `<line x1="${round(xLow)}" y1="${ay}" x2="${round(xHigh - 7 * dir)}" y2="${ay}" stroke="${arrowCol}" stroke-width="2" stroke-linecap="round"/>` +
         `<path d="M -9 -4.5 L 0 0 L -9 4.5 Z" fill="${arrowCol}" transform="translate(${round(xHigh)} ${ay}) rotate(${littleEndian ? 0 : 180})"/>` +
         '</g>';
     }
@@ -565,80 +564,28 @@ function workbenchClean(c: SceneContext, variant: CastVariant): string {
       const resAt = baseAt + Math.max(0, extCount - 1) * stagger + 0.56;
       out += reveal(resAt, text(rightAnchor + 22, yRes, `→ ${act.afterVal}`, 26, toCol));
     } else if (act.kind === 'zero-extend') {
-      // Unsigned widening (zero text):
-      // Source MSB stays completely unboxed behind a solid vertical divider wall.
-      //   A: New empty recessed zero-cells unfold leftward out from the divider wall.
-      //   B: An external `(0)` bit-circle overhead (behind the wall) feeds neutral 0s straight down.
-      const srcStartX = slotX(fromBytes.length - 1);
-      const wallX = srcStartX - BYTE_GAP / 2;
-      const extCount = toBytes.length - fromBytes.length;
-      const extLeftX = slotX(toBytes.length - 1);
-      const extRightX = slotX(fromBytes.length) + BYTE_W;
-      const extMidCx = (extLeftX + extRightX) / 2;
-      const boxTop = yBits - 24;
-      const boxBot = yHex + 10;
-      const boxH = boxBot - boxTop;
-      const frameAt = Math.max(0.2, baseAt - 0.25);
-
-      const divider =
-        `<path d="M ${round(wallX - 5)} ${round(boxTop - 2)} H ${round(wallX)} V ${round(boxBot + 2)} H ${round(wallX - 5)}" ` +
-        `fill="none" stroke="${P.muted}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`;
-      out += reveal(frameAt, divider);
-
-      if (variant === 'B' && animate) {
-        const srcY = cardY + 28;
-        const tipY = boxTop - 2;
-        const fadeAt = baseAt + Math.max(0, extCount - 1) * 0.14 + 0.85;
-        let feed =
-          `<g opacity="0">${fade(0, 1, 0.22, Math.max(0.15, baseAt - 0.2))}` +
-          `<circle cx="${round(extMidCx)}" cy="${round(srcY)}" r="12" fill="${P.bg}" stroke="${P.muted}" stroke-width="1.8"/>` +
-          text(extMidCx, srcY + 5.5, '0', 16, P.muted, 'middle') +
-          '</g>';
-        for (let lsbPos = fromBytes.length; lsbPos < toBytes.length; lsbPos++) {
-          const dstCx = slotX(lsbPos) + BYTE_W / 2;
-          const k = toBytes.length - 1 - lsbPos;
-          const delay = baseAt + k * 0.14;
-          const d = `M ${round(extMidCx)} ${round(srcY + 12)} L ${round(extMidCx)} ${round(srcY + 22)} L ${round(dstCx)} ${round(srcY + 22)} L ${round(dstCx)} ${round(tipY - 5)}`;
-          feed += `<path d="${d}" fill="none" stroke="${P.grey}" stroke-width="1.9" stroke-linejoin="round" data-grow="${round(delay)}"/>`;
-          feed += `<g opacity="0">${show(delay + 0.48)}${arrowheadAt(dstCx, tipY, 0, 1, P.grey)}</g>`;
-        }
-        out += `<g>${fade(1, 0, 0.3, fadeAt)}${feed}</g>`;
-      }
-
+      // Unsigned widening: simple, calm muted 0-fill (no MSB box, no cloning arcs)
       for (let idx = 0; idx < toBytes.length; idx++) {
         const lsbPos = toBytes.length - 1 - idx;
         const bx = slotX(lsbPos);
         const isExt = lsbPos >= fromBytes.length;
-        if (!isExt) {
-          out += drawLab3ByteColumn(bx, yBits, yHex, toBytes[idx], P.fg, toCol);
-          continue;
-        }
-        const cell =
-          rect(bx + 2, boxTop, BYTE_W - 4, boxH, P.bg, P.gapStroke, 6, 1.3) +
-          `<g opacity="0.88">${drawLab3ByteColumn(bx, yBits, yHex, toBytes[idx], P.muted, P.muted)}</g>`;
-        if (animate) {
-          if (variant === 'A') {
-            const k = lsbPos - fromBytes.length;
-            const delay = baseAt + k * 0.14;
-            out +=
-              `<g opacity="0">${fade(0, 1, 0.25, delay)}` +
-              `<g transform="translate(26 0)"><animateTransform attributeName="transform" type="translate" from="26 0" to="0 0" begin="${round(delay)}s" dur="0.34s" ${EASE} fill="freeze"/>${cell}</g>` +
-              '</g>';
-          } else {
-            const k = toBytes.length - 1 - lsbPos;
-            const delay = baseAt + k * 0.14 + 0.44;
-            out += `<g opacity="0">${fade(0, 1, 0.24, delay)}${cell}</g>`;
-          }
+        const block = drawLab3ByteColumn(
+          bx,
+          yBits,
+          yHex,
+          toBytes[idx],
+          isExt ? P.grey : P.fg,
+          isExt ? P.grey : toCol
+        );
+        if (animate && isExt) {
+          out += `<g opacity="0">${fade(0, 0.72, 0.35, baseAt)}${block}</g>`;
+        } else if (isExt) {
+          out += `<g opacity="0.72">${block}</g>`;
         } else {
-          out += cell;
+          out += block;
         }
       }
-
-      const resAt =
-        variant === 'A'
-          ? baseAt + Math.max(0, extCount - 1) * 0.14 + 0.36
-          : baseAt + Math.max(0, extCount - 1) * 0.14 + 0.56;
-      out += reveal(resAt, text(rightAnchor + 22, yRes, `→ ${act.afterVal}`, 26, toCol));
+      out += reveal(baseAt + 0.35, text(rightAnchor + 22, yRes, `→ ${act.afterVal}`, 26, toCol));
     } else {
       // Reinterpret (same bit width): keep source bytes until pane arrives, then settle to new type/value.
       for (let idx = 0; idx < toBytes.length; idx++) {
@@ -749,21 +696,21 @@ interface VariantMeta {
 
 const VARIANTS: Record<CastVariant, VariantMeta> = {
   A: {
-    name: 'Concentric MSB arcs vs unfolding empty zero-cells',
-    claim: 'Signed widening fires spacious non-overlapping rainbow arcs from the boxed MSB and tints extended bytes; unsigned widening keeps the MSB unboxed behind a wall and unfolds neutral zero-cells leftward.',
+    name: 'Concentric MSB arcs (signed) vs calm zero-fill (unsigned)',
+    claim: 'Signed widening fires nested concentric rainbow arcs from the boxed MSB and tints extended bytes; unsigned widening stays unboxed and quietly fills muted `0000 0000` bytes.',
     points: [
-      'Signed widening (`1` amber / `0` blue) uses nested concentric arcs (zero intersections) and keeps a soft tinted wash behind the extended bytes.',
-      'Unsigned widening shields the unboxed source byte and slides new recessed `0000 0000` cells out leftward.',
-      'Memory shows brighter `15.5`px byte hex and a sharper `2`px significance arrow.',
+      'Signed widening (`1` amber / `0` blue) uses non-intersecting concentric arcs and keeps soft tinted byte cards behind the extended bytes.',
+      'Unsigned widening leaves the source MSB unboxed and quietly fades in muted grey `0000 0000` upper bytes.',
+      'Memory shows brighter `15.5`px byte hex and a clean single-headed significance arrow.',
     ],
   },
   B: {
-    name: 'Bit-carrier MSB arcs vs external `(0)` origin behind wall',
-    claim: 'Contrasts internal MSB origin (`[1]`/`[0]` riding concentric arcs) against an external `(0)` bit-node isolated behind the barrier wall.',
+    name: 'Bit-carrier MSB arcs (signed) vs calm zero-fill (unsigned)',
+    claim: 'Signed widening rides a glowing `1`/`0` bit-carrier along each concentric arc tip; unsigned widening stays unboxed and quietly fills muted `0000 0000` bytes.',
     points: [
       'Signed widening sends a glowing `1` or `0` bit gliding along each concentric arc tip to stamp tinted upper bytes.',
-      'Unsigned widening places an external `(0)` bit-circle overhead behind a bulkhead wall to feed neutral `0000 0000` bytes without touching the source MSB.',
-      'Compare unfolding zero-cells (A) against external `(0)` node drops (B).',
+      'Unsigned widening leaves the source MSB unboxed and quietly fades in muted grey `0000 0000` upper bytes.',
+      'Compare clean concentric arcs (A) against bit-carrier arcs (B).',
     ],
   },
 };
