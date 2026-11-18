@@ -1627,7 +1627,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       root.setAttribute("role", "group");
       root.setAttribute("aria-label", this.m.trace.title || S.stage);
       const button = (action, label, iconName, extra = "") => `<button type="button" class="cv-button${extra}" data-action="${action}" aria-label="${esc(label)}" title="${esc(label)}">${icon(iconName)}<span class="cv-label">${esc(label)}</span></button>`;
-      const endianToggle = ((_a = this.hooks) == null ? void 0 : _a.endian) ? `<button type="button" class="cv-button cv-endian" data-endian-toggle role="switch" aria-checked="${this.littleEndian}" aria-label="${esc(S.byteOrder)}" title="${esc(this.littleEndian ? S.littleEndian : S.bigEndian)}"><span class="cv-endian-opt" data-endian-side="le" data-active="${this.littleEndian}">${esc(S.littleEndianShort)}</span><span class="cv-switch" aria-hidden="true"><span class="cv-switch-thumb"></span></span><span class="cv-endian-opt" data-endian-side="be" data-active="${!this.littleEndian}">${esc(S.bigEndianShort)}</span></button>` : "";
+      const endianToggle = ((_a = this.hooks) == null ? void 0 : _a.endian) ? `<div class="cv-endian" role="group" aria-label="${esc(S.byteOrder)}"><button type="button" class="cv-endian-seg" data-endian-side="le" aria-pressed="${this.littleEndian}" title="${esc(S.littleEndian)}">${esc(S.littleEndianShort)}</button><button type="button" class="cv-endian-seg" data-endian-side="be" aria-pressed="${!this.littleEndian}" title="${esc(S.bigEndian)}">${esc(S.bigEndianShort)}</button></div>` : "";
       root.innerHTML = `<div class="cv-view"><svg class="cv-stage" role="group" aria-label="${esc(S.stage)}" xmlns="http://www.w3.org/2000/svg"><g class="cv-scene" aria-hidden="true"></g><g class="cv-lines">${lineTargets(this.m, S)}</g></svg><div class="cv-type" aria-hidden="true" hidden></div></div><div class="cv-controls"><div class="cv-transport">` + button("play", S.play, "play", " cv-primary") + button("back", S.back, "back") + button("next", S.next, "next") + button("replay", S.replay, "replay", " cv-icon-only") + `<select class="cv-speed" aria-label="${esc(S.speed)}" title="${esc(S.speed)}">` + [0.5, 1, 1.5, 2].map((v) => `<option value="${v}"${v === 1 ? " selected" : ""}>${v}×</option>`).join("") + "</select>" + endianToggle + button("reset", S.reset, "reset", " cv-reset") + `</div><div class="cv-progress"><input class="cv-scrub" type="range" min="0" max="${this.m.steps.length - 1}" value="0" step="1" aria-label="${esc(S.scrub)}"><span class="cv-count"></span></div></div><div class="cv-status" aria-live="polite"></div>`;
       this.host.append(root);
       this.root = root;
@@ -1644,17 +1644,20 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         if (target && target.dataset.action) {
           this.invokeAction(target.dataset.action);
         }
-        const endianBtn = (_b = event.target) == null ? void 0 : _b.closest("[data-endian-toggle]");
-        if (endianBtn) {
-          const nextLe = !this.littleEndian;
-          this.littleEndian = nextLe;
-          endianBtn.setAttribute("aria-checked", String(nextLe));
-          endianBtn.title = nextLe ? S.littleEndian : S.bigEndian;
-          for (const opt of endianBtn.querySelectorAll("[data-endian-side]")) {
-            opt.dataset.active = String(opt.dataset.endianSide === "le" === nextLe);
+        const endianSeg = (_b = event.target) == null ? void 0 : _b.closest("[data-endian-side]");
+        if (endianSeg) {
+          const nextLe = endianSeg.dataset.endianSide === "le";
+          if (nextLe !== this.littleEndian) {
+            this.littleEndian = nextLe;
+            const group = endianSeg.closest(".cv-endian");
+            if (group) {
+              for (const opt of group.querySelectorAll("[data-endian-side]")) {
+                opt.setAttribute("aria-pressed", String(opt.dataset.endianSide === "le" === nextLe));
+              }
+            }
+            (_e = (_d = (_c = this.hooks) == null ? void 0 : _c.endian) == null ? void 0 : _d.onChange) == null ? void 0 : _e.call(_d, nextLe);
+            this.refresh();
           }
-          (_e = (_d = (_c = this.hooks) == null ? void 0 : _c.endian) == null ? void 0 : _d.onChange) == null ? void 0 : _e.call(_d, nextLe);
-          this.refresh();
         }
       });
       root.querySelector(".cv-speed").addEventListener("change", (event) => {
@@ -2274,31 +2277,28 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const deg = round(Math.atan2(dy, dx) * 180 / Math.PI);
     return `<path d="M -8.5 -4.2 L 0 0 L -8.5 4.2 Z" fill="${color}" transform="translate(${round(tipX)} ${round(tipY)}) rotate(${deg})"/>`;
   }
-  function pillBadge(cx, topY, label, fill, stroke, textColor, size = 14) {
-    const w = Math.max(24, label.length * size * CHAR + 14);
-    const h = size + 8;
-    return rect(cx - w / 2, topY, w, h, fill, stroke, h / 2, 1.5) + text(cx, topY + size + 1.5, label, size, textColor, "middle");
-  }
   function workbenchClean(c, variant) {
     const act = activeBitAction(c);
     if (!act) return "";
-    const { g, P, animate } = c;
+    const { g, P, animate, op } = c;
+    const copying = animate && copies(c.m.steps, c.index);
     const cardX = g.tx - 6;
     const cardY = g.ty + 18;
     const cardW = g.pane.w - 36;
     const cardH = 128;
-    const yTag = cardY + 11;
     const yBits = cardY + 72;
     const yHex = cardY + 104;
     const yRes = cardY + 86;
     const rightAnchor = cardX + 16 + 4 * BYTE_W + 3 * BYTE_GAP;
     const slotX = (bytesFromLSB) => rightAnchor - (bytesFromLSB + 1) * BYTE_W - bytesFromLSB * BYTE_GAP;
+    const reveal = (at, markup) => animate && at > 0 ? `<g opacity="0">${fade(0, 1, 0.22, at)}${markup}</g>` : markup;
     let out = rect(cardX, cardY, cardW, cardH, P.panel, P.gapStroke, 8, 1.5);
     if (act.kind === "narrow" || act.kind === "zero-extend" || act.kind === "sign-extend" || act.kind === "reinterpret") {
       const fromBytes = toBytesMSB(act.beforeVal, act.fromInfo.bytes);
       const toBytes = toBytesMSB(act.afterVal, act.toInfo.bytes);
       const fromCol = typeColour(c, act.fromType);
       const toCol = typeColour(c, act.toType);
+      const baseAt = op ? arrival(op) : T.evaluate;
       if (act.kind === "narrow") {
         const cutX = slotX(toBytes.length - 1) - BYTE_GAP / 2;
         for (let idx = 0; idx < fromBytes.length; idx++) {
@@ -2308,7 +2308,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           if (dropped) {
             const settled = `<g opacity="0.48">` + drawLab3ByteColumn(bx, yBits, yHex, fromBytes[idx], P.error, P.error) + `<line x1="${bx + 6}" y1="${yBits - 16}" x2="${bx + BYTE_W - 6}" y2="${yHex + 6}" stroke="${P.error}" stroke-width="2"/></g>`;
             if (animate) {
-              out += `<g>${hide(0.55)}${drawLab3ByteColumn(bx, yBits, yHex, fromBytes[idx], P.fg, fromCol)}</g><g opacity="0">${show(0.55)}<animateTransform attributeName="transform" type="translate" from="0 -6" to="0 0" begin="0.55s" dur="0.35s" fill="freeze"/>${settled}</g>`;
+              out += `<g>${hide(baseAt)}${drawLab3ByteColumn(bx, yBits, yHex, fromBytes[idx], P.fg, fromCol)}</g><g opacity="0">${show(baseAt)}<animateTransform attributeName="transform" type="translate" from="0 -6" to="0 0" begin="${round(baseAt)}s" dur="0.32s" fill="freeze"/>${settled}</g>`;
             } else {
               out += settled;
             }
@@ -2316,8 +2316,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
             out += drawLab3ByteColumn(bx, yBits, yHex, fromBytes[idx], P.fg, toCol);
           }
         }
-        out += `<line x1="${round(cutX)}" y1="${cardY + 14}" x2="${round(cutX)}" y2="${cardY + cardH - 12}" stroke="${P.error}" stroke-width="2.2" stroke-dasharray="5 4"/>`;
-        out += text(rightAnchor + 22, yRes, `→ ${act.afterVal}`, 26, toCol);
+        out += reveal(
+          baseAt - 0.15,
+          `<line x1="${round(cutX)}" y1="${cardY + 14}" x2="${round(cutX)}" y2="${cardY + cardH - 12}" stroke="${P.error}" stroke-width="2.2" stroke-dasharray="5 4"/>`
+        );
+        out += reveal(baseAt + 0.34, text(rightAnchor + 22, yRes, `→ ${act.afterVal}`, 26, toCol));
       } else if (act.kind === "sign-extend") {
         const isNeg = act.signBit === 1;
         const extStroke = isNeg ? P.write : P.read;
@@ -2326,50 +2329,55 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         const srcTopPos = fromBytes.length - 1;
         const srcX = slotX(srcTopPos);
         const signBitCx = srcX + NIBBLE_W / 2 - 1.55 * BIT_STEP;
-        const srcTag = `${act.fromType} · signed`;
-        const srcCenter = (srcX + rightAnchor) / 2;
-        const srcPillW = srcTag.length * 14 * CHAR + 14;
-        const srcPillCx = Math.min(srcCenter, rightAnchor - srcPillW / 2);
-        out += pillBadge(srcPillCx, yTag, srcTag, extFill, extStroke, extText, 14);
         for (let idx = 0; idx < fromBytes.length; idx++) {
           const lsbPos = fromBytes.length - 1 - idx;
           const bx = slotX(lsbPos);
           const isTopSrc = lsbPos === srcTopPos;
-          const col = drawLab3ByteColumn(
-            bx,
-            yBits,
-            yHex,
-            fromBytes[idx],
-            P.fg,
-            toCol,
-            isTopSrc ? { fill: extFill, stroke: extStroke, text: extText } : void 0
-          );
           if (animate && isTopSrc) {
-            const cx = signBitCx;
-            const cy = yBits - 6;
-            out += `<g transform="translate(${round(cx)} ${round(cy)})"><g>${pulse(0.1)}<g transform="translate(${round(-cx)} ${round(-cy)})">${col}</g></g></g>`;
+            const plain = drawLab3ByteColumn(bx, yBits, yHex, fromBytes[idx], P.fg, toCol);
+            const boxed = drawLab3ByteColumn(
+              bx,
+              yBits,
+              yHex,
+              fromBytes[idx],
+              P.fg,
+              toCol,
+              { fill: extFill, stroke: extStroke, text: extText }
+            );
+            const boxAt = Math.max(0.2, baseAt - 0.25);
+            out += `<g>${hide(boxAt)}${plain}</g><g opacity="0">${show(boxAt)}<g transform="translate(${round(signBitCx)} ${round(yBits - 6)})"><g>${pulse(boxAt)}<g transform="translate(${round(-signBitCx)} ${round(-(yBits - 6))})">${boxed}</g></g></g></g>`;
           } else {
-            out += col;
+            out += drawLab3ByteColumn(
+              bx,
+              yBits,
+              yHex,
+              fromBytes[idx],
+              P.fg,
+              toCol,
+              isTopSrc ? { fill: extFill, stroke: extStroke, text: extText } : void 0
+            );
           }
         }
         const extCount = toBytes.length - fromBytes.length;
-        const fadeAt = 0.22 + Math.max(0, extCount - 1) * 0.22 + 0.82;
+        const stagger = 0.18;
+        const fadeAt = baseAt + Math.max(0, extCount - 1) * stagger + 0.85;
         let animArrows = "";
         for (let lsbPos = fromBytes.length; lsbPos < toBytes.length; lsbPos++) {
           const bx = slotX(lsbPos);
           const byteVal = toBytes[toBytes.length - 1 - lsbPos];
           const dstCx = bx + BYTE_W / 2;
+          const dstLeftBitX = bx + NIBBLE_W / 2 - 1.55 * BIT_STEP;
           const k = lsbPos - fromBytes.length;
-          const arcDelay = 0.22 + k * 0.22;
-          const fillDelay = arcDelay + 0.42;
+          const arcDelay = baseAt + k * stagger;
+          const fillDelay = arcDelay + 0.52;
           const extByte = drawLab3ByteColumn(bx, yBits, yHex, byteVal, extText, extText);
           if (animate) {
+            const sy = yBits - 21;
+            const tipY = yBits - 21;
             if (variant === "A") {
-              const sy = yBits - 21;
               const tipX = dstCx;
-              const tipY = yBits - 21;
               const ctrlX = signBitCx * 0.28 + dstCx * 0.72;
-              const apex = cardY + 34 + k * 1.5;
+              const apex = cardY + 24 + k * 2;
               const dx = tipX - ctrlX;
               const dy = tipY - apex;
               const len = Math.hypot(dx, dy) || 1;
@@ -2377,15 +2385,21 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
               const ey = tipY - 5 * dy / len;
               const d = `M ${round(signBitCx)} ${round(sy)} Q ${round(ctrlX)} ${round(apex)}, ${round(ex)} ${round(ey)}`;
               animArrows += `<path d="${d}" fill="none" stroke="${extStroke}" stroke-width="2" stroke-linecap="round" data-grow="${round(arcDelay)}"/>`;
-              animArrows += `<g opacity="0">${show(fillDelay - 0.08)}${arrowheadAt(tipX, tipY, ex - ctrlX, ey - apex, extStroke)}</g>`;
+              animArrows += `<g opacity="0">${show(fillDelay - 0.06)}${arrowheadAt(tipX, tipY, ex - ctrlX, ey - apex, extStroke)}</g>`;
             } else {
-              const prevOriginX = k === 0 ? signBitCx : slotX(lsbPos - 1) + NIBBLE_W / 2 - 1.55 * BIT_STEP;
-              const dstLeftBitX = bx + NIBBLE_W / 2 - 1.55 * BIT_STEP;
-              const yTop = cardY + 42;
-              const tipY = yBits - 21;
-              const d = `M ${round(prevOriginX)} ${tipY} L ${round(prevOriginX)} ${yTop} L ${round(dstLeftBitX)} ${yTop} L ${round(dstLeftBitX)} ${tipY - 5}`;
-              animArrows += `<path d="${d}" fill="none" stroke="${extStroke}" stroke-width="2" stroke-linejoin="round" data-grow="${round(arcDelay)}"/>`;
-              animArrows += `<g opacity="0">${show(fillDelay - 0.08)}${arrowheadAt(dstLeftBitX, tipY, 0, 1, extStroke)}</g>`;
+              const tipX = dstLeftBitX;
+              const ctrlX = signBitCx * 0.3 + tipX * 0.7;
+              const apex = cardY + 22 + k * 2;
+              const dx = tipX - ctrlX;
+              const dy = tipY - apex;
+              const len = Math.hypot(dx, dy) || 1;
+              const ex = tipX - 5 * dx / len;
+              const ey = tipY - 5 * dy / len;
+              const d = `M ${round(signBitCx)} ${round(sy)} Q ${round(ctrlX)} ${round(apex)}, ${round(ex)} ${round(ey)}`;
+              const fullPath = `M ${round(signBitCx)} ${round(sy)} Q ${round(ctrlX)} ${round(apex)}, ${round(tipX)} ${round(tipY)}`;
+              animArrows += `<path d="${d}" fill="none" stroke="${extStroke}" stroke-width="1.9" stroke-linecap="round" opacity="0.78" data-grow="${round(arcDelay)}"/>`;
+              animArrows += `<g opacity="0">${show(fillDelay - 0.06)}${arrowheadAt(tipX, tipY, ex - ctrlX, ey - apex, extStroke)}</g>`;
+              animArrows += `<g opacity="0">${show(arcDelay)}${hide(fillDelay + 0.08)}<circle cx="0" cy="0" r="10.5" fill="${extFill}" stroke="${extStroke}" stroke-width="1.8"/>` + text(0, 5.5, String(act.signBit ?? 0), 15, extText, "middle") + `<animateMotion begin="${round(arcDelay)}s" dur="0.58s" path="${fullPath}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
             }
             out += `<g opacity="0">${show(fillDelay)}<g transform="translate(${round(dstCx)} ${round(yBits + 10)})"><g>${pulse(fillDelay)}<g transform="translate(${round(-dstCx)} ${round(-(yBits + 10))})">${extByte}</g></g></g></g>`;
           } else {
@@ -2393,57 +2407,51 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           }
         }
         if (animate && animArrows) {
-          out += `<g>${fade(1, 0, 0.32, fadeAt)}${animArrows}</g>`;
+          out += `<g>${fade(1, 0, 0.3, fadeAt)}${animArrows}</g>`;
         }
-        out += text(rightAnchor + 22, yRes, `→ ${act.afterVal}`, 26, toCol);
+        const resAt = baseAt + Math.max(0, extCount - 1) * stagger + 0.56;
+        out += reveal(resAt, text(rightAnchor + 22, yRes, `→ ${act.afterVal}`, 26, toCol));
       } else if (act.kind === "zero-extend") {
-        const wallX = slotX(fromBytes.length - 1) - BYTE_GAP / 2;
         const srcStartX = slotX(fromBytes.length - 1);
-        const srcTag = `${act.fromType} · unsigned`;
-        const srcPillW = srcTag.length * 14 * CHAR + 14;
-        const srcPillCx = Math.min((srcStartX + rightAnchor) / 2, rightAnchor - srcPillW / 2);
-        out += pillBadge(srcPillCx, yTag, srcTag, P.bg, fromCol, fromCol, 14);
-        out += `<line x1="${round(wallX)}" y1="${yBits - 20}" x2="${round(wallX)}" y2="${yHex + 6}" stroke="${P.muted}" stroke-width="1.6" stroke-dasharray="4 4"/>`;
+        const srcW = fromBytes.length * BYTE_W + (fromBytes.length - 1) * BYTE_GAP;
+        const wallX = srcStartX - BYTE_GAP / 2;
         const extCount = toBytes.length - fromBytes.length;
         const extLeftX = slotX(toBytes.length - 1);
         const extRightX = slotX(fromBytes.length) + BYTE_W;
-        const extMidCx = (extLeftX + extRightX) / 2;
+        const boxTop = yBits - 24;
+        const boxBot = yHex + 10;
+        const boxH = boxBot - boxTop;
+        const frameAt = Math.max(0.2, baseAt - 0.25);
         if (variant === "A") {
-          const padChip = pillBadge(extMidCx, yTag, "0 fill", P.bg, P.grey, P.muted, 13.5);
-          out += animate ? `<g opacity="0">${fade(0, 1, 0.25, 0.1)}${padChip}</g>` : padChip;
-          if (animate) {
-            let drops = "";
-            const fadeAt = 0.22 + Math.max(0, extCount - 1) * 0.16 + 0.72;
-            for (let lsbPos = fromBytes.length; lsbPos < toBytes.length; lsbPos++) {
-              const dstCx = slotX(lsbPos) + BYTE_W / 2;
-              const k = toBytes.length - 1 - lsbPos;
-              const delay = 0.22 + k * 0.14;
-              const sy = yTag + 24;
-              const tipY = yBits - 21;
-              const d = `M ${round(dstCx)} ${sy} L ${round(dstCx)} ${tipY - 5}`;
-              drops += `<path d="${d}" fill="none" stroke="${P.grey}" stroke-width="1.8" data-grow="${round(delay)}"/>`;
-              drops += `<g opacity="0">${show(delay + 0.32)}${arrowheadAt(dstCx, tipY, 0, 1, P.grey)}</g>`;
-            }
-            out += `<g>${fade(1, 0, 0.3, fadeAt)}${drops}</g>`;
+          const capsule = rect(srcStartX - 5, boxTop, srcW + 10, boxH, "none", fromCol, 7, 1.8);
+          out += reveal(frameAt, capsule);
+          for (let lsbPos = fromBytes.length; lsbPos < toBytes.length; lsbPos++) {
+            const bx = slotX(lsbPos);
+            const slotFrame = `<rect x="${round(bx + 2)}" y="${round(boxTop)}" width="${round(BYTE_W - 4)}" height="${round(boxH)}" rx="6" fill="none" stroke="${P.deadStroke}" stroke-width="1.5" stroke-dasharray="4 4"/>`;
+            out += reveal(frameAt, slotFrame);
           }
         } else {
-          const padChip = pillBadge(extLeftX + 26, yTag, "0", P.bg, P.grey, P.muted, 14);
-          out += animate ? `<g opacity="0">${fade(0, 1, 0.25, 0.1)}${padChip}</g>` : padChip;
+          const tray = rect(
+            extLeftX - 6,
+            boxTop,
+            extRightX - extLeftX + 12,
+            boxH,
+            P.bg,
+            P.gapStroke,
+            6,
+            1.4
+          );
+          const bulkhead = `<path d="M ${round(wallX - 5)} ${round(boxTop - 2)} H ${round(wallX)} V ${round(boxBot + 2)} H ${round(wallX - 5)}" fill="none" stroke="${P.muted}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`;
+          out += reveal(frameAt, tray + bulkhead);
           if (animate) {
-            const yBar = cardY + 42;
-            const xStart = extLeftX + 26;
-            const tipY = yBits - 21;
-            let feed = "";
-            const fadeAt = 0.22 + Math.max(0, extCount - 1) * 0.16 + 0.75;
-            for (let lsbPos = fromBytes.length; lsbPos < toBytes.length; lsbPos++) {
-              const dstCx = slotX(lsbPos) + BYTE_W / 2;
-              const k = toBytes.length - 1 - lsbPos;
-              const delay = 0.22 + k * 0.15;
-              const d = k === 0 ? `M ${round(xStart)} ${yTag + 22} L ${round(xStart)} ${yBar} L ${round(dstCx)} ${yBar} L ${round(dstCx)} ${tipY - 5}` : `M ${round(slotX(lsbPos + 1) + BYTE_W / 2)} ${yBar} L ${round(dstCx)} ${yBar} L ${round(dstCx)} ${tipY - 5}`;
-              feed += `<path d="${d}" fill="none" stroke="${P.grey}" stroke-width="1.8" stroke-linejoin="round" data-grow="${round(delay)}"/>`;
-              feed += `<g opacity="0">${show(delay + 0.34)}${arrowheadAt(dstCx, tipY, 0, 1, P.grey)}</g>`;
-            }
-            out += `<g>${fade(1, 0, 0.3, fadeAt)}${feed}</g>`;
+            const sweepY = cardY + 32;
+            const xStart = extLeftX + 6;
+            const xEnd = wallX - 6;
+            const sweepPath = `M ${round(xStart)} ${round(sweepY)} H ${round(xEnd)}`;
+            const sweepDur = Math.max(0.45, extCount * 0.16 + 0.16);
+            const fadeAt = baseAt + sweepDur + 0.32;
+            const sweep = `<path d="${sweepPath}" fill="none" stroke="${P.grey}" stroke-width="2" stroke-linecap="round" data-grow="${round(baseAt)}"/><g opacity="0">${show(baseAt)}${hide(fadeAt)}<circle cx="0" cy="0" r="5" fill="${P.bg}" stroke="${P.muted}" stroke-width="1.8"/><animateMotion begin="${round(baseAt)}s" dur="${round(sweepDur)}s" path="${sweepPath}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
+            out += `<g>${fade(1, 0, 0.28, fadeAt)}${sweep}</g>`;
           }
         }
         for (let idx = 0; idx < toBytes.length; idx++) {
@@ -2459,46 +2467,64 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
             isExt ? P.grey : toCol
           );
           if (animate && isExt) {
-            out += `<g opacity="0">${fade(0, 0.78, 0.35, 0.45)}${block}</g>`;
+            const fillDelay = variant === "A" ? baseAt + (lsbPos - fromBytes.length) * 0.13 : baseAt + 0.1 + (toBytes.length - 1 - lsbPos) * 0.15;
+            out += `<g opacity="0">${fade(0, 0.82, 0.28, fillDelay)}${block}</g>`;
           } else if (isExt) {
-            out += `<g opacity="0.78">${block}</g>`;
+            out += `<g opacity="0.82">${block}</g>`;
           } else {
             out += block;
           }
         }
-        out += text(rightAnchor + 22, yRes, `→ ${act.afterVal}`, 26, toCol);
+        const resAt = variant === "A" ? baseAt + Math.max(0, extCount - 1) * 0.13 + 0.3 : baseAt + 0.1 + Math.max(0, extCount - 1) * 0.15 + 0.3;
+        out += reveal(resAt, text(rightAnchor + 22, yRes, `→ ${act.afterVal}`, 26, toCol));
       } else {
         for (let idx = 0; idx < toBytes.length; idx++) {
           const lsbPos = toBytes.length - 1 - idx;
-          out += drawLab3ByteColumn(slotX(lsbPos), yBits, yHex, toBytes[idx], P.fg, toCol);
+          const bx = slotX(lsbPos);
+          const settled = drawLab3ByteColumn(bx, yBits, yHex, toBytes[idx], P.fg, toCol);
+          if (animate) {
+            const initial = drawLab3ByteColumn(bx, yBits, yHex, fromBytes[idx], P.fg, fromCol);
+            out += `<g>${hide(baseAt)}${initial}</g><g opacity="0">${show(baseAt)}${settled}</g>`;
+          } else {
+            out += settled;
+          }
         }
-        out += text(rightAnchor + 22, yRes, `→ ${act.afterVal}`, 26, toCol);
+        out += reveal(baseAt + 0.12, text(rightAnchor + 22, yRes, `→ ${act.afterVal}`, 26, toCol));
       }
       return out;
     }
     if (act.kind === "invert") {
+      const at = op ? arrival(op) : T.evaluate;
       const beforeBytes = toBytesMSB(act.beforeVal, act.info.bytes);
       const afterBytes = toBytesMSB(act.afterVal, act.info.bytes);
       for (let idx = 0; idx < afterBytes.length; idx++) {
         const bx = slotX(afterBytes.length - 1 - idx);
         const afterBlock = drawLab3ByteColumn(bx, yBits, yHex, afterBytes[idx], P.write, P.write);
         if (animate) {
-          out += `<g>${hide(0.45)}${drawLab3ByteColumn(bx, yBits, yHex, beforeBytes[idx], P.fg, P.fg)}</g><g opacity="0">${show(0.45)}${afterBlock}</g>`;
+          out += `<g>${hide(at)}${drawLab3ByteColumn(bx, yBits, yHex, beforeBytes[idx], P.fg, P.fg)}</g><g opacity="0">${show(at)}${afterBlock}</g>`;
         } else {
           out += afterBlock;
         }
       }
-      out += text(rightAnchor + 22, yRes, `→ ${act.afterVal}`, 26, P.write);
+      out += reveal(at + 0.18, text(rightAnchor + 22, yRes, `→ ${act.afterVal}`, 26, P.write));
       return out;
     }
     if (act.kind === "value") {
       const bytes = toBytesMSB(act.value, act.info.bytes);
       const col = typeColour(c, act.type);
+      let body = "";
       for (let idx = 0; idx < bytes.length; idx++) {
         const bx = slotX(bytes.length - 1 - idx);
-        out += drawLab3ByteColumn(bx, yBits, yHex, bytes[idx], P.fg, col);
+        body += drawLab3ByteColumn(bx, yBits, yHex, bytes[idx], P.fg, col);
       }
-      out += text(rightAnchor + 22, yRes, `= ${act.value}`, 26, col);
+      body += text(rightAnchor + 22, yRes, `= ${act.value}`, 26, col);
+      let appearAt = 0;
+      if (copying) {
+        appearAt = copyBegin(c.m.steps, c.index) + T.copyTravel;
+      } else if (animate && (op == null ? void 0 : op.kind) === "read") {
+        appearAt = arrival(op);
+      }
+      out += reveal(appearAt, body);
     }
     return out;
   }
@@ -2528,21 +2554,21 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }
   const VARIANTS = {
     A: {
-      name: "MSB-arc copy vs top-drop `0 fill`",
-      claim: "Pairs `type · signed` (boxed MSB + curved copy arcs) against `type · unsigned` (unboxed MSB + wall + external `0 fill` drops).",
+      name: "MSB arcs vs sealed capsule + empty zero-slots",
+      claim: "Zero text badges: signed widening launches curved MSB arcs; unsigned widening seals the source in its type frame while dashed empty slots fill with 0s.",
       points: [
-        "Signed widening (`int8_t · signed`) boxes the sign bit (`1` amber / `0` blue) and fans curved arcs to upper bytes before fading out.",
-        "Unsigned widening (`uint8_t · unsigned`) keeps the source MSB unboxed behind a dashed barrier and drops external `0`s straight into upper bytes.",
-        "Memory uses the locked two-tier cell (decimal top, subtle grey byte hex bottom) with the Little-endian / Big-endian player switch."
+        "Signed widening (`1` amber / `0` blue) boxes the MSB and fans curved copy arcs across upper bytes before fading away.",
+        "Unsigned widening wraps the source bytes in a closed type frame (MSB unboxed) and materializes `0000 0000` inside dashed empty byte outlines.",
+        "Execution-pane values wait until the code line or memory read finishes traveling into the pane."
       ]
     },
     B: {
-      name: "Stepped cascade copy vs left-feed `0` rail",
-      claim: "Contrasts a byte-by-byte stepped cascade from the boxed sign bit against an external `0` rail blocked from the unsigned source.",
+      name: "Bit-carrier arcs vs recessed tray + inward zero-sweep",
+      claim: "Zero text badges: signed arcs carry a flying `1`/`0` bit outward from the MSB, while unsigned sweeps inward from the left into a recessed padding tray blocked at the seam.",
       points: [
-        "Signed widening (`int8_t · signed`) steps leftward byte-by-byte from the boxed MSB (`1` or `0`) and fades arrows away leaving the color coding.",
-        "Unsigned widening (`uint8_t · unsigned`) blocks the source MSB with a dashed barrier and feeds `0` across upper bytes from an external `0` pill.",
-        "Compare stepped cascade + left-feed `0` rail against A’s curved arcs + top-drop `0 fill`."
+        "Signed widening sends a bit-token (`1` amber / `0` blue) gliding along each curved arc from the boxed MSB to stamp upper bytes.",
+        "Unsigned widening places a recessed padding tray behind a bulkhead wall and sweeps left-to-right (opposite direction) to fill `0000 0000`.",
+        "Compare pure spatial emptiness (A) against directional tray sweep + flying bit tokens (B)."
       ]
     }
   };

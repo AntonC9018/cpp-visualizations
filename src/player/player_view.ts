@@ -103,13 +103,12 @@ export class Player {
       `data-action="${action}" aria-label="${esc(label)}" title="${esc(label)}">${icon(iconName)}` +
       `<span class="cv-label">${esc(label)}</span></button>`;
     const endianToggle = this.hooks?.endian
-      ? `<button type="button" class="cv-button cv-endian" data-endian-toggle role="switch" ` +
-        `aria-checked="${this.littleEndian}" aria-label="${esc(S.byteOrder)}" ` +
-        `title="${esc(this.littleEndian ? S.littleEndian : S.bigEndian)}">` +
-        `<span class="cv-endian-opt" data-endian-side="le" data-active="${this.littleEndian}">${esc(S.littleEndianShort)}</span>` +
-        `<span class="cv-switch" aria-hidden="true"><span class="cv-switch-thumb"></span></span>` +
-        `<span class="cv-endian-opt" data-endian-side="be" data-active="${!this.littleEndian}">${esc(S.bigEndianShort)}</span>` +
-        '</button>'
+      ? `<div class="cv-endian" role="group" aria-label="${esc(S.byteOrder)}">` +
+        `<button type="button" class="cv-endian-seg" data-endian-side="le" ` +
+        `aria-pressed="${this.littleEndian}" title="${esc(S.littleEndian)}">${esc(S.littleEndianShort)}</button>` +
+        `<button type="button" class="cv-endian-seg" data-endian-side="be" ` +
+        `aria-pressed="${!this.littleEndian}" title="${esc(S.bigEndian)}">${esc(S.bigEndianShort)}</button>` +
+        '</div>'
       : '';
     root.innerHTML =
       '<div class="cv-view">' +
@@ -146,17 +145,20 @@ export class Player {
       if (target && target.dataset.action) {
         this.invokeAction(target.dataset.action);
       }
-      const endianBtn = (event.target as Element | null)?.closest('[data-endian-toggle]') as HTMLElement | null;
-      if (endianBtn) {
-        const nextLe = !this.littleEndian;
-        this.littleEndian = nextLe;
-        endianBtn.setAttribute('aria-checked', String(nextLe));
-        endianBtn.title = nextLe ? S.littleEndian : S.bigEndian;
-        for (const opt of endianBtn.querySelectorAll<HTMLElement>('[data-endian-side]')) {
-          opt.dataset.active = String((opt.dataset.endianSide === 'le') === nextLe);
+      const endianSeg = (event.target as Element | null)?.closest('[data-endian-side]') as HTMLElement | null;
+      if (endianSeg) {
+        const nextLe = endianSeg.dataset.endianSide === 'le';
+        if (nextLe !== this.littleEndian) {
+          this.littleEndian = nextLe;
+          const group = endianSeg.closest('.cv-endian');
+          if (group) {
+            for (const opt of group.querySelectorAll<HTMLElement>('[data-endian-side]')) {
+              opt.setAttribute('aria-pressed', String((opt.dataset.endianSide === 'le') === nextLe));
+            }
+          }
+          this.hooks?.endian?.onChange?.(nextLe);
+          this.refresh();
         }
-        this.hooks?.endian?.onChange?.(nextLe);
-        this.refresh();
       }
     });
     root.querySelector('.cv-speed')!.addEventListener('change', event => {
