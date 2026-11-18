@@ -2049,10 +2049,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return toBytesMSB(value, bytes).reverse();
   }
   const hexByte = (b) => b.toString(16).toUpperCase().padStart(2, "0");
-  const nibbles = (b) => [
-    (b >> 4).toString(2).padStart(4, "0"),
-    (b & 15).toString(2).padStart(4, "0")
-  ];
   const fullHex = (value, bytes) => "0x" + toBytesMSB(value, bytes).map(hexByte).join("");
   function extractInt(fragment) {
     var _a;
@@ -2252,226 +2248,184 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return out + drawTypeLabels(c, live);
   }
-  const BYTE_W = 96;
-  const BYTE_GAP = 16;
-  const NIBBLE_W = 44;
-  const NIB_GAP = 8;
-  const BIT_FONT = 18;
+  const BIT_FONT = 22;
+  const HEX_FONT = 21;
+  const RESULT_FONT = 24;
   const BIT_STEP = BIT_FONT * CHAR;
-  function drawLab3ByteColumn(x, yBits, yHex, byteVal, bitColor, hexColor, signBitHighlight) {
-    const [hi, lo] = nibbles(byteVal);
-    const hex = hexByte(byteVal);
-    const hiCx = x + NIBBLE_W / 2;
-    const loCx = x + NIBBLE_W + NIB_GAP + NIBBLE_W / 2;
-    let bitsMarkup = "";
-    if (signBitHighlight) {
-      const signBitCx = hiCx - 1.55 * BIT_STEP;
-      const restCx = hiCx + 0.55 * BIT_STEP;
-      bitsMarkup += rect(signBitCx - 6.2, yBits - 18, 12.4, 23, signBitHighlight.fill, signBitHighlight.stroke, 3.5, 1.8) + text(signBitCx, yBits, hi[0], BIT_FONT, signBitHighlight.text, "middle") + text(restCx, yBits, hi.slice(1), BIT_FONT, bitColor, "middle");
-    } else {
-      bitsMarkup += text(hiCx, yBits, hi, BIT_FONT, bitColor, "middle");
+  const NIBBLE_W = 4 * BIT_STEP;
+  const NIB_GAP = 8;
+  const BYTE_W = 2 * NIBBLE_W + NIB_GAP;
+  const BYTE_GAP = 26;
+  const CARD_H = 164;
+  const bitCx = (x, i) => x + (i < 4 ? 0 : NIBBLE_W + NIB_GAP) + (i % 4 + 0.5) * BIT_STEP;
+  function drawByte(x, yBits, yHex, byte, ink) {
+    const bits = byte.toString(2).padStart(8, "0");
+    const hex = hexByte(byte);
+    let out = "";
+    for (let i = 0; i < 8; i++) {
+      const color = i === 0 && ink.msb ? ink.msb : ink.bits;
+      out += text(bitCx(x, i), yBits, bits[i], BIT_FONT, color, "middle");
     }
-    return bitsMarkup + text(loCx, yBits, lo, BIT_FONT, bitColor, "middle") + text(hiCx, yHex, hex[0], 20, hexColor, "middle") + text(loCx, yHex, hex[1], 20, hexColor, "middle");
+    out += text(x + NIBBLE_W / 2, yHex, hex[0], HEX_FONT, ink.hex, "middle");
+    out += text(x + NIBBLE_W + NIB_GAP + NIBBLE_W / 2, yHex, hex[1], HEX_FONT, ink.hex, "middle");
+    return out;
+  }
+  const BOX_TOP = BIT_FONT * 0.78 + 4;
+  function signFrame(x, yBits, stroke, fill = "none") {
+    return rect(bitCx(x, 0) - BIT_STEP / 2 - 3, yBits - BOX_TOP, BIT_STEP + 6, BOX_TOP + 6, fill, stroke, 4, 1.8);
   }
   function arrowheadAt(tipX, tipY, dx, dy, color) {
     const deg = round(Math.atan2(dy, dx) * 180 / Math.PI);
-    return `<path d="M -8.5 -4.2 L 0 0 L -8.5 4.2 Z" fill="${color}" transform="translate(${round(tipX)} ${round(tipY)}) rotate(${deg})"/>`;
+    return `<path d="M -10 -5 L 0 0 L -10 5 Z" fill="${color}" transform="translate(${round(tipX)} ${round(tipY)}) rotate(${deg})"/>`;
   }
+  const scaled = (cx, cy, inner, begin) => `<g transform="translate(${round(cx)} ${round(cy)})"><g>${pulse(begin)}<g transform="translate(${round(-cx)} ${round(-cy)})">${inner}</g></g></g>`;
   function workbenchClean(c, variant) {
     const act = activeBitAction(c);
     if (!act) return "";
     const { g, P, animate, op } = c;
-    const copying = animate && copies(c.m.steps, c.index);
     const cardX = g.tx - 6;
     const cardY = g.ty + 18;
     const cardW = g.pane.w - 36;
-    const cardH = 160;
-    const yBits = cardY + 98;
-    const yHex = cardY + 132;
-    const yRes = cardY + 112;
-    const rightAnchor = cardX + 16 + 4 * BYTE_W + 3 * BYTE_GAP;
+    const yBits = cardY + 108;
+    const yHex = yBits + 34;
+    const yRes = yBits + 16;
+    const rightAnchor = cardX + 18 + 4 * BYTE_W + 3 * BYTE_GAP;
     const slotX = (bytesFromLSB) => rightAnchor - (bytesFromLSB + 1) * BYTE_W - bytesFromLSB * BYTE_GAP;
-    const reveal = (at, markup) => animate && at > 0 ? `<g opacity="0">${fade(0, 1, 0.22, at)}${markup}</g>` : markup;
-    let out = rect(cardX, cardY, cardW, cardH, P.panel, P.gapStroke, 8, 1.5);
-    if (act.kind === "narrow" || act.kind === "zero-extend" || act.kind === "sign-extend" || act.kind === "reinterpret") {
-      const fromBytes = toBytesMSB(act.beforeVal, act.fromInfo.bytes);
-      const toBytes = toBytesMSB(act.afterVal, act.toInfo.bytes);
-      const fromCol = typeColour(c, act.fromType);
-      const toCol = typeColour(c, act.toType);
-      const baseAt = op ? arrival(op) : T.evaluate;
-      if (act.kind === "narrow") {
-        const cutX = slotX(toBytes.length - 1) - BYTE_GAP / 2;
-        for (let idx = 0; idx < fromBytes.length; idx++) {
-          const lsbPos = fromBytes.length - 1 - idx;
-          const bx = slotX(lsbPos);
-          const dropped = lsbPos >= toBytes.length;
-          if (dropped) {
-            const settled = `<g opacity="0.48">` + drawLab3ByteColumn(bx, yBits, yHex, fromBytes[idx], P.error, P.error) + `<line x1="${bx + 6}" y1="${yBits - 16}" x2="${bx + BYTE_W - 6}" y2="${yHex + 6}" stroke="${P.error}" stroke-width="2"/></g>`;
-            if (animate) {
-              out += `<g>${hide(baseAt)}${drawLab3ByteColumn(bx, yBits, yHex, fromBytes[idx], P.fg, fromCol)}</g><g opacity="0">${show(baseAt)}<animateTransform attributeName="transform" type="translate" from="0 -6" to="0 0" begin="${round(baseAt)}s" dur="0.32s" fill="freeze"/>${settled}</g>`;
-            } else {
-              out += settled;
-            }
-          } else {
-            out += drawLab3ByteColumn(bx, yBits, yHex, fromBytes[idx], P.fg, toCol);
-          }
-        }
-        out += reveal(
-          baseAt - 0.15,
-          `<line x1="${round(cutX)}" y1="${cardY + 20}" x2="${round(cutX)}" y2="${cardY + cardH - 16}" stroke="${P.error}" stroke-width="2.2" stroke-dasharray="5 4"/>`
-        );
-        out += reveal(baseAt + 0.34, text(rightAnchor + 22, yRes, `→ ${act.afterVal}`, 26, toCol));
-      } else if (act.kind === "sign-extend") {
-        const isNeg = act.signBit === 1;
-        const extStroke = isNeg ? P.write : P.read;
-        const extFill = isNeg ? P.writeFill : P.readFill;
-        const extText = isNeg ? P.write : P.read;
-        const srcTopPos = fromBytes.length - 1;
-        const srcX = slotX(srcTopPos);
-        const signBitCx = srcX + NIBBLE_W / 2 - 1.55 * BIT_STEP;
-        for (let idx = 0; idx < fromBytes.length; idx++) {
-          const lsbPos = fromBytes.length - 1 - idx;
-          const bx = slotX(lsbPos);
-          const isTopSrc = lsbPos === srcTopPos;
-          if (animate && isTopSrc) {
-            const plain = drawLab3ByteColumn(bx, yBits, yHex, fromBytes[idx], P.fg, toCol);
-            const boxed = drawLab3ByteColumn(
-              bx,
-              yBits,
-              yHex,
-              fromBytes[idx],
-              P.fg,
-              toCol,
-              { fill: extFill, stroke: extStroke, text: extText }
-            );
-            const boxAt = Math.max(0.2, baseAt - 0.25);
-            out += `<g>${hide(boxAt)}${plain}</g><g opacity="0">${show(boxAt)}<g transform="translate(${round(signBitCx)} ${round(yBits - 6)})"><g>${pulse(boxAt)}<g transform="translate(${round(-signBitCx)} ${round(-(yBits - 6))})">${boxed}</g></g></g></g>`;
-          } else {
-            out += drawLab3ByteColumn(
-              bx,
-              yBits,
-              yHex,
-              fromBytes[idx],
-              P.fg,
-              toCol,
-              isTopSrc ? { fill: extFill, stroke: extStroke, text: extText } : void 0
-            );
-          }
-        }
-        const extCount = toBytes.length - fromBytes.length;
-        const stagger = 0.18;
-        const fadeAt = baseAt + Math.max(0, extCount - 1) * stagger + 0.88;
-        let animArrows = "";
-        for (let lsbPos = fromBytes.length; lsbPos < toBytes.length; lsbPos++) {
-          const bx = slotX(lsbPos);
-          const byteVal = toBytes[toBytes.length - 1 - lsbPos];
-          const dstCx = bx + BYTE_W / 2;
-          const dstLeftBitX = bx + NIBBLE_W / 2 - 1.55 * BIT_STEP;
-          const k = lsbPos - fromBytes.length;
-          const arcDelay = baseAt + k * stagger;
-          const fillDelay = arcDelay + 0.52;
-          const extCard = `<g opacity="0.65">` + rect(bx + 2, yBits - 24, BYTE_W - 4, 68, extFill, extStroke, 6, 1.2) + `</g>` + drawLab3ByteColumn(bx, yBits, yHex, byteVal, extText, extText);
-          if (animate) {
-            const sy = yBits - 22;
-            const tipY = yBits - 24;
-            const tipX = variant === "A" ? dstCx : dstLeftBitX;
-            const peakY = cardY + 52 - k * 18;
-            const ctrlX = (signBitCx + tipX) / 2;
-            const ctrlY = 2 * peakY - sy;
-            const dx = tipX - ctrlX;
-            const dy = tipY - ctrlY;
-            const len = Math.hypot(dx, dy) || 1;
-            const ex = tipX - 5.5 * dx / len;
-            const ey = tipY - 5.5 * dy / len;
-            const d = `M ${round(signBitCx)} ${round(sy)} Q ${round(ctrlX)} ${round(ctrlY)}, ${round(ex)} ${round(ey)}`;
-            const fullPath = `M ${round(signBitCx)} ${round(sy)} Q ${round(ctrlX)} ${round(ctrlY)}, ${round(tipX)} ${round(tipY)}`;
-            animArrows += `<path d="${d}" fill="none" stroke="${extStroke}" stroke-width="2.1" stroke-linecap="round" data-grow="${round(arcDelay)}"/>`;
-            animArrows += `<g opacity="0">${show(fillDelay - 0.06)}${arrowheadAt(tipX, tipY, ex - ctrlX, ey - ctrlY, extStroke)}</g>`;
-            if (variant === "B") {
-              animArrows += `<g opacity="0">${show(arcDelay)}${hide(fillDelay + 0.08)}<circle cx="0" cy="0" r="10.5" fill="${extFill}" stroke="${extStroke}" stroke-width="1.8"/>` + text(0, 5.5, String(act.signBit ?? 0), 15, extText, "middle") + `<animateMotion begin="${round(arcDelay)}s" dur="0.58s" path="${fullPath}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
-            }
-            out += `<g opacity="0">${show(fillDelay)}<g transform="translate(${round(dstCx)} ${round(yBits + 10)})"><g>${pulse(fillDelay)}<g transform="translate(${round(-dstCx)} ${round(-(yBits + 10))})">${extCard}</g></g></g></g>`;
-          } else {
-            out += extCard;
-          }
-        }
-        if (animate && animArrows) {
-          out += `<g>${fade(1, 0, 0.32, fadeAt)}${animArrows}</g>`;
-        }
-        const resAt = baseAt + Math.max(0, extCount - 1) * stagger + 0.56;
-        out += reveal(resAt, text(rightAnchor + 22, yRes, `→ ${act.afterVal}`, 26, toCol));
-      } else if (act.kind === "zero-extend") {
-        for (let idx = 0; idx < toBytes.length; idx++) {
-          const lsbPos = toBytes.length - 1 - idx;
-          const bx = slotX(lsbPos);
-          const isExt = lsbPos >= fromBytes.length;
-          const block = drawLab3ByteColumn(
-            bx,
-            yBits,
-            yHex,
-            toBytes[idx],
-            isExt ? P.grey : P.fg,
-            isExt ? P.grey : toCol
-          );
-          if (animate && isExt) {
-            out += `<g opacity="0">${fade(0, 0.72, 0.35, baseAt)}${block}</g>`;
-          } else if (isExt) {
-            out += `<g opacity="0.72">${block}</g>`;
-          } else {
-            out += block;
-          }
-        }
-        out += reveal(baseAt + 0.35, text(rightAnchor + 22, yRes, `→ ${act.afterVal}`, 26, toCol));
-      } else {
-        for (let idx = 0; idx < toBytes.length; idx++) {
-          const lsbPos = toBytes.length - 1 - idx;
-          const bx = slotX(lsbPos);
-          const settled = drawLab3ByteColumn(bx, yBits, yHex, toBytes[idx], P.fg, toCol);
-          if (animate) {
-            const initial = drawLab3ByteColumn(bx, yBits, yHex, fromBytes[idx], P.fg, fromCol);
-            out += `<g>${hide(baseAt)}${initial}</g><g opacity="0">${show(baseAt)}${settled}</g>`;
-          } else {
-            out += settled;
-          }
-        }
-        out += reveal(baseAt + 0.12, text(rightAnchor + 22, yRes, `→ ${act.afterVal}`, 26, toCol));
-      }
-      return out;
-    }
-    if (act.kind === "invert") {
-      const at = op ? arrival(op) : T.evaluate;
-      const beforeBytes = toBytesMSB(act.beforeVal, act.info.bytes);
-      const afterBytes = toBytesMSB(act.afterVal, act.info.bytes);
-      for (let idx = 0; idx < afterBytes.length; idx++) {
-        const bx = slotX(afterBytes.length - 1 - idx);
-        const afterBlock = drawLab3ByteColumn(bx, yBits, yHex, afterBytes[idx], P.write, P.write);
-        if (animate) {
-          out += `<g>${hide(at)}${drawLab3ByteColumn(bx, yBits, yHex, beforeBytes[idx], P.fg, P.fg)}</g><g opacity="0">${show(at)}${afterBlock}</g>`;
-        } else {
-          out += afterBlock;
-        }
-      }
-      out += reveal(at + 0.18, text(rightAnchor + 22, yRes, `→ ${act.afterVal}`, 26, P.write));
-      return out;
-    }
+    const neutralFrame = P.muted;
+    const reveal = (at2, markup) => animate && at2 > 0 ? `<g opacity="0">${fade(0, 1, 0.22, at2)}${markup}</g>` : markup;
+    const swap = (at2, before, after) => animate ? `<g>${hide(at2)}${before}</g><g opacity="0">${show(at2)}${after}</g>` : after;
+    const result = (at2, label, color) => reveal(at2, text(rightAnchor + 20, yRes, label, RESULT_FONT, color));
+    const plainValue = (value, info, hexInk) => {
+      const bytes = toBytesMSB(value, info.bytes);
+      let out2 = "";
+      bytes.forEach((b, idx) => {
+        out2 += drawByte(slotX(bytes.length - 1 - idx), yBits, yHex, b, { bits: P.fg, hex: hexInk });
+      });
+      if (info.signed) out2 += signFrame(slotX(bytes.length - 1), yBits, neutralFrame);
+      return out2;
+    };
+    let out = rect(cardX, cardY, cardW, CARD_H, P.panel, P.gapStroke, 8, 1.5);
     if (act.kind === "value") {
-      const bytes = toBytesMSB(act.value, act.info.bytes);
       const col = typeColour(c, act.type);
-      let body = "";
-      for (let idx = 0; idx < bytes.length; idx++) {
-        const bx = slotX(bytes.length - 1 - idx);
-        body += drawLab3ByteColumn(bx, yBits, yHex, bytes[idx], P.fg, col);
-      }
-      body += text(rightAnchor + 22, yRes, `= ${act.value}`, 26, col);
       let appearAt = 0;
-      if (copying) {
+      if (animate && copies(c.m.steps, c.index)) {
         appearAt = copyBegin(c.m.steps, c.index) + T.copyTravel;
       } else if (animate && (op == null ? void 0 : op.kind) === "read") {
         appearAt = arrival(op);
       }
-      out += reveal(appearAt, body);
+      return out + reveal(appearAt, plainValue(act.value, act.info, col) + text(rightAnchor + 20, yRes, `= ${act.value}`, RESULT_FONT, col));
     }
-    return out;
+    if (act.kind === "invert") {
+      const at2 = op ? arrival(op) : T.evaluate;
+      const after = toBytesMSB(act.afterVal, act.info.bytes);
+      let inverted = "";
+      after.forEach((b, idx) => {
+        inverted += drawByte(slotX(after.length - 1 - idx), yBits, yHex, b, { bits: P.write, hex: P.write });
+      });
+      if (act.info.signed) inverted += signFrame(slotX(after.length - 1), yBits, neutralFrame);
+      out += swap(at2, plainValue(act.beforeVal, act.info, P.fg), inverted);
+      return out + result(at2 + 0.18, `→ ${act.afterVal}`, P.write);
+    }
+    const fromBytes = toBytesMSB(act.beforeVal, act.fromInfo.bytes);
+    const toBytes = toBytesMSB(act.afterVal, act.toInfo.bytes);
+    const fromCol = typeColour(c, act.fromType);
+    const toCol = typeColour(c, act.toType);
+    const at = op ? arrival(op) : T.evaluate;
+    if (act.kind === "narrow") {
+      const keep = toBytes.length;
+      fromBytes.forEach((b, idx) => {
+        const lsbPos = fromBytes.length - 1 - idx;
+        const bx = slotX(lsbPos);
+        if (lsbPos < keep) {
+          out += drawByte(bx, yBits, yHex, b, { bits: P.fg, hex: toCol });
+          return;
+        }
+        const dropped = `<g opacity="0.48">` + drawByte(bx, yBits, yHex, b, { bits: P.error, hex: P.error }) + `<line x1="${round(bx + 4)}" y1="${round(yBits - 20)}" x2="${round(bx + BYTE_W - 4)}" y2="${round(yHex + 6)}" stroke="${P.error}" stroke-width="2"/></g>`;
+        out += animate ? `<g>${hide(at)}${drawByte(bx, yBits, yHex, b, { bits: P.fg, hex: fromCol })}</g><g opacity="0">${show(at)}<animateTransform attributeName="transform" type="translate" from="0 -6" to="0 0" begin="${round(at)}s" dur="0.32s" fill="freeze"/>${dropped}</g>` : dropped;
+      });
+      if (act.fromInfo.signed) {
+        const frame = signFrame(slotX(fromBytes.length - 1), yBits, neutralFrame);
+        out += animate ? `<g>${hide(at)}${frame}</g>` : "";
+      }
+      if (act.toInfo.signed) {
+        out += reveal(at + 0.34, signFrame(slotX(keep - 1), yBits, neutralFrame));
+      }
+      const cutX = slotX(keep - 1) - BYTE_GAP / 2;
+      out += reveal(
+        at - 0.15,
+        `<line x1="${round(cutX)}" y1="${cardY + 20}" x2="${round(cutX)}" y2="${cardY + CARD_H - 14}" stroke="${P.error}" stroke-width="2.2" stroke-dasharray="5 4"/>`
+      );
+      return out + result(at + 0.34, `→ ${act.afterVal}`, toCol);
+    }
+    if (act.kind === "zero-extend") {
+      toBytes.forEach((b, idx) => {
+        const lsbPos = toBytes.length - 1 - idx;
+        const isExt = lsbPos >= fromBytes.length;
+        const block = drawByte(slotX(lsbPos), yBits, yHex, b, {
+          bits: isExt ? P.grey : P.fg,
+          hex: isExt ? P.grey : toCol
+        });
+        if (!isExt) out += block;
+        else if (animate) out += `<g opacity="0">${fade(0, 0.72, 0.35, at)}${block}</g>`;
+        else out += `<g opacity="0.72">${block}</g>`;
+      });
+      return out + result(at + 0.35, `→ ${act.afterVal}`, toCol);
+    }
+    if (act.kind === "sign-extend") {
+      const ext = act.signBit === 1 ? { stroke: P.write, fill: P.writeFill } : { stroke: P.read, fill: P.readFill };
+      const srcX = slotX(fromBytes.length - 1);
+      const msbX = bitCx(srcX, 0);
+      const litAt = Math.max(0.2, at - 0.25);
+      fromBytes.forEach((b, idx) => {
+        const lsbPos = fromBytes.length - 1 - idx;
+        const bx = slotX(lsbPos);
+        if (lsbPos !== fromBytes.length - 1) {
+          out += drawByte(bx, yBits, yHex, b, { bits: P.fg, hex: toCol });
+          return;
+        }
+        const lit = signFrame(bx, yBits, ext.stroke, ext.fill) + drawByte(bx, yBits, yHex, b, { bits: P.fg, hex: toCol, msb: ext.stroke });
+        const dim2 = signFrame(bx, yBits, neutralFrame) + drawByte(bx, yBits, yHex, b, { bits: P.fg, hex: toCol });
+        out += animate ? swap(litAt, dim2, scaled(msbX, yBits - 8, lit, litAt)) : lit;
+      });
+      const stagger = 0.2;
+      const travel = 0.55;
+      const extCount = toBytes.length - fromBytes.length;
+      const doneAt = at + (extCount - 1) * stagger + travel;
+      const startY = yBits - BOX_TOP - 2;
+      let arcs = "";
+      for (let k = 0; k < extCount; k++) {
+        const lsbPos = fromBytes.length + k;
+        const bx = slotX(lsbPos);
+        const copy = drawByte(bx, yBits, yHex, toBytes[toBytes.length - 1 - lsbPos], { bits: ext.stroke, hex: ext.stroke });
+        if (!animate) {
+          out += copy;
+          continue;
+        }
+        const begin = at + k * stagger;
+        const land = begin + travel;
+        const tipX = bx + BYTE_W / 2;
+        const tipY = yBits - BIT_FONT - 2;
+        const peakY = cardY + 48 - k * 13;
+        const ctrlX = (msbX + tipX) / 2;
+        const ctrlY = 2 * peakY - (startY + tipY) / 2;
+        const dx = tipX - ctrlX;
+        const dy = tipY - ctrlY;
+        const len = Math.hypot(dx, dy) || 1;
+        const ex = tipX - 7 * dx / len;
+        const ey = tipY - 7 * dy / len;
+        const path = (x, y) => `M ${round(msbX)} ${round(startY)} Q ${round(ctrlX)} ${round(ctrlY)}, ${round(x)} ${round(y)}`;
+        arcs += `<path d="${path(ex, ey)}" fill="none" stroke="${ext.stroke}" stroke-width="2.2" stroke-linecap="round" data-grow="${round(begin)}"/>`;
+        arcs += `<g opacity="0">${show(land - 0.06)}${arrowheadAt(tipX, tipY, dx, dy, ext.stroke)}</g>`;
+        if (variant === "B") {
+          arcs += `<g opacity="0">${show(begin)}${hide(land + 0.04)}<circle r="12" fill="${ext.fill}" stroke="${ext.stroke}" stroke-width="1.8"/>` + text(0, 6, String(act.signBit), 17, ext.stroke, "middle") + `<animateMotion begin="${round(begin)}s" dur="${travel}s" path="${path(tipX, tipY)}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
+        }
+        out += `<g opacity="0">${show(land)}${scaled(tipX, yBits, copy, land)}</g>`;
+      }
+      if (arcs) out += `<g>${fade(1, 0, 0.32, doneAt + 0.35)}${arcs}</g>`;
+      return out + result(doneAt, `→ ${act.afterVal}`, toCol);
+    }
+    out += swap(at, plainValue(act.beforeVal, act.fromInfo, fromCol), plainValue(act.afterVal, act.toInfo, toCol));
+    return out + result(at + 0.12, `→ ${act.afterVal}`, toCol);
   }
   function hooksFor(variant, littleEndian, onEndianChange) {
     const geomOpts = {
@@ -2499,21 +2453,19 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }
   const VARIANTS = {
     A: {
-      name: "Concentric MSB arcs (signed) vs calm zero-fill (unsigned)",
-      claim: "Signed widening fires nested concentric rainbow arcs from the boxed MSB and tints extended bytes; unsigned widening stays unboxed and quietly fills muted `0000 0000` bytes.",
+      name: "Sign bit copied along arcs",
+      claim: "Signed types frame their sign bit; widening lights it and copies it into each new byte along nested arcs. Unsigned types have no frame and get grey zeros.",
       points: [
-        "Signed widening (`1` amber / `0` blue) uses non-intersecting concentric arcs and keeps soft tinted byte cards behind the extended bytes.",
-        "Unsigned widening leaves the source MSB unboxed and quietly fades in muted grey `0000 0000` upper bytes.",
-        "Memory shows brighter `15.5`px byte hex and a clean single-headed significance arrow."
+        "The frame on the top bit appears on every signed value, so the cause is visible before the cast.",
+        "Copied bytes keep the sign colour (amber for 1, blue for 0) after the arcs fade."
       ]
     },
     B: {
-      name: "Bit-carrier MSB arcs (signed) vs calm zero-fill (unsigned)",
-      claim: "Signed widening rides a glowing `1`/`0` bit-carrier along each concentric arc tip; unsigned widening stays unboxed and quietly fills muted `0000 0000` bytes.",
+      name: "Sign bit carried along arcs",
+      claim: "Same as A, but the bit itself rides each arc into the byte it fills.",
       points: [
-        "Signed widening sends a glowing `1` or `0` bit gliding along each concentric arc tip to stamp tinted upper bytes.",
-        "Unsigned widening leaves the source MSB unboxed and quietly fades in muted grey `0000 0000` upper bytes.",
-        "Compare clean concentric arcs (A) against bit-carrier arcs (B)."
+        "The travelling 1 or 0 makes the copy literal.",
+        "Unsigned widening is unchanged: grey zeros fade in."
       ]
     }
   };
@@ -2574,6 +2526,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           player.settle(want);
         }
         players[idx] = player;
+        host.cvPlayer = player;
       }
       const meta = VARIANTS[state.variant];
       label.textContent = `${state.variant} · ${meta.name}`;
