@@ -2002,11 +2002,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       if (this.animated) this.seek(this.elapsed);
     }
     render(animate) {
-      var _a, _b, _c;
+      var _a, _b, _c, _d, _e;
       const width = this.root.clientWidth;
       if (width !== this.layoutWidth) {
-        this.stacked = width > 0 && width < STACK_BELOW;
-        this.g = ((_a = this.hooks) == null ? void 0 : _a.geometry) ? this.hooks.geometry(this.m, this.P, this.stacked, width) : geometry(this.m, this.P, this.stacked, width);
+        this.stacked = width > 0 && width < (((_a = this.hooks) == null ? void 0 : _a.stackBelow) ?? STACK_BELOW);
+        this.g = ((_b = this.hooks) == null ? void 0 : _b.geometry) ? this.hooks.geometry(this.m, this.P, this.stacked, width) : geometry(this.m, this.P, this.stacked, width);
         this.layoutWidth = width;
         this.shownType = null;
         this.typeBox.hidden = true;
@@ -2035,13 +2035,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       };
       this.animated = animate;
       this.svg.setAttribute("viewBox", `0 0 ${Math.ceil(g.width)} ${Math.ceil(g.height)}`);
-      this.svg.style.maxWidth = `${Math.ceil(g.width * MAX_SCALE)}px`;
-      const body = ((_b = this.hooks) == null ? void 0 : _b.scene) ? this.hooks.scene(c) : scene(c);
+      this.svg.style.maxWidth = `${Math.ceil(g.width * (((_c = this.hooks) == null ? void 0 : _c.maxScale) ?? MAX_SCALE))}px`;
+      const body = ((_d = this.hooks) == null ? void 0 : _d.scene) ? this.hooks.scene(c) : scene(c);
       this.scene.innerHTML = `<rect width="100%" height="100%" fill="${this.P.bg}"/>` + body;
       placeLineTargets(g, this.lines);
       this.finishPaths();
       this.seek(0);
-      this.update(((_c = this.hooks) == null ? void 0 : _c.describe) ? this.hooks.describe(c) : describe(c));
+      this.update(((_e = this.hooks) == null ? void 0 : _e.describe) ? this.hooks.describe(c) : describe(c));
     }
     finishPaths() {
       for (const path of this.scene.querySelectorAll(

@@ -235,12 +235,12 @@ function drawCellChrome(
   const color = cell.fieldColor || cell.color;
   let markup = '';
   // Base address
-  markup += text(cell.x + 3, cell.y - 12, cell.address, 16, on ? P.muted : P.grey);
+  markup += text(cell.x + 3, cell.y - 12, cell.address, 17, on ? P.muted : P.grey);
   // Optional consecutive byte addresses (+1, +2, +3) for address-order byte view
   if (addressOrderSubTicks && cell.size > 1) {
     const bw = cell.w / cell.size;
     for (let i = 1; i < cell.size; i++) {
-      markup += text(cell.x + i * bw + 4, cell.y - 12, cell.address + i, 12, P.grey);
+      markup += text(cell.x + i * bw + 6, cell.y - 12, cell.address + i, 15, P.grey);
     }
   }
   // Background fill
@@ -252,12 +252,12 @@ function drawCellChrome(
       const lx = round(cell.x + i * bw);
       if (showByteTicks) {
         markup +=
-          `<line x1="${lx}" y1="${cell.y + 3}" x2="${lx}" y2="${cell.y + 9}" stroke="${P.deadStroke}" stroke-width="1.5"/>` +
-          `<line x1="${lx}" y1="${cell.y + cell.h - 9}" x2="${lx}" y2="${cell.y + cell.h - 3}" stroke="${P.deadStroke}" stroke-width="1.5"/>`;
+          `<line x1="${lx}" y1="${cell.y + 3}" x2="${lx}" y2="${cell.y + 11}" stroke="${P.deadStroke}" stroke-width="1.8"/>` +
+          `<line x1="${lx}" y1="${cell.y + cell.h - 11}" x2="${lx}" y2="${cell.y + cell.h - 3}" stroke="${P.deadStroke}" stroke-width="1.8"/>`;
       } else {
         markup +=
           `<line x1="${lx}" y1="${cell.y + 3}" x2="${lx}" y2="${cell.y + cell.h - 3}" ` +
-          `stroke="${on ? P.gapStroke : P.deadStroke}" stroke-width="1.2" stroke-dasharray="3 3"/>`;
+          `stroke="${on ? P.gapStroke : P.deadStroke}" stroke-width="1.4" stroke-dasharray="4 3"/>`;
       }
     }
   }
@@ -284,9 +284,9 @@ function drawCellChrome(
   if (extraSubLabel !== null) {
     markup += text(
       cell.x + cell.w / 2,
-      cell.y + cell.h + 56,
+      cell.y + cell.h + 62,
       extraSubLabel,
-      14,
+      19,
       on ? P.muted : P.grey,
       'middle'
     );
@@ -328,8 +328,8 @@ function memoryVariantA(c: SceneContext): string {
 
     let markup = drawCellChrome(c, cell, on, false, decLabel, true);
     if (on && cell.size > 1) {
-      markup += text(cell.x + 6, cell.y + 13, 'LSB', 9, P.grey);
-      markup += text(cell.x + cell.w - 6, cell.y + 13, 'MSB', 9, P.grey, 'end');
+      markup += text(cell.x + 8, cell.y + 18, 'LSB', 13, P.grey);
+      markup += text(cell.x + cell.w - 8, cell.y + 18, 'MSB', 13, P.grey, 'end');
     }
     if (on) {
       const bw = cell.w / cell.size;
@@ -340,8 +340,8 @@ function memoryVariantA(c: SceneContext): string {
       const renderByte = (b: number, bx: number): string => {
         const [hi, lo] = nibbles(b);
         return (
-          text(bx + bw / 2, cell.y + 44, hexByte(b), 22, P.fg, 'middle') +
-          text(bx + bw / 2, cell.y + 70, `${hi} ${lo}`, 9, b !== 0 ? color : P.muted, 'middle')
+          text(bx + bw / 2, cell.y + 56, hexByte(b), 28, P.fg, 'middle') +
+          text(bx + bw / 2, cell.y + 92, `${hi} ${lo}`, 15.5, b !== 0 ? color : P.muted, 'middle')
         );
       };
 
@@ -357,7 +357,7 @@ function memoryVariantA(c: SceneContext): string {
         } else if (shownBytes) {
           markup += renderByte(shownBytes[i], bx);
         } else {
-          markup += text(cx, cell.y + 48, '?', 22, P.grey, 'middle');
+          markup += text(cx, cell.y + 62, '?', 28, P.grey, 'middle');
         }
       }
     }
@@ -379,9 +379,9 @@ function byteChip(
 ): string {
   const [hi, lo] = nibbles(byteVal);
   return (
-    rect(x, y, w, h, fill, stroke, 6, 2) +
-    text(x + w / 2, y + 18, hexByte(byteVal), 16, textColor, 'middle') +
-    text(x + w / 2, y + 32, `${hi} ${lo}`, 8.5, bitColor, 'middle')
+    rect(x, y, w, h, fill, stroke, 7, 2) +
+    text(x + w / 2, y + 26, hexByte(byteVal), 22, textColor, 'middle') +
+    text(x + w / 2, y + 48, `${hi} ${lo}`, 14.5, bitColor, 'middle')
   );
 }
 
@@ -390,9 +390,9 @@ function paneStripVariantA(c: SceneContext): string {
   if (!act) return '';
   const { g, P, animate } = c;
   const stripY = g.ty + 26;
-  const chipW = 54;
-  const chipH = 39;
-  const gap = 7;
+  const chipW = 90;
+  const chipH = 58;
+  const gap = 10;
   const x0 = g.tx;
   let out = '';
 
@@ -411,8 +411,8 @@ function paneStripVariantA(c: SceneContext): string {
         if (dropped) {
           const settledDropped =
             `<g opacity="0.45">` +
-            byteChip(bx, stripY + 10, chipW, chipH, fromBytes[i], P.panel, P.error, P.muted, P.muted) +
-            `<line x1="${bx + 6}" y1="${stripY + 16}" x2="${bx + chipW - 6}" y2="${stripY + 10 + chipH - 6}" stroke="${P.error}" stroke-width="2"/>` +
+            byteChip(bx, stripY + 12, chipW, chipH, fromBytes[i], P.panel, P.error, P.muted, P.muted) +
+            `<line x1="${bx + 8}" y1="${stripY + 20}" x2="${bx + chipW - 8}" y2="${stripY + 12 + chipH - 8}" stroke="${P.error}" stroke-width="2.2"/>` +
             '</g>';
           if (animate) {
             const delay = 0.3 + i * 0.14;
@@ -435,10 +435,10 @@ function paneStripVariantA(c: SceneContext): string {
           }
         }
       }
-      out += `<line x1="${round(cutX)}" y1="${stripY - 4}" x2="${round(cutX)}" y2="${stripY + chipH + 10}" stroke="${P.error}" stroke-width="2" stroke-dasharray="4 3"/>`;
-      const noteX = x0 + fromBytes.length * (chipW + gap) + 8;
-      out += text(noteX, stripY + 17, `drop high ${dropCount}B`, 13, P.error);
-      out += text(noteX, stripY + 35, `keep ${fullHex(act.afterVal, act.toInfo.bytes)} (${act.afterVal})`, 13, toCol);
+      out += `<line x1="${round(cutX)}" y1="${stripY - 4}" x2="${round(cutX)}" y2="${stripY + chipH + 14}" stroke="${P.error}" stroke-width="2.2" stroke-dasharray="5 4"/>`;
+      const noteX = x0 + fromBytes.length * (chipW + gap) + 10;
+      out += text(noteX, stripY + 24, `drop high ${dropCount}B`, 17, P.error);
+      out += text(noteX, stripY + 48, `keep ${fullHex(act.afterVal, act.toInfo.bytes)} (${act.afterVal})`, 17, toCol);
     } else if (act.kind === 'zero-extend' || act.kind === 'sign-extend') {
       const extCount = toBytes.length - fromBytes.length;
       const extLabel = act.kind === 'sign-extend' ? 'sign-extend (1s)' : 'zero-extend (0s)';
@@ -461,22 +461,22 @@ function paneStripVariantA(c: SceneContext): string {
           const delay = 0.35 + order * 0.22;
           out +=
             `<g opacity="0">${fade(0, 1, 0.28, delay)}` +
-            `<animateTransform attributeName="transform" type="translate" from="14 0" to="0 0" begin="${round(delay)}s" dur="0.3s" fill="freeze"/>` +
+            `<animateTransform attributeName="transform" type="translate" from="16 0" to="0 0" begin="${round(delay)}s" dur="0.3s" fill="freeze"/>` +
             `${chip}</g>`;
         } else {
           out += chip;
         }
       }
-      const noteX = x0 + toBytes.length * (chipW + gap) + 8;
-      out += text(noteX, stripY + 17, extLabel, 13, P.write);
-      out += text(noteX, stripY + 35, `${fullHex(act.afterVal, act.toInfo.bytes)} (${act.afterVal})`, 13, toCol);
+      const noteX = x0 + toBytes.length * (chipW + gap) + 10;
+      out += text(noteX, stripY + 24, extLabel, 17, P.write);
+      out += text(noteX, stripY + 48, `${fullHex(act.afterVal, act.toInfo.bytes)} (${act.afterVal})`, 17, toCol);
     } else {
       for (let i = 0; i < toBytes.length; i++) {
         const bx = x0 + i * (chipW + gap);
         out += byteChip(bx, stripY, chipW, chipH, toBytes[i], P.panel, toCol, P.fg, toCol);
       }
-      const noteX = x0 + toBytes.length * (chipW + gap) + 8;
-      out += text(noteX, stripY + 26, `same bits → ${act.afterVal} (${act.toType})`, 13, toCol);
+      const noteX = x0 + toBytes.length * (chipW + gap) + 10;
+      out += text(noteX, stripY + 35, `same bits → ${act.afterVal} (${act.toType})`, 17, toCol);
     }
     return out;
   }
@@ -497,8 +497,9 @@ function paneStripVariantA(c: SceneContext): string {
         out += afterChip;
       }
     }
-    const noteX = x0 + afterBytes.length * (chipW + gap) + 8;
-    out += text(noteX, stripY + 26, `~ flips bytes → ${fullHex(act.afterVal, act.info.bytes)} (${act.afterVal})`, 13, P.write);
+    const noteX = x0 + afterBytes.length * (chipW + gap) + 10;
+    out += text(noteX, stripY + 24, `~ flips every byte`, 17, P.write);
+    out += text(noteX, stripY + 48, `${fullHex(act.afterVal, act.info.bytes)} (${act.afterVal})`, 17, P.write);
     return out;
   }
 
@@ -509,8 +510,8 @@ function paneStripVariantA(c: SceneContext): string {
       const bx = x0 + i * (chipW + gap);
       out += byteChip(bx, stripY, chipW, chipH, bytes[i], P.panel, col, P.fg, bytes[i] ? col : P.muted);
     }
-    const noteX = x0 + bytes.length * (chipW + gap) + 8;
-    out += text(noteX, stripY + 25, `${fullHex(act.value, act.info.bytes)} = ${act.value}`, 13, P.muted);
+    const noteX = x0 + bytes.length * (chipW + gap) + 10;
+    out += text(noteX, stripY + 35, `${fullHex(act.value, act.info.bytes)} = ${act.value}`, 17, P.muted);
   }
   return out;
 }
@@ -534,15 +535,15 @@ function memoryVariantB(c: SceneContext): string {
     if (on) {
       const renderVal = (val: unknown): string => {
         if (typeof val !== 'number') {
-          return text(0, 8, String(val), 26, val === '?' ? P.grey : P.fg, 'middle');
+          return text(0, 10, String(val), 30, val === '?' ? P.grey : P.fg, 'middle');
         }
         const dec = String(val);
-        const decSize = Math.min(27, (cell.w - 10) / (dec.length * CHAR));
+        const decSize = Math.min(32, (cell.w - 12) / (dec.length * CHAR));
         const hex = fullHex(val, cell.size);
-        const hexSize = Math.min(12.5, (cell.w - 8) / (hex.length * CHAR));
+        const hexSize = Math.min(18, (cell.w - 10) / (hex.length * CHAR));
         return (
-          text(0, 1, dec, round(decSize), P.fg, 'middle') +
-          text(0, 23, hex, round(hexSize), P.muted, 'middle')
+          text(0, -1, dec, round(decSize), P.fg, 'middle') +
+          text(0, 27, hex, round(hexSize), P.muted, 'middle')
         );
       };
       markup +=
@@ -575,15 +576,15 @@ function drawLab3ByteColumn(
 ): string {
   const [hi, lo] = nibbles(byteVal);
   const hex = hexByte(byteVal);
-  const nibbleW = 30;
-  const nibGap = 6;
+  const nibbleW = 44;
+  const nibGap = 8;
   const hiCx = x + nibbleW / 2;
   const loCx = x + nibbleW + nibGap + nibbleW / 2;
   return (
-    text(hiCx, yBits, hi, 12.5, hi === '0000' ? mutedColor : bitColor, 'middle') +
-    text(loCx, yBits, lo, 12.5, lo === '0000' ? mutedColor : bitColor, 'middle') +
-    text(hiCx, yHex, hex[0], 13.5, hex[0] === '0' ? mutedColor : hexColor, 'middle') +
-    text(loCx, yHex, hex[1], 13.5, hex[1] === '0' ? mutedColor : hexColor, 'middle')
+    text(hiCx, yBits, hi, 17.5, hi === '0000' ? mutedColor : bitColor, 'middle') +
+    text(loCx, yBits, lo, 17.5, lo === '0000' ? mutedColor : bitColor, 'middle') +
+    text(hiCx, yHex, hex[0], 20, hex[0] === '0' ? mutedColor : hexColor, 'middle') +
+    text(loCx, yHex, hex[1], 20, hex[1] === '0' ? mutedColor : hexColor, 'middle')
   );
 }
 
@@ -591,16 +592,16 @@ function workbenchVariantB(c: SceneContext): string {
   const act = activeBitAction(c);
   if (!act) return '';
   const { g, P, animate } = c;
-  const cardX = g.tx - 4;
-  const cardY = g.ty + 24;
-  const cardW = g.pane.w - 40;
-  const cardH = 82;
-  const yBits = cardY + 28;
-  const yHex = cardY + 50;
-  const yCap = cardY + 71;
-  const byteW = 66;
-  const byteGap = 14;
-  const rightAnchor = cardX + 12 + 4 * byteW + 3 * byteGap;
+  const cardX = g.tx - 6;
+  const cardY = g.ty + 26;
+  const cardW = g.pane.w - 36;
+  const cardH = 114;
+  const yBits = cardY + 34;
+  const yHex = cardY + 66;
+  const yCap = cardY + 98;
+  const byteW = 96;
+  const byteGap = 16;
+  const rightAnchor = cardX + 14 + 4 * byteW + 3 * byteGap;
   const slotX = (bytesFromLSB: number): number =>
     rightAnchor - (bytesFromLSB + 1) * byteW - bytesFromLSB * byteGap;
 
@@ -621,9 +622,9 @@ function workbenchVariantB(c: SceneContext): string {
         const dropped = lsbPos >= toBytes.length;
         if (dropped) {
           const settled =
-            `<g opacity="0.45">` +
+            `<g opacity="0.48">` +
             drawLab3ByteColumn(bx, yBits, yHex, fromBytes[idx], P.error, P.error, P.error) +
-            `<line x1="${bx + 4}" y1="${yBits - 14}" x2="${bx + byteW - 4}" y2="${yHex + 4}" stroke="${P.error}" stroke-width="1.5"/>` +
+            `<line x1="${bx + 6}" y1="${yBits - 16}" x2="${bx + byteW - 6}" y2="${yHex + 6}" stroke="${P.error}" stroke-width="2"/>` +
             '</g>';
           if (animate) {
             out +=
@@ -636,10 +637,10 @@ function workbenchVariantB(c: SceneContext): string {
           out += drawLab3ByteColumn(bx, yBits, yHex, fromBytes[idx], P.fg, toCol, toCol);
         }
       }
-      out += `<line x1="${round(cutX)}" y1="${cardY + 8}" x2="${round(cutX)}" y2="${cardY + 58}" stroke="${P.error}" stroke-width="2" stroke-dasharray="4 3"/>`;
-      out += text(cardX + 12, yCap, `dropped ${fromBytes.length - toBytes.length} high bytes`, 12, P.error);
-      out += text(rightAnchor + 14, yBits + 6, `→ ${act.afterVal}`, 16, toCol);
-      out += text(rightAnchor + 14, yHex + 4, fullHex(act.afterVal, act.toInfo.bytes), 12.5, P.muted);
+      out += `<line x1="${round(cutX)}" y1="${cardY + 12}" x2="${round(cutX)}" y2="${yHex + 10}" stroke="${P.error}" stroke-width="2.2" stroke-dasharray="5 4"/>`;
+      out += text(cardX + 14, yCap, `dropped ${fromBytes.length - toBytes.length} high bytes`, 17, P.error);
+      out += text(rightAnchor + 18, yBits + 6, `→ ${act.afterVal}`, 22, toCol);
+      out += text(rightAnchor + 18, yHex + 2, fullHex(act.afterVal, act.toInfo.bytes), 17, P.muted);
     } else if (act.kind === 'zero-extend' || act.kind === 'sign-extend') {
       const extKind = act.kind === 'sign-extend' ? 'sign-extend (fill 1s from sign bit)' : 'zero-extend (fill 0s)';
       for (let idx = 0; idx < toBytes.length; idx++) {
@@ -661,15 +662,17 @@ function workbenchVariantB(c: SceneContext): string {
           out += block;
         }
       }
-      out += text(slotX(maxBytes - 1), yCap, extKind, 12, P.write);
-      out += text(rightAnchor + 14, yBits + 6, `→ ${act.afterVal}`, 16, toCol);
-      out += text(rightAnchor + 14, yHex + 4, fullHex(act.afterVal, act.toInfo.bytes), 12.5, P.muted);
+      out += text(slotX(maxBytes - 1), yCap, extKind, 17, P.write);
+      out += text(rightAnchor + 18, yBits + 6, `→ ${act.afterVal}`, 22, toCol);
+      out += text(rightAnchor + 18, yHex + 2, fullHex(act.afterVal, act.toInfo.bytes), 17, P.muted);
     } else {
       for (let idx = 0; idx < toBytes.length; idx++) {
         const lsbPos = toBytes.length - 1 - idx;
         out += drawLab3ByteColumn(slotX(lsbPos), yBits, yHex, toBytes[idx], P.fg, toCol, P.muted);
       }
-      out += text(slotX(toBytes.length - 1), yCap, `same bits interpreted as ${act.toType}`, 12, toCol);
+      out += text(slotX(toBytes.length - 1), yCap, `same bits interpreted as ${act.toType}`, 17, toCol);
+      out += text(rightAnchor + 18, yBits + 6, `→ ${act.afterVal}`, 22, toCol);
+      out += text(rightAnchor + 18, yHex + 2, fullHex(act.afterVal, act.toInfo.bytes), 17, P.muted);
     }
     return out;
   }
@@ -688,9 +691,9 @@ function workbenchVariantB(c: SceneContext): string {
         out += afterBlock;
       }
     }
-    out += text(slotX(afterBytes.length - 1), yCap, `bitwise ~ flips every bit (0 ↔ 1)`, 12, P.write);
-    out += text(rightAnchor + 14, yBits + 6, `→ ${act.afterVal}`, 16, P.write);
-    out += text(rightAnchor + 14, yHex + 4, fullHex(act.afterVal, act.info.bytes), 12.5, P.muted);
+    out += text(slotX(afterBytes.length - 1), yCap, `bitwise ~ flips every bit (0 ↔ 1)`, 17, P.write);
+    out += text(rightAnchor + 18, yBits + 6, `→ ${act.afterVal}`, 22, P.write);
+    out += text(rightAnchor + 18, yHex + 2, fullHex(act.afterVal, act.info.bytes), 17, P.muted);
     return out;
   }
 
@@ -701,9 +704,9 @@ function workbenchVariantB(c: SceneContext): string {
       const bx = slotX(bytes.length - 1 - idx);
       out += drawLab3ByteColumn(bx, yBits, yHex, bytes[idx], P.fg, col, P.muted);
     }
-    out += text(slotX(bytes.length - 1), yCap, `${act.type} (${act.info.bits} bits)`, 12, P.muted);
-    out += text(rightAnchor + 14, yBits + 6, `= ${act.value}`, 16, col);
-    out += text(rightAnchor + 14, yHex + 4, fullHex(act.value, act.info.bytes), 12.5, P.muted);
+    out += text(slotX(bytes.length - 1), yCap, `${act.type} (${act.info.bits} bits)`, 17, P.muted);
+    out += text(rightAnchor + 18, yBits + 6, `= ${act.value}`, 22, col);
+    out += text(rightAnchor + 18, yHex + 2, fullHex(act.value, act.info.bytes), 17, P.muted);
   }
   return out;
 }
@@ -744,11 +747,11 @@ function memoryVariantC(c: SceneContext): string {
         const c1 = bx + bw * 0.27;
         const c2 = bx + bw * 0.73;
         return (
-          text(bx + bw / 2, cell.y + 17, `${hiBit}..${loBit}`, 10, P.muted, 'middle') +
-          text(c1, cell.y + 43, hi, 10.5, hi === '0000' ? P.muted : color, 'middle') +
-          text(c2, cell.y + 43, lo, 10.5, lo === '0000' ? P.muted : color, 'middle') +
-          text(c1, cell.y + 73, hex[0], 20, hex[0] === '0' ? P.muted : P.fg, 'middle') +
-          text(c2, cell.y + 73, hex[1], 20, hex[1] === '0' ? P.muted : P.fg, 'middle')
+          text(bx + bw / 2, cell.y + 21, `${hiBit}..${loBit}`, 13.5, P.muted, 'middle') +
+          text(c1, cell.y + 52, hi, 16, hi === '0000' ? P.muted : color, 'middle') +
+          text(c2, cell.y + 52, lo, 16, lo === '0000' ? P.muted : color, 'middle') +
+          text(c1, cell.y + 92, hex[0], 26, hex[0] === '0' ? P.muted : P.fg, 'middle') +
+          text(c2, cell.y + 92, hex[1], 26, hex[1] === '0' ? P.muted : P.fg, 'middle')
         );
       };
 
@@ -764,7 +767,7 @@ function memoryVariantC(c: SceneContext): string {
         } else if (shownBytes) {
           markup += renderByte(shownBytes[i], bx, i);
         } else {
-          markup += text(cx, cell.y + 52, '?', 24, P.grey, 'middle');
+          markup += text(cx, cell.y + 66, '?', 28, P.grey, 'middle');
         }
       }
     }
@@ -778,9 +781,9 @@ function bitPositions(x0: number, totalBits: number): number[] {
   let x = x0;
   for (let b = 0; b < totalBits; b++) {
     xs.push(x);
-    x += 11;
-    if ((b + 1) % 4 === 0 && b + 1 < totalBits) x += 5;
-    if ((b + 1) % 8 === 0 && b + 1 < totalBits) x += 6;
+    x += 15;
+    if ((b + 1) % 4 === 0 && b + 1 < totalBits) x += 7;
+    if ((b + 1) % 8 === 0 && b + 1 < totalBits) x += 10;
   }
   return xs;
 }
@@ -798,8 +801,8 @@ function bitSweepRibbonVariantC(c: SceneContext): string {
   const act = activeBitAction(c);
   if (!act) return '';
   const { g, P, animate } = c;
-  const y = g.ty + 38;
-  const yCap = y + 22;
+  const y = g.ty + 44;
+  const yCap = y + 32;
   const x0 = g.tx;
   let out = '';
 
@@ -817,25 +820,25 @@ function bitSweepRibbonVariantC(c: SceneContext): string {
         const bx = xs[i];
         const bit = fromBits[i];
         if (i < dropBits) {
-          const dropped = text(bx, y, bit, 14, P.error, 'middle');
+          const dropped = text(bx, y, bit, 19, P.error, 'middle');
           if (animate) {
             const delay = 0.22 + i * 0.045;
             out +=
-              `<g>${hide(delay)}${text(bx, y, bit, 14, bit === '1' ? fromCol : P.fg, 'middle')}</g>` +
-              `<g opacity="0">${show(delay)}<animate attributeName="opacity" from="1" to="0.45" begin="${round(delay)}s" dur="0.25s" fill="freeze"/>${dropped}</g>`;
+              `<g>${hide(delay)}${text(bx, y, bit, 19, bit === '1' ? fromCol : P.fg, 'middle')}</g>` +
+              `<g opacity="0">${show(delay)}<animate attributeName="opacity" from="1" to="0.48" begin="${round(delay)}s" dur="0.25s" fill="freeze"/>${dropped}</g>`;
           } else {
-            out += `<g opacity="0.45">${dropped}</g>`;
+            out += `<g opacity="0.48">${dropped}</g>`;
           }
         } else {
-          out += text(bx, y, bit, 14, toCol, 'middle');
+          out += text(bx, y, bit, 19, toCol, 'middle');
         }
       }
       const strikeDelay = round(0.22 + (dropBits - 1) * 0.045);
-      const strike = `<line x1="${round(xs[0] - 5)}" y1="${y - 4}" x2="${round(xs[dropBits - 1] + 5)}" y2="${y - 4}" stroke="${P.error}" stroke-width="1.5"/>`;
-      out += animate ? `<g opacity="0">${fade(0, 0.75, 0.2, strikeDelay)}${strike}</g>` : `<g opacity="0.75">${strike}</g>`;
-      out += `<line x1="${round(cutX)}" y1="${y - 16}" x2="${round(cutX)}" y2="${y + 6}" stroke="${P.error}" stroke-width="2" stroke-dasharray="3 3"/>`;
-      out += text(xs[xs.length - 1] + 18, y, `→ ${fullHex(act.afterVal, act.toInfo.bytes)} (${act.afterVal})`, 13, toCol);
-      out += text(x0 - 4, yCap, `drop bits ${act.fromInfo.bits - 1}..${act.toInfo.bits}; keep bits ${act.toInfo.bits - 1}..0`, 12, P.error);
+      const strike = `<line x1="${round(xs[0] - 6)}" y1="${y - 6}" x2="${round(xs[dropBits - 1] + 6)}" y2="${y - 6}" stroke="${P.error}" stroke-width="2"/>`;
+      out += animate ? `<g opacity="0">${fade(0, 0.8, 0.2, strikeDelay)}${strike}</g>` : `<g opacity="0.8">${strike}</g>`;
+      out += `<line x1="${round(cutX)}" y1="${y - 20}" x2="${round(cutX)}" y2="${y + 8}" stroke="${P.error}" stroke-width="2.2" stroke-dasharray="4 3"/>`;
+      out += text(xs[xs.length - 1] + 22, y, `→ ${fullHex(act.afterVal, act.toInfo.bytes)} (${act.afterVal})`, 18, toCol);
+      out += text(x0 - 4, yCap, `drop bits ${act.fromInfo.bits - 1}..${act.toInfo.bits}; keep bits ${act.toInfo.bits - 1}..0`, 17, P.error);
     } else if (act.kind === 'zero-extend' || act.kind === 'sign-extend') {
       const toBits = toBitArrayMSB(act.afterVal, act.toInfo.bits);
       const extBits = act.toInfo.bits - act.fromInfo.bits;
@@ -843,7 +846,7 @@ function bitSweepRibbonVariantC(c: SceneContext): string {
         const bx = xs[i];
         const bit = toBits[i];
         const isExt = i < extBits;
-        const mark = text(bx, y, bit, 14, isExt ? P.write : toCol, 'middle');
+        const mark = text(bx, y, bit, 19, isExt ? P.write : toCol, 'middle');
         if (animate && isExt) {
           const order = extBits - 1 - i; // sweeps leftward from bit 8 to bit 31
           const delay = 0.35 + order * 0.045;
@@ -853,10 +856,10 @@ function bitSweepRibbonVariantC(c: SceneContext): string {
         }
       }
       out += text(
-        xs[xs.length - 1] + 18,
+        xs[xs.length - 1] + 22,
         y,
         `→ ${fullHex(act.afterVal, act.toInfo.bytes)} (${act.afterVal})`,
-        13,
+        18,
         toCol
       );
       out += text(
@@ -865,16 +868,16 @@ function bitSweepRibbonVariantC(c: SceneContext): string {
         act.kind === 'sign-extend'
           ? `sign-extend: fill bits ${act.toInfo.bits - 1}..${act.fromInfo.bits} with sign bit 1`
           : `zero-extend: fill bits ${act.toInfo.bits - 1}..${act.fromInfo.bits} with 0`,
-        12,
+        17,
         P.write
       );
     } else {
       const bits = toBitArrayMSB(act.afterVal, act.toInfo.bits);
       for (let i = 0; i < bits.length; i++) {
-        out += text(xs[i], y, bits[i], 14, toCol, 'middle');
+        out += text(xs[i], y, bits[i], 19, toCol, 'middle');
       }
-      out += text(xs[xs.length - 1] + 18, y, `→ ${act.afterVal} (${act.toType})`, 13, toCol);
-      out += text(x0 - 4, yCap, `same ${act.toInfo.bits} bits reinterpreted as ${act.toType}`, 12, toCol);
+      out += text(xs[xs.length - 1] + 22, y, `→ ${act.afterVal} (${act.toType})`, 18, toCol);
+      out += text(x0 - 4, yCap, `same ${act.toInfo.bits} bits reinterpreted as ${act.toType}`, 17, toCol);
     }
     return out;
   }
@@ -888,14 +891,14 @@ function bitSweepRibbonVariantC(c: SceneContext): string {
       if (animate) {
         const delay = 0.2 + i * 0.03;
         out +=
-          `<g>${hide(delay)}${text(bx, y, beforeBits[i], 14, P.fg, 'middle')}</g>` +
-          `<g opacity="0">${show(delay)}${text(bx, y, afterBits[i], 14, P.write, 'middle')}</g>`;
+          `<g>${hide(delay)}${text(bx, y, beforeBits[i], 19, P.fg, 'middle')}</g>` +
+          `<g opacity="0">${show(delay)}${text(bx, y, afterBits[i], 19, P.write, 'middle')}</g>`;
       } else {
-        out += text(bx, y, afterBits[i], 14, P.write, 'middle');
+        out += text(bx, y, afterBits[i], 19, P.write, 'middle');
       }
     }
-    out += text(xs[xs.length - 1] + 18, y, `→ ${fullHex(act.afterVal, act.info.bytes)} (${act.afterVal})`, 13, P.write);
-    out += text(x0 - 4, yCap, `bitwise ~ flips every bit across ${act.info.bits} bits`, 12, P.write);
+    out += text(xs[xs.length - 1] + 22, y, `→ ${fullHex(act.afterVal, act.info.bytes)} (${act.afterVal})`, 18, P.write);
+    out += text(x0 - 4, yCap, `bitwise ~ flips every bit across ${act.info.bits} bits`, 17, P.write);
     return out;
   }
 
@@ -904,10 +907,10 @@ function bitSweepRibbonVariantC(c: SceneContext): string {
     const xs = bitPositions(x0, bits.length);
     const col = typeColour(c, act.type);
     for (let i = 0; i < bits.length; i++) {
-      out += text(xs[i], y, bits[i], 14, bits[i] === '1' ? col : P.muted, 'middle');
+      out += text(xs[i], y, bits[i], 19, bits[i] === '1' ? col : P.muted, 'middle');
     }
-    out += text(xs[xs.length - 1] + 18, y, `${fullHex(act.value, act.info.bytes)} = ${act.value}`, 13, P.muted);
-    out += text(x0 - 4, yCap, `${act.type} (${act.info.bits} bits, MSB left → LSB right)`, 12, P.muted);
+    out += text(xs[xs.length - 1] + 22, y, `${fullHex(act.value, act.info.bytes)} = ${act.value}`, 18, P.muted);
+    out += text(x0 - 4, yCap, `${act.type} (${act.info.bits} bits, MSB left → LSB right)`, 17, P.muted);
   }
   return out;
 }
@@ -918,11 +921,13 @@ function bitSweepRibbonVariantC(c: SceneContext): string {
 
 function hooksFor(variant: CastVariant): PlayerHooks {
   const geomOpts: Record<CastVariant, GeometryOptions> = {
-    A: { minByteWidth: 68, minColumnWidth: 500, cellHeight: 86, extraMemBottom: 28, extraPaneHeight: 68, skipWrap: true },
-    B: { minByteWidth: 48, minColumnWidth: 530, cellHeight: 76, extraPaneHeight: 98, skipWrap: true },
-    C: { minByteWidth: 78, minColumnWidth: 550, cellHeight: 96, extraMemBottom: 28, extraPaneHeight: 64, skipWrap: true },
+    A: { minByteWidth: 102, minColumnWidth: 640, cellHeight: 112, extraMemBottom: 34, extraPaneHeight: 90, skipWrap: true },
+    B: { minByteWidth: 66, minColumnWidth: 700, cellHeight: 94, extraPaneHeight: 130, skipWrap: true },
+    C: { minByteWidth: 106, minColumnWidth: 790, cellHeight: 118, extraMemBottom: 34, extraPaneHeight: 74, skipWrap: true },
   };
   return {
+    stackBelow: 900,
+    maxScale: 0.78,
     geometry: (m: PreparedModel, P: Palette, stacked: boolean, width: number): Geometry =>
       geometry(m, P, stacked, width, geomOpts[variant]),
     stepSeconds: castStepSeconds(variant),

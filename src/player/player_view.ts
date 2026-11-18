@@ -26,6 +26,8 @@ export interface PlayerHooks {
   scene?: (c: SceneContext) => string;
   stepSeconds?: (steps: ExecutionTrace['steps'], i: number) => number;
   describe?: (c: SceneContext) => string;
+  stackBelow?: number;
+  maxScale?: number;
 }
 
 export class Player {
@@ -280,7 +282,7 @@ export class Player {
   render(animate: boolean): void {
     const width = this.root.clientWidth;
     if (width !== this.layoutWidth) {
-      this.stacked = width > 0 && width < STACK_BELOW;
+      this.stacked = width > 0 && width < (this.hooks?.stackBelow ?? STACK_BELOW);
       this.g = this.hooks?.geometry
         ? this.hooks.geometry(this.m, this.P, this.stacked, width)
         : geometry(this.m, this.P, this.stacked, width);
@@ -312,7 +314,7 @@ export class Player {
     };
     this.animated = animate;
     this.svg.setAttribute('viewBox', `0 0 ${Math.ceil(g.width)} ${Math.ceil(g.height)}`);
-    this.svg.style.maxWidth = `${Math.ceil(g.width * MAX_SCALE)}px`;
+    this.svg.style.maxWidth = `${Math.ceil(g.width * (this.hooks?.maxScale ?? MAX_SCALE))}px`;
     const body = this.hooks?.scene ? this.hooks.scene(c) : scene(c);
     this.scene.innerHTML = `<rect width="100%" height="100%" fill="${this.P.bg}"/>` + body;
     placeLineTargets(g, this.lines);

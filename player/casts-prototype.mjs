@@ -48,31 +48,33 @@ const html = `<!doctype html>
   html[data-theme=dark] { --page: #0d1117; --ink: #e6e9f1; --soft: #a4abbb; --card: #161b22; --line: #30363d; }
   html[data-theme=light] { --page: #ffffff; --ink: #17202c; --soft: #4f5c6e; --card: #f6f8fa; --line: #d0d7de; }
   body { margin: 0; background: var(--page); color: var(--ink); font: 16px/1.55 system-ui, -apple-system, sans-serif; }
-  main { max-width: 720px; margin: 0 auto; padding: 24px 16px 140px; }
-  h1 { font-size: 22px; margin: 0 0 6px; }
-  h2 { font-size: 18px; margin: 28px 0 8px; }
-  h3 { font-size: 16px; margin: 0 0 6px; }
+  main { max-width: 1080px; margin: 0 auto; padding: 28px 24px 140px; }
+  h1 { font-size: 24px; margin: 0 0 6px; }
+  h2 { font-size: 19px; margin: 28px 0 8px; }
+  h3 { font-size: 17px; margin: 0 0 6px; }
   .note { color: var(--soft); margin: 0 0 18px; }
   #about { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-bottom: 24px; }
   #about p { margin: 0 0 8px; }
   #about ul { margin: 0; padding-left: 20px; color: var(--soft); }
-  pre { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; overflow-x: auto; font-size: 13.5px; margin: 0 0 10px; }
-  details { margin: 0 0 22px; }
+  pre { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; overflow-x: auto; font-size: 14px; margin: 0 0 10px; }
+  details { margin: 0 0 26px; }
   summary { cursor: pointer; font-weight: 600; margin-bottom: 8px; }
   kbd { padding: 1px 6px; border: 1px solid var(--line); border-radius: 4px; font-size: 12px; }
   #bar {
     position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 20;
-    display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 999px;
+    display: grid; grid-template-columns: auto 1fr auto auto; align-items: center; gap: 8px;
+    width: min(560px, calc(100vw - 24px));
+    padding: 6px 10px; border-radius: 999px;
     background: #fff200; color: #111; box-shadow: 0 6px 24px rgba(0, 0, 0, .45);
-    font: 600 13.5px system-ui, sans-serif; white-space: nowrap; max-width: calc(100vw - 16px);
+    font: 600 14px system-ui, sans-serif; white-space: nowrap; box-sizing: border-box;
   }
   #bar button {
     font: inherit; color: #fff200; background: #111; border: 0;
-    border-radius: 999px; padding: 4px 11px; cursor: pointer;
+    border-radius: 999px; padding: 5px 12px; cursor: pointer;
   }
   #bar button:hover { opacity: .88; }
-  #bar .label { min-width: 17em; text-align: center; }
-  @media (max-width: 640px) { #bar { font-size: 12px; } #bar .label { min-width: 0; } }
+  #bar .label { text-align: center; overflow: hidden; text-overflow: ellipsis; padding: 0 4px; }
+  @media (max-width: 640px) { #bar { font-size: 12.5px; gap: 6px; } #bar button { padding: 4px 10px; } }
 </style>
 </head>
 <body>
