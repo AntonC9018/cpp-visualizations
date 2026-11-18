@@ -28,6 +28,10 @@ export interface PlayerHooks {
   describe?: (c: SceneContext) => string;
   stackBelow?: number;
   maxScale?: number;
+  endian?: {
+    littleEndian: boolean;
+    onChange?: (littleEndian: boolean) => void;
+  };
 }
 
 export class Player {
@@ -39,6 +43,7 @@ export class Player {
   elapsed: number;
   duration: number;
   rate: number;
+  littleEndian: boolean;
   running: boolean;
   continuous: boolean;
   pristine: boolean;
@@ -71,6 +76,7 @@ export class Player {
     this.elapsed = 0;
     this.duration = 0;
     this.rate = 1;
+    this.littleEndian = hooks?.endian?.littleEndian ?? true;
     this.running = false;
     this.continuous = false;
     this.pristine = true;
@@ -96,6 +102,12 @@ export class Player {
       `<button type="button" class="cv-button${extra}" ` +
       `data-action="${action}" aria-label="${esc(label)}" title="${esc(label)}">${icon(iconName)}` +
       `<span class="cv-label">${esc(label)}</span></button>`;
+    const endianToggle = this.hooks?.endian
+      ? `<div class="cv-endian" role="group" aria-label="${esc(S.byteOrder)}">` +
+        `<button type="button" data-endian="le" aria-pressed="${this.littleEndian}" title="${esc(S.littleEndian)}">LE</button>` +
+        `<button type="button" data-endian="be" aria-pressed="${!this.littleEndian}" title="${esc(S.bigEndian)}">BE</button>` +
+        '</div>'
+      : '';
     root.innerHTML =
       '<div class="cv-view">' +
       `<svg class="cv-stage" role="group" aria-label="${esc(S.stage)}" xmlns="http://www.w3.org/2000/svg">` +
@@ -111,6 +123,7 @@ export class Player {
         .map(v => `<option value="${v}"${v === 1 ? ' selected' : ''}>${v}×</option>`)
         .join('') +
       '</select>' +
+      endianToggle +
       button('reset', S.reset, 'reset', ' cv-reset') +
       '</div>' +
       `<div class="cv-progress"><input class="cv-scrub" type="range" min="0" max="${this.m.steps.length - 1}" value="0" ` +
@@ -129,6 +142,18 @@ export class Player {
       const target = (event.target as Element | null)?.closest('[data-action]') as HTMLElement | null;
       if (target && target.dataset.action) {
         this.invokeAction(target.dataset.action);
+      }
+      const endianBtn = (event.target as Element | null)?.closest('[data-endian]') as HTMLElement | null;
+      if (endianBtn && endianBtn.dataset.endian) {
+        const nextLe = endianBtn.dataset.endian === 'le';
+        if (nextLe !== this.littleEndian) {
+          this.littleEndian = nextLe;
+          for (const btn of root.querySelectorAll<HTMLElement>('[data-endian]')) {
+            btn.setAttribute('aria-pressed', String((btn.dataset.endian === 'le') === nextLe));
+          }
+          this.hooks?.endian?.onChange?.(nextLe);
+          this.refresh();
+        }
       }
     });
     root.querySelector('.cv-speed')!.addEventListener('change', event => {
@@ -311,6 +336,7 @@ export class Player {
       animate,
       op: animate ? step.op : null,
       focus: { now, before, begin },
+      littleEndian: this.littleEndian,
     };
     this.animated = animate;
     this.svg.setAttribute('viewBox', `0 0 ${Math.ceil(g.width)} ${Math.ceil(g.height)}`);

@@ -16,15 +16,19 @@ const SCENARIOS = [
     source: 'uint32_t a{ 256 };\nuint8_t b{ static_cast<uint8_t>(a) };\nuint32_t c{ b };\n',
   },
   {
-    title: 'Widening a negative number: sign extension (Lab 3 §4)',
+    title: 'Widening a negative signed number: sign-bit 1 copied (Lab 3 §4)',
     source: 'int8_t a{ -3 };\nint b{ static_cast<int>(a) };\n',
+  },
+  {
+    title: 'Widening a positive signed number: sign-bit 0 copied',
+    source: 'int8_t a{ 5 };\nint b{ static_cast<int>(a) };\n',
   },
   {
     title: 'Narrowing a negative number: sign flip (Lab 3 §6)',
     source: 'int c{ -200 };\nint8_t d{ static_cast<int8_t>(c) };\n',
   },
   {
-    title: 'Bitwise NOT promotion, truncation, and zero extension (Lab 3 §7)',
+    title: 'Bitwise NOT promotion, truncation, and unsigned zero-extension (Lab 3 §7)',
     source: 'uint8_t a{ 0 };\nuint8_t b{ static_cast<uint8_t>(~a) };\nint32_t c{ b };\n',
   },
 ];
@@ -81,8 +85,8 @@ const html = `<!doctype html>
 <main>
   <h1>PROTOTYPE · Casts and bit-level representation</h1>
   <p class="note">
-    Three ways to show binary/hex, byte cells, narrowing truncation, and zero/sign extension on top of the real player.
-    Switch variants with the bar below or <kbd>[</kbd> / <kbd>]</kbd>; inside a player, <kbd>←</kbd>/<kbd>→</kbd> step as usual.
+    A/B comparison for memory layout and sign-bit copying, with an <kbd>LE</kbd>/<kbd>BE</kbd> byte-order toggle inside each player.
+    Switch A/B with the bar below or <kbd>[</kbd> / <kbd>]</kbd>; inside a player, <kbd>←</kbd>/<kbd>→</kbd> step as usual.
   </p>
   <div id="about"></div>
   <div id="sections"></div>

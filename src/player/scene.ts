@@ -67,6 +67,7 @@ export interface SceneContext {
   animate: boolean;
   op: TraceStep['op'];
   focus: SceneFocus;
+  littleEndian?: boolean;
 }
 
 export function colored(

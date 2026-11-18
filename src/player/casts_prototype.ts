@@ -1,28 +1,17 @@
 // PROTOTYPE, throwaway (casts and bit-level representation, #58).
 // Derives directly from the base player (`Player`, `geometry`, `scene.ts`, `svg.ts`, `player.css`).
-// Refinement pass:
-//   - Execution pane uses the clean Lab-3 two-row binary-above-hex workbench (no tiny caption text,
-//     no redundant hex under the right-hand decimal result).
-//   - Widening contrasts negative sign-bit duplication (highlighted MSB `1` + cloning arcs filling
-//     upper bytes with `1111 1111` / `F F`) against calm zero-extension (muted `0000 0000` / `0 0`).
-//   - Memory cells show BOTH the overall decimal value AND hex per byte across variants A/B/C:
-//       A: Two-tier cell (decimal top, little-endian address-order hex per byte bottom)
-//       B: Two-tier cell (decimal top, MSB-first reading-order hex per byte bottom) + arc clone
-//       C: Byte-hex cell (MSB-first hex inside cell, `= decimal` below variable name) + cascade clone
-import type { ExecutionTrace, TraceStep } from '../core/trace_format.ts';
+// Refinement pass 2 (A/B):
+//   - Player transport includes an LE / BE byte-order switch (casts/bits visualizations only).
+//   - Memory removes LSB/MSB clutter, makes byte hex smaller, and pairs overall decimal + byte hex:
+//       A: Two-tier cell (decimal top, smaller per-byte hex bottom) + curved arc bit-copy
+//       B: Byte-hex cell (`= decimal` below variable name) + stepped cascade bit-copy
+//   - Both negative (`1`) and positive (`0`) signed widening highlight the MSB, copy it across
+//     upper bytes with tangent-aligned arrowheads, and remove the arcs after animation while
+//     keeping the color coding. Unsigned widening remains calm muted zero-padding.
+import type { ExecutionTrace } from '../core/trace_format.ts';
 import { CHAR, type Palette } from './constants.ts';
-import {
-  type Geometry,
-  type GeometryOptions,
-  type PlacedLeaf,
-  geometry,
-} from './geometry.ts';
-import {
-  type PreparedModel,
-  arrival,
-  copies,
-  stepSeconds,
-} from './model.ts';
+import { type Geometry, type GeometryOptions, geometry } from './geometry.ts';
+import { type PreparedModel, arrival, copies, stepSeconds } from './model.ts';
 import { Player, type PlayerHooks } from './player_view.ts';
 import {
   type SceneContext,
@@ -39,7 +28,7 @@ import {
 } from './scene.ts';
 import { esc, fade, hide, pulse, rect, round, show, text } from './svg.ts';
 
-export type CastVariant = 'A' | 'B' | 'C';
+export type CastVariant = 'A' | 'B';
 
 interface IntTypeInfo {
   bytes: number;
@@ -105,6 +94,7 @@ function extractInt(fragment: string): number | null {
 type BitAction =
   | {
       kind: 'narrow' | 'zero-extend' | 'sign-extend' | 'reinterpret';
+      signBit?: 0 | 1;
       fromType: string;
       toType: string;
       fromInfo: IntTypeInfo;
@@ -137,11 +127,18 @@ function activeBitAction(c: SceneContext): BitAction | null {
     const fromInfo = typeInfo(op.from);
     const toInfo = typeInfo(op.to);
     let kind: 'narrow' | 'zero-extend' | 'sign-extend' | 'reinterpret' = 'reinterpret';
-    if (toInfo.bytes < fromInfo.bytes) kind = 'narrow';
-    else if (toInfo.bytes > fromInfo.bytes) {
-      kind = fromInfo.signed && beforeVal < 0 ? 'sign-extend' : 'zero-extend';
+    let signBit: 0 | 1 | undefined;
+    if (toInfo.bytes < fromInfo.bytes) {
+      kind = 'narrow';
+    } else if (toInfo.bytes > fromInfo.bytes) {
+      if (fromInfo.signed) {
+        kind = 'sign-extend';
+        signBit = beforeVal < 0 ? 1 : 0;
+      } else {
+        kind = 'zero-extend';
+      }
     }
-    return { kind, fromType: op.from, toType: op.to, fromInfo, toInfo, beforeVal, afterVal };
+    return { kind, signBit, fromType: op.from, toType: op.to, fromInfo, toInfo, beforeVal, afterVal };
   }
   if (op?.kind === 'eval' && prev) {
     const raw = prev.pane.slice(...op.span);
@@ -210,13 +207,13 @@ function castDescribe(c: SceneContext): string {
     if (act.kind === 'zero-extend') {
       return (
         `Widen ${act.fromType} (${fullHex(act.beforeVal, act.fromInfo.bytes)}) → ` +
-        `${act.toType} (${fullHex(act.afterVal, act.toInfo.bytes)}): zero-extend upper bytes`
+        `${act.toType} (${fullHex(act.afterVal, act.toInfo.bytes)}): unsigned zero-extend upper bytes`
       );
     }
     if (act.kind === 'sign-extend') {
       return (
         `Widen ${act.fromType} (${fullHex(act.beforeVal, act.fromInfo.bytes)}) → ` +
-        `${act.toType} (${fullHex(act.afterVal, act.toInfo.bytes)}): sign-extend by duplicating bit 1`
+        `${act.toType} (${fullHex(act.afterVal, act.toInfo.bytes)}): sign-extend by duplicating bit ${act.signBit}`
       );
     }
   }
@@ -224,7 +221,7 @@ function castDescribe(c: SceneContext): string {
 }
 
 // ============================================================================================
-// MEMORY: Overall value + hex per byte
+// MEMORY: Overall value + compact hex per byte (driven by Player's LE / BE toggle)
 // ============================================================================================
 
 function drawTypeLabels(c: SceneContext, live: (l: { name: string }) => boolean): string {
@@ -238,13 +235,9 @@ function drawTypeLabels(c: SceneContext, live: (l: { name: string }) => boolean)
   return out;
 }
 
-interface MemoryStyle {
-  littleEndian: boolean;
-  decimalBelow: boolean;
-}
-
-function memoryWithByteHex(c: SceneContext, style: MemoryStyle): string {
+function memoryWithByteHex(c: SceneContext, decimalBelow: boolean): string {
   const { g, P, step, prev, op } = c;
+  const littleEndian = c.littleEndian ?? true;
   const values = op && op.kind === 'write' && prev ? prev.values : step.values;
   const at = op ? arrival(op) : 0;
   const writing = new Set(op && op.kind === 'write' ? g.cellsOf(op.name).map(l => l.name) : []);
@@ -260,30 +253,27 @@ function memoryWithByteHex(c: SceneContext, style: MemoryStyle): string {
     const shownVal = changing ? after : values[cell.name];
 
     let markup = '';
-    // Base address + optional consecutive byte addresses (+1, +2, +3) for little-endian view
-    markup += text(cell.x + 3, cell.y - 12, cell.address, 17, on ? P.muted : P.grey);
-    if (style.littleEndian && cell.size > 1) {
-      const bw = cell.w / cell.size;
+    const bw = cell.w / cell.size;
+    // Consecutive byte addresses across the cell
+    markup += text(cell.x + 3, cell.y - 12, cell.address, 16, on ? P.muted : P.grey);
+    if (cell.size > 1) {
       for (let i = 1; i < cell.size; i++) {
-        markup += text(cell.x + i * bw + 6, cell.y - 12, cell.address + i, 15, P.grey);
+        markup += text(cell.x + i * bw + 6, cell.y - 12, cell.address + i, 14, P.grey);
       }
     }
 
     // Background fill
     markup += rect(cell.x, cell.y, cell.w, cell.h, on ? P.panel : P.deadFill, 'none', 0);
 
-    const bw = cell.w / cell.size;
     const divStroke = on ? P.gapStroke : P.deadStroke;
 
-    if (style.decimalBelow) {
-      // Full-height byte dividers
+    if (decimalBelow) {
       for (let i = 1; i < cell.size; i++) {
         const lx = round(cell.x + i * bw);
         markup += `<line x1="${lx}" y1="${cell.y + 3}" x2="${lx}" y2="${cell.y + cell.h - 3}" stroke="${divStroke}" stroke-width="1.3" stroke-dasharray="4 3"/>`;
       }
     } else {
-      // Two-tier box: top = overall decimal, bottom = per-byte hex compartments
-      const splitY = cell.y + 56;
+      const splitY = cell.y + 52;
       markup += `<line x1="${cell.x + 2}" y1="${splitY}" x2="${cell.x + cell.w - 2}" y2="${splitY}" stroke="${divStroke}" stroke-width="1.3"/>`;
       for (let i = 1; i < cell.size; i++) {
         const lx = round(cell.x + i * bw);
@@ -303,32 +293,26 @@ function memoryWithByteHex(c: SceneContext, style: MemoryStyle): string {
       3
     );
 
-    if (style.littleEndian && on && cell.size > 1) {
-      const lsbY = style.decimalBelow ? cell.y + 16 : cell.y + 14;
-      markup += text(cell.x + 7, lsbY, 'LSB', 11.5, P.grey);
-      markup += text(cell.x + cell.w - 7, lsbY, 'MSB', 11.5, P.grey, 'end');
-    }
-
     if (on) {
       const bytesOf = (v: number): number[] =>
-        style.littleEndian ? toBytesLSB(v, cell.size) : toBytesMSB(v, cell.size);
+        littleEndian ? toBytesLSB(v, cell.size) : toBytesMSB(v, cell.size);
 
       const renderCellBody = (val: unknown): string => {
         if (typeof val !== 'number') {
-          if (style.decimalBelow) {
-            return text(cell.x + cell.w / 2, cell.y + cell.h / 2 + 10, String(val), 28, P.grey, 'middle');
+          if (decimalBelow) {
+            return text(cell.x + cell.w / 2, cell.y + cell.h / 2 + 9, String(val), 26, P.grey, 'middle');
           }
-          return text(cell.x + cell.w / 2, cell.y + 38, String(val), 28, P.grey, 'middle');
+          return text(cell.x + cell.w / 2, cell.y + 36, String(val), 26, P.grey, 'middle');
         }
         const bytes = bytesOf(val);
         let body = '';
-        if (!style.decimalBelow) {
+        if (!decimalBelow) {
           const dec = String(val);
-          const decSize = Math.min(30, (cell.w - 14) / (dec.length * CHAR));
-          body += text(cell.x + cell.w / 2, cell.y + 38, dec, round(decSize), P.fg, 'middle');
+          const decSize = Math.min(28, (cell.w - 14) / (dec.length * CHAR));
+          body += text(cell.x + cell.w / 2, cell.y + 36, dec, round(decSize), P.fg, 'middle');
         }
-        const hexY = style.decimalBelow ? cell.y + cell.h / 2 + 9 : cell.y + 85;
-        const hexSize = style.decimalBelow ? 24 : 20;
+        const hexY = decimalBelow ? cell.y + cell.h / 2 + 7 : cell.y + 76;
+        const hexSize = decimalBelow ? 17.5 : 14.5;
         for (let i = 0; i < cell.size; i++) {
           const bx = cell.x + i * bw + bw / 2;
           const b = bytes[i];
@@ -358,7 +342,7 @@ function memoryWithByteHex(c: SceneContext, style: MemoryStyle): string {
       on ? color : P.grey,
       'middle'
     );
-    if (style.decimalBelow) {
+    if (decimalBelow) {
       const decLabel = on && typeof shownVal === 'number' ? `= ${shownVal}` : on && shownVal === '?' ? '= ?' : '';
       if (decLabel) {
         markup += text(
@@ -423,8 +407,10 @@ function drawLab3ByteColumn(
   );
 }
 
-function arrowheadDown(cx: number, tipY: number, color: string): string {
-  return `<polygon points="${round(cx)},${round(tipY)} ${round(cx - 4.5)},${round(tipY - 7)} ${round(cx + 4.5)},${round(tipY - 7)}" fill="${color}"/>`;
+/** Triangle arrowhead whose tip sits at (tipX, tipY), rotated to match direction (dx, dy). */
+function arrowheadAt(tipX: number, tipY: number, dx: number, dy: number, color: string): string {
+  const deg = round((Math.atan2(dy, dx) * 180) / Math.PI);
+  return `<path d="M -8.5 -4.2 L 0 0 L -8.5 4.2 Z" fill="${color}" transform="translate(${round(tipX)} ${round(tipY)}) rotate(${deg})"/>`;
 }
 
 function workbenchClean(c: SceneContext, signExtStyle: 'arcs' | 'cascade'): string {
@@ -432,12 +418,12 @@ function workbenchClean(c: SceneContext, signExtStyle: 'arcs' | 'cascade'): stri
   if (!act) return '';
   const { g, P, animate } = c;
   const cardX = g.tx - 6;
-  const cardY = g.ty + 22;
+  const cardY = g.ty + 20;
   const cardW = g.pane.w - 36;
-  const cardH = 104;
-  const yBits = cardY + 50;
-  const yHex = cardY + 82;
-  const yRes = cardY + 64; // vertically centered against bits+hex (no redundant hex under decimal!)
+  const cardH = 108;
+  const yBits = cardY + 54;
+  const yHex = cardY + 86;
+  const yRes = cardY + 68;
   const rightAnchor = cardX + 16 + 4 * BYTE_W + 3 * BYTE_GAP;
   const slotX = (bytesFromLSB: number): number =>
     rightAnchor - (bytesFromLSB + 1) * BYTE_W - bytesFromLSB * BYTE_GAP;
@@ -476,12 +462,18 @@ function workbenchClean(c: SceneContext, signExtStyle: 'arcs' | 'cascade'): stri
       out += `<line x1="${round(cutX)}" y1="${cardY + 14}" x2="${round(cutX)}" y2="${cardY + cardH - 12}" stroke="${P.error}" stroke-width="2.2" stroke-dasharray="5 4"/>`;
       out += text(rightAnchor + 22, yRes, `→ ${act.afterVal}`, 26, toCol);
     } else if (act.kind === 'sign-extend') {
-      // Negative signed number: highlight highest bit `1` and visually duplicate it into every upper byte
+      // Signed widening (both negative `1` and positive `0`):
+      // Highlight the MSB, animate tangent-aligned cloning paths into upper bytes, then fade
+      // the arcs/arrows away once complete while keeping the color coding.
+      const isNeg = act.signBit === 1;
+      const extStroke = isNeg ? P.write : P.read;
+      const extFill = isNeg ? P.writeFill : P.readFill;
+      const extText = isNeg ? P.write : P.read;
+
       const srcTopPos = fromBytes.length - 1;
       const srcX = slotX(srcTopPos);
-      const signBitCx = srcX + NIBBLE_W / 2 - 1.5 * BIT_STEP;
+      const signBitCx = srcX + NIBBLE_W / 2 - 1.55 * BIT_STEP;
 
-      // Render source bytes; top source byte frames the sign bit `1`
       for (let idx = 0; idx < fromBytes.length; idx++) {
         const lsbPos = fromBytes.length - 1 - idx;
         const bx = slotX(lsbPos);
@@ -494,7 +486,7 @@ function workbenchClean(c: SceneContext, signExtStyle: 'arcs' | 'cascade'): stri
           P.fg,
           toCol,
           P.muted,
-          isTopSrc ? { fill: P.writeFill, stroke: P.write, text: P.write } : undefined
+          isTopSrc ? { fill: extFill, stroke: extStroke, text: extText } : undefined
         );
         if (animate && isTopSrc) {
           const cx = signBitCx;
@@ -505,37 +497,45 @@ function workbenchClean(c: SceneContext, signExtStyle: 'arcs' | 'cascade'): stri
         }
       }
 
-      // Extended upper bytes: filled by cloning the sign bit `1`
+      const extCount = toBytes.length - fromBytes.length;
+      const fadeAt = 0.22 + Math.max(0, extCount - 1) * 0.22 + 0.82;
+      let animArrows = '';
+
       for (let lsbPos = fromBytes.length; lsbPos < toBytes.length; lsbPos++) {
         const bx = slotX(lsbPos);
         const byteVal = toBytes[toBytes.length - 1 - lsbPos];
         const dstCx = bx + BYTE_W / 2;
-        const k = lsbPos - fromBytes.length; // 0 = nearest extended byte, 1, 2...
-        const arcDelay = 0.25 + k * 0.24;
-        const fillDelay = 0.58 + k * 0.24;
+        const k = lsbPos - fromBytes.length;
+        const arcDelay = 0.22 + k * 0.22;
+        const fillDelay = arcDelay + 0.42;
 
-        const extByte = drawLab3ByteColumn(bx, yBits, yHex, byteVal, P.write, P.write, P.write);
-        if (signExtStyle === 'arcs') {
-          const sy = yBits - 21;
-          const apex = cardY + 9 + k * 2;
-          const d = `M ${round(signBitCx)} ${sy} C ${round(signBitCx)} ${apex}, ${round(dstCx)} ${apex}, ${round(dstCx)} ${sy - 2}`;
-          const arc = `<path d="${d}" fill="none" stroke="${P.write}" stroke-width="2" stroke-linecap="round"${animate ? ` data-grow="${round(arcDelay)}"` : ''}/>`;
-          const head = arrowheadDown(dstCx, sy + 1, P.write);
-          out += arc;
-          out += animate ? `<g opacity="0">${show(fillDelay - 0.08)}${head}</g>` : head;
-        } else {
-          // Cascade: horizontal step chain cloning bit 1 byte-by-byte leftward
-          const prevOriginX = k === 0 ? signBitCx : slotX(lsbPos - 1) + NIBBLE_W / 2 - 1.5 * BIT_STEP;
-          const dstLeftBitX = bx + NIBBLE_W / 2 - 1.5 * BIT_STEP;
-          const yTop = cardY + 18;
-          const d = `M ${round(prevOriginX)} ${yBits - 21} L ${round(prevOriginX)} ${yTop} L ${round(dstLeftBitX)} ${yTop} L ${round(dstLeftBitX)} ${yBits - 23}`;
-          const link = `<path d="${d}" fill="none" stroke="${P.write}" stroke-width="2" stroke-linejoin="round"${animate ? ` data-grow="${round(arcDelay)}"` : ''}/>`;
-          const head = arrowheadDown(dstLeftBitX, yBits - 20, P.write);
-          out += link;
-          out += animate ? `<g opacity="0">${show(fillDelay - 0.08)}${head}</g>` : head;
-        }
-
+        const extByte = drawLab3ByteColumn(bx, yBits, yHex, byteVal, extText, extText, extText);
         if (animate) {
+          if (signExtStyle === 'arcs') {
+            const sy = yBits - 20;
+            const tipX = dstCx;
+            const tipY = yBits - 21;
+            const ctrlX = signBitCx * 0.28 + dstCx * 0.72;
+            const apex = cardY + 4 + k * 1.5;
+            const dx = tipX - ctrlX;
+            const dy = tipY - apex;
+            const len = Math.hypot(dx, dy) || 1;
+            const ex = tipX - (5 * dx) / len;
+            const ey = tipY - (5 * dy) / len;
+            const d = `M ${round(signBitCx)} ${round(sy)} Q ${round(ctrlX)} ${round(apex)}, ${round(ex)} ${round(ey)}`;
+            animArrows += `<path d="${d}" fill="none" stroke="${extStroke}" stroke-width="2" stroke-linecap="round" data-grow="${round(arcDelay)}"/>`;
+            animArrows += `<g opacity="0">${show(fillDelay - 0.08)}${arrowheadAt(tipX, tipY, ex - ctrlX, ey - apex, extStroke)}</g>`;
+          } else {
+            const prevOriginX =
+              k === 0 ? signBitCx : slotX(lsbPos - 1) + NIBBLE_W / 2 - 1.55 * BIT_STEP;
+            const dstLeftBitX = bx + NIBBLE_W / 2 - 1.55 * BIT_STEP;
+            const yTop = cardY + 18;
+            const tipY = yBits - 20;
+            const d = `M ${round(prevOriginX)} ${tipY} L ${round(prevOriginX)} ${yTop} L ${round(dstLeftBitX)} ${yTop} L ${round(dstLeftBitX)} ${tipY - 5}`;
+            animArrows += `<path d="${d}" fill="none" stroke="${extStroke}" stroke-width="2" stroke-linejoin="round" data-grow="${round(arcDelay)}"/>`;
+            animArrows += `<g opacity="0">${show(fillDelay - 0.08)}${arrowheadAt(dstLeftBitX, tipY, 0, 1, extStroke)}</g>`;
+          }
+
           out +=
             `<g opacity="0">${show(fillDelay)}` +
             `<g transform="translate(${round(dstCx)} ${round(yBits + 10)})"><g>${pulse(fillDelay)}<g transform="translate(${round(-dstCx)} ${round(-(yBits + 10))})">${extByte}</g></g></g>` +
@@ -544,14 +544,18 @@ function workbenchClean(c: SceneContext, signExtStyle: 'arcs' | 'cascade'): stri
           out += extByte;
         }
       }
+
+      if (animate && animArrows) {
+        out += `<g>${fade(1, 0, 0.32, fadeAt)}${animArrows}</g>`;
+      }
+
       out += text(rightAnchor + 22, yRes, `→ ${act.afterVal}`, 26, toCol);
     } else if (act.kind === 'zero-extend') {
-      // Positive / unsigned widening: simple, calm muted 0-fill (no cloning arcs)
+      // Unsigned widening: calm muted zero-padding (no bit-copying)
       for (let idx = 0; idx < toBytes.length; idx++) {
         const lsbPos = toBytes.length - 1 - idx;
         const bx = slotX(lsbPos);
         const isExt = lsbPos >= fromBytes.length;
-        const isSignedPosTop = act.fromInfo.signed && lsbPos === fromBytes.length - 1;
         const block = drawLab3ByteColumn(
           bx,
           yBits,
@@ -559,8 +563,7 @@ function workbenchClean(c: SceneContext, signExtStyle: 'arcs' | 'cascade'): stri
           toBytes[idx],
           isExt ? P.grey : P.fg,
           isExt ? P.grey : toCol,
-          P.muted,
-          isSignedPosTop ? { fill: P.panel, stroke: P.muted, text: P.fg } : undefined
+          P.muted
         );
         if (animate && isExt) {
           out += `<g opacity="0">${fade(0, 0.72, 0.35, 0.3)}${block}</g>`;
@@ -612,23 +615,22 @@ function workbenchClean(c: SceneContext, signExtStyle: 'arcs' | 'cascade'): stri
 }
 
 // ============================================================================================
-// Variant hooks & prototype page controller
+// Variant hooks & prototype page controller (A / B)
 // ============================================================================================
 
-function hooksFor(variant: CastVariant): PlayerHooks {
-  const memoryOpts: Record<CastVariant, MemoryStyle> = {
-    A: { littleEndian: true, decimalBelow: false },
-    B: { littleEndian: false, decimalBelow: false },
-    C: { littleEndian: false, decimalBelow: true },
-  };
+function hooksFor(
+  variant: CastVariant,
+  littleEndian: boolean,
+  onEndianChange?: (le: boolean) => void
+): PlayerHooks {
   const geomOpts: Record<CastVariant, GeometryOptions> = {
-    A: { minByteWidth: 66, minColumnWidth: 680, cellHeight: 98, extraPaneHeight: 112, skipWrap: true },
-    B: { minByteWidth: 66, minColumnWidth: 680, cellHeight: 98, extraPaneHeight: 112, skipWrap: true },
-    C: { minByteWidth: 66, minColumnWidth: 680, cellHeight: 78, extraMemBottom: 34, extraPaneHeight: 112, skipWrap: true },
+    A: { minByteWidth: 66, minColumnWidth: 680, cellHeight: 88, extraPaneHeight: 116, skipWrap: true },
+    B: { minByteWidth: 66, minColumnWidth: 680, cellHeight: 72, extraMemBottom: 34, extraPaneHeight: 116, skipWrap: true },
   };
   return {
     stackBelow: 900,
     maxScale: 0.78,
+    endian: { littleEndian, onChange: onEndianChange },
     geometry: (m: PreparedModel, P: Palette, stacked: boolean, width: number): Geometry =>
       geometry(m, P, stacked, width, geomOpts[variant]),
     stepSeconds: castStepSeconds,
@@ -642,9 +644,9 @@ function hooksFor(variant: CastVariant): PlayerHooks {
         code(c, oldLine) +
         tether(c, oldLine) +
         arrows(c) +
-        memoryWithByteHex(c, memoryOpts[variant]) +
+        memoryWithByteHex(c, variant === 'B') +
         pane(c, copying) +
-        workbenchClean(c, variant === 'C' ? 'cascade' : 'arcs') +
+        workbenchClean(c, variant === 'B' ? 'cascade' : 'arcs') +
         output(c) +
         transfers(c)
       );
@@ -660,30 +662,21 @@ interface VariantMeta {
 
 const VARIANTS: Record<CastVariant, VariantMeta> = {
   A: {
-    name: 'Little-endian byte hex + arc sign-clone',
-    claim: 'Two-tier memory in true address order (LSB left at +0) paired with the clean binary/hex pane and sign-bit duplication arcs.',
+    name: 'Two-tier memory + curved arc bit-copy',
+    claim: 'Overall decimal on top with smaller per-byte hex below, paired with curved bit-copy arcs that fade away after extension.',
     points: [
-      'Memory shows overall decimal on top and consecutive address-ordered hex bytes (+0..+3) along the bottom.',
-      'Pane keeps binary nibbles above hex digits with no caption clutter and no duplicate hex under the decimal result.',
-      'Negative signed widening highlights the MSB `1` and clones it via warm arcs across upper bytes; positive/unsigned fills muted `0`s.',
+      'Use each player’s LE / BE toggle to flip memory byte order between little-endian and big-endian without changing the expression pane.',
+      'Signed widening copies the highlighted MSB (`1` in amber for negatives, `0` in blue for positives) with curved arcs that fade out once complete.',
+      'Unsigned widening stays quiet muted zero-padding.',
     ],
   },
   B: {
-    name: 'MSB-first byte hex + arc sign-clone',
-    claim: 'Two-tier memory in reading order (matching the binary/hex workbench left-to-right), clean pane, and sign-bit duplication arcs.',
+    name: 'Byte-hex cells (`= decimal` below) + cascade bit-copy',
+    claim: 'Full-height compact byte-hex compartments with `= decimal` below the variable name, paired with stepped cascade bit-copying.',
     points: [
-      'Memory shows overall decimal on top and per-byte hex compartments underneath (`00 | 00 | 01 | 00`).',
-      'Pane drops the tiny text and duplicate hex under `→ val`, keeping binary nibbles paired with hex digits directly below.',
-      'Sign extension highlights the highest `1` bit and draws cloning arcs filling `1111 1111` (`F F`) across upper bytes; positive/unsigned quietly zero-fills.',
-    ],
-  },
-  C: {
-    name: 'Hex cells + cascade sign-clone',
-    claim: 'Full-height byte-hex memory cells with `= decimal` below the variable name, plus stepped cascade cloning for sign extension.',
-    points: [
-      'Memory gives full box height to per-byte hex compartments and puts the overall `= decimal` cleanly under the variable name.',
-      'Compare stepped byte-by-byte cascade cloning on negative sign extension against B’s curved arcs.',
-      'Same clean binary/hex pane without caption text or duplicate hex under the decimal result.',
+      'Use each player’s LE / BE toggle to flip memory byte order; memory shows smaller byte hex inside cells and `= val` underneath.',
+      'Signed widening copies the highlighted MSB (`1` or `0`) via stepped horizontal links that fade out once complete, keeping the color coding.',
+      'Compare cell hierarchy and cascade arrows against A’s two-tier cells and curved arcs.',
     ],
   },
 };
@@ -699,9 +692,10 @@ declare global {
 function boot(): void {
   const data = window.CastsPrototype?.traces ?? [];
   const params = new URLSearchParams(location.search);
-  const rawVar = (params.get('variant') || 'B').toUpperCase();
-  const state: { variant: CastVariant } = {
-    variant: rawVar === 'A' || rawVar === 'B' || rawVar === 'C' ? rawVar : 'B',
+  const rawVar = (params.get('variant') || 'A').toUpperCase();
+  const state: { variant: CastVariant; littleEndian: boolean } = {
+    variant: rawVar === 'A' || rawVar === 'B' ? rawVar : 'A',
+    littleEndian: params.get('endian') !== 'be',
   };
   document.documentElement.dataset.theme = params.get('theme') || 'dark';
 
@@ -715,18 +709,28 @@ function boot(): void {
       (t, i) =>
         `<section class="proto-case"><h2>${i + 1}. ${esc(t.title ?? '')}</h2>` +
         `<pre><code>${esc(t.source.join('\n'))}</code></pre>` +
-        `<details data-case="${i}"${i <= 1 || params.get('open') === 'all' ? ' open' : ''}>` +
+        `<details data-case="${i}"${i <= 2 || params.get('open') === 'all' ? ' open' : ''}>` +
         `<summary>Execution trace</summary><div class="slot"></div></details></section>`
     )
     .join('');
 
+  function syncUrl(): void {
+    const url = new URL(location.href);
+    url.searchParams.set('variant', state.variant);
+    url.searchParams.set('endian', state.littleEndian ? 'le' : 'be');
+    url.searchParams.set('theme', document.documentElement.dataset.theme || 'dark');
+    history.replaceState(null, '', url);
+  }
+
   function mount(): void {
     const savedIndices = new Map<number, number>();
+    const savedEndian = new Map<number, boolean>();
     for (const details of sections.querySelectorAll<HTMLDetailsElement>('details')) {
       const idx = Number(details.dataset.case);
       const old = players[idx];
       if (old) {
         savedIndices.set(idx, old.index);
+        savedEndian.set(idx, old.littleEndian);
         old.disconnect();
       }
     }
@@ -737,7 +741,15 @@ function boot(): void {
       const slot = details.querySelector<HTMLElement>('.slot')!;
       slot.innerHTML = '<div class="course-visualization"></div>';
       const host = slot.firstElementChild as HTMLElement;
-      const player = new Player(host, data[idx], hooksFor(state.variant));
+      const le = savedEndian.get(idx) ?? state.littleEndian;
+      const player = new Player(
+        host,
+        data[idx],
+        hooksFor(state.variant, le, nextLe => {
+          state.littleEndian = nextLe;
+          syncUrl();
+        })
+      );
       const want = savedIndices.get(idx);
       if (want) {
         player.pristine = false;
@@ -753,10 +765,7 @@ function boot(): void {
       `<p>${esc(meta.claim)}</p>` +
       `<ul>${meta.points.map(p => `<li>${esc(p)}</li>`).join('')}</ul>`;
 
-    const url = new URL(location.href);
-    url.searchParams.set('variant', state.variant);
-    url.searchParams.set('theme', document.documentElement.dataset.theme || 'dark');
-    history.replaceState(null, '', url);
+    syncUrl();
   }
 
   sections.addEventListener(
@@ -771,7 +780,7 @@ function boot(): void {
   );
 
   const cycle = (delta: number): void => {
-    const keys: CastVariant[] = ['A', 'B', 'C'];
+    const keys: CastVariant[] = ['A', 'B'];
     state.variant = keys[(keys.indexOf(state.variant) + delta + keys.length) % keys.length];
     mount();
   };
@@ -782,9 +791,7 @@ function boot(): void {
     const root = document.documentElement;
     root.dataset.theme = root.dataset.theme === 'dark' ? 'light' : 'dark';
     for (const p of players) p.refresh();
-    const url = new URL(location.href);
-    url.searchParams.set('theme', root.dataset.theme);
-    history.replaceState(null, '', url);
+    syncUrl();
   };
 
   document.addEventListener('keydown', event => {

@@ -73,6 +73,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       replay: "Replay step",
       reset: "Reset",
       speed: "Playback speed",
+      byteOrder: "Memory byte order",
+      littleEndian: "Little-endian (least significant byte first)",
+      bigEndian: "Big-endian (most significant byte first)",
       scrub: "Execution step",
       output: "Output:",
       stage: "Code, memory and expression evaluation",
@@ -99,6 +102,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       replay: "Повторить шаг",
       reset: "Сначала",
       speed: "Скорость",
+      byteOrder: "Порядок байтов в памяти",
+      littleEndian: "Little-endian (младший байт первым)",
+      bigEndian: "Big-endian (старший байт первым)",
       scrub: "Шаг выполнения",
       output: "Вывод:",
       stage: "Код, память и вычисление выражения",
@@ -1562,6 +1568,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       __publicField(this, "elapsed");
       __publicField(this, "duration");
       __publicField(this, "rate");
+      __publicField(this, "littleEndian");
       __publicField(this, "running");
       __publicField(this, "continuous");
       __publicField(this, "pristine");
@@ -1584,6 +1591,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       __publicField(this, "P");
       __publicField(this, "g");
       __publicField(this, "shownType");
+      var _a;
       this.host = host;
       this.m = prepare(trace);
       this.S = strings();
@@ -1592,6 +1600,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.elapsed = 0;
       this.duration = 0;
       this.rate = 1;
+      this.littleEndian = ((_a = hooks == null ? void 0 : hooks.endian) == null ? void 0 : _a.littleEndian) ?? true;
       this.running = false;
       this.continuous = false;
       this.pristine = true;
@@ -1606,6 +1615,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.settle(0);
     }
     build() {
+      var _a;
       const S = this.S;
       const root = document.createElement("div");
       root.className = "cv-player not-content";
@@ -1613,7 +1623,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       root.setAttribute("role", "group");
       root.setAttribute("aria-label", this.m.trace.title || S.stage);
       const button = (action, label, iconName, extra = "") => `<button type="button" class="cv-button${extra}" data-action="${action}" aria-label="${esc(label)}" title="${esc(label)}">${icon(iconName)}<span class="cv-label">${esc(label)}</span></button>`;
-      root.innerHTML = `<div class="cv-view"><svg class="cv-stage" role="group" aria-label="${esc(S.stage)}" xmlns="http://www.w3.org/2000/svg"><g class="cv-scene" aria-hidden="true"></g><g class="cv-lines">${lineTargets(this.m, S)}</g></svg><div class="cv-type" aria-hidden="true" hidden></div></div><div class="cv-controls"><div class="cv-transport">` + button("play", S.play, "play", " cv-primary") + button("back", S.back, "back") + button("next", S.next, "next") + button("replay", S.replay, "replay", " cv-icon-only") + `<select class="cv-speed" aria-label="${esc(S.speed)}" title="${esc(S.speed)}">` + [0.5, 1, 1.5, 2].map((v) => `<option value="${v}"${v === 1 ? " selected" : ""}>${v}×</option>`).join("") + "</select>" + button("reset", S.reset, "reset", " cv-reset") + `</div><div class="cv-progress"><input class="cv-scrub" type="range" min="0" max="${this.m.steps.length - 1}" value="0" step="1" aria-label="${esc(S.scrub)}"><span class="cv-count"></span></div></div><div class="cv-status" aria-live="polite"></div>`;
+      const endianToggle = ((_a = this.hooks) == null ? void 0 : _a.endian) ? `<div class="cv-endian" role="group" aria-label="${esc(S.byteOrder)}"><button type="button" data-endian="le" aria-pressed="${this.littleEndian}" title="${esc(S.littleEndian)}">LE</button><button type="button" data-endian="be" aria-pressed="${!this.littleEndian}" title="${esc(S.bigEndian)}">BE</button></div>` : "";
+      root.innerHTML = `<div class="cv-view"><svg class="cv-stage" role="group" aria-label="${esc(S.stage)}" xmlns="http://www.w3.org/2000/svg"><g class="cv-scene" aria-hidden="true"></g><g class="cv-lines">${lineTargets(this.m, S)}</g></svg><div class="cv-type" aria-hidden="true" hidden></div></div><div class="cv-controls"><div class="cv-transport">` + button("play", S.play, "play", " cv-primary") + button("back", S.back, "back") + button("next", S.next, "next") + button("replay", S.replay, "replay", " cv-icon-only") + `<select class="cv-speed" aria-label="${esc(S.speed)}" title="${esc(S.speed)}">` + [0.5, 1, 1.5, 2].map((v) => `<option value="${v}"${v === 1 ? " selected" : ""}>${v}×</option>`).join("") + "</select>" + endianToggle + button("reset", S.reset, "reset", " cv-reset") + `</div><div class="cv-progress"><input class="cv-scrub" type="range" min="0" max="${this.m.steps.length - 1}" value="0" step="1" aria-label="${esc(S.scrub)}"><span class="cv-count"></span></div></div><div class="cv-status" aria-live="polite"></div>`;
       this.host.append(root);
       this.root = root;
       this.svg = root.querySelector(".cv-stage");
@@ -1624,10 +1635,22 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.count = root.querySelector(".cv-count");
       this.status = root.querySelector(".cv-status");
       root.querySelector(".cv-transport").addEventListener("click", (event) => {
-        var _a;
-        const target = (_a = event.target) == null ? void 0 : _a.closest("[data-action]");
+        var _a2, _b, _c, _d, _e;
+        const target = (_a2 = event.target) == null ? void 0 : _a2.closest("[data-action]");
         if (target && target.dataset.action) {
           this.invokeAction(target.dataset.action);
+        }
+        const endianBtn = (_b = event.target) == null ? void 0 : _b.closest("[data-endian]");
+        if (endianBtn && endianBtn.dataset.endian) {
+          const nextLe = endianBtn.dataset.endian === "le";
+          if (nextLe !== this.littleEndian) {
+            this.littleEndian = nextLe;
+            for (const btn of root.querySelectorAll("[data-endian]")) {
+              btn.setAttribute("aria-pressed", String(btn.dataset.endian === "le" === nextLe));
+            }
+            (_e = (_d = (_c = this.hooks) == null ? void 0 : _c.endian) == null ? void 0 : _d.onChange) == null ? void 0 : _e.call(_d, nextLe);
+            this.refresh();
+          }
         }
       });
       root.querySelector(".cv-speed").addEventListener("change", (event) => {
@@ -1638,8 +1661,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         this.settle(Number(this.scrub.value));
       });
       this.svg.addEventListener("click", (event) => {
-        var _a;
-        const line = (_a = event.target) == null ? void 0 : _a.closest("[data-line]");
+        var _a2;
+        const line = (_a2 = event.target) == null ? void 0 : _a2.closest("[data-line]");
         if (line && line.dataset.line !== void 0) {
           this.line(Number(line.dataset.line));
         }
@@ -1788,7 +1811,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         prev,
         animate,
         op: animate ? step.op : null,
-        focus: { now, before, begin }
+        focus: { now, before, begin },
+        littleEndian: this.littleEndian
       };
       this.animated = animate;
       this.svg.setAttribute("viewBox", `0 0 ${Math.ceil(g.width)} ${Math.ceil(g.height)}`);
@@ -2040,11 +2064,18 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const fromInfo = typeInfo(op.from);
       const toInfo = typeInfo(op.to);
       let kind = "reinterpret";
-      if (toInfo.bytes < fromInfo.bytes) kind = "narrow";
-      else if (toInfo.bytes > fromInfo.bytes) {
-        kind = fromInfo.signed && beforeVal < 0 ? "sign-extend" : "zero-extend";
+      let signBit;
+      if (toInfo.bytes < fromInfo.bytes) {
+        kind = "narrow";
+      } else if (toInfo.bytes > fromInfo.bytes) {
+        if (fromInfo.signed) {
+          kind = "sign-extend";
+          signBit = beforeVal < 0 ? 1 : 0;
+        } else {
+          kind = "zero-extend";
+        }
       }
-      return { kind, fromType: op.from, toType: op.to, fromInfo, toInfo, beforeVal, afterVal };
+      return { kind, signBit, fromType: op.from, toType: op.to, fromInfo, toInfo, beforeVal, afterVal };
     }
     if ((op == null ? void 0 : op.kind) === "eval" && prev) {
       const raw = prev.pane.slice(...op.span);
@@ -2106,10 +2137,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         return `Narrow ${act.fromType} (${fullHex(act.beforeVal, act.fromInfo.bytes)}) → ${act.toType} (${fullHex(act.afterVal, act.toInfo.bytes)}): drop high ${act.fromInfo.bytes - act.toInfo.bytes} bytes`;
       }
       if (act.kind === "zero-extend") {
-        return `Widen ${act.fromType} (${fullHex(act.beforeVal, act.fromInfo.bytes)}) → ${act.toType} (${fullHex(act.afterVal, act.toInfo.bytes)}): zero-extend upper bytes`;
+        return `Widen ${act.fromType} (${fullHex(act.beforeVal, act.fromInfo.bytes)}) → ${act.toType} (${fullHex(act.afterVal, act.toInfo.bytes)}): unsigned zero-extend upper bytes`;
       }
       if (act.kind === "sign-extend") {
-        return `Widen ${act.fromType} (${fullHex(act.beforeVal, act.fromInfo.bytes)}) → ${act.toType} (${fullHex(act.afterVal, act.toInfo.bytes)}): sign-extend by duplicating bit 1`;
+        return `Widen ${act.fromType} (${fullHex(act.beforeVal, act.fromInfo.bytes)}) → ${act.toType} (${fullHex(act.afterVal, act.toInfo.bytes)}): sign-extend by duplicating bit ${act.signBit}`;
       }
     }
     return describe(c);
@@ -2124,8 +2155,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return out;
   }
-  function memoryWithByteHex(c, style) {
+  function memoryWithByteHex(c, decimalBelow) {
     const { g, P, step, prev, op } = c;
+    const littleEndian = c.littleEndian ?? true;
     const values = op && op.kind === "write" && prev ? prev.values : step.values;
     const at = op ? arrival(op) : 0;
     const writing = new Set(op && op.kind === "write" ? g.cellsOf(op.name).map((l) => l.name) : []);
@@ -2139,23 +2171,22 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const after = step.values[cell.name];
       const shownVal = changing ? after : values[cell.name];
       let markup = "";
-      markup += text(cell.x + 3, cell.y - 12, cell.address, 17, on ? P.muted : P.grey);
-      if (style.littleEndian && cell.size > 1) {
-        const bw2 = cell.w / cell.size;
+      const bw = cell.w / cell.size;
+      markup += text(cell.x + 3, cell.y - 12, cell.address, 16, on ? P.muted : P.grey);
+      if (cell.size > 1) {
         for (let i = 1; i < cell.size; i++) {
-          markup += text(cell.x + i * bw2 + 6, cell.y - 12, cell.address + i, 15, P.grey);
+          markup += text(cell.x + i * bw + 6, cell.y - 12, cell.address + i, 14, P.grey);
         }
       }
       markup += rect(cell.x, cell.y, cell.w, cell.h, on ? P.panel : P.deadFill, "none", 0);
-      const bw = cell.w / cell.size;
       const divStroke = on ? P.gapStroke : P.deadStroke;
-      if (style.decimalBelow) {
+      if (decimalBelow) {
         for (let i = 1; i < cell.size; i++) {
           const lx = round(cell.x + i * bw);
           markup += `<line x1="${lx}" y1="${cell.y + 3}" x2="${lx}" y2="${cell.y + cell.h - 3}" stroke="${divStroke}" stroke-width="1.3" stroke-dasharray="4 3"/>`;
         }
       } else {
-        const splitY = cell.y + 56;
+        const splitY = cell.y + 52;
         markup += `<line x1="${cell.x + 2}" y1="${splitY}" x2="${cell.x + cell.w - 2}" y2="${splitY}" stroke="${divStroke}" stroke-width="1.3"/>`;
         for (let i = 1; i < cell.size; i++) {
           const lx = round(cell.x + i * bw);
@@ -2172,29 +2203,24 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         0,
         3
       );
-      if (style.littleEndian && on && cell.size > 1) {
-        const lsbY = style.decimalBelow ? cell.y + 16 : cell.y + 14;
-        markup += text(cell.x + 7, lsbY, "LSB", 11.5, P.grey);
-        markup += text(cell.x + cell.w - 7, lsbY, "MSB", 11.5, P.grey, "end");
-      }
       if (on) {
-        const bytesOf = (v) => style.littleEndian ? toBytesLSB(v, cell.size) : toBytesMSB(v, cell.size);
+        const bytesOf = (v) => littleEndian ? toBytesLSB(v, cell.size) : toBytesMSB(v, cell.size);
         const renderCellBody = (val) => {
           if (typeof val !== "number") {
-            if (style.decimalBelow) {
-              return text(cell.x + cell.w / 2, cell.y + cell.h / 2 + 10, String(val), 28, P.grey, "middle");
+            if (decimalBelow) {
+              return text(cell.x + cell.w / 2, cell.y + cell.h / 2 + 9, String(val), 26, P.grey, "middle");
             }
-            return text(cell.x + cell.w / 2, cell.y + 38, String(val), 28, P.grey, "middle");
+            return text(cell.x + cell.w / 2, cell.y + 36, String(val), 26, P.grey, "middle");
           }
           const bytes = bytesOf(val);
           let body = "";
-          if (!style.decimalBelow) {
+          if (!decimalBelow) {
             const dec = String(val);
-            const decSize = Math.min(30, (cell.w - 14) / (dec.length * CHAR));
-            body += text(cell.x + cell.w / 2, cell.y + 38, dec, round(decSize), P.fg, "middle");
+            const decSize = Math.min(28, (cell.w - 14) / (dec.length * CHAR));
+            body += text(cell.x + cell.w / 2, cell.y + 36, dec, round(decSize), P.fg, "middle");
           }
-          const hexY = style.decimalBelow ? cell.y + cell.h / 2 + 9 : cell.y + 85;
-          const hexSize = style.decimalBelow ? 24 : 20;
+          const hexY = decimalBelow ? cell.y + cell.h / 2 + 7 : cell.y + 76;
+          const hexSize = decimalBelow ? 17.5 : 14.5;
           for (let i = 0; i < cell.size; i++) {
             const bx = cell.x + i * bw + bw / 2;
             const b = bytes[i];
@@ -2221,7 +2247,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         on ? color : P.grey,
         "middle"
       );
-      if (style.decimalBelow) {
+      if (decimalBelow) {
         const decLabel = on && typeof shownVal === "number" ? `= ${shownVal}` : on && shownVal === "?" ? "= ?" : "";
         if (decLabel) {
           markup += text(
@@ -2259,20 +2285,21 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return bitsMarkup + text(loCx, yBits, lo, BIT_FONT, lo === "0000" ? mutedColor : bitColor, "middle") + text(hiCx, yHex, hex[0], 20, hex[0] === "0" ? mutedColor : hexColor, "middle") + text(loCx, yHex, hex[1], 20, hex[1] === "0" ? mutedColor : hexColor, "middle");
   }
-  function arrowheadDown(cx, tipY, color) {
-    return `<polygon points="${round(cx)},${round(tipY)} ${round(cx - 4.5)},${round(tipY - 7)} ${round(cx + 4.5)},${round(tipY - 7)}" fill="${color}"/>`;
+  function arrowheadAt(tipX, tipY, dx, dy, color) {
+    const deg = round(Math.atan2(dy, dx) * 180 / Math.PI);
+    return `<path d="M -8.5 -4.2 L 0 0 L -8.5 4.2 Z" fill="${color}" transform="translate(${round(tipX)} ${round(tipY)}) rotate(${deg})"/>`;
   }
   function workbenchClean(c, signExtStyle) {
     const act = activeBitAction(c);
     if (!act) return "";
     const { g, P, animate } = c;
     const cardX = g.tx - 6;
-    const cardY = g.ty + 22;
+    const cardY = g.ty + 20;
     const cardW = g.pane.w - 36;
-    const cardH = 104;
-    const yBits = cardY + 50;
-    const yHex = cardY + 82;
-    const yRes = cardY + 64;
+    const cardH = 108;
+    const yBits = cardY + 54;
+    const yHex = cardY + 86;
+    const yRes = cardY + 68;
     const rightAnchor = cardX + 16 + 4 * BYTE_W + 3 * BYTE_GAP;
     const slotX = (bytesFromLSB) => rightAnchor - (bytesFromLSB + 1) * BYTE_W - bytesFromLSB * BYTE_GAP;
     let out = rect(cardX, cardY, cardW, cardH, P.panel, P.gapStroke, 8, 1.5);
@@ -2301,9 +2328,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         out += `<line x1="${round(cutX)}" y1="${cardY + 14}" x2="${round(cutX)}" y2="${cardY + cardH - 12}" stroke="${P.error}" stroke-width="2.2" stroke-dasharray="5 4"/>`;
         out += text(rightAnchor + 22, yRes, `→ ${act.afterVal}`, 26, toCol);
       } else if (act.kind === "sign-extend") {
+        const isNeg = act.signBit === 1;
+        const extStroke = isNeg ? P.write : P.read;
+        const extFill = isNeg ? P.writeFill : P.readFill;
+        const extText = isNeg ? P.write : P.read;
         const srcTopPos = fromBytes.length - 1;
         const srcX = slotX(srcTopPos);
-        const signBitCx = srcX + NIBBLE_W / 2 - 1.5 * BIT_STEP;
+        const signBitCx = srcX + NIBBLE_W / 2 - 1.55 * BIT_STEP;
         for (let idx = 0; idx < fromBytes.length; idx++) {
           const lsbPos = fromBytes.length - 1 - idx;
           const bx = slotX(lsbPos);
@@ -2316,7 +2347,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
             P.fg,
             toCol,
             P.muted,
-            isTopSrc ? { fill: P.writeFill, stroke: P.write, text: P.write } : void 0
+            isTopSrc ? { fill: extFill, stroke: extStroke, text: extText } : void 0
           );
           if (animate && isTopSrc) {
             const cx = signBitCx;
@@ -2326,37 +2357,48 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
             out += col;
           }
         }
+        const extCount = toBytes.length - fromBytes.length;
+        const fadeAt = 0.22 + Math.max(0, extCount - 1) * 0.22 + 0.82;
+        let animArrows = "";
         for (let lsbPos = fromBytes.length; lsbPos < toBytes.length; lsbPos++) {
           const bx = slotX(lsbPos);
           const byteVal = toBytes[toBytes.length - 1 - lsbPos];
           const dstCx = bx + BYTE_W / 2;
           const k = lsbPos - fromBytes.length;
-          const arcDelay = 0.25 + k * 0.24;
-          const fillDelay = 0.58 + k * 0.24;
-          const extByte = drawLab3ByteColumn(bx, yBits, yHex, byteVal, P.write, P.write, P.write);
-          if (signExtStyle === "arcs") {
-            const sy = yBits - 21;
-            const apex = cardY + 9 + k * 2;
-            const d = `M ${round(signBitCx)} ${sy} C ${round(signBitCx)} ${apex}, ${round(dstCx)} ${apex}, ${round(dstCx)} ${sy - 2}`;
-            const arc = `<path d="${d}" fill="none" stroke="${P.write}" stroke-width="2" stroke-linecap="round"${animate ? ` data-grow="${round(arcDelay)}"` : ""}/>`;
-            const head = arrowheadDown(dstCx, sy + 1, P.write);
-            out += arc;
-            out += animate ? `<g opacity="0">${show(fillDelay - 0.08)}${head}</g>` : head;
-          } else {
-            const prevOriginX = k === 0 ? signBitCx : slotX(lsbPos - 1) + NIBBLE_W / 2 - 1.5 * BIT_STEP;
-            const dstLeftBitX = bx + NIBBLE_W / 2 - 1.5 * BIT_STEP;
-            const yTop = cardY + 18;
-            const d = `M ${round(prevOriginX)} ${yBits - 21} L ${round(prevOriginX)} ${yTop} L ${round(dstLeftBitX)} ${yTop} L ${round(dstLeftBitX)} ${yBits - 23}`;
-            const link = `<path d="${d}" fill="none" stroke="${P.write}" stroke-width="2" stroke-linejoin="round"${animate ? ` data-grow="${round(arcDelay)}"` : ""}/>`;
-            const head = arrowheadDown(dstLeftBitX, yBits - 20, P.write);
-            out += link;
-            out += animate ? `<g opacity="0">${show(fillDelay - 0.08)}${head}</g>` : head;
-          }
+          const arcDelay = 0.22 + k * 0.22;
+          const fillDelay = arcDelay + 0.42;
+          const extByte = drawLab3ByteColumn(bx, yBits, yHex, byteVal, extText, extText, extText);
           if (animate) {
+            if (signExtStyle === "arcs") {
+              const sy = yBits - 20;
+              const tipX = dstCx;
+              const tipY = yBits - 21;
+              const ctrlX = signBitCx * 0.28 + dstCx * 0.72;
+              const apex = cardY + 4 + k * 1.5;
+              const dx = tipX - ctrlX;
+              const dy = tipY - apex;
+              const len = Math.hypot(dx, dy) || 1;
+              const ex = tipX - 5 * dx / len;
+              const ey = tipY - 5 * dy / len;
+              const d = `M ${round(signBitCx)} ${round(sy)} Q ${round(ctrlX)} ${round(apex)}, ${round(ex)} ${round(ey)}`;
+              animArrows += `<path d="${d}" fill="none" stroke="${extStroke}" stroke-width="2" stroke-linecap="round" data-grow="${round(arcDelay)}"/>`;
+              animArrows += `<g opacity="0">${show(fillDelay - 0.08)}${arrowheadAt(tipX, tipY, ex - ctrlX, ey - apex, extStroke)}</g>`;
+            } else {
+              const prevOriginX = k === 0 ? signBitCx : slotX(lsbPos - 1) + NIBBLE_W / 2 - 1.55 * BIT_STEP;
+              const dstLeftBitX = bx + NIBBLE_W / 2 - 1.55 * BIT_STEP;
+              const yTop = cardY + 18;
+              const tipY = yBits - 20;
+              const d = `M ${round(prevOriginX)} ${tipY} L ${round(prevOriginX)} ${yTop} L ${round(dstLeftBitX)} ${yTop} L ${round(dstLeftBitX)} ${tipY - 5}`;
+              animArrows += `<path d="${d}" fill="none" stroke="${extStroke}" stroke-width="2" stroke-linejoin="round" data-grow="${round(arcDelay)}"/>`;
+              animArrows += `<g opacity="0">${show(fillDelay - 0.08)}${arrowheadAt(dstLeftBitX, tipY, 0, 1, extStroke)}</g>`;
+            }
             out += `<g opacity="0">${show(fillDelay)}<g transform="translate(${round(dstCx)} ${round(yBits + 10)})"><g>${pulse(fillDelay)}<g transform="translate(${round(-dstCx)} ${round(-(yBits + 10))})">${extByte}</g></g></g></g>`;
           } else {
             out += extByte;
           }
+        }
+        if (animate && animArrows) {
+          out += `<g>${fade(1, 0, 0.32, fadeAt)}${animArrows}</g>`;
         }
         out += text(rightAnchor + 22, yRes, `→ ${act.afterVal}`, 26, toCol);
       } else if (act.kind === "zero-extend") {
@@ -2364,7 +2406,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           const lsbPos = toBytes.length - 1 - idx;
           const bx = slotX(lsbPos);
           const isExt = lsbPos >= fromBytes.length;
-          const isSignedPosTop = act.fromInfo.signed && lsbPos === fromBytes.length - 1;
           const block = drawLab3ByteColumn(
             bx,
             yBits,
@@ -2372,8 +2413,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
             toBytes[idx],
             isExt ? P.grey : P.fg,
             isExt ? P.grey : toCol,
-            P.muted,
-            isSignedPosTop ? { fill: P.panel, stroke: P.muted, text: P.fg } : void 0
+            P.muted
           );
           if (animate && isExt) {
             out += `<g opacity="0">${fade(0, 0.72, 0.35, 0.3)}${block}</g>`;
@@ -2419,20 +2459,15 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return out;
   }
-  function hooksFor(variant) {
-    const memoryOpts = {
-      A: { littleEndian: true, decimalBelow: false },
-      B: { littleEndian: false, decimalBelow: false },
-      C: { littleEndian: false, decimalBelow: true }
-    };
+  function hooksFor(variant, littleEndian, onEndianChange) {
     const geomOpts = {
-      A: { minByteWidth: 66, minColumnWidth: 680, cellHeight: 98, extraPaneHeight: 112, skipWrap: true },
-      B: { minByteWidth: 66, minColumnWidth: 680, cellHeight: 98, extraPaneHeight: 112, skipWrap: true },
-      C: { minByteWidth: 66, minColumnWidth: 680, cellHeight: 78, extraMemBottom: 34, extraPaneHeight: 112, skipWrap: true }
+      A: { minByteWidth: 66, minColumnWidth: 680, cellHeight: 88, extraPaneHeight: 116, skipWrap: true },
+      B: { minByteWidth: 66, minColumnWidth: 680, cellHeight: 72, extraMemBottom: 34, extraPaneHeight: 116, skipWrap: true }
     };
     return {
       stackBelow: 900,
       maxScale: 0.78,
+      endian: { littleEndian, onChange: onEndianChange },
       geometry: (m, P, stacked, width) => geometry(m, P, stacked, width, geomOpts[variant]),
       stepSeconds: castStepSeconds,
       describe: castDescribe,
@@ -2441,36 +2476,27 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         const lineChanged = animate && prev !== null && prev.line !== step.line;
         const copying = animate && copies(c.m.steps, c.index);
         const oldLine = lineChanged && prev ? prev.line : null;
-        return code(c, oldLine) + tether(c, oldLine) + arrows(c) + memoryWithByteHex(c, memoryOpts[variant]) + pane(c, copying) + workbenchClean(c, variant === "C" ? "cascade" : "arcs") + output(c) + transfers(c);
+        return code(c, oldLine) + tether(c, oldLine) + arrows(c) + memoryWithByteHex(c, variant === "B") + pane(c, copying) + workbenchClean(c, variant === "B" ? "cascade" : "arcs") + output(c) + transfers(c);
       }
     };
   }
   const VARIANTS = {
     A: {
-      name: "Little-endian byte hex + arc sign-clone",
-      claim: "Two-tier memory in true address order (LSB left at +0) paired with the clean binary/hex pane and sign-bit duplication arcs.",
+      name: "Two-tier memory + curved arc bit-copy",
+      claim: "Overall decimal on top with smaller per-byte hex below, paired with curved bit-copy arcs that fade away after extension.",
       points: [
-        "Memory shows overall decimal on top and consecutive address-ordered hex bytes (+0..+3) along the bottom.",
-        "Pane keeps binary nibbles above hex digits with no caption clutter and no duplicate hex under the decimal result.",
-        "Negative signed widening highlights the MSB `1` and clones it via warm arcs across upper bytes; positive/unsigned fills muted `0`s."
+        "Use each player’s LE / BE toggle to flip memory byte order between little-endian and big-endian without changing the expression pane.",
+        "Signed widening copies the highlighted MSB (`1` in amber for negatives, `0` in blue for positives) with curved arcs that fade out once complete.",
+        "Unsigned widening stays quiet muted zero-padding."
       ]
     },
     B: {
-      name: "MSB-first byte hex + arc sign-clone",
-      claim: "Two-tier memory in reading order (matching the binary/hex workbench left-to-right), clean pane, and sign-bit duplication arcs.",
+      name: "Byte-hex cells (`= decimal` below) + cascade bit-copy",
+      claim: "Full-height compact byte-hex compartments with `= decimal` below the variable name, paired with stepped cascade bit-copying.",
       points: [
-        "Memory shows overall decimal on top and per-byte hex compartments underneath (`00 | 00 | 01 | 00`).",
-        "Pane drops the tiny text and duplicate hex under `→ val`, keeping binary nibbles paired with hex digits directly below.",
-        "Sign extension highlights the highest `1` bit and draws cloning arcs filling `1111 1111` (`F F`) across upper bytes; positive/unsigned quietly zero-fills."
-      ]
-    },
-    C: {
-      name: "Hex cells + cascade sign-clone",
-      claim: "Full-height byte-hex memory cells with `= decimal` below the variable name, plus stepped cascade cloning for sign extension.",
-      points: [
-        "Memory gives full box height to per-byte hex compartments and puts the overall `= decimal` cleanly under the variable name.",
-        "Compare stepped byte-by-byte cascade cloning on negative sign extension against B’s curved arcs.",
-        "Same clean binary/hex pane without caption text or duplicate hex under the decimal result."
+        "Use each player’s LE / BE toggle to flip memory byte order; memory shows smaller byte hex inside cells and `= val` underneath.",
+        "Signed widening copies the highlighted MSB (`1` or `0`) via stepped horizontal links that fade out once complete, keeping the color coding.",
+        "Compare cell hierarchy and cascade arrows against A’s two-tier cells and curved arcs."
       ]
     }
   };
@@ -2478,9 +2504,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     var _a;
     const data = ((_a = window.CastsPrototype) == null ? void 0 : _a.traces) ?? [];
     const params = new URLSearchParams(location.search);
-    const rawVar = (params.get("variant") || "B").toUpperCase();
+    const rawVar = (params.get("variant") || "A").toUpperCase();
     const state = {
-      variant: rawVar === "A" || rawVar === "B" || rawVar === "C" ? rawVar : "B"
+      variant: rawVar === "A" || rawVar === "B" ? rawVar : "A",
+      littleEndian: params.get("endian") !== "be"
     };
     document.documentElement.dataset.theme = params.get("theme") || "dark";
     const about = document.getElementById("about");
@@ -2488,15 +2515,24 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const label = document.getElementById("label");
     const players = [];
     sections.innerHTML = data.map(
-      (t, i) => `<section class="proto-case"><h2>${i + 1}. ${esc(t.title ?? "")}</h2><pre><code>${esc(t.source.join("\n"))}</code></pre><details data-case="${i}"${i <= 1 || params.get("open") === "all" ? " open" : ""}><summary>Execution trace</summary><div class="slot"></div></details></section>`
+      (t, i) => `<section class="proto-case"><h2>${i + 1}. ${esc(t.title ?? "")}</h2><pre><code>${esc(t.source.join("\n"))}</code></pre><details data-case="${i}"${i <= 2 || params.get("open") === "all" ? " open" : ""}><summary>Execution trace</summary><div class="slot"></div></details></section>`
     ).join("");
+    function syncUrl() {
+      const url = new URL(location.href);
+      url.searchParams.set("variant", state.variant);
+      url.searchParams.set("endian", state.littleEndian ? "le" : "be");
+      url.searchParams.set("theme", document.documentElement.dataset.theme || "dark");
+      history.replaceState(null, "", url);
+    }
     function mount() {
       const savedIndices = /* @__PURE__ */ new Map();
+      const savedEndian = /* @__PURE__ */ new Map();
       for (const details of sections.querySelectorAll("details")) {
         const idx = Number(details.dataset.case);
         const old = players[idx];
         if (old) {
           savedIndices.set(idx, old.index);
+          savedEndian.set(idx, old.littleEndian);
           old.disconnect();
         }
       }
@@ -2506,7 +2542,15 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         const slot = details.querySelector(".slot");
         slot.innerHTML = '<div class="course-visualization"></div>';
         const host = slot.firstElementChild;
-        const player = new Player(host, data[idx], hooksFor(state.variant));
+        const le = savedEndian.get(idx) ?? state.littleEndian;
+        const player = new Player(
+          host,
+          data[idx],
+          hooksFor(state.variant, le, (nextLe) => {
+            state.littleEndian = nextLe;
+            syncUrl();
+          })
+        );
         const want = savedIndices.get(idx);
         if (want) {
           player.pristine = false;
@@ -2517,10 +2561,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const meta = VARIANTS[state.variant];
       label.textContent = `${state.variant} · ${meta.name}`;
       about.innerHTML = `<h3>${state.variant}. ${esc(meta.name)}</h3><p>${esc(meta.claim)}</p><ul>${meta.points.map((p) => `<li>${esc(p)}</li>`).join("")}</ul>`;
-      const url = new URL(location.href);
-      url.searchParams.set("variant", state.variant);
-      url.searchParams.set("theme", document.documentElement.dataset.theme || "dark");
-      history.replaceState(null, "", url);
+      syncUrl();
     }
     sections.addEventListener(
       "toggle",
@@ -2536,7 +2577,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       true
     );
     const cycle = (delta) => {
-      const keys = ["A", "B", "C"];
+      const keys = ["A", "B"];
       state.variant = keys[(keys.indexOf(state.variant) + delta + keys.length) % keys.length];
       mount();
     };
@@ -2546,9 +2587,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const root = document.documentElement;
       root.dataset.theme = root.dataset.theme === "dark" ? "light" : "dark";
       for (const p of players) p.refresh();
-      const url = new URL(location.href);
-      url.searchParams.set("theme", root.dataset.theme);
-      history.replaceState(null, "", url);
+      syncUrl();
     };
     document.addEventListener("keydown", (event) => {
       var _a2;
