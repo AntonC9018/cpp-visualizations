@@ -108,6 +108,14 @@ that does not run: the value's type against the slot's.
 Without `--types` a conversion is an evaluation like any other, a step only when the value
 changes, and a statement that does not compile is rejected.
 
+`--bits` (the tag's `bits` attribute) is for examples about how integers are stored: it implies
+`--types` and draws every integer as its bytes and bits. Memory shows each value above its
+bytes in hex, and the player gets a Little-endian / Big-endian switch for their order. Under
+the pane a row of bits follows each value and conversion: narrowing strikes out the dropped
+bytes, and widening a signed value carries its sign bit into the new bytes while widening an
+unsigned one fills zeros. Only integer variables are taken; pointers, structs, arrays and
+references are rejected.
+
 A brace list of plain values (`A a { 1, 2 };`) is stored as spelled, with no step that only
 respaces it, and so is a typed one (`A{ 1, 2 }`); a designated list evaluates to its values.
 A struct value with a type of its own keeps it in the pane: a typed literal, and a struct that

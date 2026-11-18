@@ -1,20 +1,18 @@
-// PROTOTYPE, throwaway (casts and bit-level representation, #58).
-// Derives directly from the base player (`Player`, `geometry`, `scene.ts`, `svg.ts`, `player.css`).
-//   - Memory: overall decimal on top, neutral per-byte hex below, byte order from the player's
-//     Little-endian / Big-endian switch, with a significance arrow under multi-byte cells.
-//   - Execution pane: bits above hex, MSB left, in a card that hugs the numbers.
-//     Signed widening lights the sign bit and carries it along flat nested arcs into the new
-//     bytes; unsigned widening fades in grey zeros.
+// The bits view (`bits` traces): integers drawn as their bytes and bits.
+//
+// Memory shows each variable's value above its bytes in hex, in the byte order the player's
+// Little-endian / Big-endian switch picks, with an arrow from the least to the most significant
+// byte. The pane adds a workbench under the expression: the value's bits above their hex, most
+// significant bit left. Narrowing strikes out the dropped bytes; widening a signed value carries
+// its sign bit along arcs into the new bytes, and widening an unsigned one fades in zeros.
 import type { ExecutionTrace } from '../core/trace_format.ts';
-import { CHAR, EASE, T, type Palette } from './constants.ts';
-import { type Geometry, type GeometryOptions, geometry } from './geometry.ts';
-import { type PreparedModel, arrival, copies, copyBegin, stepSeconds } from './model.ts';
-import { Player, type PlayerHooks } from './player_view.ts';
+import { type Integer, integerSpelled } from '../core/integers.ts';
+import { CHAR, EASE, T } from './constants.ts';
+import { arrival, copies, copyBegin, stepSeconds } from './model.ts';
 import {
   type SceneContext,
   arrows,
   code,
-  describe,
   dim,
   output,
   pane,
@@ -23,40 +21,12 @@ import {
   typeColour,
   typeLabel,
 } from './scene.ts';
-import { esc, fade, hide, pulse, rect, round, show, text } from './svg.ts';
+import { fade, hide, pulse, rect, round, show, text } from './svg.ts';
+import type { TraceView } from './views.ts';
 
-interface IntTypeInfo {
-  bytes: number;
-  bits: number;
-  signed: boolean;
-}
-
-function typeInfo(typeName: string | undefined): IntTypeInfo {
-  const clean = (typeName ?? 'int').replace(/^const\s+/, '').replace(/^std::/, '').trim();
-  const table: Record<string, IntTypeInfo> = {
-    int8_t: { bytes: 1, bits: 8, signed: true },
-    'signed char': { bytes: 1, bits: 8, signed: true },
-    uint8_t: { bytes: 1, bits: 8, signed: false },
-    'unsigned char': { bytes: 1, bits: 8, signed: false },
-    int16_t: { bytes: 2, bits: 16, signed: true },
-    short: { bytes: 2, bits: 16, signed: true },
-    'short int': { bytes: 2, bits: 16, signed: true },
-    uint16_t: { bytes: 2, bits: 16, signed: false },
-    'unsigned short': { bytes: 2, bits: 16, signed: false },
-    int32_t: { bytes: 4, bits: 32, signed: true },
-    int: { bytes: 4, bits: 32, signed: true },
-    uint32_t: { bytes: 4, bits: 32, signed: false },
-    'unsigned int': { bytes: 4, bits: 32, signed: false },
-    unsigned: { bytes: 4, bits: 32, signed: false },
-    int64_t: { bytes: 8, bits: 64, signed: true },
-    long: { bytes: 8, bits: 64, signed: true },
-    'long long': { bytes: 8, bits: 64, signed: true },
-    uint64_t: { bytes: 8, bits: 64, signed: false },
-    'unsigned long': { bytes: 8, bits: 64, signed: false },
-    'unsigned long long': { bytes: 8, bits: 64, signed: false },
-    size_t: { bytes: 8, bits: 64, signed: false },
-  };
-  return table[clean] ?? { bytes: 4, bits: 32, signed: true };
+/** The integer type of a spelling; the tracer gives a bits trace integer types only. */
+function integerOf(spelling: string | undefined): Integer {
+  return integerSpelled(spelling ?? 'int') ?? integerSpelled('int')!;
 }
 
 function toBytesMSB(value: number, bytes: number): number[] {
@@ -73,13 +43,6 @@ function toBytesLSB(value: number, bytes: number): number[] {
 }
 
 const hexByte = (b: number): string => b.toString(16).toUpperCase().padStart(2, '0');
-const nibbles = (b: number): [string, string] => [
-  (b >> 4).toString(2).padStart(4, '0'),
-  (b & 0xf).toString(2).padStart(4, '0'),
-];
-const fullHex = (value: number, bytes: number): string =>
-  '0x' + toBytesMSB(value, bytes).map(hexByte).join('');
-
 function extractInt(fragment: string): number | null {
   const inner = fragment.match(/\(([^()]+)\)\s*$/)?.[1] ?? fragment;
   const match = inner.match(/-?\d+/);
@@ -92,15 +55,15 @@ type BitAction =
       signBit?: 0 | 1;
       fromType: string;
       toType: string;
-      fromInfo: IntTypeInfo;
-      toInfo: IntTypeInfo;
+      fromInfo: Integer;
+      toInfo: Integer;
       beforeVal: number;
       afterVal: number;
     }
   | {
       kind: 'invert';
       type: string;
-      info: IntTypeInfo;
+      info: Integer;
       beforeVal: number;
       afterVal: number;
     }
@@ -108,7 +71,7 @@ type BitAction =
       kind: 'value';
       label: string;
       type: string;
-      info: IntTypeInfo;
+      info: Integer;
       value: number;
     };
 
@@ -119,13 +82,13 @@ function activeBitAction(c: SceneContext): BitAction | null {
     const beforeRaw = prev ? prev.pane.slice(...op.span) : op.value;
     const beforeVal = extractInt(beforeRaw) ?? Number.parseInt(op.value, 10);
     const afterVal = Number.parseInt(op.value, 10);
-    const fromInfo = typeInfo(op.from);
-    const toInfo = typeInfo(op.to);
+    const fromInfo = integerOf(op.from);
+    const toInfo = integerOf(op.to);
     let kind: 'narrow' | 'zero-extend' | 'sign-extend' | 'reinterpret' = 'reinterpret';
     let signBit: 0 | 1 | undefined;
-    if (toInfo.bytes < fromInfo.bytes) {
+    if (toInfo.size < fromInfo.size) {
       kind = 'narrow';
-    } else if (toInfo.bytes > fromInfo.bytes) {
+    } else if (toInfo.size > fromInfo.size) {
       if (fromInfo.signed) {
         kind = 'sign-extend';
         signBit = beforeVal < 0 ? 1 : 0;
@@ -142,7 +105,7 @@ function activeBitAction(c: SceneContext): BitAction | null {
       const afterVal = Number.parseInt(op.value, 10);
       const type =
         step.types?.find(t => !t.slot && t.span[0] === op.span[0])?.type ?? 'int';
-      return { kind: 'invert', type, info: typeInfo(type), beforeVal, afterVal };
+      return { kind: 'invert', type, info: integerOf(type), beforeVal, afterVal };
     }
   }
   if (op && (op.kind === 'read' || op.kind === 'write')) {
@@ -154,7 +117,7 @@ function activeBitAction(c: SceneContext): BitAction | null {
         kind: 'value',
         label: op.kind === 'write' ? `${op.name} = ${num}` : op.name,
         type,
-        info: typeInfo(type),
+        info: integerOf(type),
         value: num,
       };
     }
@@ -167,7 +130,7 @@ function activeBitAction(c: SceneContext): BitAction | null {
         kind: 'value',
         label: slice,
         type: lit.type,
-        info: typeInfo(lit.type),
+        info: integerOf(lit.type),
         value: Number.parseInt(slice, 10),
       };
     }
@@ -181,7 +144,7 @@ function isBitwiseInvert(steps: ExecutionTrace['steps'], i: number): boolean {
   return /^\s*~\s*-?\d+\s*$/.test(steps[i - 1].pane.slice(...step.op.span));
 }
 
-function castStepSeconds(steps: ExecutionTrace['steps'], i: number): number {
+function bitStepSeconds(steps: ExecutionTrace['steps'], i: number): number {
   const step = steps[i];
   if (step.op?.kind === 'convert' || isBitwiseInvert(steps, i)) {
     return step.hold + 2.1;
@@ -189,34 +152,8 @@ function castStepSeconds(steps: ExecutionTrace['steps'], i: number): number {
   return stepSeconds(steps, i);
 }
 
-function castDescribe(c: SceneContext): string {
-  const act = activeBitAction(c);
-  if (act && c.step.op?.kind === 'convert') {
-    if (act.kind === 'narrow') {
-      return (
-        `Narrow ${act.fromType} (${fullHex(act.beforeVal, act.fromInfo.bytes)}) → ` +
-        `${act.toType} (${fullHex(act.afterVal, act.toInfo.bytes)}): drop high ` +
-        `${act.fromInfo.bytes - act.toInfo.bytes} bytes`
-      );
-    }
-    if (act.kind === 'zero-extend') {
-      return (
-        `Widen ${act.fromType} (${fullHex(act.beforeVal, act.fromInfo.bytes)}) → ` +
-        `${act.toType} (${fullHex(act.afterVal, act.toInfo.bytes)}): unsigned zero-extend upper bytes`
-      );
-    }
-    if (act.kind === 'sign-extend') {
-      return (
-        `Widen ${act.fromType} (${fullHex(act.beforeVal, act.fromInfo.bytes)}) → ` +
-        `${act.toType} (${fullHex(act.afterVal, act.toInfo.bytes)}): sign-extend by duplicating bit ${act.signBit}`
-      );
-    }
-  }
-  return describe(c);
-}
-
 // ============================================================================================
-// MEMORY: Overall value + compact hex per byte (driven by Player's LE / BE toggle)
+// MEMORY: the value above its bytes in hex, in the chosen byte order
 // ============================================================================================
 
 function drawTypeLabels(c: SceneContext, live: (l: { name: string }) => boolean): string {
@@ -230,9 +167,9 @@ function drawTypeLabels(c: SceneContext, live: (l: { name: string }) => boolean)
   return out;
 }
 
-function memoryWithByteHex(c: SceneContext): string {
+function memory(c: SceneContext): string {
   const { g, P, step, prev, op } = c;
-  const littleEndian = c.littleEndian ?? true;
+  const { littleEndian } = c;
   const values = op && op.kind === 'write' && prev ? prev.values : step.values;
   const at = op ? arrival(op) : 0;
   const writing = new Set(op && op.kind === 'write' ? g.cellsOf(op.name).map(l => l.name) : []);
@@ -257,7 +194,7 @@ function memoryWithByteHex(c: SceneContext): string {
       }
     }
 
-    // Two-tier cell: top = overall decimal value, bottom = subtle per-byte hex
+    // The value on top, its bytes in hex below
     markup += rect(cell.x, cell.y, cell.w, cell.h, on ? P.panel : P.deadFill, 'none', 0);
 
     const divStroke = on ? P.gapStroke : P.deadStroke;
@@ -293,11 +230,12 @@ function memoryWithByteHex(c: SceneContext): string {
         const decSize = Math.min(28, (cell.w - 14) / (dec.length * CHAR));
         body += text(cell.x + cell.w / 2, cell.y + 36, dec, round(decSize), P.fg, 'middle');
         const hexY = cell.y + 76;
+        body += `<g class="cv-byte-hex" data-name="${cell.name}" opacity="0.86">`;
         for (let i = 0; i < cell.size; i++) {
           const bx = cell.x + i * bw + bw / 2;
-          body += `<g opacity="0.86">${text(bx, hexY, hexByte(bytes[i]), 15.5, P.fg, 'middle')}</g>`;
+          body += text(bx, hexY, hexByte(bytes[i]), 15.5, P.fg, 'middle');
         }
-        return body;
+        return body + '</g>';
       };
 
       const cx = cell.x + cell.w / 2;
@@ -312,7 +250,7 @@ function memoryWithByteHex(c: SceneContext): string {
       }
     }
 
-    // Clear lowest-to-highest significance direction arrow across multi-byte cells
+    // An arrow from the least to the most significant byte
     if (cell.size > 1) {
       const ay = cell.y + cell.h + 10;
       const dir = littleEndian ? 1 : -1;
@@ -342,7 +280,7 @@ function memoryWithByteHex(c: SceneContext): string {
 }
 
 // ============================================================================================
-// EXECUTION PANE: Lab-3 workbench (bits above hex, MSB left)
+// PANE: the workbench, bits above hex, most significant bit left
 // ============================================================================================
 
 const BIT_FONT = 22;
@@ -369,14 +307,14 @@ const bitCx = (x: number, i: number): number =>
 function drawByte(x: number, yBits: number, yHex: number, byte: number, ink: ByteInk): string {
   const bits = byte.toString(2).padStart(8, '0');
   const hex = hexByte(byte);
-  let out = '';
+  let out = `<g class="cv-bit-byte" data-bits="${bits}">`;
   for (let i = 0; i < 8; i++) {
     const color = i === 0 && ink.msb ? ink.msb : ink.bits;
     out += text(bitCx(x, i), yBits, bits[i], BIT_FONT, color, 'middle');
   }
   out += text(x + NIBBLE_W / 2, yHex, hex[0], HEX_FONT, ink.hex, 'middle');
   out += text(x + NIBBLE_W + NIB_GAP + NIBBLE_W / 2, yHex, hex[1], HEX_FONT, ink.hex, 'middle');
-  return out;
+  return out + '</g>';
 }
 
 const BOX_TOP = BIT_FONT * 0.78 + 4;
@@ -396,7 +334,7 @@ const scaled = (cx: number, cy: number, inner: string, begin: number): string =>
   `<g transform="translate(${round(cx)} ${round(cy)})"><g>${pulse(begin)}` +
   `<g transform="translate(${round(-cx)} ${round(-cy)})">${inner}</g></g></g>`;
 
-function workbenchClean(c: SceneContext): string {
+function workbench(c: SceneContext): string {
   const act = activeBitAction(c);
   if (!act) return '';
   const { g, P, animate, op } = c;
@@ -423,8 +361,8 @@ function workbenchClean(c: SceneContext): string {
   const result = (at: number, label: string, color: string): string =>
     reveal(at, text(rightAnchor + 20, yRes, label, RESULT_FONT, color));
   /** Bytes of `value` (MSB first) laid out right-aligned. */
-  const plainValue = (value: number, info: IntTypeInfo, hexInk: string): string => {
-    const bytes = toBytesMSB(value, info.bytes);
+  const plainValue = (value: number, info: Integer, hexInk: string): string => {
+    const bytes = toBytesMSB(value, info.size);
     let out = '';
     bytes.forEach((b, idx) => {
       out += drawByte(slotX(bytes.length - 1 - idx), yBits, yHex, b, { bits: P.fg, hex: hexInk });
@@ -444,23 +382,23 @@ function workbenchClean(c: SceneContext): string {
     const label = `= ${act.value}`;
     return reveal(
       appearAt,
-      card(act.info.bytes, label) + plainValue(act.value, act.info, col) + text(rightAnchor + 20, yRes, label, RESULT_FONT, col)
+      card(act.info.size, label) + plainValue(act.value, act.info, col) + text(rightAnchor + 20, yRes, label, RESULT_FONT, col)
     );
   }
 
   if (act.kind === 'invert') {
     const at = op ? arrival(op) : T.evaluate;
-    const after = toBytesMSB(act.afterVal, act.info.bytes);
+    const after = toBytesMSB(act.afterVal, act.info.size);
     let inverted = '';
     after.forEach((b, idx) => {
       inverted += drawByte(slotX(after.length - 1 - idx), yBits, yHex, b, { bits: P.write, hex: P.write });
     });
     const label = `→ ${act.afterVal}`;
-    return card(act.info.bytes, label) + swap(at, plainValue(act.beforeVal, act.info, P.fg), inverted) + result(at + 0.18, label, P.write);
+    return card(act.info.size, label) + swap(at, plainValue(act.beforeVal, act.info, P.fg), inverted) + result(at + 0.18, label, P.write);
   }
 
-  const fromBytes = toBytesMSB(act.beforeVal, act.fromInfo.bytes);
-  const toBytes = toBytesMSB(act.afterVal, act.toInfo.bytes);
+  const fromBytes = toBytesMSB(act.beforeVal, act.fromInfo.size);
+  const toBytes = toBytesMSB(act.afterVal, act.toInfo.size);
   const fromCol = typeColour(c, act.fromType);
   const toCol = typeColour(c, act.toType);
   const at = op ? arrival(op) : T.evaluate;
@@ -580,147 +518,33 @@ function workbenchClean(c: SceneContext): string {
   return out + result(at + 0.12, label, toCol);
 }
 
-// ============================================================================================
-// Player hooks & prototype page controller
-// ============================================================================================
+function bitsScene(c: SceneContext): string {
+  const { step, prev, animate } = c;
+  const lineChanged = animate && prev !== null && prev.line !== step.line;
+  const oldLine = lineChanged && prev ? prev.line : null;
+  return (
+    code(c, oldLine) +
+    tether(c, oldLine) +
+    arrows(c) +
+    memory(c) +
+    pane(c, animate && copies(c.m.steps, c.index)) +
+    workbench(c) +
+    output(c) +
+    transfers(c)
+  );
+}
 
-function hooksFor(
-  littleEndian: boolean,
-  onEndianChange?: (le: boolean) => void
-): PlayerHooks {
-  const geomOpts: GeometryOptions = {
+export const BITS_VIEW: TraceView = {
+  geometry: {
     minByteWidth: 66,
     minColumnWidth: 680,
     cellHeight: 88,
     extraPaneHeight: 120,
     skipWrap: true,
-  };
-  return {
-    stackBelow: 900,
-    maxScale: 0.78,
-    endian: { littleEndian, onChange: onEndianChange },
-    geometry: (m: PreparedModel, P: Palette, stacked: boolean, width: number): Geometry =>
-      geometry(m, P, stacked, width, geomOpts),
-    stepSeconds: castStepSeconds,
-    describe: castDescribe,
-    scene: (c: SceneContext): string => {
-      const { step, prev, animate } = c;
-      const lineChanged = animate && prev !== null && prev.line !== step.line;
-      const copying = animate && copies(c.m.steps, c.index);
-      const oldLine = lineChanged && prev ? prev.line : null;
-      return (
-        code(c, oldLine) +
-        tether(c, oldLine) +
-        arrows(c) +
-        memoryWithByteHex(c) +
-        pane(c, copying) +
-        workbenchClean(c) +
-        output(c) +
-        transfers(c)
-      );
-    },
-  };
-}
-
-declare global {
-  interface Window {
-    CastsPrototype?: {
-      traces: ExecutionTrace[];
-    };
-  }
-}
-
-function boot(): void {
-  const data = window.CastsPrototype?.traces ?? [];
-  const params = new URLSearchParams(location.search);
-  const state = { littleEndian: params.get('endian') !== 'be' };
-  document.documentElement.dataset.theme = params.get('theme') || 'dark';
-
-  const sections = document.getElementById('sections')!;
-  const players: Player[] = [];
-
-  sections.innerHTML = data
-    .map(
-      (t, i) =>
-        `<section class="proto-case"><h2>${i + 1}. ${esc(t.title ?? '')}</h2>` +
-        `<pre><code>${esc(t.source.join('\n'))}</code></pre>` +
-        `<details data-case="${i}"${i <= 2 || params.get('open') === 'all' ? ' open' : ''}>` +
-        `<summary>Execution trace</summary><div class="slot"></div></details></section>`
-    )
-    .join('');
-
-  function syncUrl(): void {
-    const url = new URL(location.href);
-    url.searchParams.set('endian', state.littleEndian ? 'le' : 'be');
-    url.searchParams.set('theme', document.documentElement.dataset.theme || 'dark');
-    history.replaceState(null, '', url);
-  }
-
-  function mount(): void {
-    const savedIndices = new Map<number, number>();
-    const savedEndian = new Map<number, boolean>();
-    for (const details of sections.querySelectorAll<HTMLDetailsElement>('details')) {
-      const idx = Number(details.dataset.case);
-      const old = players[idx];
-      if (old) {
-        savedIndices.set(idx, old.index);
-        savedEndian.set(idx, old.littleEndian);
-        old.disconnect();
-      }
-    }
-    players.length = 0;
-
-    for (const details of sections.querySelectorAll<HTMLDetailsElement>('details')) {
-      const idx = Number(details.dataset.case);
-      const slot = details.querySelector<HTMLElement>('.slot')!;
-      slot.innerHTML = '<div class="course-visualization"></div>';
-      const host = slot.firstElementChild as HTMLElement;
-      const le = savedEndian.get(idx) ?? state.littleEndian;
-      const player = new Player(
-        host,
-        data[idx],
-        hooksFor(le, nextLe => {
-          state.littleEndian = nextLe;
-          syncUrl();
-        })
-      );
-      const want = savedIndices.get(idx);
-      if (want) {
-        player.pristine = false;
-        player.settle(want);
-      }
-      players[idx] = player;
-      (host as HTMLElement & { cvPlayer?: Player }).cvPlayer = player;
-    }
-
-    syncUrl();
-  }
-
-  sections.addEventListener(
-    'toggle',
-    event => {
-      const details = event.target;
-      if (!(details instanceof HTMLDetailsElement) || !details.open) return;
-      const idx = Number(details.dataset.case);
-      requestAnimationFrame(() => players[idx]?.refresh());
-    },
-    true
-  );
-
-  document.getElementById('theme')!.onclick = () => {
-    const root = document.documentElement;
-    root.dataset.theme = root.dataset.theme === 'dark' ? 'light' : 'dark';
-    for (const p of players) p.refresh();
-    syncUrl();
-  };
-
-  mount();
-}
-
-if (typeof window !== 'undefined') {
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', boot);
-  } else {
-    boot();
-  }
-}
+  },
+  stackBelow: 900,
+  maxScale: 0.78,
+  byteOrder: true,
+  scene: bitsScene,
+  stepSeconds: bitStepSeconds,
+};

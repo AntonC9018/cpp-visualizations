@@ -85,7 +85,8 @@ red, blue), each at least 3:1 against the stage. Reads use `#2f64d6` on `#d9e5ff
 ```text
 trace     = {format: 1, source: [line…], variables: [variable…], steps: [step…],
              title?: text, spans?: [span | null per source line],
-             types?: {struct name: definition text}, references?: [{name, color}…]}
+             types?: {struct name: definition text}, bits?: true,
+             references?: [{name, color}…]}
 variable  = {name, address, size, kind: "int" | "ptr", color, type?}
           | {name, address, size, kind: "struct", color, type, fields: [field…]}
 field     = {name, offset, size, kind: "int" | "ptr", color}
@@ -109,6 +110,11 @@ span      = [start, end)  — character offsets
   and contiguous fields named `[0]` through `[N-1]`. In storage maps and operation targets,
   dots separate all path components (`matrix.[0].[1]`). The pane spells the same access
   as C++ (`matrix[0][1]`), including when an alias or dereference substitutes its target.
+- `bits` draws integers as bytes and bits: memory shows each value above its bytes in hex, in
+  the byte order of a Little-endian / Big-endian switch the player adds, and the pane shows the
+  value's bits above their hex. Narrowing strikes out the dropped bytes; widening a signed value
+  carries its sign bit into the new bytes, widening an unsigned one fills zeros. Every variable
+  is then a typed integer, and there are no references.
 - `references` are names without storage. `refs` maps each reference bound so far to the
   variable or leaf it names; it only ever grows, by a `bind`.
 - A scalar's `type` is its declared type as the lessons write it (`int*`, `uint8_t`); the

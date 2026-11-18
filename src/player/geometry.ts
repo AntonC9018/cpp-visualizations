@@ -82,12 +82,16 @@ export interface TypeTarget extends PlacedRect {
   underline?: boolean;
 }
 
+/** What a view changes about the default geometry (see `views.ts`). */
 export interface GeometryOptions {
+  /** Units per byte at least, so a byte has room for its hex. */
   minByteWidth?: number;
+  /** Width of the code's neighbouring column at least. */
   minColumnWidth?: number;
   cellHeight?: number;
+  /** Room under the pane's text, for the view's own drawing. */
   extraPaneHeight?: number;
-  extraMemBottom?: number;
+  /** Keep memory on one row. */
   skipWrap?: boolean;
 }
 
@@ -485,7 +489,6 @@ export function geometry(
   options: GeometryOptions = {}
 ): Geometry {
   const cellH = options.cellHeight ?? CELL;
-  const extraMemBottom = options.extraMemBottom ?? 0;
   const extraPaneHeight = options.extraPaneHeight ?? 0;
   const minByteWidth = options.minByteWidth ?? 0;
   const isStruct = (c: { fields?: unknown }): c is PlacedGroup => Boolean(c.fields);
@@ -527,7 +530,6 @@ export function geometry(
     m.steps.every(step => Object.keys(step.targets).length === 0);
   const pitch =
     (structs ? cellH + FRAME.bottom + 32 : cellH + 34) +
-    extraMemBottom +
     rise * RISE.bottom +
     (structs ? FRAME.top : 0) +
     30 +
@@ -666,10 +668,7 @@ export function geometry(
   const labelHeight = m.typed ? LABEL.rise + Math.max(0, labelExtent.rows - 1) * LABEL.row : 0;
   const labelRise = m.typed ? labelHeight + 6 : 0;
   const named =
-    (structs ? cellH + FRAME.bottom + 32 : cellH + 34) +
-    extraMemBottom +
-    rise * RISE.bottom +
-    tagged.height;
+    (structs ? cellH + FRAME.bottom + 32 : cellH + 34) + rise * RISE.bottom + tagged.height;
   const names = named + typeRow.height;
   const paneTop = room + names + extraRows * pitch + 56;
   const paneH = 76 + labelRise + extraPaneHeight;

@@ -4,11 +4,9 @@ import {
   FIELD_COLOURS,
   type IconName,
   KEYWORDS,
-  MAX_SCALE,
   PALETTE,
   type Palette,
   type PlayerStrings,
-  STACK_BELOW,
   T,
   TYPE_COLOURS,
   VARIABLE_COLOURS,
@@ -17,32 +15,21 @@ import {
   themeName,
 } from './constants.ts';
 import { type Geometry, type TypeTarget, geometry } from './geometry.ts';
-import { type PreparedModel, activeVariables, arrival, prepare, stepSeconds } from './model.ts';
-import { type SceneContext, describe, lineTargets, placeLineTargets, scene } from './scene.ts';
+import { type PreparedModel, activeVariables, arrival, prepare } from './model.ts';
+import { type SceneContext, describe, lineTargets, placeLineTargets } from './scene.ts';
 import { esc } from './svg.ts';
-
-export interface PlayerHooks {
-  geometry?: (m: PreparedModel, P: Palette, stacked: boolean, width: number) => Geometry;
-  scene?: (c: SceneContext) => string;
-  stepSeconds?: (steps: ExecutionTrace['steps'], i: number) => number;
-  describe?: (c: SceneContext) => string;
-  stackBelow?: number;
-  maxScale?: number;
-  endian?: {
-    littleEndian: boolean;
-    onChange?: (littleEndian: boolean) => void;
-  };
-}
+import { type TraceView, viewOf } from './views.ts';
 
 export class Player {
   host: HTMLElement;
   m: PreparedModel;
   S: PlayerStrings;
-  hooks?: PlayerHooks;
+  view: TraceView;
   index: number;
   elapsed: number;
   duration: number;
   rate: number;
+  /** Memory's byte order, for a view that draws bytes. */
   littleEndian: boolean;
   running: boolean;
   continuous: boolean;
@@ -67,16 +54,16 @@ export class Player {
   g!: Geometry;
   shownType: TypeTarget | null;
 
-  constructor(host: HTMLElement, trace: ExecutionTrace, hooks?: PlayerHooks) {
+  constructor(host: HTMLElement, trace: ExecutionTrace) {
     this.host = host;
     this.m = prepare(trace);
     this.S = strings();
-    this.hooks = hooks;
+    this.view = viewOf(this.m);
     this.index = 0;
     this.elapsed = 0;
     this.duration = 0;
     this.rate = 1;
-    this.littleEndian = hooks?.endian?.littleEndian ?? true;
+    this.littleEndian = true;
     this.running = false;
     this.continuous = false;
     this.pristine = true;
@@ -102,12 +89,13 @@ export class Player {
       `<button type="button" class="cv-button${extra}" ` +
       `data-action="${action}" aria-label="${esc(label)}" title="${esc(label)}">${icon(iconName)}` +
       `<span class="cv-label">${esc(label)}</span></button>`;
-    const endianToggle = this.hooks?.endian
+    const order = (side: 'le' | 'be', label: string, title: string): string =>
+      `<button type="button" class="cv-endian-seg" data-endian-side="${side}" ` +
+      `aria-pressed="${(side === 'le') === this.littleEndian}" title="${esc(title)}">${esc(label)}</button>`;
+    const endianToggle = this.view.byteOrder
       ? `<div class="cv-endian" role="group" aria-label="${esc(S.byteOrder)}">` +
-        `<button type="button" class="cv-endian-seg" data-endian-side="le" ` +
-        `aria-pressed="${this.littleEndian}" title="${esc(S.littleEndian)}">${esc(S.littleEndianShort)}</button>` +
-        `<button type="button" class="cv-endian-seg" data-endian-side="be" ` +
-        `aria-pressed="${!this.littleEndian}" title="${esc(S.bigEndian)}">${esc(S.bigEndianShort)}</button>` +
+        order('le', S.littleEndianShort, S.littleEndian) +
+        order('be', S.bigEndianShort, S.bigEndian) +
         '</div>'
       : '';
     root.innerHTML =
@@ -145,21 +133,8 @@ export class Player {
       if (target && target.dataset.action) {
         this.invokeAction(target.dataset.action);
       }
-      const endianSeg = (event.target as Element | null)?.closest('[data-endian-side]') as HTMLElement | null;
-      if (endianSeg) {
-        const nextLe = endianSeg.dataset.endianSide === 'le';
-        if (nextLe !== this.littleEndian) {
-          this.littleEndian = nextLe;
-          const group = endianSeg.closest('.cv-endian');
-          if (group) {
-            for (const opt of group.querySelectorAll<HTMLElement>('[data-endian-side]')) {
-              opt.setAttribute('aria-pressed', String((opt.dataset.endianSide === 'le') === nextLe));
-            }
-          }
-          this.hooks?.endian?.onChange?.(nextLe);
-          this.refresh();
-        }
-      }
+      const side = (event.target as Element | null)?.closest('[data-endian-side]') as HTMLElement | null;
+      if (side) this.byteOrder(side.dataset.endianSide === 'le');
     });
     root.querySelector('.cv-speed')!.addEventListener('change', event => {
       this.rate = Number((event.target as HTMLSelectElement).value);
@@ -186,6 +161,16 @@ export class Player {
       });
       this.observer.observe(root);
     }
+  }
+
+  /** Draw memory in the given byte order. */
+  byteOrder(littleEndian: boolean): void {
+    if (littleEndian === this.littleEndian) return;
+    this.littleEndian = littleEndian;
+    for (const side of this.root.querySelectorAll<HTMLElement>('[data-endian-side]')) {
+      side.setAttribute('aria-pressed', String((side.dataset.endianSide === 'le') === littleEndian));
+    }
+    this.refresh();
   }
 
   private invokeAction(action: string): void {
@@ -312,10 +297,8 @@ export class Player {
   render(animate: boolean): void {
     const width = this.root.clientWidth;
     if (width !== this.layoutWidth) {
-      this.stacked = width > 0 && width < (this.hooks?.stackBelow ?? STACK_BELOW);
-      this.g = this.hooks?.geometry
-        ? this.hooks.geometry(this.m, this.P, this.stacked, width)
-        : geometry(this.m, this.P, this.stacked, width);
+      this.stacked = width > 0 && width < this.view.stackBelow;
+      this.g = geometry(this.m, this.P, this.stacked, width, this.view.geometry);
       this.layoutWidth = width;
       this.shownType = null;
       this.typeBox.hidden = true;
@@ -345,13 +328,12 @@ export class Player {
     };
     this.animated = animate;
     this.svg.setAttribute('viewBox', `0 0 ${Math.ceil(g.width)} ${Math.ceil(g.height)}`);
-    this.svg.style.maxWidth = `${Math.ceil(g.width * (this.hooks?.maxScale ?? MAX_SCALE))}px`;
-    const body = this.hooks?.scene ? this.hooks.scene(c) : scene(c);
-    this.scene.innerHTML = `<rect width="100%" height="100%" fill="${this.P.bg}"/>` + body;
+    this.svg.style.maxWidth = `${Math.ceil(g.width * this.view.maxScale)}px`;
+    this.scene.innerHTML = `<rect width="100%" height="100%" fill="${this.P.bg}"/>` + this.view.scene(c);
     placeLineTargets(g, this.lines);
     this.finishPaths();
     this.seek(0);
-    this.update(this.hooks?.describe ? this.hooks.describe(c) : describe(c));
+    this.update(describe(c));
   }
 
   finishPaths(): void {
@@ -438,9 +420,7 @@ export class Player {
     this.continuous = autoplay;
     this.index = index;
     this.elapsed = 0;
-    this.duration = this.hooks?.stepSeconds
-      ? this.hooks.stepSeconds(this.m.steps, index)
-      : stepSeconds(this.m.steps, index);
+    this.duration = this.view.stepSeconds(this.m.steps, index);
     this.render(true);
     if (this.duration > 0 || autoplay) this.resume();
   }

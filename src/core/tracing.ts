@@ -6,6 +6,7 @@
 
 import { arrayType, codeName, elementLabel, operatorName, resolveArrayAliases } from './arrays.ts';
 import { type AstNode, type CompilerFrontend, IllFormed, Unsupported } from './errors.ts';
+import { Integer, integerSpelled } from './integers.ts';
 import type { Flags } from './settings.ts';
 import {
   type Record as RecordInfo,
@@ -42,6 +43,8 @@ import {
   validate,
   whitespaceOutput,
 } from './trace_format.ts';
+
+export { INTEGERS, Integer } from './integers.ts';
 
 export { IllFormed, Unsupported };
 
@@ -162,72 +165,10 @@ function isPlainObject(value: unknown): value is StructValue {
   return typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Pointer);
 }
 
-/** A builtin integer type: its bytes and whether it is signed. Arithmetic is exact in bigint. */
-export class Integer {
-  readonly size: number;
-  readonly signed: boolean;
-
-  constructor(size: number, signed: boolean) {
-    this.size = size;
-    this.signed = signed;
-    Object.freeze(this);
-  }
-
-  /** `value` converted to this type: its low bits, as every conversion keeps them. */
-  wrap(value: bigint): bigint {
-    return this.signed ? BigInt.asIntN(8 * this.size, value) : BigInt.asUintN(8 * this.size, value);
-  }
-
-  holds(value: bigint): boolean {
-    return this.wrap(value) === value;
-  }
-
-  /** The result of arithmetic in this type: unsigned wraps, signed overflow is undefined. */
-  result(value: bigint): bigint {
-    if (this.signed && !this.holds(value)) {
-      throw new Unsupported('signed integer overflow is outside the timeline category');
-    }
-    return this.wrap(value);
-  }
-}
-
-// By Clang's canonical spelling, with the sizes of the pinned x86-64 toolchain; GDB checks the
-// size of every cell. `char` and `bool` are not numbers in the lessons and stay out.
-export const INTEGERS: Readonly<Record<string, Integer>> = Object.freeze({
-  'signed char': new Integer(1, true),
-  'unsigned char': new Integer(1, false),
-  short: new Integer(2, true),
-  'unsigned short': new Integer(2, false),
-  int: new Integer(4, true),
-  'unsigned int': new Integer(4, false),
-  long: new Integer(8, true),
-  'unsigned long': new Integer(8, false),
-  'long long': new Integer(8, true),
-  'unsigned long long': new Integer(8, false),
-});
-
-// Clang resolves an alias only where it is the whole type, not under a pointer (`uint8_t *`).
-const ALIASES: Readonly<Record<string, string>> = Object.freeze({
-  size_t: 'unsigned long',
-  ptrdiff_t: 'long',
-  intptr_t: 'long',
-  uintptr_t: 'unsigned long',
-  int8_t: 'signed char',
-  uint8_t: 'unsigned char',
-  int16_t: 'short',
-  uint16_t: 'unsigned short',
-  int32_t: 'int',
-  uint32_t: 'unsigned int',
-  int64_t: 'long',
-  uint64_t: 'unsigned long',
-});
-
 /** The integer type a spelling names, unless the snippet has a struct of that name. */
 function integerNamed(spelling: string, records: unknown = {}): Integer | null {
-  const name = spelling.replace(/^const /, '').replace(/^std::/, '');
-  if (hasRecord(records, name)) return null;
-  const canonical = Object.hasOwn(ALIASES, name) ? ALIASES[name] : name;
-  return Object.hasOwn(INTEGERS, canonical) ? INTEGERS[canonical] : null;
+  if (hasRecord(records, spelling.replace(/^const /, '').replace(/^std::/, ''))) return null;
+  return integerSpelled(spelling);
 }
 
 /** The integer type of an expression or declaration, behind any alias (`uint8_t`). */
@@ -2094,7 +2035,8 @@ class Renderer {
 /**
  * How to trace, with the flags of `settings.ts`. `types`: the pane and memory carry types, a
  * conversion is a step of its own, and a last statement whose types do not fit is shown as a
- * final step that does not run.
+ * final step that does not run. `bits`: the player draws integers as bytes and bits; it implies
+ * `types` and takes integer variables only.
  */
 export interface TraceOptions extends Flags {
   runtime?: boolean;
@@ -2110,7 +2052,8 @@ export interface TraceOptions extends Flags {
  * layout is Clang's usual -O0 layout.
  */
 export function traceWithFrontend(source: string, options: TraceOptions): ExecutionTrace {
-  const { runtime = true, types = false, frontend, executor = hooks.execute, directory } = options;
+  const { runtime = true, bits = false, frontend, executor = hooks.execute, directory } = options;
+  const types = bits || (options.types ?? false);
   let body = snippetBody(source);
   let mismatch: Mismatch | null = null;
   let statements: Statement[];
@@ -2176,6 +2119,9 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
         scalar(name, top, size, declaration.pointer ? 'ptr' : 'int', color, types ? declaration.type : null)
       );
     }
+  }
+  if (bits && (Object.keys(references).length > 0 || variables.some(v => v.kind !== 'int'))) {
+    throw new Unsupported('bits draw integer variables only');
   }
   let addresses: Record<string, number>;
   let states: State[];
@@ -2269,6 +2215,9 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
   }
   if (hasRefs) {
     result.references = Object.values(references);
+  }
+  if (bits) {
+    result.bits = true;
   }
   try {
     validate(result);

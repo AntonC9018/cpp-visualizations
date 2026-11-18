@@ -6,6 +6,7 @@
 // `player/README.md` documents every field.
 
 import { arrayType, codeName, elementLabel } from './arrays.ts';
+import { integerSpelled } from './integers.ts';
 
 export const FORMAT = 1;
 export type ScalarKind = 'int' | 'ptr';
@@ -197,6 +198,8 @@ export interface ExecutionTrace {
   source: string[];
   spans?: (Span | null)[];
   types?: Record<string, string>;
+  /** Draw integers as bytes and bits; every variable is then a typed integer. */
+  bits?: true;
   variables: TraceVariable[];
   references?: TraceReference[];
   steps: TraceStep[];
@@ -950,7 +953,7 @@ export function validate(trace: unknown): asserts trace is AnyTrace {
     trace,
     'trace',
     ['format', 'source', 'variables', 'steps'],
-    ['title', 'spans', 'types', 'references']
+    ['title', 'spans', 'types', 'bits', 'references']
   );
   check(trace.format === FORMAT, 'trace.format', `expected ${FORMAT}`);
   const { source } = trace;
@@ -988,6 +991,15 @@ export function validate(trace: unknown): asserts trace is AnyTrace {
   }
   const variables = trace.variables as TraceVariable[];
   const cells = checkVariables(variables, 'trace.variables');
+  if (Object.hasOwn(trace, 'bits')) {
+    check(trace.bits === true, 'trace.bits', 'expected true');
+    check(
+      !Object.hasOwn(trace, 'references') &&
+        variables.every(v => v.kind === 'int' && integerSpelled(v.type ?? '')?.size === v.size),
+      'trace.bits',
+      'expected only integer variables, each with its type'
+    );
+  }
   const references = Object.hasOwn(trace, 'references')
     ? checkReferences(trace.references, variables, 'trace.references')
     : new Set<string>();

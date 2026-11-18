@@ -29,11 +29,6 @@ const BUILD_ENTRIES: Record<string, BuildEntry> = {
     name: 'CoursePlaygroundBundle',
     fileName: 'playground.js',
   },
-  casts: {
-    entry: resolve(ROOT, 'src/player/casts_prototype.ts'),
-    name: 'CastsPrototypeBundle',
-    fileName: 'casts-prototype.js',
-  },
 };
 
 export default defineConfig(({ mode }) => {

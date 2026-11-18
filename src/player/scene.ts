@@ -67,7 +67,7 @@ export interface SceneContext {
   animate: boolean;
   op: TraceStep['op'];
   focus: SceneFocus;
-  littleEndian?: boolean;
+  littleEndian: boolean;
 }
 
 export function colored(
@@ -865,25 +865,7 @@ function output(c: SceneContext): string {
   return out;
 }
 
-export {
-  arrows,
-  code,
-  dim,
-  exprBackground,
-  labelTop,
-  memory,
-  output,
-  pane,
-  paneBody,
-  paneText,
-  paneTypes,
-  settledPane,
-  tether,
-  transfers,
-  typeColour,
-  typeLabel,
-  valueBox,
-};
+export { arrows, code, dim, output, pane, tether, transfers, typeColour, typeLabel };
 
 export function scene(c: SceneContext): string {
   const { step, prev, animate } = c;

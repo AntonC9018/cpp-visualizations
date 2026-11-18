@@ -225,3 +225,32 @@ describe('RuntimeConversionTests', () => {
     });
   });
 });
+
+describe('BitsTests', () => {
+  const bits = (source: string): ExecutionTrace => tracing.trace(source, { runtime: false, bits: true });
+
+  test('bits_imply_types_and_mark_the_trace', () => {
+    const t = bits('int8_t a{ -3 }; int b{ static_cast<int>(a) };');
+    assert.equal(t.bits, true);
+    assert.deepEqual(conversions(t, 1), [['int b = static_cast<int>(-3)', 'int b = -3', 'int8_t', 'int']]);
+    assert.deepEqual(
+      t.variables.map(v => [v.name, v.type]),
+      [
+        ['b', 'int'],
+        ['a', 'int8_t'],
+      ]
+    );
+  });
+
+  test('bits_take_integer_variables_only', () => {
+    throwsUnsupported(() => bits('int a{ 5 }; int* p{ &a };'), /integer variables only/);
+    throwsUnsupported(() => bits('int a{ 5 }; int& r{ a };'), /integer variables only/);
+    throwsUnsupported(() => bits('struct A { int x; }; A a{ 1 };'), /integer variables only/);
+  });
+
+  test('a_bits_trace_with_a_pointer_is_invalid', () => {
+    const t = tracing.trace('int a{ 5 }; int* p{ &a };', { runtime: false, types: true });
+    assert.throws(() => validate({ ...t, bits: true }), FormatError);
+    assert.throws(() => validate({ ...bits('int a{ 5 };'), bits: false }), FormatError);
+  });
+});

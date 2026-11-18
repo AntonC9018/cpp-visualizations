@@ -77,6 +77,12 @@ export const PRESETS: readonly PlaygroundPreset[] = [
     source: ['uint8_t a = 200;', 'int b = a + a;', 'int* p = b;'].join('\n'),
   },
   {
+    id: 'bits-widening',
+    settings: { template: 'expression-timeline', flags: { bits: true } },
+    label: { en: 'Bits: narrowing & sign extension', ru: 'Биты: сужение и расширение знака' },
+    source: ['int c = -200;', 'int8_t d = static_cast<int8_t>(c);', 'int e = d;', 'uint8_t f = 200;', 'int g = f;'].join('\n'),
+  },
+  {
     id: 'layout-padding',
     settings: { template: 'layout', flags: {} },
     label: { en: 'Struct padding & alignment', ru: 'Выравнивание и заполнение полей' },
