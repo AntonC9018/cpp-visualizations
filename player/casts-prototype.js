@@ -2090,15 +2090,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     if (((_a = step.op) == null ? void 0 : _a.kind) !== "eval" || i === 0) return false;
     return /^\s*~\s*-?\d+\s*$/.test(steps[i - 1].pane.slice(...step.op.span));
   }
-  function castStepSeconds(variant) {
-    return (steps, i) => {
-      var _a;
-      const step = steps[i];
-      if (((_a = step.op) == null ? void 0 : _a.kind) === "convert" || isBitwiseInvert(steps, i)) {
-        return step.hold + (variant === "C" ? 2.15 : 1.85);
-      }
-      return stepSeconds(steps, i);
-    };
+  function castStepSeconds(steps, i) {
+    var _a;
+    const step = steps[i];
+    if (((_a = step.op) == null ? void 0 : _a.kind) === "convert" || isBitwiseInvert(steps, i)) {
+      return step.hold + 2.1;
+    }
+    return stepSeconds(steps, i);
   }
   function castDescribe(c) {
     var _a;
@@ -2111,63 +2109,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         return `Widen ${act.fromType} (${fullHex(act.beforeVal, act.fromInfo.bytes)}) → ${act.toType} (${fullHex(act.afterVal, act.toInfo.bytes)}): zero-extend upper bytes`;
       }
       if (act.kind === "sign-extend") {
-        return `Widen ${act.fromType} (${fullHex(act.beforeVal, act.fromInfo.bytes)}) → ${act.toType} (${fullHex(act.afterVal, act.toInfo.bytes)}): sign-extend with 1s`;
+        return `Widen ${act.fromType} (${fullHex(act.beforeVal, act.fromInfo.bytes)}) → ${act.toType} (${fullHex(act.afterVal, act.toInfo.bytes)}): sign-extend by duplicating bit 1`;
       }
     }
     return describe(c);
-  }
-  function drawCellChrome(c, cell, on, showByteTicks, extraSubLabel, addressOrderSubTicks) {
-    const { g, P } = c;
-    const color = cell.fieldColor || cell.color;
-    let markup = "";
-    markup += text(cell.x + 3, cell.y - 12, cell.address, 17, on ? P.muted : P.grey);
-    if (addressOrderSubTicks && cell.size > 1) {
-      const bw = cell.w / cell.size;
-      for (let i = 1; i < cell.size; i++) {
-        markup += text(cell.x + i * bw + 6, cell.y - 12, cell.address + i, 15, P.grey);
-      }
-    }
-    markup += rect(cell.x, cell.y, cell.w, cell.h, on ? P.panel : P.deadFill, "none", 0);
-    if (cell.size > 1) {
-      const bw = cell.w / cell.size;
-      for (let i = 1; i < cell.size; i++) {
-        const lx = round(cell.x + i * bw);
-        if (showByteTicks) {
-          markup += `<line x1="${lx}" y1="${cell.y + 3}" x2="${lx}" y2="${cell.y + 11}" stroke="${P.deadStroke}" stroke-width="1.8"/><line x1="${lx}" y1="${cell.y + cell.h - 11}" x2="${lx}" y2="${cell.y + cell.h - 3}" stroke="${P.deadStroke}" stroke-width="1.8"/>`;
-        } else {
-          markup += `<line x1="${lx}" y1="${cell.y + 3}" x2="${lx}" y2="${cell.y + cell.h - 3}" stroke="${on ? P.gapStroke : P.deadStroke}" stroke-width="1.4" stroke-dasharray="4 3"/>`;
-        }
-      }
-    }
-    markup += rect(
-      cell.x + 1.5,
-      cell.y + 1.5,
-      cell.w - 3,
-      cell.h - 3,
-      "none",
-      on ? color : P.deadStroke,
-      0,
-      3
-    );
-    markup += text(
-      cell.x + cell.w / 2,
-      cell.y + cell.h + 34,
-      cell.label,
-      g.nameSize,
-      on ? color : P.grey,
-      "middle"
-    );
-    if (extraSubLabel !== null) {
-      markup += text(
-        cell.x + cell.w / 2,
-        cell.y + cell.h + 62,
-        extraSubLabel,
-        19,
-        on ? P.muted : P.grey,
-        "middle"
-      );
-    }
-    return markup;
   }
   function drawTypeLabels(c, live) {
     const { g, P } = c;
@@ -2179,7 +2124,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return out;
   }
-  function memoryVariantA(c) {
+  function memoryWithByteHex(c, style) {
     const { g, P, step, prev, op } = c;
     const values = op && op.kind === "write" && prev ? prev.values : step.values;
     const at = op ? arrival(op) : 0;
@@ -2193,234 +2138,157 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const before = prev ? prev.values[cell.name] : null;
       const after = step.values[cell.name];
       const shownVal = changing ? after : values[cell.name];
-      const decLabel = on && typeof shownVal === "number" ? `= ${shownVal}` : on && shownVal === "?" ? "= ?" : "";
-      let markup = drawCellChrome(c, cell, on, false, decLabel, true);
-      if (on && cell.size > 1) {
-        markup += text(cell.x + 8, cell.y + 18, "LSB", 13, P.grey);
-        markup += text(cell.x + cell.w - 8, cell.y + 18, "MSB", 13, P.grey, "end");
-      }
-      if (on) {
-        const bw = cell.w / cell.size;
-        const beforeBytes = typeof before === "number" ? toBytesLSB(before, cell.size) : null;
-        const afterBytes = typeof after === "number" ? toBytesLSB(after, cell.size) : null;
-        const shownBytes = typeof shownVal === "number" ? toBytesLSB(shownVal, cell.size) : null;
-        const renderByte = (b, bx) => {
-          const [hi, lo] = nibbles(b);
-          return text(bx + bw / 2, cell.y + 56, hexByte(b), 28, P.fg, "middle") + text(bx + bw / 2, cell.y + 92, `${hi} ${lo}`, 15.5, b !== 0 ? color : P.muted, "middle");
-        };
-        for (let i = 0; i < cell.size; i++) {
-          const bx = cell.x + i * bw;
-          const cx = bx + bw / 2;
-          const cy = cell.y + cell.h / 2;
-          if (changing && afterBytes && (!beforeBytes || beforeBytes[i] !== afterBytes[i])) {
-            markup += `<g transform="translate(${round(cx)} ${round(cy)})"><g>${pulse(at - 0.2)}<g transform="translate(${round(-cx)} ${round(-cy)})">`;
-            if (beforeBytes) markup += `<g>${hide(at)}${renderByte(beforeBytes[i], bx)}</g>`;
-            markup += `<g opacity="0">${show(at)}${renderByte(afterBytes[i], bx)}</g>`;
-            markup += "</g></g></g>";
-          } else if (shownBytes) {
-            markup += renderByte(shownBytes[i], bx);
-          } else {
-            markup += text(cx, cell.y + 62, "?", 28, P.grey, "middle");
-          }
+      let markup = "";
+      markup += text(cell.x + 3, cell.y - 12, cell.address, 17, on ? P.muted : P.grey);
+      if (style.littleEndian && cell.size > 1) {
+        const bw2 = cell.w / cell.size;
+        for (let i = 1; i < cell.size; i++) {
+          markup += text(cell.x + i * bw2 + 6, cell.y - 12, cell.address + i, 15, P.grey);
         }
       }
-      out += dim(c, cell.group || cell.name, markup);
-    }
-    return out + drawTypeLabels(c, live);
-  }
-  function byteChip(x, y, w, h, byteVal, fill, stroke, textColor, bitColor) {
-    const [hi, lo] = nibbles(byteVal);
-    return rect(x, y, w, h, fill, stroke, 7, 2) + text(x + w / 2, y + 26, hexByte(byteVal), 22, textColor, "middle") + text(x + w / 2, y + 48, `${hi} ${lo}`, 14.5, bitColor, "middle");
-  }
-  function paneStripVariantA(c) {
-    const act = activeBitAction(c);
-    if (!act) return "";
-    const { g, P, animate } = c;
-    const stripY = g.ty + 26;
-    const chipW = 90;
-    const chipH = 58;
-    const gap = 10;
-    const x0 = g.tx;
-    let out = "";
-    if (act.kind === "narrow" || act.kind === "zero-extend" || act.kind === "sign-extend" || act.kind === "reinterpret") {
-      const fromBytes = toBytesMSB(act.beforeVal, act.fromInfo.bytes);
-      const toBytes = toBytesMSB(act.afterVal, act.toInfo.bytes);
-      const fromCol = typeColour(c, act.fromType);
-      const toCol = typeColour(c, act.toType);
-      if (act.kind === "narrow") {
-        const dropCount = fromBytes.length - toBytes.length;
-        const cutX = x0 + dropCount * (chipW + gap) - gap / 2;
-        for (let i = 0; i < fromBytes.length; i++) {
-          const bx = x0 + i * (chipW + gap);
-          const dropped = i < dropCount;
-          if (dropped) {
-            const settledDropped = `<g opacity="0.45">` + byteChip(bx, stripY + 12, chipW, chipH, fromBytes[i], P.panel, P.error, P.muted, P.muted) + `<line x1="${bx + 8}" y1="${stripY + 20}" x2="${bx + chipW - 8}" y2="${stripY + 12 + chipH - 8}" stroke="${P.error}" stroke-width="2.2"/></g>`;
-            if (animate) {
-              const delay = 0.3 + i * 0.14;
-              out += `<g>${hide(delay)}${byteChip(bx, stripY, chipW, chipH, fromBytes[i], P.panel, fromCol, P.fg, P.muted)}</g><g opacity="0">${show(delay)}<animateTransform attributeName="transform" type="translate" from="0 -10" to="0 0" begin="${round(delay)}s" dur="0.35s" fill="freeze"/>${settledDropped}</g>`;
-            } else {
-              out += settledDropped;
-            }
-          } else {
-            const kept = byteChip(bx, stripY, chipW, chipH, fromBytes[i], P.panel, toCol, P.fg, toCol);
-            if (animate) {
-              const cx = bx + chipW / 2;
-              const cy = stripY + chipH / 2;
-              out += `<g>${hide(0.85)}${byteChip(bx, stripY, chipW, chipH, fromBytes[i], P.panel, fromCol, P.fg, P.muted)}</g><g opacity="0">${show(0.85)}<g transform="translate(${round(cx)} ${round(cy)})"><g>${pulse(0.9)}<g transform="translate(${round(-cx)} ${round(-cy)})">${kept}</g></g></g></g>`;
-            } else {
-              out += kept;
-            }
-          }
+      markup += rect(cell.x, cell.y, cell.w, cell.h, on ? P.panel : P.deadFill, "none", 0);
+      const bw = cell.w / cell.size;
+      const divStroke = on ? P.gapStroke : P.deadStroke;
+      if (style.decimalBelow) {
+        for (let i = 1; i < cell.size; i++) {
+          const lx = round(cell.x + i * bw);
+          markup += `<line x1="${lx}" y1="${cell.y + 3}" x2="${lx}" y2="${cell.y + cell.h - 3}" stroke="${divStroke}" stroke-width="1.3" stroke-dasharray="4 3"/>`;
         }
-        out += `<line x1="${round(cutX)}" y1="${stripY - 4}" x2="${round(cutX)}" y2="${stripY + chipH + 14}" stroke="${P.error}" stroke-width="2.2" stroke-dasharray="5 4"/>`;
-        const noteX = x0 + fromBytes.length * (chipW + gap) + 10;
-        out += text(noteX, stripY + 24, `drop high ${dropCount}B`, 17, P.error);
-        out += text(noteX, stripY + 48, `keep ${fullHex(act.afterVal, act.toInfo.bytes)} (${act.afterVal})`, 17, toCol);
-      } else if (act.kind === "zero-extend" || act.kind === "sign-extend") {
-        const extCount = toBytes.length - fromBytes.length;
-        const extLabel = act.kind === "sign-extend" ? "sign-extend (1s)" : "zero-extend (0s)";
-        for (let i = 0; i < toBytes.length; i++) {
-          const bx = x0 + i * (chipW + gap);
-          const isExt = i < extCount;
-          const chip = byteChip(
-            bx,
-            stripY,
-            chipW,
-            chipH,
-            toBytes[i],
-            P.panel,
-            isExt ? P.write : toCol,
-            P.fg,
-            isExt ? P.write : toCol
-          );
-          if (animate && isExt) {
-            const order = extCount - 1 - i;
-            const delay = 0.35 + order * 0.22;
-            out += `<g opacity="0">${fade(0, 1, 0.28, delay)}<animateTransform attributeName="transform" type="translate" from="16 0" to="0 0" begin="${round(delay)}s" dur="0.3s" fill="freeze"/>${chip}</g>`;
-          } else {
-            out += chip;
-          }
-        }
-        const noteX = x0 + toBytes.length * (chipW + gap) + 10;
-        out += text(noteX, stripY + 24, extLabel, 17, P.write);
-        out += text(noteX, stripY + 48, `${fullHex(act.afterVal, act.toInfo.bytes)} (${act.afterVal})`, 17, toCol);
       } else {
-        for (let i = 0; i < toBytes.length; i++) {
-          const bx = x0 + i * (chipW + gap);
-          out += byteChip(bx, stripY, chipW, chipH, toBytes[i], P.panel, toCol, P.fg, toCol);
-        }
-        const noteX = x0 + toBytes.length * (chipW + gap) + 10;
-        out += text(noteX, stripY + 35, `same bits → ${act.afterVal} (${act.toType})`, 17, toCol);
-      }
-      return out;
-    }
-    if (act.kind === "invert") {
-      const beforeBytes = toBytesMSB(act.beforeVal, act.info.bytes);
-      const afterBytes = toBytesMSB(act.afterVal, act.info.bytes);
-      const col = typeColour(c, act.type);
-      for (let i = 0; i < afterBytes.length; i++) {
-        const bx = x0 + i * (chipW + gap);
-        const afterChip = byteChip(bx, stripY, chipW, chipH, afterBytes[i], P.panel, P.write, P.fg, P.write);
-        if (animate) {
-          const delay = 0.3 + i * 0.14;
-          out += `<g>${hide(delay)}${byteChip(bx, stripY, chipW, chipH, beforeBytes[i], P.panel, col, P.fg, P.muted)}</g><g opacity="0">${show(delay)}${afterChip}</g>`;
-        } else {
-          out += afterChip;
+        const splitY = cell.y + 56;
+        markup += `<line x1="${cell.x + 2}" y1="${splitY}" x2="${cell.x + cell.w - 2}" y2="${splitY}" stroke="${divStroke}" stroke-width="1.3"/>`;
+        for (let i = 1; i < cell.size; i++) {
+          const lx = round(cell.x + i * bw);
+          markup += `<line x1="${lx}" y1="${splitY}" x2="${lx}" y2="${cell.y + cell.h - 2}" stroke="${divStroke}" stroke-width="1.3"/>`;
         }
       }
-      const noteX = x0 + afterBytes.length * (chipW + gap) + 10;
-      out += text(noteX, stripY + 24, `~ flips every byte`, 17, P.write);
-      out += text(noteX, stripY + 48, `${fullHex(act.afterVal, act.info.bytes)} (${act.afterVal})`, 17, P.write);
-      return out;
-    }
-    if (act.kind === "value") {
-      const bytes = toBytesMSB(act.value, act.info.bytes);
-      const col = typeColour(c, act.type);
-      for (let i = 0; i < bytes.length; i++) {
-        const bx = x0 + i * (chipW + gap);
-        out += byteChip(bx, stripY, chipW, chipH, bytes[i], P.panel, col, P.fg, bytes[i] ? col : P.muted);
+      markup += rect(
+        cell.x + 1.5,
+        cell.y + 1.5,
+        cell.w - 3,
+        cell.h - 3,
+        "none",
+        on ? color : P.deadStroke,
+        0,
+        3
+      );
+      if (style.littleEndian && on && cell.size > 1) {
+        const lsbY = style.decimalBelow ? cell.y + 16 : cell.y + 14;
+        markup += text(cell.x + 7, lsbY, "LSB", 11.5, P.grey);
+        markup += text(cell.x + cell.w - 7, lsbY, "MSB", 11.5, P.grey, "end");
       }
-      const noteX = x0 + bytes.length * (chipW + gap) + 10;
-      out += text(noteX, stripY + 35, `${fullHex(act.value, act.info.bytes)} = ${act.value}`, 17, P.muted);
-    }
-    return out;
-  }
-  function memoryVariantB(c) {
-    const { g, P, step, prev, op } = c;
-    const values = op && op.kind === "write" && prev ? prev.values : step.values;
-    const at = op ? arrival(op) : 0;
-    const writing = new Set(op && op.kind === "write" ? g.cellsOf(op.name).map((l) => l.name) : []);
-    const live = (l) => values[l.name] !== null || writing.has(l.name);
-    let out = "";
-    for (const cell of g.leaves) {
-      const on = live(cell);
-      const changing = writing.has(cell.name);
-      let markup = drawCellChrome(c, cell, on, true, null, false);
       if (on) {
-        const renderVal = (val) => {
+        const bytesOf = (v) => style.littleEndian ? toBytesLSB(v, cell.size) : toBytesMSB(v, cell.size);
+        const renderCellBody = (val) => {
           if (typeof val !== "number") {
-            return text(0, 10, String(val), 30, val === "?" ? P.grey : P.fg, "middle");
+            if (style.decimalBelow) {
+              return text(cell.x + cell.w / 2, cell.y + cell.h / 2 + 10, String(val), 28, P.grey, "middle");
+            }
+            return text(cell.x + cell.w / 2, cell.y + 38, String(val), 28, P.grey, "middle");
           }
-          const dec = String(val);
-          const decSize = Math.min(32, (cell.w - 12) / (dec.length * CHAR));
-          const hex = fullHex(val, cell.size);
-          const hexSize = Math.min(18, (cell.w - 10) / (hex.length * CHAR));
-          return text(0, -1, dec, round(decSize), P.fg, "middle") + text(0, 27, hex, round(hexSize), P.muted, "middle");
+          const bytes = bytesOf(val);
+          let body = "";
+          if (!style.decimalBelow) {
+            const dec = String(val);
+            const decSize = Math.min(30, (cell.w - 14) / (dec.length * CHAR));
+            body += text(cell.x + cell.w / 2, cell.y + 38, dec, round(decSize), P.fg, "middle");
+          }
+          const hexY = style.decimalBelow ? cell.y + cell.h / 2 + 9 : cell.y + 85;
+          const hexSize = style.decimalBelow ? 24 : 20;
+          for (let i = 0; i < cell.size; i++) {
+            const bx = cell.x + i * bw + bw / 2;
+            const b = bytes[i];
+            body += text(bx, hexY, hexByte(b), hexSize, b !== 0 ? color : P.muted, "middle");
+          }
+          return body;
         };
-        markup += `<g transform="translate(${round(cell.x + cell.w / 2)} ${round(cell.y + cell.h / 2)})"><g>` + (changing ? pulse(at - 0.2) : "");
-        const before = prev ? prev.values[cell.name] : null;
-        const after = step.values[cell.name];
+        const cx = cell.x + cell.w / 2;
+        const cy = cell.y + cell.h / 2;
         if (changing && before !== after) {
-          if (before !== null) markup += `<g>${hide(at)}${renderVal(before)}</g>`;
-          markup += `<g opacity="0">${show(at)}${renderVal(after)}</g>`;
+          markup += `<g transform="translate(${round(cx)} ${round(cy)})"><g>${pulse(at - 0.2)}<g transform="translate(${round(-cx)} ${round(-cy)})">`;
+          if (before !== null) markup += `<g>${hide(at)}${renderCellBody(before)}</g>`;
+          markup += `<g opacity="0">${show(at)}${renderCellBody(after)}</g>`;
+          markup += "</g></g></g>";
         } else {
-          markup += renderVal(changing ? after : values[cell.name]);
+          markup += renderCellBody(shownVal);
         }
-        markup += "</g></g>";
+      }
+      markup += text(
+        cell.x + cell.w / 2,
+        cell.y + cell.h + 34,
+        cell.label,
+        g.nameSize,
+        on ? color : P.grey,
+        "middle"
+      );
+      if (style.decimalBelow) {
+        const decLabel = on && typeof shownVal === "number" ? `= ${shownVal}` : on && shownVal === "?" ? "= ?" : "";
+        if (decLabel) {
+          markup += text(
+            cell.x + cell.w / 2,
+            cell.y + cell.h + 62,
+            decLabel,
+            20,
+            on ? P.fg : P.grey,
+            "middle"
+          );
+        }
       }
       out += dim(c, cell.group || cell.name, markup);
     }
     return out + drawTypeLabels(c, live);
   }
-  function drawLab3ByteColumn(x, yBits, yHex, byteVal, bitColor, hexColor, mutedColor) {
+  const BYTE_W = 96;
+  const BYTE_GAP = 16;
+  const NIBBLE_W = 44;
+  const NIB_GAP = 8;
+  const BIT_FONT = 18;
+  const BIT_STEP = BIT_FONT * CHAR;
+  function drawLab3ByteColumn(x, yBits, yHex, byteVal, bitColor, hexColor, mutedColor, signBitHighlight) {
     const [hi, lo] = nibbles(byteVal);
     const hex = hexByte(byteVal);
-    const nibbleW = 44;
-    const nibGap = 8;
-    const hiCx = x + nibbleW / 2;
-    const loCx = x + nibbleW + nibGap + nibbleW / 2;
-    return text(hiCx, yBits, hi, 17.5, hi === "0000" ? mutedColor : bitColor, "middle") + text(loCx, yBits, lo, 17.5, lo === "0000" ? mutedColor : bitColor, "middle") + text(hiCx, yHex, hex[0], 20, hex[0] === "0" ? mutedColor : hexColor, "middle") + text(loCx, yHex, hex[1], 20, hex[1] === "0" ? mutedColor : hexColor, "middle");
+    const hiCx = x + NIBBLE_W / 2;
+    const loCx = x + NIBBLE_W + NIB_GAP + NIBBLE_W / 2;
+    let bitsMarkup = "";
+    if (signBitHighlight) {
+      const signBitCx = hiCx - 1.55 * BIT_STEP;
+      const restCx = hiCx + 0.55 * BIT_STEP;
+      bitsMarkup += rect(signBitCx - 6.2, yBits - 18, 12.4, 23, signBitHighlight.fill, signBitHighlight.stroke, 3.5, 1.8) + text(signBitCx, yBits, hi[0], BIT_FONT, signBitHighlight.text, "middle") + text(restCx, yBits, hi.slice(1), BIT_FONT, hi === "0000" ? mutedColor : bitColor, "middle");
+    } else {
+      bitsMarkup += text(hiCx, yBits, hi, BIT_FONT, hi === "0000" ? mutedColor : bitColor, "middle");
+    }
+    return bitsMarkup + text(loCx, yBits, lo, BIT_FONT, lo === "0000" ? mutedColor : bitColor, "middle") + text(hiCx, yHex, hex[0], 20, hex[0] === "0" ? mutedColor : hexColor, "middle") + text(loCx, yHex, hex[1], 20, hex[1] === "0" ? mutedColor : hexColor, "middle");
   }
-  function workbenchVariantB(c) {
+  function arrowheadDown(cx, tipY, color) {
+    return `<polygon points="${round(cx)},${round(tipY)} ${round(cx - 4.5)},${round(tipY - 7)} ${round(cx + 4.5)},${round(tipY - 7)}" fill="${color}"/>`;
+  }
+  function workbenchClean(c, signExtStyle) {
     const act = activeBitAction(c);
     if (!act) return "";
     const { g, P, animate } = c;
     const cardX = g.tx - 6;
-    const cardY = g.ty + 26;
+    const cardY = g.ty + 22;
     const cardW = g.pane.w - 36;
-    const cardH = 114;
-    const yBits = cardY + 34;
-    const yHex = cardY + 66;
-    const yCap = cardY + 98;
-    const byteW = 96;
-    const byteGap = 16;
-    const rightAnchor = cardX + 14 + 4 * byteW + 3 * byteGap;
-    const slotX = (bytesFromLSB) => rightAnchor - (bytesFromLSB + 1) * byteW - bytesFromLSB * byteGap;
+    const cardH = 104;
+    const yBits = cardY + 50;
+    const yHex = cardY + 82;
+    const yRes = cardY + 64;
+    const rightAnchor = cardX + 16 + 4 * BYTE_W + 3 * BYTE_GAP;
+    const slotX = (bytesFromLSB) => rightAnchor - (bytesFromLSB + 1) * BYTE_W - bytesFromLSB * BYTE_GAP;
     let out = rect(cardX, cardY, cardW, cardH, P.panel, P.gapStroke, 8, 1.5);
     if (act.kind === "narrow" || act.kind === "zero-extend" || act.kind === "sign-extend" || act.kind === "reinterpret") {
       const fromBytes = toBytesMSB(act.beforeVal, act.fromInfo.bytes);
       const toBytes = toBytesMSB(act.afterVal, act.toInfo.bytes);
       const fromCol = typeColour(c, act.fromType);
       const toCol = typeColour(c, act.toType);
-      const maxBytes = Math.max(fromBytes.length, toBytes.length);
       if (act.kind === "narrow") {
-        const cutX = slotX(toBytes.length - 1) - byteGap / 2;
+        const cutX = slotX(toBytes.length - 1) - BYTE_GAP / 2;
         for (let idx = 0; idx < fromBytes.length; idx++) {
           const lsbPos = fromBytes.length - 1 - idx;
           const bx = slotX(lsbPos);
           const dropped = lsbPos >= toBytes.length;
           if (dropped) {
-            const settled = `<g opacity="0.48">` + drawLab3ByteColumn(bx, yBits, yHex, fromBytes[idx], P.error, P.error, P.error) + `<line x1="${bx + 6}" y1="${yBits - 16}" x2="${bx + byteW - 6}" y2="${yHex + 6}" stroke="${P.error}" stroke-width="2"/></g>`;
+            const settled = `<g opacity="0.48">` + drawLab3ByteColumn(bx, yBits, yHex, fromBytes[idx], P.error, P.error, P.error) + `<line x1="${bx + 6}" y1="${yBits - 16}" x2="${bx + BYTE_W - 6}" y2="${yHex + 6}" stroke="${P.error}" stroke-width="2"/></g>`;
             if (animate) {
               out += `<g>${hide(0.55)}${drawLab3ByteColumn(bx, yBits, yHex, fromBytes[idx], P.fg, fromCol, P.muted)}</g><g opacity="0">${show(0.55)}<animateTransform attributeName="transform" type="translate" from="0 -6" to="0 0" begin="0.55s" dur="0.35s" fill="freeze"/>${settled}</g>`;
             } else {
@@ -2430,42 +2298,98 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
             out += drawLab3ByteColumn(bx, yBits, yHex, fromBytes[idx], P.fg, toCol, toCol);
           }
         }
-        out += `<line x1="${round(cutX)}" y1="${cardY + 12}" x2="${round(cutX)}" y2="${yHex + 10}" stroke="${P.error}" stroke-width="2.2" stroke-dasharray="5 4"/>`;
-        out += text(cardX + 14, yCap, `dropped ${fromBytes.length - toBytes.length} high bytes`, 17, P.error);
-        out += text(rightAnchor + 18, yBits + 6, `→ ${act.afterVal}`, 22, toCol);
-        out += text(rightAnchor + 18, yHex + 2, fullHex(act.afterVal, act.toInfo.bytes), 17, P.muted);
-      } else if (act.kind === "zero-extend" || act.kind === "sign-extend") {
-        const extKind = act.kind === "sign-extend" ? "sign-extend (fill 1s from sign bit)" : "zero-extend (fill 0s)";
+        out += `<line x1="${round(cutX)}" y1="${cardY + 14}" x2="${round(cutX)}" y2="${cardY + cardH - 12}" stroke="${P.error}" stroke-width="2.2" stroke-dasharray="5 4"/>`;
+        out += text(rightAnchor + 22, yRes, `→ ${act.afterVal}`, 26, toCol);
+      } else if (act.kind === "sign-extend") {
+        const srcTopPos = fromBytes.length - 1;
+        const srcX = slotX(srcTopPos);
+        const signBitCx = srcX + NIBBLE_W / 2 - 1.5 * BIT_STEP;
+        for (let idx = 0; idx < fromBytes.length; idx++) {
+          const lsbPos = fromBytes.length - 1 - idx;
+          const bx = slotX(lsbPos);
+          const isTopSrc = lsbPos === srcTopPos;
+          const col = drawLab3ByteColumn(
+            bx,
+            yBits,
+            yHex,
+            fromBytes[idx],
+            P.fg,
+            toCol,
+            P.muted,
+            isTopSrc ? { fill: P.writeFill, stroke: P.write, text: P.write } : void 0
+          );
+          if (animate && isTopSrc) {
+            const cx = signBitCx;
+            const cy = yBits - 6;
+            out += `<g transform="translate(${round(cx)} ${round(cy)})"><g>${pulse(0.1)}<g transform="translate(${round(-cx)} ${round(-cy)})">${col}</g></g></g>`;
+          } else {
+            out += col;
+          }
+        }
+        for (let lsbPos = fromBytes.length; lsbPos < toBytes.length; lsbPos++) {
+          const bx = slotX(lsbPos);
+          const byteVal = toBytes[toBytes.length - 1 - lsbPos];
+          const dstCx = bx + BYTE_W / 2;
+          const k = lsbPos - fromBytes.length;
+          const arcDelay = 0.25 + k * 0.24;
+          const fillDelay = 0.58 + k * 0.24;
+          const extByte = drawLab3ByteColumn(bx, yBits, yHex, byteVal, P.write, P.write, P.write);
+          if (signExtStyle === "arcs") {
+            const sy = yBits - 21;
+            const apex = cardY + 9 + k * 2;
+            const d = `M ${round(signBitCx)} ${sy} C ${round(signBitCx)} ${apex}, ${round(dstCx)} ${apex}, ${round(dstCx)} ${sy - 2}`;
+            const arc = `<path d="${d}" fill="none" stroke="${P.write}" stroke-width="2" stroke-linecap="round"${animate ? ` data-grow="${round(arcDelay)}"` : ""}/>`;
+            const head = arrowheadDown(dstCx, sy + 1, P.write);
+            out += arc;
+            out += animate ? `<g opacity="0">${show(fillDelay - 0.08)}${head}</g>` : head;
+          } else {
+            const prevOriginX = k === 0 ? signBitCx : slotX(lsbPos - 1) + NIBBLE_W / 2 - 1.5 * BIT_STEP;
+            const dstLeftBitX = bx + NIBBLE_W / 2 - 1.5 * BIT_STEP;
+            const yTop = cardY + 18;
+            const d = `M ${round(prevOriginX)} ${yBits - 21} L ${round(prevOriginX)} ${yTop} L ${round(dstLeftBitX)} ${yTop} L ${round(dstLeftBitX)} ${yBits - 23}`;
+            const link = `<path d="${d}" fill="none" stroke="${P.write}" stroke-width="2" stroke-linejoin="round"${animate ? ` data-grow="${round(arcDelay)}"` : ""}/>`;
+            const head = arrowheadDown(dstLeftBitX, yBits - 20, P.write);
+            out += link;
+            out += animate ? `<g opacity="0">${show(fillDelay - 0.08)}${head}</g>` : head;
+          }
+          if (animate) {
+            out += `<g opacity="0">${show(fillDelay)}<g transform="translate(${round(dstCx)} ${round(yBits + 10)})"><g>${pulse(fillDelay)}<g transform="translate(${round(-dstCx)} ${round(-(yBits + 10))})">${extByte}</g></g></g></g>`;
+          } else {
+            out += extByte;
+          }
+        }
+        out += text(rightAnchor + 22, yRes, `→ ${act.afterVal}`, 26, toCol);
+      } else if (act.kind === "zero-extend") {
         for (let idx = 0; idx < toBytes.length; idx++) {
           const lsbPos = toBytes.length - 1 - idx;
           const bx = slotX(lsbPos);
           const isExt = lsbPos >= fromBytes.length;
+          const isSignedPosTop = act.fromInfo.signed && lsbPos === fromBytes.length - 1;
           const block = drawLab3ByteColumn(
             bx,
             yBits,
             yHex,
             toBytes[idx],
-            isExt ? P.write : P.fg,
-            isExt ? P.write : toCol,
-            isExt ? P.write : P.muted
+            isExt ? P.grey : P.fg,
+            isExt ? P.grey : toCol,
+            P.muted,
+            isSignedPosTop ? { fill: P.panel, stroke: P.muted, text: P.fg } : void 0
           );
           if (animate && isExt) {
-            out += `<g opacity="0">${fade(0, 1, 0.35, 0.45)}${block}</g>`;
+            out += `<g opacity="0">${fade(0, 0.72, 0.35, 0.3)}${block}</g>`;
+          } else if (isExt) {
+            out += `<g opacity="0.72">${block}</g>`;
           } else {
             out += block;
           }
         }
-        out += text(slotX(maxBytes - 1), yCap, extKind, 17, P.write);
-        out += text(rightAnchor + 18, yBits + 6, `→ ${act.afterVal}`, 22, toCol);
-        out += text(rightAnchor + 18, yHex + 2, fullHex(act.afterVal, act.toInfo.bytes), 17, P.muted);
+        out += text(rightAnchor + 22, yRes, `→ ${act.afterVal}`, 26, toCol);
       } else {
         for (let idx = 0; idx < toBytes.length; idx++) {
           const lsbPos = toBytes.length - 1 - idx;
           out += drawLab3ByteColumn(slotX(lsbPos), yBits, yHex, toBytes[idx], P.fg, toCol, P.muted);
         }
-        out += text(slotX(toBytes.length - 1), yCap, `same bits interpreted as ${act.toType}`, 17, toCol);
-        out += text(rightAnchor + 18, yBits + 6, `→ ${act.afterVal}`, 22, toCol);
-        out += text(rightAnchor + 18, yHex + 2, fullHex(act.afterVal, act.toInfo.bytes), 17, P.muted);
+        out += text(rightAnchor + 22, yRes, `→ ${act.afterVal}`, 26, toCol);
       }
       return out;
     }
@@ -2481,9 +2405,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           out += afterBlock;
         }
       }
-      out += text(slotX(afterBytes.length - 1), yCap, `bitwise ~ flips every bit (0 ↔ 1)`, 17, P.write);
-      out += text(rightAnchor + 18, yBits + 6, `→ ${act.afterVal}`, 22, P.write);
-      out += text(rightAnchor + 18, yHex + 2, fullHex(act.afterVal, act.info.bytes), 17, P.muted);
+      out += text(rightAnchor + 22, yRes, `→ ${act.afterVal}`, 26, P.write);
       return out;
     }
     if (act.kind === "value") {
@@ -2493,237 +2415,62 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         const bx = slotX(bytes.length - 1 - idx);
         out += drawLab3ByteColumn(bx, yBits, yHex, bytes[idx], P.fg, col, P.muted);
       }
-      out += text(slotX(bytes.length - 1), yCap, `${act.type} (${act.info.bits} bits)`, 17, P.muted);
-      out += text(rightAnchor + 18, yBits + 6, `= ${act.value}`, 22, col);
-      out += text(rightAnchor + 18, yHex + 2, fullHex(act.value, act.info.bytes), 17, P.muted);
-    }
-    return out;
-  }
-  function memoryVariantC(c) {
-    const { g, P, step, prev, op } = c;
-    const values = op && op.kind === "write" && prev ? prev.values : step.values;
-    const at = op ? arrival(op) : 0;
-    const writing = new Set(op && op.kind === "write" ? g.cellsOf(op.name).map((l) => l.name) : []);
-    const live = (l) => values[l.name] !== null || writing.has(l.name);
-    let out = "";
-    for (const cell of g.leaves) {
-      const on = live(cell);
-      const changing = writing.has(cell.name);
-      const color = cell.fieldColor || cell.color;
-      const before = prev ? prev.values[cell.name] : null;
-      const after = step.values[cell.name];
-      const shownVal = changing ? after : values[cell.name];
-      const decLabel = on && typeof shownVal === "number" ? `= ${shownVal}` : on && shownVal === "?" ? "= ?" : "";
-      let markup = drawCellChrome(c, cell, on, false, decLabel, false);
-      if (on) {
-        const bw = cell.w / cell.size;
-        const beforeBytes = typeof before === "number" ? toBytesMSB(before, cell.size) : null;
-        const afterBytes = typeof after === "number" ? toBytesMSB(after, cell.size) : null;
-        const shownBytes = typeof shownVal === "number" ? toBytesMSB(shownVal, cell.size) : null;
-        const renderByte = (b, bx, msbIndex) => {
-          const hiBit = (cell.size - msbIndex) * 8 - 1;
-          const loBit = hiBit - 7;
-          const [hi, lo] = nibbles(b);
-          const hex = hexByte(b);
-          const c1 = bx + bw * 0.27;
-          const c2 = bx + bw * 0.73;
-          return text(bx + bw / 2, cell.y + 21, `${hiBit}..${loBit}`, 13.5, P.muted, "middle") + text(c1, cell.y + 52, hi, 16, hi === "0000" ? P.muted : color, "middle") + text(c2, cell.y + 52, lo, 16, lo === "0000" ? P.muted : color, "middle") + text(c1, cell.y + 92, hex[0], 26, hex[0] === "0" ? P.muted : P.fg, "middle") + text(c2, cell.y + 92, hex[1], 26, hex[1] === "0" ? P.muted : P.fg, "middle");
-        };
-        for (let i = 0; i < cell.size; i++) {
-          const bx = cell.x + i * bw;
-          const cx = bx + bw / 2;
-          const cy = cell.y + cell.h / 2;
-          if (changing && afterBytes && (!beforeBytes || beforeBytes[i] !== afterBytes[i])) {
-            markup += `<g transform="translate(${round(cx)} ${round(cy)})"><g>${pulse(at - 0.2)}<g transform="translate(${round(-cx)} ${round(-cy)})">`;
-            if (beforeBytes) markup += `<g>${hide(at)}${renderByte(beforeBytes[i], bx, i)}</g>`;
-            markup += `<g opacity="0">${show(at)}${renderByte(afterBytes[i], bx, i)}</g>`;
-            markup += "</g></g></g>";
-          } else if (shownBytes) {
-            markup += renderByte(shownBytes[i], bx, i);
-          } else {
-            markup += text(cx, cell.y + 66, "?", 28, P.grey, "middle");
-          }
-        }
-      }
-      out += dim(c, cell.group || cell.name, markup);
-    }
-    return out + drawTypeLabels(c, live);
-  }
-  function bitPositions(x0, totalBits) {
-    const xs = [];
-    let x = x0;
-    for (let b = 0; b < totalBits; b++) {
-      xs.push(x);
-      x += 15;
-      if ((b + 1) % 4 === 0 && b + 1 < totalBits) x += 7;
-      if ((b + 1) % 8 === 0 && b + 1 < totalBits) x += 10;
-    }
-    return xs;
-  }
-  function toBitArrayMSB(value, bits) {
-    const u = BigInt.asUintN(bits, BigInt(value));
-    const out = [];
-    for (let i = bits - 1; i >= 0; i--) {
-      out.push((u >> BigInt(i) & 1n) === 1n ? "1" : "0");
-    }
-    return out;
-  }
-  function bitSweepRibbonVariantC(c) {
-    const act = activeBitAction(c);
-    if (!act) return "";
-    const { g, P, animate } = c;
-    const y = g.ty + 44;
-    const yCap = y + 32;
-    const x0 = g.tx;
-    let out = "";
-    if (act.kind === "narrow" || act.kind === "zero-extend" || act.kind === "sign-extend" || act.kind === "reinterpret") {
-      const fromCol = typeColour(c, act.fromType);
-      const toCol = typeColour(c, act.toType);
-      const maxBits = Math.max(act.fromInfo.bits, act.toInfo.bits);
-      const xs = bitPositions(x0, maxBits);
-      if (act.kind === "narrow") {
-        const fromBits = toBitArrayMSB(act.beforeVal, act.fromInfo.bits);
-        const dropBits = act.fromInfo.bits - act.toInfo.bits;
-        const cutX = (xs[dropBits - 1] + xs[dropBits]) / 2 + 1;
-        for (let i = 0; i < fromBits.length; i++) {
-          const bx = xs[i];
-          const bit = fromBits[i];
-          if (i < dropBits) {
-            const dropped = text(bx, y, bit, 19, P.error, "middle");
-            if (animate) {
-              const delay = 0.22 + i * 0.045;
-              out += `<g>${hide(delay)}${text(bx, y, bit, 19, bit === "1" ? fromCol : P.fg, "middle")}</g><g opacity="0">${show(delay)}<animate attributeName="opacity" from="1" to="0.48" begin="${round(delay)}s" dur="0.25s" fill="freeze"/>${dropped}</g>`;
-            } else {
-              out += `<g opacity="0.48">${dropped}</g>`;
-            }
-          } else {
-            out += text(bx, y, bit, 19, toCol, "middle");
-          }
-        }
-        const strikeDelay = round(0.22 + (dropBits - 1) * 0.045);
-        const strike = `<line x1="${round(xs[0] - 6)}" y1="${y - 6}" x2="${round(xs[dropBits - 1] + 6)}" y2="${y - 6}" stroke="${P.error}" stroke-width="2"/>`;
-        out += animate ? `<g opacity="0">${fade(0, 0.8, 0.2, strikeDelay)}${strike}</g>` : `<g opacity="0.8">${strike}</g>`;
-        out += `<line x1="${round(cutX)}" y1="${y - 20}" x2="${round(cutX)}" y2="${y + 8}" stroke="${P.error}" stroke-width="2.2" stroke-dasharray="4 3"/>`;
-        out += text(xs[xs.length - 1] + 22, y, `→ ${fullHex(act.afterVal, act.toInfo.bytes)} (${act.afterVal})`, 18, toCol);
-        out += text(x0 - 4, yCap, `drop bits ${act.fromInfo.bits - 1}..${act.toInfo.bits}; keep bits ${act.toInfo.bits - 1}..0`, 17, P.error);
-      } else if (act.kind === "zero-extend" || act.kind === "sign-extend") {
-        const toBits = toBitArrayMSB(act.afterVal, act.toInfo.bits);
-        const extBits = act.toInfo.bits - act.fromInfo.bits;
-        for (let i = 0; i < toBits.length; i++) {
-          const bx = xs[i];
-          const bit = toBits[i];
-          const isExt = i < extBits;
-          const mark = text(bx, y, bit, 19, isExt ? P.write : toCol, "middle");
-          if (animate && isExt) {
-            const order = extBits - 1 - i;
-            const delay = 0.35 + order * 0.045;
-            out += `<g opacity="0">${fade(0, 1, 0.12, delay)}${mark}</g>`;
-          } else {
-            out += mark;
-          }
-        }
-        out += text(
-          xs[xs.length - 1] + 22,
-          y,
-          `→ ${fullHex(act.afterVal, act.toInfo.bytes)} (${act.afterVal})`,
-          18,
-          toCol
-        );
-        out += text(
-          x0 - 4,
-          yCap,
-          act.kind === "sign-extend" ? `sign-extend: fill bits ${act.toInfo.bits - 1}..${act.fromInfo.bits} with sign bit 1` : `zero-extend: fill bits ${act.toInfo.bits - 1}..${act.fromInfo.bits} with 0`,
-          17,
-          P.write
-        );
-      } else {
-        const bits = toBitArrayMSB(act.afterVal, act.toInfo.bits);
-        for (let i = 0; i < bits.length; i++) {
-          out += text(xs[i], y, bits[i], 19, toCol, "middle");
-        }
-        out += text(xs[xs.length - 1] + 22, y, `→ ${act.afterVal} (${act.toType})`, 18, toCol);
-        out += text(x0 - 4, yCap, `same ${act.toInfo.bits} bits reinterpreted as ${act.toType}`, 17, toCol);
-      }
-      return out;
-    }
-    if (act.kind === "invert") {
-      const beforeBits = toBitArrayMSB(act.beforeVal, act.info.bits);
-      const afterBits = toBitArrayMSB(act.afterVal, act.info.bits);
-      const xs = bitPositions(x0, afterBits.length);
-      for (let i = 0; i < afterBits.length; i++) {
-        const bx = xs[i];
-        if (animate) {
-          const delay = 0.2 + i * 0.03;
-          out += `<g>${hide(delay)}${text(bx, y, beforeBits[i], 19, P.fg, "middle")}</g><g opacity="0">${show(delay)}${text(bx, y, afterBits[i], 19, P.write, "middle")}</g>`;
-        } else {
-          out += text(bx, y, afterBits[i], 19, P.write, "middle");
-        }
-      }
-      out += text(xs[xs.length - 1] + 22, y, `→ ${fullHex(act.afterVal, act.info.bytes)} (${act.afterVal})`, 18, P.write);
-      out += text(x0 - 4, yCap, `bitwise ~ flips every bit across ${act.info.bits} bits`, 17, P.write);
-      return out;
-    }
-    if (act.kind === "value") {
-      const bits = toBitArrayMSB(act.value, act.info.bits);
-      const xs = bitPositions(x0, bits.length);
-      const col = typeColour(c, act.type);
-      for (let i = 0; i < bits.length; i++) {
-        out += text(xs[i], y, bits[i], 19, bits[i] === "1" ? col : P.muted, "middle");
-      }
-      out += text(xs[xs.length - 1] + 22, y, `${fullHex(act.value, act.info.bytes)} = ${act.value}`, 18, P.muted);
-      out += text(x0 - 4, yCap, `${act.type} (${act.info.bits} bits, MSB left → LSB right)`, 17, P.muted);
+      out += text(rightAnchor + 22, yRes, `= ${act.value}`, 26, col);
     }
     return out;
   }
   function hooksFor(variant) {
+    const memoryOpts = {
+      A: { littleEndian: true, decimalBelow: false },
+      B: { littleEndian: false, decimalBelow: false },
+      C: { littleEndian: false, decimalBelow: true }
+    };
     const geomOpts = {
-      A: { minByteWidth: 102, minColumnWidth: 640, cellHeight: 112, extraMemBottom: 34, extraPaneHeight: 90, skipWrap: true },
-      B: { minByteWidth: 66, minColumnWidth: 700, cellHeight: 94, extraPaneHeight: 130, skipWrap: true },
-      C: { minByteWidth: 106, minColumnWidth: 790, cellHeight: 118, extraMemBottom: 34, extraPaneHeight: 74, skipWrap: true }
+      A: { minByteWidth: 66, minColumnWidth: 680, cellHeight: 98, extraPaneHeight: 112, skipWrap: true },
+      B: { minByteWidth: 66, minColumnWidth: 680, cellHeight: 98, extraPaneHeight: 112, skipWrap: true },
+      C: { minByteWidth: 66, minColumnWidth: 680, cellHeight: 78, extraMemBottom: 34, extraPaneHeight: 112, skipWrap: true }
     };
     return {
       stackBelow: 900,
       maxScale: 0.78,
       geometry: (m, P, stacked, width) => geometry(m, P, stacked, width, geomOpts[variant]),
-      stepSeconds: castStepSeconds(variant),
+      stepSeconds: castStepSeconds,
       describe: castDescribe,
       scene: (c) => {
         const { step, prev, animate } = c;
         const lineChanged = animate && prev !== null && prev.line !== step.line;
         const copying = animate && copies(c.m.steps, c.index);
         const oldLine = lineChanged && prev ? prev.line : null;
-        const mem = variant === "A" ? memoryVariantA(c) : variant === "B" ? memoryVariantB(c) : memoryVariantC(c);
-        const paneExtra = variant === "A" ? paneStripVariantA(c) : variant === "B" ? workbenchVariantB(c) : bitSweepRibbonVariantC(c);
-        return code(c, oldLine) + tether(c, oldLine) + arrows(c) + mem + pane(c, copying) + paneExtra + output(c) + transfers(c);
+        return code(c, oldLine) + tether(c, oldLine) + arrows(c) + memoryWithByteHex(c, memoryOpts[variant]) + pane(c, copying) + workbenchClean(c, variant === "C" ? "cascade" : "arcs") + output(c) + transfers(c);
       }
     };
   }
   const VARIANTS = {
     A: {
-      name: "Byte lanes + byte-level casts",
-      claim: "Memory splits into 1-byte cells in address order (little-endian: LSB at +0); conversions drop or slide whole bytes.",
+      name: "Little-endian byte hex + arc sign-clone",
+      claim: "Two-tier memory in true address order (LSB left at +0) paired with the clean binary/hex pane and sign-bit duplication arcs.",
       points: [
-        "Each byte cell shows 2-digit hex prominently with its 8 bits below, and a decimal summary (= 256) under the variable name.",
-        "True address order (72..75 = 00 01 00 00) shows why b (at 71) reads the +0 byte directly.",
-        "Pane strip steps at byte granularity: narrowing drops the 3 high bytes; widening slides in 3 zero/sign bytes."
+        "Memory shows overall decimal on top and consecutive address-ordered hex bytes (+0..+3) along the bottom.",
+        "Pane keeps binary nibbles above hex digits with no caption clutter and no duplicate hex under the decimal result.",
+        "Negative signed widening highlights the MSB `1` and clones it via warm arcs across upper bytes; positive/unsigned fills muted `0`s."
       ]
     },
     B: {
-      name: "Word memory + Lab-3 bit/hex workbench",
-      claim: "Memory stays at word level (decimal + hex + byte boundary ticks); the pane opens Lab 3’s aligned binary-above-hex ruler.",
+      name: "MSB-first byte hex + arc sign-clone",
+      claim: "Two-tier memory in reading order (matching the binary/hex workbench left-to-right), clean pane, and sign-bit duplication arcs.",
       points: [
-        "Matches the rest of the course’s player in memory (256, 0, -3) while keeping byte widths visible via tick marks.",
-        "Pane workbench matches 03_numeric_conversions.md verbatim: 4-bit nibbles above each hex digit, wider gaps between bytes.",
-        "Animations act on word/byte blocks: a red cut bar drops the upper 24 bits on narrowing, or expands 24 extension bits on widening."
+        "Memory shows overall decimal on top and per-byte hex compartments underneath (`00 | 00 | 01 | 00`).",
+        "Pane drops the tiny text and duplicate hex under `→ val`, keeping binary nibbles paired with hex digits directly below.",
+        "Sign extension highlights the highest `1` bit and draws cloning arcs filling `1111 1111` (`F F`) across upper bytes; positive/unsigned quietly zero-fills."
       ]
     },
     C: {
-      name: "Bit-and-byte tape + bit-by-bit sweep",
-      claim: "Memory renders every byte in reading order (MSB left, LSB right) with bits above hex; casts sweep across individual bits.",
+      name: "Hex cells + cascade sign-clone",
+      claim: "Full-height byte-hex memory cells with `= decimal` below the variable name, plus stepped cascade cloning for sign extension.",
       points: [
-        "No little-endian mental flip needed in Lab 3: 256 reads left-to-right as 00 00 01 00 = 0x00000100 with bit 8 lit.",
-        "Each byte cell stacks its two 4-bit nibbles directly over its two hex digits.",
-        "Conversions animate bit-by-bit: bits 31→8 sweep out on narrowing, or extension bits 8→31 ripple in sequentially on widening."
+        "Memory gives full box height to per-byte hex compartments and puts the overall `= decimal` cleanly under the variable name.",
+        "Compare stepped byte-by-byte cascade cloning on negative sign extension against B’s curved arcs.",
+        "Same clean binary/hex pane without caption text or duplicate hex under the decimal result."
       ]
     }
   };
@@ -2741,7 +2488,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const label = document.getElementById("label");
     const players = [];
     sections.innerHTML = data.map(
-      (t, i) => `<section class="proto-case"><h2>${i + 1}. ${esc(t.title ?? "")}</h2><pre><code>${esc(t.source.join("\n"))}</code></pre><details data-case="${i}"${i === 0 || params.get("open") === "all" ? " open" : ""}><summary>Execution trace</summary><div class="slot"></div></details></section>`
+      (t, i) => `<section class="proto-case"><h2>${i + 1}. ${esc(t.title ?? "")}</h2><pre><code>${esc(t.source.join("\n"))}</code></pre><details data-case="${i}"${i <= 1 || params.get("open") === "all" ? " open" : ""}><summary>Execution trace</summary><div class="slot"></div></details></section>`
     ).join("");
     function mount() {
       const savedIndices = /* @__PURE__ */ new Map();
