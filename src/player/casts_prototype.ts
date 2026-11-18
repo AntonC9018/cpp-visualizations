@@ -2,9 +2,9 @@
 // Derives directly from the base player (`Player`, `geometry`, `scene.ts`, `svg.ts`, `player.css`).
 //   - Memory: overall decimal on top, neutral per-byte hex below, byte order from the player's
 //     Little-endian / Big-endian switch, with a significance arrow under multi-byte cells.
-//   - Execution pane: bits above hex, MSB left. Signed types frame their sign bit.
-//     Signed widening copies that bit along nested arcs (A: arcs, B: arcs carrying the bit);
-//     unsigned widening fades in grey zeros.
+//   - Execution pane: bits above hex, MSB left, in a card that hugs the numbers.
+//     Signed widening lights the sign bit and carries it along flat nested arcs into the new
+//     bytes; unsigned widening fades in grey zeros.
 import type { ExecutionTrace } from '../core/trace_format.ts';
 import { CHAR, EASE, T, type Palette } from './constants.ts';
 import { type Geometry, type GeometryOptions, geometry } from './geometry.ts';
@@ -24,8 +24,6 @@ import {
   typeLabel,
 } from './scene.ts';
 import { esc, fade, hide, pulse, rect, round, show, text } from './svg.ts';
-
-export type CastVariant = 'A' | 'B';
 
 interface IntTypeInfo {
   bytes: number;
@@ -320,11 +318,11 @@ function memoryWithByteHex(c: SceneContext): string {
       const dir = littleEndian ? 1 : -1;
       const xLow = cell.x + (littleEndian ? bw / 2 : cell.w - bw / 2);
       const xHigh = cell.x + (littleEndian ? cell.w - bw / 2 : bw / 2);
-      const arrowCol = on ? P.fg : P.deadStroke;
+      const arrowCol = on ? P.grey : P.deadStroke;
       markup +=
-        `<g opacity="${on ? '0.82' : '0.55'}">` +
-        `<line x1="${round(xLow)}" y1="${ay}" x2="${round(xHigh - 7 * dir)}" y2="${ay}" stroke="${arrowCol}" stroke-width="2" stroke-linecap="round"/>` +
-        `<path d="M -9 -4.5 L 0 0 L -9 4.5 Z" fill="${arrowCol}" transform="translate(${round(xHigh)} ${ay}) rotate(${littleEndian ? 0 : 180})"/>` +
+        `<g opacity="${on ? '0.75' : '0.5'}">` +
+        `<line x1="${round(xLow)}" y1="${ay}" x2="${round(xHigh - 6 * dir)}" y2="${ay}" stroke="${arrowCol}" stroke-width="1.5" stroke-linecap="round"/>` +
+        `<path d="M -8 -4 L 0 0 L -8 4 Z" fill="${arrowCol}" transform="translate(${round(xHigh)} ${ay}) rotate(${littleEndian ? 0 : 180})"/>` +
         '</g>';
     }
 
@@ -346,8 +344,6 @@ function memoryWithByteHex(c: SceneContext): string {
 // ============================================================================================
 // EXECUTION PANE: Lab-3 workbench (bits above hex, MSB left)
 // ============================================================================================
-// A signed type always frames its sign bit; an unsigned type has none. Widening then reads as
-// a consequence: a framed bit is copied into the new bytes, an unframed value gets plain zeros.
 
 const BIT_FONT = 22;
 const HEX_FONT = 21;
@@ -357,7 +353,7 @@ const NIBBLE_W = 4 * BIT_STEP;
 const NIB_GAP = 8;
 const BYTE_W = 2 * NIBBLE_W + NIB_GAP;
 const BYTE_GAP = 26;
-const CARD_H = 164;
+const CARD_PAD = 12;
 
 interface ByteInk {
   bits: string;
@@ -400,20 +396,25 @@ const scaled = (cx: number, cy: number, inner: string, begin: number): string =>
   `<g transform="translate(${round(cx)} ${round(cy)})"><g>${pulse(begin)}` +
   `<g transform="translate(${round(-cx)} ${round(-cy)})">${inner}</g></g></g>`;
 
-function workbenchClean(c: SceneContext, variant: CastVariant): string {
+function workbenchClean(c: SceneContext): string {
   const act = activeBitAction(c);
   if (!act) return '';
   const { g, P, animate, op } = c;
-  const cardX = g.tx - 6;
-  const cardY = g.ty + 18;
-  const cardW = g.pane.w - 36;
-  const yBits = cardY + 108;
+  // Bytes sit in fixed right-aligned slots; the card hugs the bytes and the result beside them.
+  // The space above the card is left for the sign-extension arcs.
+  const cardTop = g.ty + 56;
+  const yBits = cardTop + CARD_PAD + BOX_TOP;
   const yHex = yBits + 34;
   const yRes = yBits + 16;
-  const rightAnchor = cardX + 18 + 4 * BYTE_W + 3 * BYTE_GAP;
+  const cardBottom = yHex + CARD_PAD;
+  const rightAnchor = g.tx + 12 + 4 * BYTE_W + 3 * BYTE_GAP;
   const slotX = (bytesFromLSB: number): number =>
     rightAnchor - (bytesFromLSB + 1) * BYTE_W - bytesFromLSB * BYTE_GAP;
-  const neutralFrame = P.muted;
+  const card = (bytes: number, resultLabel: string): string => {
+    const left = slotX(bytes - 1) - CARD_PAD - 4;
+    const right = rightAnchor + 20 + resultLabel.length * RESULT_FONT * CHAR + CARD_PAD + 4;
+    return rect(left, cardTop, right - left, cardBottom - cardTop, P.panel, P.gapStroke, 8, 1.5);
+  };
 
   const reveal = (at: number, markup: string): string =>
     animate && at > 0 ? `<g opacity="0">${fade(0, 1, 0.22, at)}${markup}</g>` : markup;
@@ -421,18 +422,15 @@ function workbenchClean(c: SceneContext, variant: CastVariant): string {
     animate ? `<g>${hide(at)}${before}</g><g opacity="0">${show(at)}${after}</g>` : after;
   const result = (at: number, label: string, color: string): string =>
     reveal(at, text(rightAnchor + 20, yRes, label, RESULT_FONT, color));
-  /** Bytes of `value` (MSB first) laid out right-aligned, with the sign frame when signed. */
+  /** Bytes of `value` (MSB first) laid out right-aligned. */
   const plainValue = (value: number, info: IntTypeInfo, hexInk: string): string => {
     const bytes = toBytesMSB(value, info.bytes);
     let out = '';
     bytes.forEach((b, idx) => {
       out += drawByte(slotX(bytes.length - 1 - idx), yBits, yHex, b, { bits: P.fg, hex: hexInk });
     });
-    if (info.signed) out += signFrame(slotX(bytes.length - 1), yBits, neutralFrame);
     return out;
   };
-
-  let out = rect(cardX, cardY, cardW, CARD_H, P.panel, P.gapStroke, 8, 1.5);
 
   if (act.kind === 'value') {
     const col = typeColour(c, act.type);
@@ -443,9 +441,10 @@ function workbenchClean(c: SceneContext, variant: CastVariant): string {
     } else if (animate && op?.kind === 'read') {
       appearAt = arrival(op);
     }
-    return (
-      out +
-      reveal(appearAt, plainValue(act.value, act.info, col) + text(rightAnchor + 20, yRes, `= ${act.value}`, RESULT_FONT, col))
+    const label = `= ${act.value}`;
+    return reveal(
+      appearAt,
+      card(act.info.bytes, label) + plainValue(act.value, act.info, col) + text(rightAnchor + 20, yRes, label, RESULT_FONT, col)
     );
   }
 
@@ -456,9 +455,8 @@ function workbenchClean(c: SceneContext, variant: CastVariant): string {
     after.forEach((b, idx) => {
       inverted += drawByte(slotX(after.length - 1 - idx), yBits, yHex, b, { bits: P.write, hex: P.write });
     });
-    if (act.info.signed) inverted += signFrame(slotX(after.length - 1), yBits, neutralFrame);
-    out += swap(at, plainValue(act.beforeVal, act.info, P.fg), inverted);
-    return out + result(at + 0.18, `→ ${act.afterVal}`, P.write);
+    const label = `→ ${act.afterVal}`;
+    return card(act.info.bytes, label) + swap(at, plainValue(act.beforeVal, act.info, P.fg), inverted) + result(at + 0.18, label, P.write);
   }
 
   const fromBytes = toBytesMSB(act.beforeVal, act.fromInfo.bytes);
@@ -466,6 +464,8 @@ function workbenchClean(c: SceneContext, variant: CastVariant): string {
   const fromCol = typeColour(c, act.fromType);
   const toCol = typeColour(c, act.toType);
   const at = op ? arrival(op) : T.evaluate;
+  const label = `→ ${act.afterVal}`;
+  let out = card(Math.max(fromBytes.length, toBytes.length), label);
 
   if (act.kind === 'narrow') {
     // The high bytes are struck out and dropped; what stays is reread as the new type.
@@ -487,19 +487,12 @@ function workbenchClean(c: SceneContext, variant: CastVariant): string {
           `<g opacity="0">${show(at)}<animateTransform attributeName="transform" type="translate" from="0 -6" to="0 0" begin="${round(at)}s" dur="0.32s" fill="freeze"/>${dropped}</g>`
         : dropped;
     });
-    if (act.fromInfo.signed) {
-      const frame = signFrame(slotX(fromBytes.length - 1), yBits, neutralFrame);
-      out += animate ? `<g>${hide(at)}${frame}</g>` : '';
-    }
-    if (act.toInfo.signed) {
-      out += reveal(at + 0.34, signFrame(slotX(keep - 1), yBits, neutralFrame));
-    }
     const cutX = slotX(keep - 1) - BYTE_GAP / 2;
     out += reveal(
       at - 0.15,
-      `<line x1="${round(cutX)}" y1="${cardY + 20}" x2="${round(cutX)}" y2="${cardY + CARD_H - 14}" stroke="${P.error}" stroke-width="2.2" stroke-dasharray="5 4"/>`
+      `<line x1="${round(cutX)}" y1="${cardTop + 6}" x2="${round(cutX)}" y2="${cardBottom - 6}" stroke="${P.error}" stroke-width="2.2" stroke-dasharray="5 4"/>`
     );
-    return out + result(at + 0.34, `→ ${act.afterVal}`, toCol);
+    return out + result(at + 0.34, label, toCol);
   }
 
   if (act.kind === 'zero-extend') {
@@ -515,12 +508,12 @@ function workbenchClean(c: SceneContext, variant: CastVariant): string {
       else if (animate) out += `<g opacity="0">${fade(0, 0.72, 0.35, at)}${block}</g>`;
       else out += `<g opacity="0.72">${block}</g>`;
     });
-    return out + result(at + 0.35, `→ ${act.afterVal}`, toCol);
+    return out + result(at + 0.35, label, toCol);
   }
 
   if (act.kind === 'sign-extend') {
-    // Signed source: the framed sign bit lights up and is copied into every new byte along
-    // nested arcs. The arcs fade once the copies land; the colour stays.
+    // Signed source: the sign bit lights up and rides nested arcs into every new byte.
+    // The arcs fade once the copies land; the colour stays.
     const ext = act.signBit === 1 ? { stroke: P.write, fill: P.writeFill } : { stroke: P.read, fill: P.readFill };
     const srcX = slotX(fromBytes.length - 1);
     const msbX = bitCx(srcX, 0);
@@ -535,8 +528,8 @@ function workbenchClean(c: SceneContext, variant: CastVariant): string {
       }
       const lit =
         signFrame(bx, yBits, ext.stroke, ext.fill) + drawByte(bx, yBits, yHex, b, { bits: P.fg, hex: toCol, msb: ext.stroke });
-      const dim = signFrame(bx, yBits, neutralFrame) + drawByte(bx, yBits, yHex, b, { bits: P.fg, hex: toCol });
-      out += animate ? swap(litAt, dim, scaled(msbX, yBits - 8, lit, litAt)) : lit;
+      const plain = drawByte(bx, yBits, yHex, b, { bits: P.fg, hex: toCol });
+      out += animate ? swap(litAt, plain, scaled(msbX, yBits - 8, lit, litAt)) : lit;
     });
 
     const stagger = 0.2;
@@ -557,8 +550,8 @@ function workbenchClean(c: SceneContext, variant: CastVariant): string {
       const land = begin + travel;
       const tipX = bx + BYTE_W / 2;
       const tipY = yBits - BIT_FONT - 2;
-      // Nested parabolas: the farther the byte, the higher the arc, so they never cross.
-      const peakY = cardY + 48 - k * 13;
+      // Flat nested parabolas: the farther the byte, the higher the arc, so they never cross.
+      const peakY = startY - 16 - k * 9;
       const ctrlX = (msbX + tipX) / 2;
       const ctrlY = 2 * peakY - (startY + tipY) / 2;
       const dx = tipX - ctrlX;
@@ -570,31 +563,28 @@ function workbenchClean(c: SceneContext, variant: CastVariant): string {
         `M ${round(msbX)} ${round(startY)} Q ${round(ctrlX)} ${round(ctrlY)}, ${round(x)} ${round(y)}`;
       arcs += `<path d="${path(ex, ey)}" fill="none" stroke="${ext.stroke}" stroke-width="2.2" stroke-linecap="round" data-grow="${round(begin)}"/>`;
       arcs += `<g opacity="0">${show(land - 0.06)}${arrowheadAt(tipX, tipY, dx, dy, ext.stroke)}</g>`;
-      if (variant === 'B') {
-        arcs +=
-          `<g opacity="0">${show(begin)}${hide(land + 0.04)}` +
-          `<circle r="12" fill="${ext.fill}" stroke="${ext.stroke}" stroke-width="1.8"/>` +
-          text(0, 6, String(act.signBit), 17, ext.stroke, 'middle') +
-          `<animateMotion begin="${round(begin)}s" dur="${travel}s" path="${path(tipX, tipY)}" keyPoints="0;1" ${EASE} fill="freeze"/>` +
-          '</g>';
-      }
+      arcs +=
+        `<g opacity="0">${show(begin)}${hide(land + 0.04)}` +
+        `<circle r="10" fill="${ext.fill}" stroke="${ext.stroke}" stroke-width="1.6"/>` +
+        text(0, 5, String(act.signBit), 15, ext.stroke, 'middle') +
+        `<animateMotion begin="${round(begin)}s" dur="${travel}s" path="${path(tipX, tipY)}" keyPoints="0;1" ${EASE} fill="freeze"/>` +
+        '</g>';
       out += `<g opacity="0">${show(land)}${scaled(tipX, yBits, copy, land)}</g>`;
     }
     if (arcs) out += `<g>${fade(1, 0, 0.32, doneAt + 0.35)}${arcs}</g>`;
-    return out + result(doneAt, `→ ${act.afterVal}`, toCol);
+    return out + result(doneAt, label, toCol);
   }
 
   // Reinterpret (same width): the bits stay, only the type reading them changes.
   out += swap(at, plainValue(act.beforeVal, act.fromInfo, fromCol), plainValue(act.afterVal, act.toInfo, toCol));
-  return out + result(at + 0.12, `→ ${act.afterVal}`, toCol);
+  return out + result(at + 0.12, label, toCol);
 }
 
 // ============================================================================================
-// Variant hooks & prototype page controller (A / B)
+// Player hooks & prototype page controller
 // ============================================================================================
 
 function hooksFor(
-  variant: CastVariant,
   littleEndian: boolean,
   onEndianChange?: (le: boolean) => void
 ): PlayerHooks {
@@ -602,7 +592,7 @@ function hooksFor(
     minByteWidth: 66,
     minColumnWidth: 680,
     cellHeight: 88,
-    extraPaneHeight: 170,
+    extraPaneHeight: 120,
     skipWrap: true,
   };
   return {
@@ -624,38 +614,13 @@ function hooksFor(
         arrows(c) +
         memoryWithByteHex(c) +
         pane(c, copying) +
-        workbenchClean(c, variant) +
+        workbenchClean(c) +
         output(c) +
         transfers(c)
       );
     },
   };
 }
-
-interface VariantMeta {
-  name: string;
-  claim: string;
-  points: string[];
-}
-
-const VARIANTS: Record<CastVariant, VariantMeta> = {
-  A: {
-    name: 'Sign bit copied along arcs',
-    claim: 'Signed types frame their sign bit; widening lights it and copies it into each new byte along nested arcs. Unsigned types have no frame and get grey zeros.',
-    points: [
-      'The frame on the top bit appears on every signed value, so the cause is visible before the cast.',
-      'Copied bytes keep the sign colour (amber for 1, blue for 0) after the arcs fade.',
-    ],
-  },
-  B: {
-    name: 'Sign bit carried along arcs',
-    claim: 'Same as A, but the bit itself rides each arc into the byte it fills.',
-    points: [
-      'The travelling 1 or 0 makes the copy literal.',
-      'Unsigned widening is unchanged: grey zeros fade in.',
-    ],
-  },
-};
 
 declare global {
   interface Window {
@@ -668,16 +633,10 @@ declare global {
 function boot(): void {
   const data = window.CastsPrototype?.traces ?? [];
   const params = new URLSearchParams(location.search);
-  const rawVar = (params.get('variant') || 'A').toUpperCase();
-  const state: { variant: CastVariant; littleEndian: boolean } = {
-    variant: rawVar === 'A' || rawVar === 'B' ? rawVar : 'A',
-    littleEndian: params.get('endian') !== 'be',
-  };
+  const state = { littleEndian: params.get('endian') !== 'be' };
   document.documentElement.dataset.theme = params.get('theme') || 'dark';
 
-  const about = document.getElementById('about')!;
   const sections = document.getElementById('sections')!;
-  const label = document.getElementById('label')!;
   const players: Player[] = [];
 
   sections.innerHTML = data
@@ -692,7 +651,6 @@ function boot(): void {
 
   function syncUrl(): void {
     const url = new URL(location.href);
-    url.searchParams.set('variant', state.variant);
     url.searchParams.set('endian', state.littleEndian ? 'le' : 'be');
     url.searchParams.set('theme', document.documentElement.dataset.theme || 'dark');
     history.replaceState(null, '', url);
@@ -721,7 +679,7 @@ function boot(): void {
       const player = new Player(
         host,
         data[idx],
-        hooksFor(state.variant, le, nextLe => {
+        hooksFor(le, nextLe => {
           state.littleEndian = nextLe;
           syncUrl();
         })
@@ -734,13 +692,6 @@ function boot(): void {
       players[idx] = player;
       (host as HTMLElement & { cvPlayer?: Player }).cvPlayer = player;
     }
-
-    const meta = VARIANTS[state.variant];
-    label.textContent = `${state.variant} · ${meta.name}`;
-    about.innerHTML =
-      `<h3>${state.variant}. ${esc(meta.name)}</h3>` +
-      `<p>${esc(meta.claim)}</p>` +
-      `<ul>${meta.points.map(p => `<li>${esc(p)}</li>`).join('')}</ul>`;
 
     syncUrl();
   }
@@ -756,26 +707,12 @@ function boot(): void {
     true
   );
 
-  const cycle = (delta: number): void => {
-    const keys: CastVariant[] = ['A', 'B'];
-    state.variant = keys[(keys.indexOf(state.variant) + delta + keys.length) % keys.length];
-    mount();
-  };
-
-  document.getElementById('prev')!.onclick = () => cycle(-1);
-  document.getElementById('next')!.onclick = () => cycle(1);
   document.getElementById('theme')!.onclick = () => {
     const root = document.documentElement;
     root.dataset.theme = root.dataset.theme === 'dark' ? 'light' : 'dark';
     for (const p of players) p.refresh();
     syncUrl();
   };
-
-  document.addEventListener('keydown', event => {
-    if ((event.target as Element | null)?.matches('input, textarea, select, [contenteditable]')) return;
-    if (event.key === '[') cycle(-1);
-    if (event.key === ']') cycle(1);
-  });
 
   mount();
 }

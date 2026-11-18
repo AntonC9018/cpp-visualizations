@@ -2233,8 +2233,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         const dir = littleEndian ? 1 : -1;
         const xLow = cell.x + (littleEndian ? bw / 2 : cell.w - bw / 2);
         const xHigh = cell.x + (littleEndian ? cell.w - bw / 2 : bw / 2);
-        const arrowCol = on ? P.fg : P.deadStroke;
-        markup += `<g opacity="${on ? "0.82" : "0.55"}"><line x1="${round(xLow)}" y1="${ay}" x2="${round(xHigh - 7 * dir)}" y2="${ay}" stroke="${arrowCol}" stroke-width="2" stroke-linecap="round"/><path d="M -9 -4.5 L 0 0 L -9 4.5 Z" fill="${arrowCol}" transform="translate(${round(xHigh)} ${ay}) rotate(${littleEndian ? 0 : 180})"/></g>`;
+        const arrowCol = on ? P.grey : P.deadStroke;
+        markup += `<g opacity="${on ? "0.75" : "0.5"}"><line x1="${round(xLow)}" y1="${ay}" x2="${round(xHigh - 6 * dir)}" y2="${ay}" stroke="${arrowCol}" stroke-width="1.5" stroke-linecap="round"/><path d="M -8 -4 L 0 0 L -8 4 Z" fill="${arrowCol}" transform="translate(${round(xHigh)} ${ay}) rotate(${littleEndian ? 0 : 180})"/></g>`;
       }
       markup += text(
         cell.x + cell.w / 2,
@@ -2256,7 +2256,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   const NIB_GAP = 8;
   const BYTE_W = 2 * NIBBLE_W + NIB_GAP;
   const BYTE_GAP = 26;
-  const CARD_H = 164;
+  const CARD_PAD = 12;
   const bitCx = (x, i) => x + (i < 4 ? 0 : NIBBLE_W + NIB_GAP) + (i % 4 + 0.5) * BIT_STEP;
   function drawByte(x, yBits, yHex, byte, ink) {
     const bits = byte.toString(2).padStart(8, "0");
@@ -2279,32 +2279,33 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return `<path d="M -10 -5 L 0 0 L -10 5 Z" fill="${color}" transform="translate(${round(tipX)} ${round(tipY)}) rotate(${deg})"/>`;
   }
   const scaled = (cx, cy, inner, begin) => `<g transform="translate(${round(cx)} ${round(cy)})"><g>${pulse(begin)}<g transform="translate(${round(-cx)} ${round(-cy)})">${inner}</g></g></g>`;
-  function workbenchClean(c, variant) {
+  function workbenchClean(c) {
     const act = activeBitAction(c);
     if (!act) return "";
     const { g, P, animate, op } = c;
-    const cardX = g.tx - 6;
-    const cardY = g.ty + 18;
-    const cardW = g.pane.w - 36;
-    const yBits = cardY + 108;
+    const cardTop = g.ty + 56;
+    const yBits = cardTop + CARD_PAD + BOX_TOP;
     const yHex = yBits + 34;
     const yRes = yBits + 16;
-    const rightAnchor = cardX + 18 + 4 * BYTE_W + 3 * BYTE_GAP;
+    const cardBottom = yHex + CARD_PAD;
+    const rightAnchor = g.tx + 12 + 4 * BYTE_W + 3 * BYTE_GAP;
     const slotX = (bytesFromLSB) => rightAnchor - (bytesFromLSB + 1) * BYTE_W - bytesFromLSB * BYTE_GAP;
-    const neutralFrame = P.muted;
+    const card = (bytes, resultLabel) => {
+      const left = slotX(bytes - 1) - CARD_PAD - 4;
+      const right = rightAnchor + 20 + resultLabel.length * RESULT_FONT * CHAR + CARD_PAD + 4;
+      return rect(left, cardTop, right - left, cardBottom - cardTop, P.panel, P.gapStroke, 8, 1.5);
+    };
     const reveal = (at2, markup) => animate && at2 > 0 ? `<g opacity="0">${fade(0, 1, 0.22, at2)}${markup}</g>` : markup;
     const swap = (at2, before, after) => animate ? `<g>${hide(at2)}${before}</g><g opacity="0">${show(at2)}${after}</g>` : after;
-    const result = (at2, label, color) => reveal(at2, text(rightAnchor + 20, yRes, label, RESULT_FONT, color));
+    const result = (at2, label2, color) => reveal(at2, text(rightAnchor + 20, yRes, label2, RESULT_FONT, color));
     const plainValue = (value, info, hexInk) => {
       const bytes = toBytesMSB(value, info.bytes);
       let out2 = "";
       bytes.forEach((b, idx) => {
         out2 += drawByte(slotX(bytes.length - 1 - idx), yBits, yHex, b, { bits: P.fg, hex: hexInk });
       });
-      if (info.signed) out2 += signFrame(slotX(bytes.length - 1), yBits, neutralFrame);
       return out2;
     };
-    let out = rect(cardX, cardY, cardW, CARD_H, P.panel, P.gapStroke, 8, 1.5);
     if (act.kind === "value") {
       const col = typeColour(c, act.type);
       let appearAt = 0;
@@ -2313,7 +2314,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       } else if (animate && (op == null ? void 0 : op.kind) === "read") {
         appearAt = arrival(op);
       }
-      return out + reveal(appearAt, plainValue(act.value, act.info, col) + text(rightAnchor + 20, yRes, `= ${act.value}`, RESULT_FONT, col));
+      const label2 = `= ${act.value}`;
+      return reveal(
+        appearAt,
+        card(act.info.bytes, label2) + plainValue(act.value, act.info, col) + text(rightAnchor + 20, yRes, label2, RESULT_FONT, col)
+      );
     }
     if (act.kind === "invert") {
       const at2 = op ? arrival(op) : T.evaluate;
@@ -2322,15 +2327,16 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       after.forEach((b, idx) => {
         inverted += drawByte(slotX(after.length - 1 - idx), yBits, yHex, b, { bits: P.write, hex: P.write });
       });
-      if (act.info.signed) inverted += signFrame(slotX(after.length - 1), yBits, neutralFrame);
-      out += swap(at2, plainValue(act.beforeVal, act.info, P.fg), inverted);
-      return out + result(at2 + 0.18, `→ ${act.afterVal}`, P.write);
+      const label2 = `→ ${act.afterVal}`;
+      return card(act.info.bytes, label2) + swap(at2, plainValue(act.beforeVal, act.info, P.fg), inverted) + result(at2 + 0.18, label2, P.write);
     }
     const fromBytes = toBytesMSB(act.beforeVal, act.fromInfo.bytes);
     const toBytes = toBytesMSB(act.afterVal, act.toInfo.bytes);
     const fromCol = typeColour(c, act.fromType);
     const toCol = typeColour(c, act.toType);
     const at = op ? arrival(op) : T.evaluate;
+    const label = `→ ${act.afterVal}`;
+    let out = card(Math.max(fromBytes.length, toBytes.length), label);
     if (act.kind === "narrow") {
       const keep = toBytes.length;
       fromBytes.forEach((b, idx) => {
@@ -2343,19 +2349,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         const dropped = `<g opacity="0.48">` + drawByte(bx, yBits, yHex, b, { bits: P.error, hex: P.error }) + `<line x1="${round(bx + 4)}" y1="${round(yBits - 20)}" x2="${round(bx + BYTE_W - 4)}" y2="${round(yHex + 6)}" stroke="${P.error}" stroke-width="2"/></g>`;
         out += animate ? `<g>${hide(at)}${drawByte(bx, yBits, yHex, b, { bits: P.fg, hex: fromCol })}</g><g opacity="0">${show(at)}<animateTransform attributeName="transform" type="translate" from="0 -6" to="0 0" begin="${round(at)}s" dur="0.32s" fill="freeze"/>${dropped}</g>` : dropped;
       });
-      if (act.fromInfo.signed) {
-        const frame = signFrame(slotX(fromBytes.length - 1), yBits, neutralFrame);
-        out += animate ? `<g>${hide(at)}${frame}</g>` : "";
-      }
-      if (act.toInfo.signed) {
-        out += reveal(at + 0.34, signFrame(slotX(keep - 1), yBits, neutralFrame));
-      }
       const cutX = slotX(keep - 1) - BYTE_GAP / 2;
       out += reveal(
         at - 0.15,
-        `<line x1="${round(cutX)}" y1="${cardY + 20}" x2="${round(cutX)}" y2="${cardY + CARD_H - 14}" stroke="${P.error}" stroke-width="2.2" stroke-dasharray="5 4"/>`
+        `<line x1="${round(cutX)}" y1="${cardTop + 6}" x2="${round(cutX)}" y2="${cardBottom - 6}" stroke="${P.error}" stroke-width="2.2" stroke-dasharray="5 4"/>`
       );
-      return out + result(at + 0.34, `→ ${act.afterVal}`, toCol);
+      return out + result(at + 0.34, label, toCol);
     }
     if (act.kind === "zero-extend") {
       toBytes.forEach((b, idx) => {
@@ -2369,7 +2368,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         else if (animate) out += `<g opacity="0">${fade(0, 0.72, 0.35, at)}${block}</g>`;
         else out += `<g opacity="0.72">${block}</g>`;
       });
-      return out + result(at + 0.35, `→ ${act.afterVal}`, toCol);
+      return out + result(at + 0.35, label, toCol);
     }
     if (act.kind === "sign-extend") {
       const ext = act.signBit === 1 ? { stroke: P.write, fill: P.writeFill } : { stroke: P.read, fill: P.readFill };
@@ -2384,8 +2383,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           return;
         }
         const lit = signFrame(bx, yBits, ext.stroke, ext.fill) + drawByte(bx, yBits, yHex, b, { bits: P.fg, hex: toCol, msb: ext.stroke });
-        const dim2 = signFrame(bx, yBits, neutralFrame) + drawByte(bx, yBits, yHex, b, { bits: P.fg, hex: toCol });
-        out += animate ? swap(litAt, dim2, scaled(msbX, yBits - 8, lit, litAt)) : lit;
+        const plain = drawByte(bx, yBits, yHex, b, { bits: P.fg, hex: toCol });
+        out += animate ? swap(litAt, plain, scaled(msbX, yBits - 8, lit, litAt)) : lit;
       });
       const stagger = 0.2;
       const travel = 0.55;
@@ -2405,7 +2404,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         const land = begin + travel;
         const tipX = bx + BYTE_W / 2;
         const tipY = yBits - BIT_FONT - 2;
-        const peakY = cardY + 48 - k * 13;
+        const peakY = startY - 16 - k * 9;
         const ctrlX = (msbX + tipX) / 2;
         const ctrlY = 2 * peakY - (startY + tipY) / 2;
         const dx = tipX - ctrlX;
@@ -2416,23 +2415,21 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         const path = (x, y) => `M ${round(msbX)} ${round(startY)} Q ${round(ctrlX)} ${round(ctrlY)}, ${round(x)} ${round(y)}`;
         arcs += `<path d="${path(ex, ey)}" fill="none" stroke="${ext.stroke}" stroke-width="2.2" stroke-linecap="round" data-grow="${round(begin)}"/>`;
         arcs += `<g opacity="0">${show(land - 0.06)}${arrowheadAt(tipX, tipY, dx, dy, ext.stroke)}</g>`;
-        if (variant === "B") {
-          arcs += `<g opacity="0">${show(begin)}${hide(land + 0.04)}<circle r="12" fill="${ext.fill}" stroke="${ext.stroke}" stroke-width="1.8"/>` + text(0, 6, String(act.signBit), 17, ext.stroke, "middle") + `<animateMotion begin="${round(begin)}s" dur="${travel}s" path="${path(tipX, tipY)}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
-        }
+        arcs += `<g opacity="0">${show(begin)}${hide(land + 0.04)}<circle r="10" fill="${ext.fill}" stroke="${ext.stroke}" stroke-width="1.6"/>` + text(0, 5, String(act.signBit), 15, ext.stroke, "middle") + `<animateMotion begin="${round(begin)}s" dur="${travel}s" path="${path(tipX, tipY)}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
         out += `<g opacity="0">${show(land)}${scaled(tipX, yBits, copy, land)}</g>`;
       }
       if (arcs) out += `<g>${fade(1, 0, 0.32, doneAt + 0.35)}${arcs}</g>`;
-      return out + result(doneAt, `→ ${act.afterVal}`, toCol);
+      return out + result(doneAt, label, toCol);
     }
     out += swap(at, plainValue(act.beforeVal, act.fromInfo, fromCol), plainValue(act.afterVal, act.toInfo, toCol));
-    return out + result(at + 0.12, `→ ${act.afterVal}`, toCol);
+    return out + result(at + 0.12, label, toCol);
   }
-  function hooksFor(variant, littleEndian, onEndianChange) {
+  function hooksFor(littleEndian, onEndianChange) {
     const geomOpts = {
       minByteWidth: 66,
       minColumnWidth: 680,
       cellHeight: 88,
-      extraPaneHeight: 170,
+      extraPaneHeight: 120,
       skipWrap: true
     };
     return {
@@ -2447,48 +2444,23 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         const lineChanged = animate && prev !== null && prev.line !== step.line;
         const copying = animate && copies(c.m.steps, c.index);
         const oldLine = lineChanged && prev ? prev.line : null;
-        return code(c, oldLine) + tether(c, oldLine) + arrows(c) + memoryWithByteHex(c) + pane(c, copying) + workbenchClean(c, variant) + output(c) + transfers(c);
+        return code(c, oldLine) + tether(c, oldLine) + arrows(c) + memoryWithByteHex(c) + pane(c, copying) + workbenchClean(c) + output(c) + transfers(c);
       }
     };
   }
-  const VARIANTS = {
-    A: {
-      name: "Sign bit copied along arcs",
-      claim: "Signed types frame their sign bit; widening lights it and copies it into each new byte along nested arcs. Unsigned types have no frame and get grey zeros.",
-      points: [
-        "The frame on the top bit appears on every signed value, so the cause is visible before the cast.",
-        "Copied bytes keep the sign colour (amber for 1, blue for 0) after the arcs fade."
-      ]
-    },
-    B: {
-      name: "Sign bit carried along arcs",
-      claim: "Same as A, but the bit itself rides each arc into the byte it fills.",
-      points: [
-        "The travelling 1 or 0 makes the copy literal.",
-        "Unsigned widening is unchanged: grey zeros fade in."
-      ]
-    }
-  };
   function boot() {
     var _a;
     const data = ((_a = window.CastsPrototype) == null ? void 0 : _a.traces) ?? [];
     const params = new URLSearchParams(location.search);
-    const rawVar = (params.get("variant") || "A").toUpperCase();
-    const state = {
-      variant: rawVar === "A" || rawVar === "B" ? rawVar : "A",
-      littleEndian: params.get("endian") !== "be"
-    };
+    const state = { littleEndian: params.get("endian") !== "be" };
     document.documentElement.dataset.theme = params.get("theme") || "dark";
-    const about = document.getElementById("about");
     const sections = document.getElementById("sections");
-    const label = document.getElementById("label");
     const players = [];
     sections.innerHTML = data.map(
       (t, i) => `<section class="proto-case"><h2>${i + 1}. ${esc(t.title ?? "")}</h2><pre><code>${esc(t.source.join("\n"))}</code></pre><details data-case="${i}"${i <= 2 || params.get("open") === "all" ? " open" : ""}><summary>Execution trace</summary><div class="slot"></div></details></section>`
     ).join("");
     function syncUrl() {
       const url = new URL(location.href);
-      url.searchParams.set("variant", state.variant);
       url.searchParams.set("endian", state.littleEndian ? "le" : "be");
       url.searchParams.set("theme", document.documentElement.dataset.theme || "dark");
       history.replaceState(null, "", url);
@@ -2515,7 +2487,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         const player = new Player(
           host,
           data[idx],
-          hooksFor(state.variant, le, (nextLe) => {
+          hooksFor(le, (nextLe) => {
             state.littleEndian = nextLe;
             syncUrl();
           })
@@ -2528,9 +2500,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         players[idx] = player;
         host.cvPlayer = player;
       }
-      const meta = VARIANTS[state.variant];
-      label.textContent = `${state.variant} · ${meta.name}`;
-      about.innerHTML = `<h3>${state.variant}. ${esc(meta.name)}</h3><p>${esc(meta.claim)}</p><ul>${meta.points.map((p) => `<li>${esc(p)}</li>`).join("")}</ul>`;
       syncUrl();
     }
     sections.addEventListener(
@@ -2546,25 +2515,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       },
       true
     );
-    const cycle = (delta) => {
-      const keys = ["A", "B"];
-      state.variant = keys[(keys.indexOf(state.variant) + delta + keys.length) % keys.length];
-      mount();
-    };
-    document.getElementById("prev").onclick = () => cycle(-1);
-    document.getElementById("next").onclick = () => cycle(1);
     document.getElementById("theme").onclick = () => {
       const root = document.documentElement;
       root.dataset.theme = root.dataset.theme === "dark" ? "light" : "dark";
       for (const p of players) p.refresh();
       syncUrl();
     };
-    document.addEventListener("keydown", (event) => {
-      var _a2;
-      if ((_a2 = event.target) == null ? void 0 : _a2.matches("input, textarea, select, [contenteditable]")) return;
-      if (event.key === "[") cycle(-1);
-      if (event.key === "]") cycle(1);
-    });
     mount();
   }
   if (typeof window !== "undefined") {
