@@ -402,6 +402,94 @@ test('long pane type labels neither overlap nor leave the pane', async () => {
   }
 });
 
+test('a bits trace draws bytes in either order and copies the sign bit, in both themes', async () => {
+  const bits = traceSource('int8_t a{ -3 }; int b{ static_cast<int>(a) }; uint8_t c{ 253 }; int d{ c };', {
+    runtime: false,
+    bits: true,
+  });
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.setContent(PAGE.replace(trace, JSON.stringify(bits).replace(/</g, '\\u003c')));
+  await page.evaluate(() => window.CourseVisualization!.scan());
+  await page.waitForSelector('.cv-player');
+  const host = page.locator('.course-visualization');
+  const bytesOf = (name: string): Promise<string> =>
+    page.evaluate(
+      name => (document.querySelector(`.cv-byte-hex[data-name="${name}"]`)?.textContent ?? '').replace(/(..)/g, '$1 ').trim(),
+      name
+    );
+  const convertFrom = (type: string): number =>
+    bits.steps.findIndex(step => step.op?.kind === 'convert' && step.op.from === type);
+  const workbench = (step: number): Promise<string[]> =>
+    host.evaluate((h: PlayerElement, step) => {
+      h.cvPlayer.settle(step);
+      return [...h.cvPlayer.svg.querySelectorAll('.cv-bit-byte')].map(g => g.getAttribute('data-bits')!);
+    }, step);
+
+  for (const theme of ['dark', 'light']) {
+    await page.evaluate(theme => (document.documentElement.dataset.theme = theme), theme);
+    await page.getByRole('button', { name: 'Little-endian' }).click();
+    await host.evaluate((h: PlayerElement) => h.cvPlayer.end());
+    assert.equal(await bytesOf('b'), 'FD FF FF FF');
+    assert.equal(await bytesOf('d'), 'FD 00 00 00');
+    await page.getByRole('button', { name: 'Big-endian' }).click();
+    assert.equal(await page.getByRole('button', { name: 'Big-endian' }).getAttribute('aria-pressed'), 'true');
+    assert.equal(await bytesOf('b'), 'FF FF FF FD');
+
+    const signed = await workbench(convertFrom('int8_t'));
+    assert.deepEqual([...signed].sort(), ['11111101', '11111111', '11111111', '11111111']);
+    const unsigned = await workbench(convertFrom('uint8_t'));
+    assert.deepEqual([...unsigned].sort(), ['00000000', '00000000', '00000000', '11111101']);
+  }
+  assert.deepEqual(errors, []);
+});
+
+test('a bits trace reads hex literals and fits eight bytes in a narrow player', async () => {
+  const bits = traceSource('int16_t a{ 0x1234 }; int64_t b{ a };', { runtime: false, bits: true });
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.setViewportSize({ width: 391, height: 900 });
+  await page.setContent(PAGE.replace(trace, JSON.stringify(bits).replace(/</g, '\\u003c')));
+  await page.evaluate(() => window.CourseVisualization!.scan());
+  await page.waitForSelector('.cv-player');
+  const host = page.locator('.course-visualization');
+  const converts = bits.steps.flatMap((step, i) => (step.op?.kind === 'convert' ? [i] : []));
+  const workbench = (step: number) =>
+    host.evaluate((h: PlayerElement, step) => {
+      h.cvPlayer.settle(step);
+      const stage = h.cvPlayer.svg.getBoundingClientRect();
+      return [...h.cvPlayer.svg.querySelectorAll('.cv-bit-byte')].map(g => {
+        const box = g.getBoundingClientRect();
+        return { bits: g.getAttribute('data-bits')!, inside: box.left >= stage.left && box.right <= stage.right };
+      });
+    }, step);
+
+  const narrowed = await workbench(converts[0]);
+  assert.deepEqual(narrowed.map(b => b.bits).slice(-2), ['00010010', '00110100']);
+  const widened = await workbench(converts[1]);
+  assert.equal(widened.length, 8);
+  assert.deepEqual(widened.filter(b => !b.inside), []);
+  assert.deepEqual(errors, []);
+});
+
+test('a bits trace keeps the value in the workbench while printing it', async () => {
+  const bits = traceSource('int a{ 7 }; std::cout << a;', { runtime: false, bits: true });
+  await page.setContent(PAGE.replace(trace, JSON.stringify(bits).replace(/</g, '\\u003c')));
+  await page.evaluate(() => window.CourseVisualization!.scan());
+  await page.waitForSelector('.cv-player');
+  const print = bits.steps.findIndex(step => step.op?.kind === 'print');
+  const shown = await page.locator('.course-visualization').evaluate((h: PlayerElement, step) => {
+    h.cvPlayer.settle(step);
+    return [...h.cvPlayer.svg.querySelectorAll('.cv-bit-byte')].map(g => g.getAttribute('data-bits')!);
+  }, print);
+  assert.deepEqual(shown, ['00000000', '00000000', '00000000', '00000111']);
+});
+
+test('a trace without bits has no byte order switch', async () => {
+  await page.waitForSelector('.cv-player');
+  assert.equal(await page.locator('.cv-endian').count(), 0);
+});
+
 // `struct A { uint8_t f1; int f2; uint8_t f3; }`: padding after f1 and after f3.
 const PADDED_LAYOUT: LayoutTrace = {
   format: 1,

@@ -47,6 +47,14 @@ export const FLAGS = {
       ru: 'Показывать тип каждого значения и последнюю инструкцию с несовместимыми типами',
     },
   },
+  bits: {
+    templates: ['expression-timeline'],
+    label: { en: 'Bits', ru: 'Биты' },
+    description: {
+      en: 'Show the bytes of every integer in memory and its bits as it is converted; implies types',
+      ru: 'Показывать байты каждого целого в памяти и его биты при преобразовании; включает типы',
+    },
+  },
 } as const satisfies Record<string, FlagInfo>;
 
 export type Flag = keyof typeof FLAGS;

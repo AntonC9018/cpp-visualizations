@@ -73,6 +73,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       replay: "Replay step",
       reset: "Reset",
       speed: "Playback speed",
+      byteOrder: "Memory byte order",
+      littleEndian: "Little-endian (least significant byte first)",
+      bigEndian: "Big-endian (most significant byte first)",
+      littleEndianShort: "Little-endian",
+      bigEndianShort: "Big-endian",
       scrub: "Execution step",
       output: "Output:",
       stage: "Code, memory and expression evaluation",
@@ -99,6 +104,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       replay: "Повторить шаг",
       reset: "Сначала",
       speed: "Скорость",
+      byteOrder: "Порядок байтов в памяти",
+      littleEndian: "Little-endian (младший байт первым)",
+      bigEndian: "Big-endian (старший байт первым)",
+      littleEndianShort: "Little-endian",
+      bigEndianShort: "Big-endian",
       scrub: "Шаг выполнения",
       output: "Вывод:",
       stage: "Код, память и вычисление выражения",
@@ -560,14 +570,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return { labels, height: edge.length ? edge.length * LABEL.row + 6 : 0 };
   }
-  const labelWidth = (c) => String(c.address).length * 16 * CHAR;
+  const labelWidth$1 = (c) => String(c.address).length * 16 * CHAR;
   const labelCentre = (c) => [
-    c.x + 3 + labelWidth(c) / 2,
+    c.x + 3 + labelWidth$1(c) / 2,
     c.y - 18
   ];
   const valueCentre = (c) => [
     c.x + c.w / 2,
-    c.y + 32
+    c.y + c.h / 2
   ];
   function links(g, step) {
     const list = g.leaves.filter((l) => l.kind === "ptr" && step.targets[l.name] && g.box(step.targets[l.name])).map((l) => ({
@@ -596,7 +606,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const margin = Math.min(12, cell.w / 2);
       const left = cell.x + margin;
       const high = cell.x + cell.w - margin;
-      const clearance = cell.x + 3 + labelWidth(cell) + 14;
+      const clearance = cell.x + 3 + labelWidth$1(cell) + 14;
       const intervals = ends.length - 1;
       const low = !g.isStruct(cell) && clearance + 20 * intervals <= high ? Math.max(left, clearance) : left;
       const spacing = intervals ? Math.min(20, (high - low) / intervals) : 0;
@@ -656,10 +666,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   const WRAP_HEIGHT_FACTOR = 1.5;
   function placement(m, byte, rowOf) {
     const spans = /* @__PURE__ */ new Map();
-    const gaps = [];
+    const gaps2 = [];
     let row = 0;
     const unused = (x2, bytes) => {
-      if (bytes > 0) gaps.push([x2, bytes * byte, row]);
+      if (bytes > 0) gaps2.push([x2, bytes * byte, row]);
       return Math.max(0, bytes) * byte;
     };
     const put = (item, x2) => {
@@ -693,7 +703,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       address = item.address + item.size;
       width = Math.max(width, x);
     }
-    return { spans, gaps, width };
+    return { spans, gaps: gaps2, width };
   }
   function typeTargets(m, g) {
     const names = Object.keys(m.types);
@@ -735,7 +745,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }
   const COLUMN_GAP = 56;
   const STACK_TETHER_WIDTH = 30;
-  function geometry(m, P, stacked, viewport) {
+  function geometry(m, P, stacked, viewport, options = {}) {
+    const cellH = options.cellHeight ?? CELL;
+    const extraPaneHeight = options.extraPaneHeight ?? 0;
+    const minByteWidth = options.minByteWidth ?? 0;
     const isStruct = (c) => Boolean(c.fields);
     const unwrapped = codeLayout(m.source);
     const targetCodeSize = stacked ? 12 : 13;
@@ -753,26 +766,29 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     };
     const stackedCodeBudget = canvasBudget - 2 * MARGIN - STACK_TETHER_WIDTH;
     const initialCode = stacked ? fitCode(stackedCodeBudget) : unwrapped;
-    const widest = m.leaves.some((leaf) => leaf.size < 4) ? NARROW_BYTE : MAX_BYTE;
+    const widest = Math.max(minByteWidth, m.leaves.some((leaf) => leaf.size < 4) ? NARROW_BYTE : MAX_BYTE);
     const rise = m.rise;
     const structs = m.groups.length > 0;
     const paneChars = Math.max(...m.steps.map((step) => step.pane.length));
     const finalStdout = m.steps[m.steps.length - 1].stdout;
     const outputLines = finalStdout ? finalStdout.replace(/\n$/, "").split("\n") : [];
     const outputChars = Math.max(0, ...outputLines.map((line) => line.length));
-    const canWrap = !stacked && m.tops.length > 1 && !m.typed && m.references.length === 0 && m.steps.every((step) => Object.keys(step.targets).length === 0);
-    const pitch = (structs ? CELL + FRAME.bottom + 32 : CELL + 34) + rise * RISE.bottom + (structs ? FRAME.top : 0) + 30 + rise * RISE.top;
+    const canWrap = !stacked && !options.skipWrap && m.tops.length > 1 && !m.typed && m.references.length === 0 && m.steps.every((step) => Object.keys(step.targets).length === 0);
+    const pitch = (structs ? cellH + FRAME.bottom + 32 : cellH + 34) + rise * RISE.bottom + (structs ? FRAME.top : 0) + 30 + rise * RISE.top;
     const plan = (rows2) => {
       const rowOf2 = /* @__PURE__ */ new Map();
       rows2.forEach((row, r) => row.forEach((i) => rowOf2.set(m.tops[i].name, r)));
-      const byteFor = (budget) => Math.min(
-        widest,
-        ...rows2.map((row) => {
-          const items = row.map((i) => m.tops[i]);
-          const bytes = items[items.length - 1].address + items[items.length - 1].size - items[0].address;
-          const nested = m.groups.filter((s) => s.parent && rowOf2.get(s.top) === rowOf2.get(items[0].name));
-          return Math.max(1, (budget - GAP * (items.length - 1) - 2 * NEST * nested.length) / bytes);
-        })
+      const byteFor = (budget) => Math.max(
+        minByteWidth,
+        Math.min(
+          widest,
+          ...rows2.map((row) => {
+            const items = row.map((i) => m.tops[i]);
+            const bytes = items[items.length - 1].address + items[items.length - 1].size - items[0].address;
+            const nested = m.groups.filter((s) => s.parent && rowOf2.get(s.top) === rowOf2.get(items[0].name));
+            return Math.max(1, (budget - GAP * (items.length - 1) - 2 * NEST * nested.length) / bytes);
+          })
+        )
       );
       const natural = placement(m, byteFor(MEMORY_WIDTH), rowOf2).width;
       const paneSize = Math.max(
@@ -783,6 +799,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const labelExtent2 = paneLabelExtent(m, paneChar);
       const others = Math.max(
         360,
+        options.minColumnWidth ?? 0,
         paneChars * paneChar + 48,
         labelExtent2.right + 24 - PANE_LABEL_LEFT,
         (P.outputLabel.length + 1) * 26 * CHAR + outputChars * paneChar + 48,
@@ -838,7 +855,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         x: memX2 + span[0],
         y: memY2 + rowY(c.name),
         w: span[1],
-        h: CELL,
+        h: cellH,
         color: "",
         fieldColor: null
       };
@@ -850,7 +867,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         x: memX2 + span[0],
         y: memY2 + rowY(c.name),
         w: span[1],
-        h: CELL,
+        h: cellH,
         color: "",
         fieldColor: null
       };
@@ -875,10 +892,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const typeRow = typeRows(m, probe.box);
     const labelHeight = m.typed ? LABEL.rise + Math.max(0, labelExtent.rows - 1) * LABEL.row : 0;
     const labelRise = m.typed ? labelHeight + 6 : 0;
-    const named = (structs ? CELL + FRAME.bottom + 32 : CELL + 34) + rise * RISE.bottom + tagged.height;
+    const named = (structs ? cellH + FRAME.bottom + 32 : cellH + 34) + rise * RISE.bottom + tagged.height;
     const names = named + typeRow.height;
     const paneTop = room + names + extraRows * pitch + 56;
-    const paneH = 76 + labelRise;
+    const paneH = 76 + labelRise + extraPaneHeight;
     const outputTop = paneTop + paneH + 60;
     const columnH = outputLines.length ? outputTop + (outputLines.length - 1) * 36 + 14 : paneTop + paneH;
     const codeX = MARGIN;
@@ -911,7 +928,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const code2 = { x: codeX, y: codeY, w: codeW, h: codeH };
     const codeRows = placeCodeRows(rows, code2.y + 50);
     const lineY = (i) => codeRows[i][0].y;
-    const gaps = placed.gaps.map(([x, w, row]) => [
+    const gaps2 = placed.gaps.map(([x, w, row]) => [
       memX + x,
       w,
       memY + row * pitch
@@ -966,7 +983,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       out,
       lineY,
       codeRows,
-      gaps,
+      gaps: gaps2,
       leaves,
       groups,
       box,
@@ -993,6 +1010,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     };
     g.typeTargets = typeTargets(m, g);
     return g;
+  }
+  class Unsupported extends Error {
+    constructor(message) {
+      super(message);
+      this.name = "Unsupported";
+    }
   }
   function arrayType(spelling) {
     var _a;
@@ -1415,16 +1438,19 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return out;
   }
-  function memory(c) {
+  function gaps(c, height) {
+    return c.g.gaps.map(
+      ([x, w, y]) => `<rect x="${round(x + 3)}" y="${y + 3}" width="${round(w - 6)}" height="${height - 6}" fill="none" stroke="${c.P.gapStroke}" stroke-dasharray="5 5"/>`
+    ).join("");
+  }
+  function memory$1(c) {
     const { g, P, step, prev, op } = c;
     const values = op && op.kind === "write" && prev ? prev.values : step.values;
     const at = op ? arrival(op) : 0;
     const writing = new Set(op && op.kind === "write" ? g.cellsOf(op.name).map((l) => l.name) : []);
     const live = (l) => values[l.name] !== null || writing.has(l.name);
     let out = "";
-    for (const [x, w, y] of g.gaps) {
-      out += `<rect x="${round(x + 3)}" y="${y + 3}" width="${round(w - 6)}" height="58" fill="none" stroke="${P.gapStroke}" stroke-dasharray="5 5"/>`;
-    }
+    out += gaps(c, CELL);
     const arrays = new Set(g.groups.filter((s) => arrayType(s.type ?? "")).map((s) => s.name));
     const inArray = (name) => [...arrays].some((a) => name.startsWith(a + "."));
     const startsAt = (target, cell) => {
@@ -1476,7 +1502,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     if (op && op.kind === "addr") {
       const cell = g.cellsOf(op.name)[0];
       const [lx, ly] = labelCentre(cell);
-      out += `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.2, at + 0.1)}` + rect(lx - labelWidth(cell) / 2 - 5, ly - 13, labelWidth(cell) + 10, 24, P.readFill, P.read, 5, 2) + "</g>";
+      out += `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.2, at + 0.1)}` + rect(lx - labelWidth$1(cell) / 2 - 5, ly - 13, labelWidth$1(cell) + 10, 24, P.readFill, P.read, 5, 2) + "</g>";
     }
     for (const cell of g.leaves) {
       const on = live(cell);
@@ -1771,7 +1797,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const lineChanged = animate && prev !== null && prev.line !== step.line;
     const copying = animate && copies(c.m.steps, c.index);
     const oldLine = lineChanged && prev ? prev.line : null;
-    return code(c, oldLine) + tether(c, oldLine) + arrows(c) + memory(c) + pane(c, copying) + output(c) + transfers(c);
+    return code(c, oldLine) + tether(c, oldLine) + arrows(c) + memory$1(c) + pane(c, copying) + output(c) + transfers(c);
   }
   function describe(c) {
     const { m, S, step } = c;
@@ -1787,15 +1813,541 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return format(S[op.kind], op);
   }
+  class Integer {
+    constructor(size, signed) {
+      __publicField(this, "size");
+      __publicField(this, "signed");
+      this.size = size;
+      this.signed = signed;
+      Object.freeze(this);
+    }
+    /** `value` converted to this type: its low bits, as every conversion keeps them. */
+    wrap(value) {
+      return this.signed ? BigInt.asIntN(8 * this.size, value) : BigInt.asUintN(8 * this.size, value);
+    }
+    holds(value) {
+      return this.wrap(value) === value;
+    }
+    /** The result of arithmetic in this type: unsigned wraps, signed overflow is undefined. */
+    result(value) {
+      if (this.signed && !this.holds(value)) {
+        throw new Unsupported("signed integer overflow is outside the timeline category");
+      }
+      return this.wrap(value);
+    }
+  }
+  const INTEGERS = Object.freeze({
+    "signed char": new Integer(1, true),
+    "unsigned char": new Integer(1, false),
+    short: new Integer(2, true),
+    "unsigned short": new Integer(2, false),
+    int: new Integer(4, true),
+    "unsigned int": new Integer(4, false),
+    long: new Integer(8, true),
+    "unsigned long": new Integer(8, false),
+    "long long": new Integer(8, true),
+    "unsigned long long": new Integer(8, false)
+  });
+  const ALIASES = Object.freeze({
+    size_t: "unsigned long",
+    ptrdiff_t: "long",
+    intptr_t: "long",
+    uintptr_t: "unsigned long",
+    int8_t: "signed char",
+    uint8_t: "unsigned char",
+    int16_t: "short",
+    uint16_t: "unsigned short",
+    int32_t: "int",
+    uint32_t: "unsigned int",
+    int64_t: "long",
+    uint64_t: "unsigned long",
+    int_least8_t: "signed char",
+    uint_least8_t: "unsigned char",
+    int_least16_t: "short",
+    uint_least16_t: "unsigned short",
+    int_least32_t: "int",
+    uint_least32_t: "unsigned int",
+    int_least64_t: "long",
+    uint_least64_t: "unsigned long",
+    int_fast8_t: "signed char",
+    uint_fast8_t: "unsigned char",
+    int_fast16_t: "long",
+    uint_fast16_t: "unsigned long",
+    int_fast32_t: "long",
+    uint_fast32_t: "unsigned long",
+    int_fast64_t: "long",
+    uint_fast64_t: "unsigned long",
+    intmax_t: "long",
+    uintmax_t: "unsigned long",
+    signed: "int",
+    unsigned: "unsigned int",
+    "signed int": "int",
+    "short int": "short",
+    "signed short": "short",
+    "unsigned short int": "unsigned short",
+    "long int": "long",
+    "signed long": "long",
+    "unsigned long int": "unsigned long",
+    "long long int": "long long",
+    "signed long long": "long long",
+    "unsigned long long int": "unsigned long long"
+  });
+  const bareSpelling = (spelling) => spelling.replace(/^const /, "").replace(/^std::/, "");
+  function integerSpelled(spelling, aliases = {}) {
+    const name = bareSpelling(spelling);
+    const known = Object.hasOwn(ALIASES, name) ? ALIASES[name] : name;
+    const canonical = Object.hasOwn(INTEGERS, known) || !Object.hasOwn(aliases, name) ? known : aliases[name];
+    return Object.hasOwn(INTEGERS, canonical) ? INTEGERS[canonical] : null;
+  }
+  function integerLiteral(spelling) {
+    const match = spelling.trim().match(/^([-+]?)\s*(0[xX][0-9a-fA-F']+|0[bB][01']+|0[0-7']*|[1-9][0-9']*)(?:[uU](?:ll|LL|[lLzZ])?|(?:ll|LL|[lLzZ])[uU]?)?$/);
+    if (!match || /^0[xXbB]'|''|'$/.test(match[2])) return null;
+    const digits = match[2].replaceAll("'", "");
+    const octal = /^0[0-7]+$/.test(digits) ? `0o${digits.slice(1)}` : digits;
+    const value = BigInt(octal);
+    return match[1] === "-" ? -value : value;
+  }
+  function convertOperand(previous, op) {
+    var _a;
+    const part = (_a = previous.types) == null ? void 0 : _a.find(
+      (t) => !t.slot && t.type === op.from && t.span[0] >= op.span[0] && t.span[1] <= op.span[1]
+    );
+    return integerLiteral(previous.pane.slice(...(part == null ? void 0 : part.span) ?? op.span));
+  }
+  function integerOf(m, spelling) {
+    return integerSpelled(spelling ?? "int", m.trace.integers) ?? integerSpelled("int");
+  }
+  function toBytesMSB(value, bytes) {
+    const unsigned = BigInt.asUintN(bytes * 8, value);
+    const out = [];
+    for (let i = bytes - 1; i >= 0; i--) {
+      out.push(Number(unsigned >> BigInt(i * 8) & 0xffn));
+    }
+    return out;
+  }
+  function toBytesLSB(value, bytes) {
+    return toBytesMSB(value, bytes).reverse();
+  }
+  const hexByte = (b) => b.toString(16).toUpperCase().padStart(2, "0");
+  function invertedOperand(prev, step) {
+    var _a, _b;
+    if (((_a = step.op) == null ? void 0 : _a.kind) !== "eval" || !prev) return null;
+    const operand = (_b = prev.pane.slice(...step.op.span).match(/^\s*~(.*)$/)) == null ? void 0 : _b[1];
+    return operand === void 0 ? null : integerLiteral(operand);
+  }
+  function signCopies(m, step) {
+    const { op } = step;
+    if ((op == null ? void 0 : op.kind) !== "convert") return 0;
+    const from = integerOf(m, op.from);
+    return from.signed ? Math.max(0, integerOf(m, op.to).size - from.size) : 0;
+  }
+  function activeBitAction(c) {
+    var _a, _b, _c;
+    const { step, prev, m } = c;
+    const op = step.op;
+    if ((op == null ? void 0 : op.kind) === "convert") {
+      const beforeVal = prev ? convertOperand(prev, op) : null;
+      const afterVal = integerLiteral(op.value);
+      if (beforeVal === null || afterVal === null) return null;
+      const fromInfo = integerOf(m, op.from);
+      const toInfo = integerOf(m, op.to);
+      let kind = "reinterpret";
+      let signBit;
+      if (toInfo.size < fromInfo.size) {
+        kind = "narrow";
+      } else if (toInfo.size > fromInfo.size) {
+        if (fromInfo.signed) {
+          kind = "sign-extend";
+          signBit = fromInfo.wrap(beforeVal) < 0n ? 1 : 0;
+        } else {
+          kind = "zero-extend";
+        }
+      }
+      return { kind, signBit, fromType: op.from, toType: op.to, fromInfo, toInfo, beforeVal, afterVal };
+    }
+    if ((op == null ? void 0 : op.kind) === "eval" || (op == null ? void 0 : op.kind) === "print") {
+      const value = integerLiteral(op.value);
+      const type = (_b = (_a = step.types) == null ? void 0 : _a.find((t) => !t.slot && t.span[0] === op.span[0])) == null ? void 0 : _b.type;
+      if (value === null || !type) return null;
+      const beforeVal = invertedOperand(prev, step);
+      if (beforeVal !== null) {
+        return { kind: "invert", type, info: integerOf(m, type), beforeVal, afterVal: value };
+      }
+      return { kind: "value", type, info: integerOf(m, type), value };
+    }
+    if (op && (op.kind === "read" || op.kind === "write")) {
+      const value = integerLiteral(op.value);
+      if (value === null) return null;
+      const type = ((_c = m.leaves.find((l) => l.name === op.name)) == null ? void 0 : _c.type) ?? "int";
+      return { kind: "value", type, info: integerOf(m, type), value };
+    }
+    const literals = op === null ? (step.types ?? []).filter((t) => !t.slot) : [];
+    if (literals.length === 1) {
+      const value = integerLiteral(step.pane.slice(...literals[0].span));
+      if (value !== null) {
+        const { type } = literals[0];
+        return { kind: "value", type, info: integerOf(m, type), value };
+      }
+    }
+    return null;
+  }
+  const STAGGER = 0.2;
+  const TRAVEL = 0.55;
+  const signSeconds = (copies2) => (copies2 - 1) * STAGGER + TRAVEL + 0.7;
+  function bitStepSeconds(m, i) {
+    var _a;
+    const { steps } = m;
+    const step = steps[i];
+    if (((_a = step.op) == null ? void 0 : _a.kind) === "convert" || invertedOperand(steps[i - 1] ?? null, step) !== null) {
+      const copies2 = signCopies(m, step);
+      const signDone = copies2 > 0 ? arrival(step.op) + signSeconds(copies2) : 0;
+      return step.hold + Math.max(2.1, signDone);
+    }
+    return stepSeconds(steps, i);
+  }
+  const BITS_CELL = 88;
+  function drawTypeLabels(c, live) {
+    const { g, P } = c;
+    let out = "";
+    for (const label of g.typeLabels) {
+      const on = g.cellsOf(label.name).some(live);
+      const color = on ? typeColour(c, label.type) : P.deadStroke;
+      out += dim(c, label.name, typeLabel(c, label.cx, label.top, label.type, 18, color));
+    }
+    return out;
+  }
+  function memory(c) {
+    const { g, P, step, prev, op } = c;
+    const { littleEndian } = c;
+    const values = op && op.kind === "write" && prev ? prev.values : step.values;
+    const at = op ? arrival(op) : 0;
+    const writing = new Set(op && op.kind === "write" ? g.cellsOf(op.name).map((l) => l.name) : []);
+    const live = (l) => values[l.name] !== null || writing.has(l.name);
+    let out = gaps(c, BITS_CELL);
+    for (const cell of g.leaves) {
+      const on = live(cell);
+      const changing = writing.has(cell.name);
+      const color = cell.fieldColor || cell.color;
+      const before = prev ? prev.values[cell.name] : null;
+      const after = step.values[cell.name];
+      const shownVal = changing ? after : values[cell.name];
+      let markup = "";
+      const bw = cell.w / cell.size;
+      markup += text(cell.x + 3, cell.y - 12, cell.address, 16, on ? P.muted : P.grey);
+      if (cell.size > 1) {
+        for (let i = 1; i < cell.size; i++) {
+          markup += text(cell.x + i * bw + 6, cell.y - 12, cell.address + i, 14, P.grey);
+        }
+      }
+      markup += rect(cell.x, cell.y, cell.w, cell.h, on ? P.panel : P.deadFill, "none", 0);
+      const divStroke = on ? P.gapStroke : P.deadStroke;
+      const splitY = cell.y + 52;
+      markup += `<line x1="${cell.x + 2}" y1="${splitY}" x2="${cell.x + cell.w - 2}" y2="${splitY}" stroke="${divStroke}" stroke-width="1.3"/>`;
+      for (let i = 1; i < cell.size; i++) {
+        const lx = round(cell.x + i * bw);
+        markup += `<line x1="${lx}" y1="${splitY}" x2="${lx}" y2="${cell.y + cell.h - 2}" stroke="${divStroke}" stroke-width="1.3"/>`;
+      }
+      markup += rect(
+        cell.x + 1.5,
+        cell.y + 1.5,
+        cell.w - 3,
+        cell.h - 3,
+        "none",
+        on ? color : P.deadStroke,
+        0,
+        3
+      );
+      if (on) {
+        const bytesOf = (v) => littleEndian ? toBytesLSB(BigInt(v), cell.size) : toBytesMSB(BigInt(v), cell.size);
+        const renderCellBody = (val) => {
+          if (typeof val !== "number") {
+            return text(cell.x + cell.w / 2, cell.y + 36, String(val), 26, P.grey, "middle");
+          }
+          const bytes = bytesOf(val);
+          let body = "";
+          const dec = String(val);
+          const decSize = Math.min(28, (cell.w - 14) / (dec.length * CHAR));
+          body += text(cell.x + cell.w / 2, cell.y + 36, dec, round(decSize), P.fg, "middle");
+          const hexY = cell.y + 76;
+          body += `<g class="cv-byte-hex" data-name="${cell.name}" opacity="0.86">`;
+          for (let i = 0; i < cell.size; i++) {
+            const bx = cell.x + i * bw + bw / 2;
+            body += text(bx, hexY, hexByte(bytes[i]), 15.5, P.fg, "middle");
+          }
+          return body + "</g>";
+        };
+        const cx = cell.x + cell.w / 2;
+        const cy = cell.y + cell.h / 2;
+        if (changing && before !== after) {
+          markup += `<g transform="translate(${round(cx)} ${round(cy)})"><g>${pulse(at - 0.2)}<g transform="translate(${round(-cx)} ${round(-cy)})">`;
+          if (before !== null) markup += `<g>${hide(at)}${renderCellBody(before)}</g>`;
+          markup += `<g opacity="0">${show(at)}${renderCellBody(after)}</g>`;
+          markup += "</g></g></g>";
+        } else {
+          markup += renderCellBody(shownVal);
+        }
+      }
+      if (cell.size > 1) {
+        const ay = cell.y + cell.h + 10;
+        const dir = littleEndian ? 1 : -1;
+        const xLow = cell.x + (littleEndian ? bw / 2 : cell.w - bw / 2);
+        const xHigh = cell.x + (littleEndian ? cell.w - bw / 2 : bw / 2);
+        const arrowCol = on ? P.grey : P.deadStroke;
+        markup += `<g opacity="${on ? "0.75" : "0.5"}"><line x1="${round(xLow)}" y1="${ay}" x2="${round(xHigh - 6 * dir)}" y2="${ay}" stroke="${arrowCol}" stroke-width="1.5" stroke-linecap="round"/><path d="M -8 -4 L 0 0 L -8 4 Z" fill="${arrowCol}" transform="translate(${round(xHigh)} ${ay}) rotate(${littleEndian ? 0 : 180})"/></g>`;
+      }
+      markup += text(
+        cell.x + cell.w / 2,
+        cell.y + cell.h + 36,
+        cell.label,
+        g.nameSize,
+        on ? color : P.grey,
+        "middle"
+      );
+      out += dim(c, cell.group || cell.name, markup);
+    }
+    return out + drawTypeLabels(c, live);
+  }
+  const BIT_FONT = 22;
+  const HEX_FONT = 21;
+  const RESULT_FONT = 24;
+  const BIT_STEP = BIT_FONT * CHAR;
+  const NIBBLE_W = 4 * BIT_STEP;
+  const NIB_GAP = 8;
+  const BYTE_W = 2 * NIBBLE_W + NIB_GAP;
+  const BYTE_GAP = 26;
+  const CARD_PAD = 12;
+  const ARC_RISE = 9;
+  const ROOMY_ARCS = 3;
+  const extents = /* @__PURE__ */ new WeakMap();
+  function workbenchExtent(m) {
+    let extent = extents.get(m);
+    if (extent) return extent;
+    const sizes = m.leaves.map((l) => l.size);
+    let labelChars = 0;
+    let arcs = 0;
+    for (const step of m.steps) {
+      arcs = Math.max(arcs, signCopies(m, step));
+      for (const part of step.types ?? []) sizes.push(integerOf(m, part.type).size);
+      const { op } = step;
+      if ((op == null ? void 0 : op.kind) === "convert") sizes.push(integerOf(m, op.from).size, integerOf(m, op.to).size);
+      if (op && "value" in op) labelChars = Math.max(labelChars, op.value.length + 2);
+    }
+    extent = { bytes: Math.max(1, ...sizes), labelChars, drop: Math.max(0, arcs - ROOMY_ARCS) * ARC_RISE };
+    extents.set(m, extent);
+    return extent;
+  }
+  const slotsWidth = (bytes) => bytes * BYTE_W + (bytes - 1) * BYTE_GAP;
+  const RESULT_GAP = 20;
+  const labelWidth = (label) => (typeof label === "number" ? label : label.length) * RESULT_FONT * CHAR;
+  const bitCx = (x, i) => x + (i < 4 ? 0 : NIBBLE_W + NIB_GAP) + (i % 4 + 0.5) * BIT_STEP;
+  function drawByte(x, yBits, yHex, byte, ink) {
+    const bits = byte.toString(2).padStart(8, "0");
+    const hex = hexByte(byte);
+    let out = `<g class="cv-bit-byte" data-bits="${bits}">`;
+    for (let i = 0; i < 8; i++) {
+      const color = i === 0 && ink.msb ? ink.msb : ink.bits;
+      out += text(bitCx(x, i), yBits, bits[i], BIT_FONT, color, "middle");
+    }
+    out += text(x + NIBBLE_W / 2, yHex, hex[0], HEX_FONT, ink.hex, "middle");
+    out += text(x + NIBBLE_W + NIB_GAP + NIBBLE_W / 2, yHex, hex[1], HEX_FONT, ink.hex, "middle");
+    return out + "</g>";
+  }
+  const BOX_TOP = BIT_FONT * 0.78 + 4;
+  function signFrame(x, yBits, stroke, fill = "none") {
+    return rect(bitCx(x, 0) - BIT_STEP / 2 - 3, yBits - BOX_TOP, BIT_STEP + 6, BOX_TOP + 6, fill, stroke, 4, 1.8);
+  }
+  function arrowheadAt(tipX, tipY, dx, dy, color) {
+    const deg = round(Math.atan2(dy, dx) * 180 / Math.PI);
+    return `<path d="M -10 -5 L 0 0 L -10 5 Z" fill="${color}" transform="translate(${round(tipX)} ${round(tipY)}) rotate(${deg})"/>`;
+  }
+  const scaled = (cx, cy, inner, begin) => `<g transform="translate(${round(cx)} ${round(cy)})"><g>${pulse(begin)}<g transform="translate(${round(-cx)} ${round(-cy)})">${inner}</g></g></g>`;
+  function workbench(c) {
+    const act = activeBitAction(c);
+    if (!act) return "";
+    const { g, P, animate, op } = c;
+    const cardTop = g.ty + 56 + workbenchExtent(c.m).drop;
+    const yBits = cardTop + CARD_PAD + BOX_TOP;
+    const yHex = yBits + 34;
+    const yRes = yBits + 16;
+    const cardBottom = yHex + CARD_PAD;
+    const rightAnchor = g.tx + 12 + slotsWidth(workbenchExtent(c.m).bytes);
+    const slotX = (bytesFromLSB) => rightAnchor - (bytesFromLSB + 1) * BYTE_W - bytesFromLSB * BYTE_GAP;
+    const card = (bytes, resultLabel) => {
+      const left = slotX(bytes - 1) - CARD_PAD - 4;
+      const right = rightAnchor + RESULT_GAP + labelWidth(resultLabel) + CARD_PAD + 4;
+      return rect(left, cardTop, right - left, cardBottom - cardTop, P.panel, P.gapStroke, 8, 1.5);
+    };
+    const reveal = (at2, markup) => animate && at2 > 0 ? `<g opacity="0">${fade(0, 1, 0.22, at2)}${markup}</g>` : markup;
+    const swap = (at2, before, after) => animate ? `<g>${hide(at2)}${before}</g><g opacity="0">${show(at2)}${after}</g>` : after;
+    const result = (at2, label2, color) => reveal(at2, text(rightAnchor + RESULT_GAP, yRes, label2, RESULT_FONT, color));
+    const plainValue = (value, info, hexInk) => {
+      const bytes = toBytesMSB(value, info.size);
+      let out2 = "";
+      bytes.forEach((b, idx) => {
+        out2 += drawByte(slotX(bytes.length - 1 - idx), yBits, yHex, b, { bits: P.fg, hex: hexInk });
+      });
+      return out2;
+    };
+    if (act.kind === "value") {
+      const col = typeColour(c, act.type);
+      let appearAt = 0;
+      if (animate && copies(c.m.steps, c.index)) {
+        appearAt = copyBegin(c.m.steps, c.index) + T.copyTravel;
+      } else if (animate && (op == null ? void 0 : op.kind) === "read") {
+        appearAt = arrival(op);
+      }
+      const label2 = `= ${act.value}`;
+      return reveal(
+        appearAt,
+        card(act.info.size, label2) + plainValue(act.value, act.info, col) + text(rightAnchor + RESULT_GAP, yRes, label2, RESULT_FONT, col)
+      );
+    }
+    if (act.kind === "invert") {
+      const at2 = op ? arrival(op) : T.evaluate;
+      const after = toBytesMSB(act.afterVal, act.info.size);
+      let inverted = "";
+      after.forEach((b, idx) => {
+        inverted += drawByte(slotX(after.length - 1 - idx), yBits, yHex, b, { bits: P.write, hex: P.write });
+      });
+      const label2 = `→ ${act.afterVal}`;
+      return card(act.info.size, label2) + swap(at2, plainValue(act.beforeVal, act.info, P.fg), inverted) + result(at2 + 0.18, label2, P.write);
+    }
+    const fromBytes = toBytesMSB(act.beforeVal, act.fromInfo.size);
+    const toBytes = toBytesMSB(act.afterVal, act.toInfo.size);
+    const fromCol = typeColour(c, act.fromType);
+    const toCol = typeColour(c, act.toType);
+    const at = op ? arrival(op) : T.evaluate;
+    const label = `→ ${act.afterVal}`;
+    let out = card(Math.max(fromBytes.length, toBytes.length), label);
+    if (act.kind === "narrow") {
+      const keep = toBytes.length;
+      fromBytes.forEach((b, idx) => {
+        const lsbPos = fromBytes.length - 1 - idx;
+        const bx = slotX(lsbPos);
+        if (lsbPos < keep) {
+          out += drawByte(bx, yBits, yHex, b, { bits: P.fg, hex: toCol });
+          return;
+        }
+        const dropped = `<g opacity="0.48">` + drawByte(bx, yBits, yHex, b, { bits: P.error, hex: P.error }) + `<line x1="${round(bx + 4)}" y1="${round(yBits - 20)}" x2="${round(bx + BYTE_W - 4)}" y2="${round(yHex + 6)}" stroke="${P.error}" stroke-width="2"/></g>`;
+        out += animate ? `<g>${hide(at)}${drawByte(bx, yBits, yHex, b, { bits: P.fg, hex: fromCol })}</g><g opacity="0">${show(at)}<animateTransform attributeName="transform" type="translate" from="0 -6" to="0 0" begin="${round(at)}s" dur="0.32s" fill="freeze"/>${dropped}</g>` : dropped;
+      });
+      const cutX = slotX(keep - 1) - BYTE_GAP / 2;
+      out += reveal(
+        at - 0.15,
+        `<line x1="${round(cutX)}" y1="${cardTop + 6}" x2="${round(cutX)}" y2="${cardBottom - 6}" stroke="${P.error}" stroke-width="2.2" stroke-dasharray="5 4"/>`
+      );
+      return out + result(at + 0.34, label, toCol);
+    }
+    if (act.kind === "zero-extend") {
+      toBytes.forEach((b, idx) => {
+        const lsbPos = toBytes.length - 1 - idx;
+        const isExt = lsbPos >= fromBytes.length;
+        const block = drawByte(slotX(lsbPos), yBits, yHex, b, {
+          bits: isExt ? P.muted : P.fg,
+          hex: isExt ? P.muted : toCol
+        });
+        if (!isExt) out += block;
+        else if (animate) out += `<g opacity="0">${fade(0, 1, 0.35, at)}${block}</g>`;
+        else out += block;
+      });
+      return out + result(at + 0.35, label, toCol);
+    }
+    if (act.kind === "sign-extend") {
+      const ext = act.signBit === 1 ? { stroke: P.write, fill: P.writeFill } : { stroke: P.read, fill: P.readFill };
+      const srcX = slotX(fromBytes.length - 1);
+      const msbX = bitCx(srcX, 0);
+      const litAt = Math.max(0.2, at - 0.25);
+      fromBytes.forEach((b, idx) => {
+        const lsbPos = fromBytes.length - 1 - idx;
+        const bx = slotX(lsbPos);
+        if (lsbPos !== fromBytes.length - 1) {
+          out += drawByte(bx, yBits, yHex, b, { bits: P.fg, hex: toCol });
+          return;
+        }
+        const lit = signFrame(bx, yBits, ext.stroke, ext.fill) + drawByte(bx, yBits, yHex, b, { bits: P.fg, hex: toCol, msb: ext.stroke });
+        const plain = drawByte(bx, yBits, yHex, b, { bits: P.fg, hex: toCol });
+        out += animate ? swap(litAt, plain, scaled(msbX, yBits - 8, lit, litAt)) : lit;
+      });
+      const extCount = toBytes.length - fromBytes.length;
+      const doneAt = at + (extCount - 1) * STAGGER + TRAVEL;
+      const startY = yBits - BOX_TOP - 2;
+      let arcs = "";
+      for (let k = 0; k < extCount; k++) {
+        const lsbPos = fromBytes.length + k;
+        const bx = slotX(lsbPos);
+        const copy = drawByte(bx, yBits, yHex, toBytes[toBytes.length - 1 - lsbPos], { bits: ext.stroke, hex: ext.stroke });
+        if (!animate) {
+          out += copy;
+          continue;
+        }
+        const begin = at + k * STAGGER;
+        const land = begin + TRAVEL;
+        const tipX = bx + BYTE_W / 2;
+        const tipY = yBits - BIT_FONT - 2;
+        const peakY = startY - 16 - k * ARC_RISE;
+        const ctrlX = (msbX + tipX) / 2;
+        const ctrlY = 2 * peakY - (startY + tipY) / 2;
+        const dx = tipX - ctrlX;
+        const dy = tipY - ctrlY;
+        const len = Math.hypot(dx, dy) || 1;
+        const ex = tipX - 7 * dx / len;
+        const ey = tipY - 7 * dy / len;
+        const path = (x, y) => `M ${round(msbX)} ${round(startY)} Q ${round(ctrlX)} ${round(ctrlY)}, ${round(x)} ${round(y)}`;
+        arcs += `<path d="${path(ex, ey)}" fill="none" stroke="${ext.stroke}" stroke-width="2.2" stroke-linecap="round" data-grow="${round(begin)}"/>`;
+        arcs += `<g opacity="0">${show(land - 0.06)}${arrowheadAt(tipX, tipY, dx, dy, ext.stroke)}</g>`;
+        arcs += `<g opacity="0">${show(begin)}${hide(land + 0.04)}<circle r="10" fill="${ext.fill}" stroke="${ext.stroke}" stroke-width="1.6"/>` + text(0, 5, String(act.signBit), 15, ext.stroke, "middle") + `<animateMotion begin="${round(begin)}s" dur="${TRAVEL}s" path="${path(tipX, tipY)}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
+        out += `<g opacity="0">${show(land)}${scaled(tipX, yBits, copy, land)}</g>`;
+      }
+      if (arcs) out += `<g>${fade(1, 0, 0.32, doneAt + 0.35)}${arcs}</g>`;
+      return out + result(doneAt, label, toCol);
+    }
+    out += swap(at, plainValue(act.beforeVal, act.fromInfo, fromCol), plainValue(act.afterVal, act.toInfo, toCol));
+    return out + result(at + 0.12, label, toCol);
+  }
+  function bitsScene(c) {
+    const { step, prev, animate } = c;
+    const lineChanged = animate && prev !== null && prev.line !== step.line;
+    const oldLine = lineChanged && prev ? prev.line : null;
+    return code(c, oldLine) + tether(c, oldLine) + arrows(c) + memory(c) + pane(c, animate && copies(c.m.steps, c.index)) + workbench(c) + output(c) + transfers(c);
+  }
+  const BITS_VIEW = {
+    geometry(m) {
+      const { bytes, labelChars, drop } = workbenchExtent(m);
+      const workbench2 = 12 + slotsWidth(bytes) + RESULT_GAP + labelWidth(labelChars) + CARD_PAD + 28;
+      return {
+        minByteWidth: 66,
+        minColumnWidth: Math.max(680, Math.ceil(workbench2)),
+        cellHeight: BITS_CELL,
+        extraPaneHeight: 120 + drop,
+        skipWrap: true
+      };
+    },
+    stackBelow: 900,
+    maxScale: 0.78,
+    byteOrder: true,
+    scene: bitsScene,
+    stepSeconds: bitStepSeconds
+  };
+  const DEFAULT_VIEW = {
+    stackBelow: STACK_BELOW,
+    maxScale: MAX_SCALE,
+    byteOrder: false,
+    scene,
+    stepSeconds: (m, index) => stepSeconds(m.steps, index)
+  };
+  const viewOf = (m) => m.trace.bits ? BITS_VIEW : DEFAULT_VIEW;
   class Player {
     constructor(host, trace) {
       __publicField(this, "host");
       __publicField(this, "m");
       __publicField(this, "S");
+      __publicField(this, "view");
       __publicField(this, "index");
       __publicField(this, "elapsed");
       __publicField(this, "duration");
       __publicField(this, "rate");
+      /** Memory's byte order, for a view that draws bytes. */
+      __publicField(this, "littleEndian");
       __publicField(this, "running");
       __publicField(this, "continuous");
       __publicField(this, "pristine");
@@ -1821,10 +2373,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.host = host;
       this.m = prepare(trace);
       this.S = strings();
+      this.view = viewOf(this.m);
       this.index = 0;
       this.elapsed = 0;
       this.duration = 0;
       this.rate = 1;
+      this.littleEndian = true;
       this.running = false;
       this.continuous = false;
       this.pristine = true;
@@ -1846,7 +2400,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       root.setAttribute("role", "group");
       root.setAttribute("aria-label", this.m.trace.title || S.stage);
       const button = (action, label, iconName, extra = "") => `<button type="button" class="cv-button${extra}" data-action="${action}" aria-label="${esc(label)}" title="${esc(label)}">${icon(iconName)}<span class="cv-label">${esc(label)}</span></button>`;
-      root.innerHTML = `<div class="cv-view"><svg class="cv-stage" role="group" aria-label="${esc(S.stage)}" xmlns="http://www.w3.org/2000/svg"><g class="cv-scene" aria-hidden="true"></g><g class="cv-lines">${lineTargets(this.m, S)}</g></svg><div class="cv-type" aria-hidden="true" hidden></div></div><div class="cv-controls"><div class="cv-transport">` + button("play", S.play, "play", " cv-primary") + button("back", S.back, "back") + button("next", S.next, "next") + button("replay", S.replay, "replay", " cv-icon-only") + `<select class="cv-speed" aria-label="${esc(S.speed)}" title="${esc(S.speed)}">` + [0.5, 1, 1.5, 2].map((v) => `<option value="${v}"${v === 1 ? " selected" : ""}>${v}×</option>`).join("") + "</select>" + button("reset", S.reset, "reset", " cv-reset") + `</div><div class="cv-progress"><input class="cv-scrub" type="range" min="0" max="${this.m.steps.length - 1}" value="0" step="1" aria-label="${esc(S.scrub)}"><span class="cv-count"></span></div></div><div class="cv-status" aria-live="polite"></div>`;
+      const order = (side, label, title) => `<button type="button" class="cv-endian-seg" data-endian-side="${side}" aria-pressed="${side === "le" === this.littleEndian}" title="${esc(title)}">${esc(label)}</button>`;
+      const endianToggle = this.view.byteOrder ? `<div class="cv-endian" role="group" aria-label="${esc(S.byteOrder)}">` + order("le", S.littleEndianShort, S.littleEndian) + order("be", S.bigEndianShort, S.bigEndian) + "</div>" : "";
+      root.innerHTML = `<div class="cv-view"><svg class="cv-stage" role="group" aria-label="${esc(S.stage)}" xmlns="http://www.w3.org/2000/svg"><g class="cv-scene" aria-hidden="true"></g><g class="cv-lines">${lineTargets(this.m, S)}</g></svg><div class="cv-type" aria-hidden="true" hidden></div></div><div class="cv-controls"><div class="cv-transport">` + button("play", S.play, "play", " cv-primary") + button("back", S.back, "back") + button("next", S.next, "next") + button("replay", S.replay, "replay", " cv-icon-only") + `<select class="cv-speed" aria-label="${esc(S.speed)}" title="${esc(S.speed)}">` + [0.5, 1, 1.5, 2].map((v) => `<option value="${v}"${v === 1 ? " selected" : ""}>${v}×</option>`).join("") + "</select>" + endianToggle + button("reset", S.reset, "reset", " cv-reset") + `</div><div class="cv-progress"><input class="cv-scrub" type="range" min="0" max="${this.m.steps.length - 1}" value="0" step="1" aria-label="${esc(S.scrub)}"><span class="cv-count"></span></div></div><div class="cv-status" aria-live="polite"></div>`;
       this.host.append(root);
       this.root = root;
       this.svg = root.querySelector(".cv-stage");
@@ -1857,11 +2413,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.count = root.querySelector(".cv-count");
       this.status = root.querySelector(".cv-status");
       root.querySelector(".cv-transport").addEventListener("click", (event) => {
-        var _a;
+        var _a, _b;
         const target = (_a = event.target) == null ? void 0 : _a.closest("[data-action]");
         if (target && target.dataset.action) {
           this.invokeAction(target.dataset.action);
         }
+        const side = (_b = event.target) == null ? void 0 : _b.closest("[data-endian-side]");
+        if (side) this.byteOrder(side.dataset.endianSide === "le");
       });
       root.querySelector(".cv-speed").addEventListener("change", (event) => {
         this.rate = Number(event.target.value);
@@ -1889,6 +2447,15 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         });
         this.observer.observe(root);
       }
+    }
+    /** Draw memory in the given byte order. */
+    byteOrder(littleEndian) {
+      if (littleEndian === this.littleEndian) return;
+      this.littleEndian = littleEndian;
+      for (const side of this.root.querySelectorAll("[data-endian-side]")) {
+        side.setAttribute("aria-pressed", String(side.dataset.endianSide === "le" === littleEndian));
+      }
+      this.refresh();
     }
     invokeAction(action) {
       switch (action) {
@@ -1992,10 +2559,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       if (this.animated) this.seek(this.elapsed);
     }
     render(animate) {
+      var _a, _b;
       const width = this.root.clientWidth;
       if (width !== this.layoutWidth) {
-        this.stacked = width > 0 && width < STACK_BELOW;
-        this.g = geometry(this.m, this.P, this.stacked, width);
+        this.stacked = width > 0 && width < this.view.stackBelow;
+        this.g = geometry(this.m, this.P, this.stacked, width, (_b = (_a = this.view).geometry) == null ? void 0 : _b.call(_a, this.m));
         this.layoutWidth = width;
         this.shownType = null;
         this.typeBox.hidden = true;
@@ -2020,12 +2588,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         prev,
         animate,
         op: animate ? step.op : null,
-        focus: { now, before, begin }
+        focus: { now, before, begin },
+        littleEndian: this.littleEndian
       };
       this.animated = animate;
       this.svg.setAttribute("viewBox", `0 0 ${Math.ceil(g.width)} ${Math.ceil(g.height)}`);
-      this.svg.style.maxWidth = `${Math.ceil(g.width * MAX_SCALE)}px`;
-      this.scene.innerHTML = `<rect width="100%" height="100%" fill="${this.P.bg}"/>` + scene(c);
+      this.svg.style.maxWidth = `${Math.ceil(g.width * this.view.maxScale)}px`;
+      this.scene.innerHTML = `<rect width="100%" height="100%" fill="${this.P.bg}"/>` + this.view.scene(c);
       placeLineTargets(g, this.lines);
       this.finishPaths();
       this.seek(0);
@@ -2111,7 +2680,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.continuous = autoplay;
       this.index = index;
       this.elapsed = 0;
-      this.duration = stepSeconds(this.m.steps, index);
+      this.duration = this.view.stepSeconds(this.m, index);
       this.render(true);
       if (this.duration > 0 || autoplay) this.resume();
     }

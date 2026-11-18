@@ -221,6 +221,49 @@
   margin: 0;
 }
 .course-visualization .cv-icon-only .cv-label { display: none; }
+.course-visualization .cv-endian {
+  display: inline-grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  align-items: stretch;
+  gap: 2px;
+  min-height: 2rem;
+  margin: 0;
+  padding: 2px;
+  border: 1px solid var(--cv-button-border);
+  border-radius: 0.4rem;
+  background: var(--cv-chrome);
+  box-sizing: border-box;
+}
+.course-visualization .cv-endian-seg {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 0.18rem 0.6rem;
+  border: 0;
+  border-radius: 0.28rem;
+  background: transparent;
+  color: var(--cv-subtle);
+  font: inherit;
+  font-weight: 600;
+  line-height: 1.2;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.course-visualization .cv-endian-seg:hover:not([aria-pressed='true']) {
+  background: var(--cv-button-hover);
+  color: var(--cv-text);
+}
+.course-visualization .cv-endian-seg[aria-pressed='true'] {
+  background: var(--cv-accent);
+  color: var(--cv-accent-text);
+}
+.course-visualization .cv-endian-seg:focus-visible {
+  outline: 2px solid var(--cv-accent);
+  outline-offset: 1px;
+}
 .course-visualization .cv-reset { margin-left: auto; }
 .course-visualization .cv-scrub {
   flex: 1;

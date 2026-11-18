@@ -4,11 +4,9 @@ import {
   FIELD_COLOURS,
   type IconName,
   KEYWORDS,
-  MAX_SCALE,
   PALETTE,
   type Palette,
   type PlayerStrings,
-  STACK_BELOW,
   T,
   TYPE_COLOURS,
   VARIABLE_COLOURS,
@@ -17,18 +15,22 @@ import {
   themeName,
 } from './constants.ts';
 import { type Geometry, type TypeTarget, geometry } from './geometry.ts';
-import { type PreparedModel, activeVariables, arrival, prepare, stepSeconds } from './model.ts';
-import { type SceneContext, describe, lineTargets, placeLineTargets, scene } from './scene.ts';
+import { type PreparedModel, activeVariables, arrival, prepare } from './model.ts';
+import { type SceneContext, describe, lineTargets, placeLineTargets } from './scene.ts';
 import { esc } from './svg.ts';
+import { type TraceView, viewOf } from './views.ts';
 
 export class Player {
   host: HTMLElement;
   m: PreparedModel;
   S: PlayerStrings;
+  view: TraceView;
   index: number;
   elapsed: number;
   duration: number;
   rate: number;
+  /** Memory's byte order, for a view that draws bytes. */
+  littleEndian: boolean;
   running: boolean;
   continuous: boolean;
   pristine: boolean;
@@ -56,10 +58,12 @@ export class Player {
     this.host = host;
     this.m = prepare(trace);
     this.S = strings();
+    this.view = viewOf(this.m);
     this.index = 0;
     this.elapsed = 0;
     this.duration = 0;
     this.rate = 1;
+    this.littleEndian = true;
     this.running = false;
     this.continuous = false;
     this.pristine = true;
@@ -85,6 +89,15 @@ export class Player {
       `<button type="button" class="cv-button${extra}" ` +
       `data-action="${action}" aria-label="${esc(label)}" title="${esc(label)}">${icon(iconName)}` +
       `<span class="cv-label">${esc(label)}</span></button>`;
+    const order = (side: 'le' | 'be', label: string, title: string): string =>
+      `<button type="button" class="cv-endian-seg" data-endian-side="${side}" ` +
+      `aria-pressed="${(side === 'le') === this.littleEndian}" title="${esc(title)}">${esc(label)}</button>`;
+    const endianToggle = this.view.byteOrder
+      ? `<div class="cv-endian" role="group" aria-label="${esc(S.byteOrder)}">` +
+        order('le', S.littleEndianShort, S.littleEndian) +
+        order('be', S.bigEndianShort, S.bigEndian) +
+        '</div>'
+      : '';
     root.innerHTML =
       '<div class="cv-view">' +
       `<svg class="cv-stage" role="group" aria-label="${esc(S.stage)}" xmlns="http://www.w3.org/2000/svg">` +
@@ -100,6 +113,7 @@ export class Player {
         .map(v => `<option value="${v}"${v === 1 ? ' selected' : ''}>${v}×</option>`)
         .join('') +
       '</select>' +
+      endianToggle +
       button('reset', S.reset, 'reset', ' cv-reset') +
       '</div>' +
       `<div class="cv-progress"><input class="cv-scrub" type="range" min="0" max="${this.m.steps.length - 1}" value="0" ` +
@@ -119,6 +133,8 @@ export class Player {
       if (target && target.dataset.action) {
         this.invokeAction(target.dataset.action);
       }
+      const side = (event.target as Element | null)?.closest('[data-endian-side]') as HTMLElement | null;
+      if (side) this.byteOrder(side.dataset.endianSide === 'le');
     });
     root.querySelector('.cv-speed')!.addEventListener('change', event => {
       this.rate = Number((event.target as HTMLSelectElement).value);
@@ -145,6 +161,16 @@ export class Player {
       });
       this.observer.observe(root);
     }
+  }
+
+  /** Draw memory in the given byte order. */
+  byteOrder(littleEndian: boolean): void {
+    if (littleEndian === this.littleEndian) return;
+    this.littleEndian = littleEndian;
+    for (const side of this.root.querySelectorAll<HTMLElement>('[data-endian-side]')) {
+      side.setAttribute('aria-pressed', String((side.dataset.endianSide === 'le') === littleEndian));
+    }
+    this.refresh();
   }
 
   private invokeAction(action: string): void {
@@ -271,8 +297,8 @@ export class Player {
   render(animate: boolean): void {
     const width = this.root.clientWidth;
     if (width !== this.layoutWidth) {
-      this.stacked = width > 0 && width < STACK_BELOW;
-      this.g = geometry(this.m, this.P, this.stacked, width);
+      this.stacked = width > 0 && width < this.view.stackBelow;
+      this.g = geometry(this.m, this.P, this.stacked, width, this.view.geometry?.(this.m));
       this.layoutWidth = width;
       this.shownType = null;
       this.typeBox.hidden = true;
@@ -298,11 +324,12 @@ export class Player {
       animate,
       op: animate ? step.op : null,
       focus: { now, before, begin },
+      littleEndian: this.littleEndian,
     };
     this.animated = animate;
     this.svg.setAttribute('viewBox', `0 0 ${Math.ceil(g.width)} ${Math.ceil(g.height)}`);
-    this.svg.style.maxWidth = `${Math.ceil(g.width * MAX_SCALE)}px`;
-    this.scene.innerHTML = `<rect width="100%" height="100%" fill="${this.P.bg}"/>` + scene(c);
+    this.svg.style.maxWidth = `${Math.ceil(g.width * this.view.maxScale)}px`;
+    this.scene.innerHTML = `<rect width="100%" height="100%" fill="${this.P.bg}"/>` + this.view.scene(c);
     placeLineTargets(g, this.lines);
     this.finishPaths();
     this.seek(0);
@@ -393,7 +420,7 @@ export class Player {
     this.continuous = autoplay;
     this.index = index;
     this.elapsed = 0;
-    this.duration = stepSeconds(this.m.steps, index);
+    this.duration = this.view.stepSeconds(this.m, index);
     this.render(true);
     if (this.duration > 0 || autoplay) this.resume();
   }

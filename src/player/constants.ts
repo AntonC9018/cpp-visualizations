@@ -120,6 +120,11 @@ export interface PlayerStrings {
   replay: string;
   reset: string;
   speed: string;
+  byteOrder: string;
+  littleEndian: string;
+  bigEndian: string;
+  littleEndianShort: string;
+  bigEndianShort: string;
   scrub: string;
   output: string;
   stage: string;
@@ -148,6 +153,11 @@ export const STRINGS: Record<string, PlayerStrings> = {
     replay: 'Replay step',
     reset: 'Reset',
     speed: 'Playback speed',
+    byteOrder: 'Memory byte order',
+    littleEndian: 'Little-endian (least significant byte first)',
+    bigEndian: 'Big-endian (most significant byte first)',
+    littleEndianShort: 'Little-endian',
+    bigEndianShort: 'Big-endian',
     scrub: 'Execution step',
     output: 'Output:',
     stage: 'Code, memory and expression evaluation',
@@ -174,6 +184,11 @@ export const STRINGS: Record<string, PlayerStrings> = {
     replay: 'Повторить шаг',
     reset: 'Сначала',
     speed: 'Скорость',
+    byteOrder: 'Порядок байтов в памяти',
+    littleEndian: 'Little-endian (младший байт первым)',
+    bigEndian: 'Big-endian (старший байт первым)',
+    littleEndianShort: 'Little-endian',
+    bigEndianShort: 'Big-endian',
     scrub: 'Шаг выполнения',
     output: 'Вывод:',
     stage: 'Код, память и вычисление выражения',

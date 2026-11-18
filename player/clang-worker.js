@@ -559,6 +559,100 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return records;
   }
+  class Integer {
+    constructor(size, signed) {
+      __publicField(this, "size");
+      __publicField(this, "signed");
+      this.size = size;
+      this.signed = signed;
+      Object.freeze(this);
+    }
+    /** `value` converted to this type: its low bits, as every conversion keeps them. */
+    wrap(value) {
+      return this.signed ? BigInt.asIntN(8 * this.size, value) : BigInt.asUintN(8 * this.size, value);
+    }
+    holds(value) {
+      return this.wrap(value) === value;
+    }
+    /** The result of arithmetic in this type: unsigned wraps, signed overflow is undefined. */
+    result(value) {
+      if (this.signed && !this.holds(value)) {
+        throw new Unsupported("signed integer overflow is outside the timeline category");
+      }
+      return this.wrap(value);
+    }
+  }
+  const INTEGERS = Object.freeze({
+    "signed char": new Integer(1, true),
+    "unsigned char": new Integer(1, false),
+    short: new Integer(2, true),
+    "unsigned short": new Integer(2, false),
+    int: new Integer(4, true),
+    "unsigned int": new Integer(4, false),
+    long: new Integer(8, true),
+    "unsigned long": new Integer(8, false),
+    "long long": new Integer(8, true),
+    "unsigned long long": new Integer(8, false)
+  });
+  const ALIASES = Object.freeze({
+    size_t: "unsigned long",
+    ptrdiff_t: "long",
+    intptr_t: "long",
+    uintptr_t: "unsigned long",
+    int8_t: "signed char",
+    uint8_t: "unsigned char",
+    int16_t: "short",
+    uint16_t: "unsigned short",
+    int32_t: "int",
+    uint32_t: "unsigned int",
+    int64_t: "long",
+    uint64_t: "unsigned long",
+    int_least8_t: "signed char",
+    uint_least8_t: "unsigned char",
+    int_least16_t: "short",
+    uint_least16_t: "unsigned short",
+    int_least32_t: "int",
+    uint_least32_t: "unsigned int",
+    int_least64_t: "long",
+    uint_least64_t: "unsigned long",
+    int_fast8_t: "signed char",
+    uint_fast8_t: "unsigned char",
+    int_fast16_t: "long",
+    uint_fast16_t: "unsigned long",
+    int_fast32_t: "long",
+    uint_fast32_t: "unsigned long",
+    int_fast64_t: "long",
+    uint_fast64_t: "unsigned long",
+    intmax_t: "long",
+    uintmax_t: "unsigned long",
+    signed: "int",
+    unsigned: "unsigned int",
+    "signed int": "int",
+    "short int": "short",
+    "signed short": "short",
+    "unsigned short int": "unsigned short",
+    "long int": "long",
+    "signed long": "long",
+    "unsigned long int": "unsigned long",
+    "long long int": "long long",
+    "signed long long": "long long",
+    "unsigned long long int": "unsigned long long"
+  });
+  const bareSpelling = (spelling) => spelling.replace(/^const /, "").replace(/^std::/, "");
+  function integerSpelled(spelling, aliases = {}) {
+    const name = bareSpelling(spelling);
+    const known = Object.hasOwn(ALIASES, name) ? ALIASES[name] : name;
+    const canonical = Object.hasOwn(INTEGERS, known) || !Object.hasOwn(aliases, name) ? known : aliases[name];
+    return Object.hasOwn(INTEGERS, canonical) ? INTEGERS[canonical] : null;
+  }
+  function integerLiteral(spelling) {
+    const match = spelling.trim().match(/^([-+]?)\s*(0[xX][0-9a-fA-F']+|0[bB][01']+|0[0-7']*|[1-9][0-9']*)(?:[uU](?:ll|LL|[lLzZ])?|(?:ll|LL|[lLzZ])[uU]?)?$/);
+    if (!match || /^0[xXbB]'|''|'$/.test(match[2])) return null;
+    const digits = match[2].replaceAll("'", "");
+    const octal = /^0[0-7]+$/.test(digits) ? `0o${digits.slice(1)}` : digits;
+    const value = BigInt(octal);
+    return match[1] === "-" ? -value : value;
+  }
   const FORMAT = 1;
   const SCALAR_KINDS = ["int", "ptr"];
   const STRUCT = "struct";
@@ -1156,7 +1250,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       trace,
       "trace",
       ["format", "source", "variables", "steps"],
-      ["title", "spans", "types", "references"]
+      ["title", "spans", "types", "bits", "integers", "references"]
     );
     check(trace.format === FORMAT, "trace.format", `expected ${FORMAT}`);
     const { source } = trace;
@@ -1192,6 +1286,25 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     const variables = trace.variables;
     const cells = checkVariables(variables, "trace.variables");
+    const aliases = trace.integers ?? {};
+    if (Object.hasOwn(trace, "integers")) {
+      check(
+        trace.bits === true && isPlainObject$1(aliases) && Object.values(aliases).every((name) => typeof name === "string" && Object.hasOwn(INTEGERS, name)),
+        "trace.integers",
+        "expected builtin integer types by alias, in a bits trace"
+      );
+    }
+    if (Object.hasOwn(trace, "bits")) {
+      check(trace.bits === true, "trace.bits", "expected true");
+      check(
+        !Object.hasOwn(trace, "references") && variables.every((v) => {
+          var _a2;
+          return v.kind === "int" && ((_a2 = integerSpelled(v.type ?? "", aliases)) == null ? void 0 : _a2.size) === v.size;
+        }),
+        "trace.bits",
+        "expected only integer variables, each with its type"
+      );
+    }
     const references = Object.hasOwn(trace, "references") ? checkReferences(trace.references, variables, "trace.references") : /* @__PURE__ */ new Set();
     const storage = {
       variables,
@@ -1263,6 +1376,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         }
         checkChanges(step, previous, storage, where);
       }
+      if (trace.bits) {
+        checkBitsStep(step, previous, aliases, where);
+      }
       check(
         index === steps.length - 1 || ((_a = step.op) == null ? void 0 : _a.kind) !== "clash",
         `${where}.op`,
@@ -1270,6 +1386,36 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       );
       previous = step;
     }
+  }
+  function checkBitsStep(step, previous, aliases, where) {
+    check(
+      (step.types ?? []).every((part) => integerSpelled(part.type, aliases) !== null),
+      `${where}.types`,
+      "expected integer types in a bits trace"
+    );
+    const { op } = step;
+    if ((op == null ? void 0 : op.kind) !== "convert") return;
+    const from = integerSpelled(op.from, aliases);
+    const to = integerSpelled(op.to, aliases);
+    const value = integerLiteral(op.value);
+    check(
+      from !== null && to !== null && value !== null,
+      `${where}.op`,
+      "expected an integer value converted between integer types in a bits trace"
+    );
+    const operand = previous && convertOperand(previous, op);
+    check(
+      operand !== null && to.wrap(operand) === value,
+      `${where}.op.value`,
+      `expected the operand converted to ${op.to}`
+    );
+  }
+  function convertOperand(previous, op) {
+    var _a;
+    const part = (_a = previous.types) == null ? void 0 : _a.find(
+      (t) => !t.slot && t.type === op.from && t.span[0] >= op.span[0] && t.span[1] <= op.span[1]
+    );
+    return integerLiteral(previous.pane.slice(...(part == null ? void 0 : part.span) ?? op.span));
   }
   const REFERENCE = "reference";
   const hooks = {
@@ -1300,60 +1446,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   function isPlainObject(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value) && !(value instanceof Pointer);
   }
-  class Integer {
-    constructor(size, signed) {
-      __publicField(this, "size");
-      __publicField(this, "signed");
-      this.size = size;
-      this.signed = signed;
-      Object.freeze(this);
-    }
-    /** `value` converted to this type: its low bits, as every conversion keeps them. */
-    wrap(value) {
-      return this.signed ? BigInt.asIntN(8 * this.size, value) : BigInt.asUintN(8 * this.size, value);
-    }
-    holds(value) {
-      return this.wrap(value) === value;
-    }
-    /** The result of arithmetic in this type: unsigned wraps, signed overflow is undefined. */
-    result(value) {
-      if (this.signed && !this.holds(value)) {
-        throw new Unsupported("signed integer overflow is outside the timeline category");
-      }
-      return this.wrap(value);
-    }
-  }
-  const INTEGERS = Object.freeze({
-    "signed char": new Integer(1, true),
-    "unsigned char": new Integer(1, false),
-    short: new Integer(2, true),
-    "unsigned short": new Integer(2, false),
-    int: new Integer(4, true),
-    "unsigned int": new Integer(4, false),
-    long: new Integer(8, true),
-    "unsigned long": new Integer(8, false),
-    "long long": new Integer(8, true),
-    "unsigned long long": new Integer(8, false)
-  });
-  const ALIASES = Object.freeze({
-    size_t: "unsigned long",
-    ptrdiff_t: "long",
-    intptr_t: "long",
-    uintptr_t: "unsigned long",
-    int8_t: "signed char",
-    uint8_t: "unsigned char",
-    int16_t: "short",
-    uint16_t: "unsigned short",
-    int32_t: "int",
-    uint32_t: "unsigned int",
-    int64_t: "long",
-    uint64_t: "unsigned long"
-  });
   function integerNamed(spelling, records = {}) {
-    const name = spelling.replace(/^const /, "").replace(/^std::/, "");
-    if (hasRecord(records, name)) return null;
-    const canonical = Object.hasOwn(ALIASES, name) ? ALIASES[name] : name;
-    return Object.hasOwn(INTEGERS, canonical) ? INTEGERS[canonical] : null;
+    if (hasRecord(records, spelling.replace(/^const /, "").replace(/^std::/, ""))) return null;
+    return integerSpelled(spelling);
   }
   function integerType(node, records = {}) {
     return integerNamed(canonicalType(node), records);
@@ -2419,6 +2514,17 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
     ];
   }
+  function integerAliases(node, found = {}) {
+    if (node.type) {
+      const name = bareSpelling(displayedType(node));
+      const canonical = bareSpelling(canonicalType(node));
+      if (!integerSpelled(name) && Object.hasOwn(INTEGERS, canonical)) found[name] = canonical;
+    }
+    for (const child of node.inner ?? []) {
+      if (child) integerAliases(child, found);
+    }
+    return found;
+  }
   function analyzeWithFrontend(source, frontend) {
     var _a, _b;
     const program = preamble(source, frontend) + source + "\n}\n";
@@ -2459,7 +2565,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     if (Object.keys(state).length === 0) {
       throw new Unsupported("a variable timeline requires at least one variable");
     }
-    return [statements, records];
+    return [statements, records, integerAliases(ast)];
   }
   function floorDiv(a, b) {
     return Math.floor(a / b);
@@ -2842,17 +2948,19 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
   }
   function traceWithFrontend(source, options) {
-    const { runtime = true, types = false, frontend, executor = hooks.execute, directory } = options;
+    const { runtime = true, bits = false, frontend, executor = hooks.execute, directory } = options;
+    const types = bits || (options.types ?? false);
     let body = snippetBody(source);
     let mismatch = null;
     let statements;
     let records;
+    let aliases;
     try {
-      [statements, records] = analyzeWithFrontend(body, frontend);
+      [statements, records, aliases] = analyzeWithFrontend(body, frontend);
     } catch (error) {
       if (!types || !(error instanceof IllFormed)) throw error;
       [body, mismatch] = cutMismatch(body, error, preamble(body, frontend).length);
-      [statements, records] = analyzeWithFrontend(body, frontend);
+      [statements, records, aliases] = analyzeWithFrontend(body, frontend);
     }
     const predicted = [];
     let state = {};
@@ -2907,6 +3015,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           scalar(name, top, size, declaration.pointer ? "ptr" : "int", color, types ? declaration.type : null)
         );
       }
+    }
+    if (bits && (Object.keys(references).length > 0 || variables.some((v) => v.kind !== "int"))) {
+      throw new Unsupported("bits draw integer variables only");
     }
     let addresses$1;
     let states;
@@ -2998,6 +3109,23 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     if (hasRefs) {
       result.references = Object.values(references);
     }
+    if (bits) {
+      result.bits = true;
+      const spelled = new Set(
+        [
+          ...variables.map((v) => v.kind === "int" ? v.type : void 0),
+          ...renderer.steps.flatMap((step) => {
+            var _a;
+            return [
+              ...(step.types ?? []).map((part) => part.type),
+              ...((_a = step.op) == null ? void 0 : _a.kind) === "convert" ? [step.op.from, step.op.to] : []
+            ];
+          })
+        ].filter((type) => Boolean(type)).map(bareSpelling)
+      );
+      const used = Object.entries(aliases).filter(([name]) => spelled.has(name));
+      if (used.length > 0) result.integers = Object.fromEntries(used);
+    }
     try {
       validate(result);
     } catch (exc) {
@@ -3045,6 +3173,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       description: {
         en: "Show the type of every value, and a last statement whose types do not fit",
         ru: "Показывать тип каждого значения и последнюю инструкцию с несовместимыми типами"
+      }
+    },
+    bits: {
+      templates: ["expression-timeline"],
+      label: { en: "Bits", ru: "Биты" },
+      description: {
+        en: "Show the bytes of every integer in memory and its bits as it is converted; implies types",
+        ru: "Показывать байты каждого целого в памяти и его биты при преобразовании; включает типы"
       }
     }
   };
