@@ -11,6 +11,7 @@ export interface RecordFieldInfo {
   kind: ScalarKind | 'struct';
   type?: string;
   size: number;
+  floating?: boolean;
 }
 
 class RecordLayout {
@@ -236,6 +237,7 @@ export function layoutsFromFrontend(
         offset,
         kind: nested ? 'struct' : isPointer(node) ? 'ptr' : 'int',
         size: 0,
+        ...(floatSpelled(canonicalType(node)) ? { floating: true } : {}),
       };
       if (layoutOnly || nested) {
         item.type = nested ?? spelling;
@@ -291,11 +293,13 @@ export function layoutsFromFrontend(
       const count = array.count * (nested ? countCells(array.element) : 1);
       checkArrayExtent(array.count, count);
       const size = layout.size / array.count;
+      const isFloatElem = floatSpelled(array.element);
       const fields: RecordFieldInfo[] = Array.from({ length: array.count }, (_, index) => ({
         name: elementLabel(index),
         offset: index * size,
         kind: nested ? 'struct' : pointer ? 'ptr' : 'int',
         ...(nested ? { type: array.element } : {}),
+        ...(isFloatElem ? { floating: true } : {}),
         size,
       }));
       records[name] = new RecordLayout(name, layout.size, layout.alignment, fields);

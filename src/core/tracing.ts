@@ -488,7 +488,7 @@ export function extractMainAstFromStdout(stdout: string, program: string): AstNo
  * - `convert`: a value of the type `source` becomes the `value` it has in `type`, even when it
  *   reads the same.
  */
-export type Reduction = { readonly span: Span; readonly type: string } & (
+export type Reduction = { readonly span: Span; readonly type: string; readonly floating?: boolean } & (
   | { readonly kind: 'read'; readonly name: string; readonly record: string | null }
   | { readonly kind: 'addr'; readonly name: string }
   | { readonly kind: 'deref'; readonly name: string; readonly value: Pointer | null }
@@ -499,7 +499,7 @@ export type Reduction = { readonly span: Span; readonly type: string } & (
 );
 
 /** A reduction's own fields, one shape per kind: the evaluator adds where it is and its type. */
-type ReductionDetails = Reduction extends infer R ? (R extends unknown ? Omit<R, 'span' | 'type'> : never) : never;
+type ReductionDetails = Reduction extends infer R ? (R extends unknown ? Omit<R, 'span' | 'type' | 'floating'> : never) : never;
 
 function load(state: State, name: string, missing = false): Value {
   const [owner, ...path] = name.split('.');
@@ -582,7 +582,13 @@ class Evaluator {
   }
 
   private reduce(node: AstNode, details: ReductionDetails): void {
-    this.reductions.push({ ...details, span: this.locate(node), type: displayedType(node) });
+    const floating = Boolean(floatType(node, this.records));
+    this.reductions.push({
+      ...details,
+      span: this.locate(node),
+      type: displayedType(node),
+      ...(floating ? { floating: true } : {}),
+    });
   }
 
   /** A brace list inside another one is part of its value, not an evaluation of its own. */
@@ -876,7 +882,6 @@ class Evaluator {
       if (float) {
         const operand = this.numericOperand(children[0]);
         value = float.round(node.opcode === '+' ? operand : -operand);
-        if (Object.is(value, -0)) value = 0;
       } else {
         const operand = BigInt(this.integerOperand(children[0]));
         value = exact(integerTypeOf(node).result(node.opcode === '+' ? operand : -operand));
@@ -1017,7 +1022,7 @@ class Evaluator {
     if (!Number.isFinite(res)) {
       throw new Unsupported('undefined floating-point division');
     }
-    return Object.is(res, -0) ? 0 : res;
+    return res;
   }
 
   private static arithmetic(type: Integer, operation: string, left: number, right: number): number {
@@ -1076,6 +1081,7 @@ export class Statement {
   slot: Span | null;
   type: string | null;
   size: number | null;
+  floating: boolean;
 
   constructor({
     source,
@@ -1098,6 +1104,7 @@ export class Statement {
     slot = null,
     type = null,
     size = null,
+    floating = false,
   }: {
     source: string;
     span: Span | null;
@@ -1119,6 +1126,7 @@ export class Statement {
     slot?: Span | null;
     type?: string | null;
     size?: number | null;
+    floating?: boolean;
   }) {
     this.source = source;
     this.span = span;
@@ -1140,6 +1148,7 @@ export class Statement {
     this.slot = slot;
     this.type = type;
     this.size = size;
+    this.floating = floating;
   }
 }
 
@@ -1425,6 +1434,7 @@ function analyzeStatement(
       slot: [0, pane.length],
       type: displayedType(variable),
       size,
+      floating: Boolean(floatType(variable, records)),
     });
   }
 
@@ -1553,6 +1563,7 @@ function analyzeStatement(
     slot,
     type: declared ? displayedType(variable) : null,
     size,
+    floating: Boolean(floatType(declared ? variable : root, records)),
   });
 }
 
@@ -1853,15 +1864,8 @@ export function observeExecution(
             ? addresses[value.target]
             : 0
           : value;
-      const observed = row[name].value;
-      const matches =
-        observed === bits ||
-        (typeof observed === 'number' &&
-          typeof bits === 'number' &&
-          cells[name].kind !== 'ptr' &&
-          formatFloat(observed) === formatFloat(bits));
-      if (!matches) {
-        if (value instanceof Pointer && observed && !addrValues.has(observed)) {
+      if (row[name].value !== bits) {
+        if (value instanceof Pointer && row[name].value && !addrValues.has(row[name].value)) {
           throw new Unsupported(`runtime value of ${name} is not the address of a variable`);
         }
         throw new Unsupported(`runtime verification failed: ${name} disagrees`);
@@ -1986,13 +1990,15 @@ class Renderer {
   stdout: string;
   real: Record<string, number>;
   realStdout: string;
+  floatingCells: Set<string>;
 
   constructor(
     addresses: Record<string, number>,
     cells: Record<string, unknown> | null = null,
     real: Record<string, number> | null = null,
     hasReferences = false,
-    types = false
+    types = false,
+    floatingCells: Set<string> = new Set()
   ) {
     this.addresses = addresses;
     this.types = types;
@@ -2003,6 +2009,7 @@ class Renderer {
     this.stdout = '';
     this.real = real ?? addresses;
     this.realStdout = '';
+    this.floatingCells = floatingCells;
   }
 
   printed(pointer: Pointer, addresses: Record<string, number>): string {
@@ -2016,22 +2023,27 @@ class Renderer {
     return `0x${address.toString(16).padStart(16, '0')}`;
   }
 
-  show(value: Value): string {
+  show(value: Value, floating = false, prefix = ''): string {
     if (isPlainObject(value)) {
-      return `{${Object.values(value)
-        .map(item => this.show(item))
+      return `{${Object.entries(value)
+        .map(([k, item]) => {
+          const path = prefix ? `${prefix}.${k}` : k;
+          return this.show(item, this.floatingCells.has(path), path);
+        })
         .join(', ')}}`;
     }
-    const val = this.stored(value);
-    return Number.isInteger(val) ? String(val) : formatFloat(val);
+    const val = this.stored(value, floating);
+    if (Object.is(val, -0)) return '-0';
+    return floating || !Number.isInteger(val) ? formatFloat(val) : String(val);
   }
 
-  stored(value: Value): number {
+  stored(value: Value, floating = false): number {
     if (value instanceof Pointer) {
       return value.target ? this.addresses[value.target] : 0;
     }
     if (typeof value !== 'number') throw new Error('only an integer or a pointer is stored in a cell');
-    return Number.isInteger(value) ? value : Number(formatFloat(value));
+    if (Object.is(value, -0)) return -0;
+    return floating || !Number.isInteger(value) ? Number(formatFloat(value)) : value;
   }
 
   add(
@@ -2049,7 +2061,7 @@ class Renderer {
         ? null
         : flat[name] === null
           ? UNKNOWN
-          : this.stored(flat[name]);
+          : this.stored(flat[name], this.floatingCells.has(name));
     }
     const targets: Record<string, string> = {};
     for (const [name, value] of Object.entries(flat)) {
@@ -2098,7 +2110,9 @@ class Renderer {
       let text: string;
       let op: Unplaced<TraceOperation>;
       if (reduction.kind === 'read') {
-        text = (reduction.record ?? '') + this.show(load(before, reduction.name));
+        text =
+          (reduction.record ?? '') +
+          this.show(load(before, reduction.name), Boolean(reduction.floating), reduction.name);
         op = { kind: 'read', name: reduction.name, value: text };
       } else if (reduction.kind === 'addr') {
         text = String(this.addresses[reduction.name]);
@@ -2119,10 +2133,12 @@ class Renderer {
         this.types &&
         !pane.insideTyped(reduction.span[0], reduction.span[1])
       ) {
-        text = this.show(reduction.value);
+        text = this.show(reduction.value, Boolean(reduction.floating));
         op = { kind: 'convert', value: text, from: reduction.source, to: reduction.type };
       } else {
-        text = (reduction.kind === 'eval' ? (reduction.record ?? '') : '') + this.show(reduction.value);
+        text =
+          (reduction.kind === 'eval' ? (reduction.record ?? '') : '') +
+          this.show(reduction.value, Boolean(reduction.floating), statement.target ?? '');
         op = { kind: 'eval', value: text };
         // A brace list of plain values is already its value, however it is spaced.
         if (
@@ -2159,7 +2175,7 @@ class Renderer {
       return;
     }
     if (typeof statement.value === 'number') {
-      const shown = this.show(statement.value);
+      const shown = this.show(statement.value, statement.floating);
       if (pane.read(statement.result[0], statement.result[1]) !== shown) {
         const op = {
           kind: 'eval' as const,
@@ -2270,6 +2286,7 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
   const declarations = statements.filter(s => s.declared);
   const variables: TraceVariable[] = [];
   const references: Record<string, TraceReference> = {};
+  const floatingCells = new Set<string>();
   let top = -8;
   const fieldColors: Record<string, number> = {};
   for (let color = 0; color < declarations.length; color++) {
@@ -2284,9 +2301,11 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
     const alignment = record ? record.alignment : size;
     top = floorDiv(top - size, alignment) * alignment;
     if (record) {
-      const fieldsOf = (rec: RecordInfo): TraceField[] => {
+      const fieldsOf = (rec: RecordInfo, prefix: string): TraceField[] => {
         const flds: TraceField[] = [];
         for (const item of rec.fields) {
+          const path = `${prefix}.${item.name}`;
+          if (item.floating) floatingCells.add(path);
           if (!Object.hasOwn(fieldColors, item.name)) {
             fieldColors[item.name] = Object.keys(fieldColors).length;
           }
@@ -2298,7 +2317,7 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
                 item.type!,
                 item.offset,
                 item.size,
-                fieldsOf(records[item.type!]),
+                fieldsOf(records[item.type!], path),
                 shade
               )
             );
@@ -2308,8 +2327,9 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
         }
         return flds;
       };
-      variables.push(struct(name, record.name, top, size, fieldsOf(record), color));
+      variables.push(struct(name, record.name, top, size, fieldsOf(record, name), color));
     } else {
+      if (declaration.floating) floatingCells.add(name);
       variables.push(
         scalar(name, top, size, declaration.pointer ? 'ptr' : 'int', color, types ? declaration.type : null)
       );
@@ -2385,7 +2405,7 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
     throw new Unsupported('a snippet of only struct definitions has nothing to step through');
   }
   const hasRefs = Object.keys(references).length > 0;
-  const renderer = new Renderer(addresses, leaves(variables), real, hasRefs, types);
+  const renderer = new Renderer(addresses, leaves(variables), real, hasRefs, types, floatingCells);
   let previous: State = {};
   for (let line = 0; line < shown.length; line++) {
     const [statement, after] = shown[line];

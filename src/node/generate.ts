@@ -64,15 +64,23 @@ export function applicable(traceData: ExecutionTrace, snippet: string): void {
   }
   const writes = steps.filter(s => s.op && s.op.kind === 'write');
   const reads = ops.filter(op => ['read', 'addr', 'deref', 'bind'].includes(op.kind));
+  const evaluations = ops.filter(op => op.kind === 'eval' || op.kind === 'convert');
   const emptyInit = source.some(line => line.replace(/ /g, '').includes('{}'));
   const assignments = writes.filter(step => !DECLARATION.test(source[step.line]));
-  if (reads.length === 0 && writes.length <= 1 && assignments.length === 0 && !emptyInit) {
+  if (
+    reads.length === 0 &&
+    evaluations.length === 0 &&
+    writes.length <= 1 &&
+    assignments.length === 0 &&
+    !emptyInit
+  ) {
     throw new Unsupported('a lone memory cell without a copy or state change needs no visualization');
   }
   const binds = ops.some(op => op.kind === 'bind');
   if (
     variables.length === 1 &&
     writes.length === 1 &&
+    evaluations.length === 0 &&
     !emptyInit &&
     assignments.length === 0 &&
     !binds

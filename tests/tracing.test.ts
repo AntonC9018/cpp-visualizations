@@ -422,7 +422,7 @@ describe('StaticPointerTraceTests', () => {
       'int a{1}; int* p = (int*)&a;': /CStyleCastExpr/,
       'int a{1}; long* p = reinterpret_cast<long*>(&a);': /unsupported expression: CXXReinterpretCastExpr/,
       'int* p = new int{1};': /CXXNewExpr/,
-      'char a{1}; char* p = &a;': /not char/,
+      'char* p{};': /not char/,
       'const int a{1}; const int* p = &a;': /pointers to int/,
       'int a{1}; int* const p = &a;': /pointers to int/,
       'int a{5}; int b = *(&a);': /pointer variable/,

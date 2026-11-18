@@ -246,15 +246,19 @@ describe('RuntimeConversionTests', () => {
   test('gdb_agrees_on_floats_void_pointers_and_sizeof', () => {
     const t = tracing.trace(
       'int seven = 7; double half = static_cast<double>(seven) / 2; float quarter = half / 2.0f; ' +
+        'double negZero = -0.0; double big = 1000000.0; ' +
         'void* vp = &seven; int* ip = static_cast<int*>(vp); size_t sz = sizeof(*ip) + sizeof(double); ' +
-        'std::cout << half << std::endl; std::cout << quarter << std::endl; std::cout << sz << std::endl;'
+        'std::cout << half << std::endl; std::cout << quarter << std::endl; ' +
+        'std::cout << negZero << std::endl; std::cout << big << std::endl; std::cout << sz << std::endl;'
     );
     assert.deepEqual(t.steps.at(-1)!.values.half, 3.5);
     assert.deepEqual(t.steps.at(-1)!.values.quarter, 1.75);
+    assert.equal(Object.is(t.steps.at(-1)!.values.negZero, -0), true);
+    assert.deepEqual(t.steps.at(-1)!.values.big, 1000000);
     assert.deepEqual(t.steps.at(-1)!.values.sz, 12);
     assert.equal(t.steps.at(-1)!.targets.vp, 'seven');
     assert.equal(t.steps.at(-1)!.targets.ip, 'seven');
-    assert.equal(t.steps.at(-1)!.stdout, '3.5\n1.75\n12\n');
+    assert.equal(t.steps.at(-1)!.stdout, '3.5\n1.75\n-0\n1e+06\n12\n');
   });
 });
 

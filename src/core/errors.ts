@@ -84,6 +84,7 @@ export interface AstNode {
   constexpr?: boolean;
   bases?: unknown[];
   type?: AstType;
+  argType?: AstType;
   range?: AstRange;
   loc?: AstRangeEndpoint;
   referencedDecl?: AstReferencedDecl;
