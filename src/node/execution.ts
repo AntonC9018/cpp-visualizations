@@ -56,11 +56,12 @@ class Checkpoint(gdb.Breakpoint):
                     else:
                         value = value[part]
                 kind = value.type.strip_typedefs().code
-                if value.address is None or kind not in (gdb.TYPE_CODE_INT, gdb.TYPE_CODE_PTR):
+                if value.address is None or kind not in (gdb.TYPE_CODE_INT, gdb.TYPE_CODE_PTR, gdb.TYPE_CODE_FLT):
                     raise RuntimeError("unsupported storage for " + name)
+                val = (float(value) if kind == gdb.TYPE_CODE_FLT else int(value)) if defined else None
                 row[name] = {"address": int(value.address), "size": int(value.type.sizeof),
                              "pointer": kind == gdb.TYPE_CODE_PTR,
-                             "value": int(value) if defined else None}
+                             "value": val}
                 if member:
                     row[name].update(objectAddress=object_address, objectSize=object_size)
             records.append({"position": position, "variables": row})

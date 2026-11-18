@@ -24,7 +24,7 @@ export { TRACER_SOURCES, revision } from './revision.ts';
 // The memory row's legible capacity. Code, pane and output have no limit: the player's SVG
 // scales to its content, so longer or wider snippets just draw smaller text.
 export const MAX_VARIABLES = 5;
-const DECLARATION = /^\s*(?:const\s+)?(?:int|auto)\b/;
+const DECLARATION = /^\s*(?:const\s+)?(?:(?:unsigned|signed)\s+)?(?:int|short|long|char|float|double|void|auto|(?:std::)?u?int(?:8|16|32|64)_t|(?:std::)?size_t|(?:std::)?ptrdiff_t)\b/;
 
 export function checkContiguousStorage(variables: TraceVariable[]): void {
   if (!contiguous(variables)) {

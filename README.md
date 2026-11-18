@@ -56,15 +56,16 @@ to `0`. The pane follows lesson notation: `**pp` → `**72` → `*p` → `*64` �
 
 Structs support aggregate and designated initialization, uninitialized field storage, whole-object
 copies, `.` and `->`, field addresses and pointer fields. Copies are shallow: pointer fields keep
-their original targets. Fields must be `int`, pointers to `int`, another struct of the snippet by
-value, or pointers to one. A nested struct is copied, assigned and initialized as a whole
+their original targets. Fields must be supported integers, `float`, `double`, pointers (including
+`void*`), another struct of the snippet by value, or `std::array`. A nested struct is copied,
+assigned and initialized as a whole
 (`a.inner = { 5 };`), and its fields are reached by path (`a.inner.x`, `p->inner.x`,
 `&a.inner.x`). Every live field is checked under GDB after every statement. The player draws
 struct frames, a nested struct as a frame inside its owner's, per-field colours and separate
 arc endpoints for objects and fields.
 
 Execution traces support `std::array<T, N>` with 1–32 elements per dimension and up to
-64 scalar cells per array. Elements may be supported integers, pointers, structs, or arrays.
+64 scalar cells per array. Elements may be supported integers, `float`, `double`, pointers, structs, or arrays.
 Arrays can be struct fields. The tracer handles aggregate initialization, copies, assignments,
 indexed reads and writes, `.size()`, and `.data()` for obtaining a pointer to the first element.
 References can bind to an array or an element. The player draws an indexed frame, walks through
@@ -78,7 +79,7 @@ step; wherever its name is used afterwards, the name first becomes what it stand
 program cannot name it, so memory is drawn without it, with the variables in their real order.
 GDB checks every binding after every statement.
 
-Output prints one integer or pointer value followed only by whitespace (`' '`, `'\t'`, `'\n'`) or
+Output prints one integer, floating-point or pointer value followed only by whitespace (`' '`, `'\t'`, `'\n'`) or
 `std::endl`. A statement of whitespace alone, such as `std::cout << std::endl;`, prints it as
 spelled; flushing is not shown. A pointer prints its normalized address as 8 bytes of
 hexadecimal (`64` → `0x0000000000000040`), one more step of the pane; the run's real,
@@ -87,14 +88,17 @@ literal or another character is rejected.
 
 Integers of every width are values: `int`, `short`, `long`, `long long`, their unsigned kinds
 and the aliases over them (`uint8_t`, `int16_t`, `size_t`), each drawn at its own size.
-A conversion between two of them is one step, whether it is written (`static_cast<uint8_t>(a)`)
+`float` (4 bytes) and `double` (8 bytes) values and arithmetic (`+`, `-`, `*`, `/`), `void*`
+pointers (with implicit conversions to `void*` and `static_cast` to or from `void*`), and
+`sizeof` on supported types and expressions are also supported.
+A conversion between numeric or pointer types is one step, whether it is written (`static_cast<uint8_t>(a)`, `static_cast<double>(seven)`)
 or implied: an initializer or assignment of another type, and the promotion of an operand
 before arithmetic (`a + a` on `uint8_t` adds two `int`s, `~a` flips the 32 bits of an `int`).
-The value keeps its low bits, so `256` becomes `0` as `uint8_t` and `-2` becomes `65534` as
+An integer conversion keeps its low bits, so `256` becomes `0` as `uint8_t` and `-2` becomes `65534` as
 `uint16_t`. `static_cast` to the type the value already has only goes away.
-Unsigned arithmetic wraps; signed overflow is undefined and rejected.
-`char`, `bool` and floating-point types are not supported, a one-byte integer cannot be
-printed (the stream prints a character), and neither can a value beyond 2^53, which the player
+Unsigned arithmetic wraps; signed overflow and non-finite floating-point division are undefined and rejected.
+`char` and `bool` are not supported, a one-byte integer cannot be
+printed (the stream prints a character), and neither can an integer beyond 2^53, which the player
 could not draw exactly.
 
 Types are shown only where an example asks for them, with `--types` (the tag's `types`
@@ -113,7 +117,7 @@ changes, and a statement that does not compile is rejected.
 bytes in hex, and the player gets a Little-endian / Big-endian switch for their order. Under
 the pane a row of bits follows each value and conversion: narrowing strikes out the dropped
 bytes, and widening a signed value carries its sign bit into the new bytes while widening an
-unsigned one fills zeros. Only integer variables are taken; pointers, structs, arrays and
+unsigned one fills zeros. Only integer variables are taken; floats, pointers, structs, arrays and
 references are rejected.
 
 A brace list of plain values (`A a { 1, 2 };`) is stored as spelled, with no step that only
@@ -122,7 +126,7 @@ A struct value with a type of its own keeps it in the pane: a typed literal, and
 is read (`b = a` becomes `b = A{1, 2}`).
 
 Pointer arithmetic/comparison, C arrays, rvalue references, references bound to temporaries,
-casts other than `static_cast` between integers, a conversion inside a struct's braces,
+casts other than `static_cast`,
 heap allocation,
 other field types, methods, inheritance, bitfields, default member initializers, empty structs,
 qualified pointers, control flow, ill-formed snippets and undefined reads or

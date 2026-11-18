@@ -360,6 +360,15 @@ describe('StaticPointerTraceTests', () => {
     assert.equal(trace.steps[trace.steps.length - 3].values.q, '?');
   });
 
+  test('void_pointers_and_sizeof_reduce_cleanly', () => {
+    const trace = traceStatic(
+      'int a = 5; void* vp = &a; int* ip = static_cast<int*>(vp); *ip = sizeof(a) + sizeof(*ip);'
+    );
+    assert.equal(final(trace, 'targets').vp, 'a');
+    assert.equal(final(trace, 'targets').ip, 'a');
+    assert.equal(final(trace).a, 8);
+  });
+
   test('unsupported_and_undefined_never_execute', () => {
     const sources = [
       'int a; std::cout << a;',
@@ -370,7 +379,7 @@ describe('StaticPointerTraceTests', () => {
       'int a{50000}; int b=a*a;',
       'int a{1}; int b=a/0;',
       'int a{1}; int b=a%0;',
-      'double a{1.5};',
+      'long double a{1.5};',
       'bool a{true};',
       'static int a{1};',
       'int a{1}; while(a) a=0;',
@@ -413,7 +422,7 @@ describe('StaticPointerTraceTests', () => {
       'int a{1}; int* p = (int*)&a;': /CStyleCastExpr/,
       'int a{1}; long* p = reinterpret_cast<long*>(&a);': /unsupported expression: CXXReinterpretCastExpr/,
       'int* p = new int{1};': /CXXNewExpr/,
-      'int a{1}; void* p = &a;': /pointers to int/,
+      'char a{1}; char* p = &a;': /not char/,
       'const int a{1}; const int* p = &a;': /pointers to int/,
       'int a{1}; int* const p = &a;': /pointers to int/,
       'int a{5}; int b = *(&a);': /pointer variable/,

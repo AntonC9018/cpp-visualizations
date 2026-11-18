@@ -126,6 +126,45 @@ const QUOTED_OR_COMMENT = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\/\/[^\n]*|\/\*[\
 
 // Values -----------------------------------------------------------------------------------
 
+export const FLOATINGS: Readonly<Record<string, { size: number; round: (value: number) => number }>> =
+  Object.freeze({
+    float: Object.freeze({ size: 4, round: (value: number) => Math.fround(value) }),
+    double: Object.freeze({ size: 8, round: (value: number) => value }),
+  });
+
+function floatNamed(spelling: string, records: unknown = {}): { size: number; round: (value: number) => number } | null {
+  const bare = spelling.replace(/^const /, '').replace(/^std::/, '');
+  if (hasRecord(records, bare)) return null;
+  return Object.hasOwn(FLOATINGS, bare) ? FLOATINGS[bare] : null;
+}
+
+function floatType(node: AstNode | null | undefined, records: unknown = {}): { size: number; round: (value: number) => number } | null {
+  return floatNamed(canonicalType(node), records);
+}
+
+/** Format a floating-point number the way `std::cout` defaultfloat (precision 6) prints it. */
+export function formatFloat(value: number): string {
+  if (Object.is(value, -0)) return '-0';
+  if (value === 0) return '0';
+  const sign = value < 0 ? '-' : '';
+  const [m, e] = Math.abs(value).toExponential(5).split('e');
+  const exp = Number(e);
+  if (exp < -4 || exp >= 6) {
+    const trimmed = m.replace(/\.?0+$/, '');
+    const expSign = exp < 0 ? '-' : '+';
+    return `${sign}${trimmed}e${expSign}${String(Math.abs(exp)).padStart(2, '0')}`;
+  }
+  const digits = m.replace('.', '');
+  const point = exp + 1;
+  const fixed =
+    point <= 0
+      ? '0.' + '0'.repeat(-point) + digits
+      : point >= digits.length
+        ? digits + '0'.repeat(point - digits.length)
+        : digits.slice(0, point) + '.' + digits.slice(point);
+  return sign + (fixed.includes('.') ? fixed.replace(/\.?0+$/, '') : fixed);
+}
+
 export class Pointer {
   target: string | null;
 
@@ -206,11 +245,17 @@ function getRecord(records: unknown, name: string): RecordInfo | undefined {
   return Object.hasOwn(map, name) ? map[name] : undefined;
 }
 
-/** How many pointer levels lie over an integer or a supported struct. */
+/** How many pointer levels lie over an integer, float, void or a supported struct. */
 export function pointerDepth(node: AstNode | null | undefined, records: unknown = {}): number {
   const qualified = typeSpelling(node);
   const intMatch = /^(const )?([\w: ]+?)(?: (\*+))?$/.exec(canonicalType(node));
-  if (intMatch && integerNamed(intMatch[2], records) && !(intMatch[1] && intMatch[3])) {
+  if (
+    intMatch &&
+    (integerNamed(intMatch[2], records) ||
+      floatNamed(intMatch[2], records) ||
+      (intMatch[2] === 'void' && Boolean(intMatch[3]))) &&
+    !(intMatch[1] && intMatch[3])
+  ) {
     return (intMatch[3] || '').length;
   }
   const recordType = recordName(node);
@@ -450,7 +495,7 @@ export type Reduction = { readonly span: Span; readonly type: string } & (
   | { readonly kind: 'alias'; readonly name: string; readonly target: string }
   | { readonly kind: 'select'; readonly name: string }
   | { readonly kind: 'eval'; readonly value: Value; readonly record: string | null }
-  | { readonly kind: 'convert'; readonly value: number; readonly source: string }
+  | { readonly kind: 'convert'; readonly value: number | Pointer; readonly source: string }
 );
 
 /** A reduction's own fields, one shape per kind: the evaluator adds where it is and its type. */
@@ -692,7 +737,13 @@ class Evaluator {
         return this.rvalue(children[0]);
       }
       rejectPointerOperator(children[0]);
-      if (cast === 'IntegralCast') {
+      if (
+        cast === 'IntegralCast' ||
+        cast === 'IntegralToFloating' ||
+        cast === 'FloatingToIntegral' ||
+        cast === 'FloatingCast' ||
+        (cast === 'BitCast' && canonicalType(node) === 'void *')
+      ) {
         return [this.convert(node, children[0]), null];
       }
       throw new Unsupported(`implicit ${cast} conversions are outside this category`);
@@ -702,12 +753,24 @@ class Evaluator {
       let operand = children[0];
       while (
         operand?.kind === 'ImplicitCastExpr' &&
-        (operand.castKind === 'IntegralCast' || operand.castKind === 'NoOp') &&
+        (operand.castKind === 'IntegralCast' ||
+          operand.castKind === 'IntegralToFloating' ||
+          operand.castKind === 'FloatingToIntegral' ||
+          operand.castKind === 'FloatingCast' ||
+          operand.castKind === 'NoOp' ||
+          (operand.castKind === 'BitCast' && canonicalType(operand) === 'void *')) &&
         (operand.inner ?? []).length === 1
       ) {
         operand = operand.inner![0];
       }
       return [this.convert(node, operand), null];
+    }
+    if (kind === 'UnaryExprOrTypeTraitExpr' && node.name === 'sizeof') {
+      const target = node.argType ? { type: node.argType } : children[0];
+      if (!target) throw new Unsupported('malformed sizeof expression');
+      const size = this.byteSizeOf(target);
+      this.reduce(node, { kind: 'eval', value: size, record: null });
+      return [size, null];
     }
     const access = this.arrayAccess(node);
     if (access?.member && access.args.length === 0) {
@@ -747,9 +810,6 @@ class Evaluator {
           const child = elements[i];
           if (!child || child.kind === 'ImplicitValueInitExpr') {
             value[item.name] = filled(item, this.records, true);
-          } else if (!array && child.castKind === 'IntegralCast') {
-            // The list is one typed value: a part of it has no label to change.
-            throw new Unsupported("a conversion inside a struct's braces is not supported");
           } else {
             const [childVal] = this.rvalue(child);
             value[item.name] = childVal;
@@ -785,6 +845,13 @@ class Evaluator {
     if (kind === 'IntegerLiteral') {
       return [exact(BigInt(node.value ?? '0')), null];
     }
+    if (kind === 'FloatingLiteral') {
+      const float = floatType(node, this.records);
+      if (!float) throw new Unsupported(`unsupported floating literal type ${typeSpelling(node)}`);
+      const value = float.round(Number(node.value ?? '0'));
+      if (!Number.isFinite(value)) throw new Unsupported('non-finite floating-point value');
+      return [value, null];
+    }
     if (kind === 'InitListExpr' || kind === 'CXXFunctionalCastExpr') {
       return [this.braces(node, depth), null];
     }
@@ -805,8 +872,15 @@ class Evaluator {
       children.length === 1 &&
       !depth
     ) {
-      const operand = BigInt(this.integerOperand(children[0]));
-      value = exact(integerTypeOf(node).result(node.opcode === '+' ? operand : -operand));
+      const float = floatType(node, this.records);
+      if (float) {
+        const operand = this.numericOperand(children[0]);
+        value = float.round(node.opcode === '+' ? operand : -operand);
+        if (Object.is(value, -0)) value = 0;
+      } else {
+        const operand = BigInt(this.integerOperand(children[0]));
+        value = exact(integerTypeOf(node).result(node.opcode === '+' ? operand : -operand));
+      }
     } else if (kind === 'UnaryOperator' && node.opcode === '~' && children.length === 1 && !depth) {
       // Every bit of the (promoted) operand flips; this never overflows, even when signed.
       value = exact(integerTypeOf(node).wrap(~BigInt(this.integerOperand(children[0]))));
@@ -816,12 +890,22 @@ class Evaluator {
       children.length === 2
     ) {
       rejectPointerOperator(node);
-      value = Evaluator.arithmetic(
-        integerTypeOf(node),
-        node.opcode!,
-        this.integerOperand(children[0]),
-        this.integerOperand(children[1])
-      );
+      const float = floatType(node, this.records);
+      if (float) {
+        value = Evaluator.floatArithmetic(
+          float,
+          node.opcode!,
+          this.numericOperand(children[0]),
+          this.numericOperand(children[1])
+        );
+      } else {
+        value = Evaluator.arithmetic(
+          integerTypeOf(node),
+          node.opcode!,
+          this.integerOperand(children[0]),
+          this.integerOperand(children[1])
+        );
+      }
     } else {
       throw new Unsupported(`unsupported expression: ${kind} ${node?.opcode ?? ''}`.trimEnd());
     }
@@ -829,7 +913,18 @@ class Evaluator {
     return [value, null];
   }
 
-  private integerOperand(node: AstNode): number {
+  private byteSizeOf(node: AstNode): number {
+    if (pointerDepth(node, this.records) > 0) return POINTER_SIZE;
+    const record = getRecord(this.records, recordName(node));
+    if (record) return record.size;
+    const int = integerType(node, this.records);
+    if (int) return int.size;
+    const float = floatType(node, this.records);
+    if (float) return float.size;
+    throw new Unsupported(`cannot determine size of ${typeSpelling(node)}`);
+  }
+
+  private numericOperand(node: AstNode): number {
     const [value] = this.rvalue(node);
     if (typeof value !== 'number') {
       throw new Unsupported('pointer arithmetic and comparison are not supported');
@@ -837,14 +932,42 @@ class Evaluator {
     return value;
   }
 
-  /** `operand` converted to the integer type of `node`, a cast written or implied. */
-  private convert(node: AstNode, operand: AstNode): number {
-    pointerDepth(node, this.records);
-    const target = integerType(node);
-    if (!target || !integerType(operand)) {
-      throw new Unsupported('only conversions between integer types are supported');
+  private integerOperand(node: AstNode): number {
+    const value = this.numericOperand(node);
+    if (!Number.isInteger(value)) {
+      throw new Unsupported(`only integer arithmetic is supported, not ${typeSpelling(node) || 'this type'}`);
     }
-    const value = exact(target.wrap(BigInt(this.integerOperand(operand))));
+    return value;
+  }
+
+  /** `operand` converted to the integer, float or pointer type of `node`, a cast written or implied. */
+  private convert(node: AstNode, operand: AstNode): number | Pointer {
+    const depth = pointerDepth(node, this.records);
+    const operandDepth = pointerDepth(operand, this.records);
+    let value: number | Pointer;
+    if (depth > 0 && operandDepth > 0 && (canonicalType(node) === 'void *' || canonicalType(operand) === 'void *')) {
+      const [ptr] = this.rvalue(operand);
+      value = asPointer(ptr);
+    } else {
+      const targetInt = integerType(node, this.records);
+      const targetFloat = floatType(node, this.records);
+      const sourceInt = integerType(operand, this.records);
+      const sourceFloat = floatType(operand, this.records);
+      if (targetInt && sourceInt) {
+        value = exact(targetInt.wrap(BigInt(this.integerOperand(operand))));
+      } else if (targetFloat && (sourceInt || sourceFloat)) {
+        value = targetFloat.round(this.numericOperand(operand));
+        if (!Number.isFinite(value)) throw new Unsupported('non-finite floating-point value');
+      } else if (targetInt && sourceFloat) {
+        const truncated = Math.trunc(this.numericOperand(operand));
+        if (!Number.isFinite(truncated) || !targetInt.holds(BigInt(truncated))) {
+          throw new Unsupported('floating-point conversion overflows integer type');
+        }
+        value = exact(BigInt(truncated));
+      } else {
+        throw new Unsupported('only conversions between integer types are supported');
+      }
+    }
     const source = displayedType(operand);
     if (source === displayedType(node)) {
       // `static_cast<int>` of an int changes nothing: the cast just goes away.
@@ -876,6 +999,25 @@ class Evaluator {
     }
     this.reduce(node, { kind: 'eval', value, record: null });
     return value;
+  }
+
+  private static floatArithmetic(
+    type: { size: number; round: (value: number) => number },
+    operation: string,
+    left: number,
+    right: number
+  ): number {
+    let raw: number;
+    if (operation === '+') raw = left + right;
+    else if (operation === '-') raw = left - right;
+    else if (operation === '*') raw = left * right;
+    else if (operation === '/') raw = left / right;
+    else throw new Unsupported(`only integer arithmetic is supported, not ${operation}`);
+    const res = type.round(raw);
+    if (!Number.isFinite(res)) {
+      throw new Unsupported('undefined floating-point division');
+    }
+    return Object.is(res, -0) ? 0 : res;
   }
 
   private static arithmetic(type: Integer, operation: string, left: number, right: number): number {
@@ -1003,19 +1145,35 @@ export class Statement {
 
 /**
  * The parts of an expression that have a type before anything is evaluated: local names (a
- * field access by `.` whole) and literals. Compound expressions get theirs when reduced.
+ * field access by `.` whole), literals and aggregate brace lists. Compound expressions get
+ * theirs when reduced.
  */
-function typedParts(node: AstNode, locate: (item: AstNode) => Span, names: Set<string>): Typed[] {
+function typedParts(
+  node: AstNode,
+  locate: (item: AstNode) => Span,
+  names: Set<string>,
+  records: Record<string, RecordInfo>
+): Typed[] {
+  if (node.kind === 'UnaryExprOrTypeTraitExpr') return [];
   let plain = node;
   while (plain?.kind === 'MemberExpr' && !plain.isArrow && (plain.inner ?? []).length === 1) {
     plain = plain.inner![0];
   }
   const local = plain?.kind === 'DeclRefExpr' && names.has(plain.referencedDecl?.name ?? '');
-  if (local || node.kind === 'IntegerLiteral' || node.kind === 'CXXNullPtrLiteralExpr') {
+  const aggregate =
+    (node.kind === 'InitListExpr' || node.kind === 'CXXFunctionalCastExpr') &&
+    hasRecord(records, recordName(node));
+  if (
+    local ||
+    aggregate ||
+    node.kind === 'IntegerLiteral' ||
+    node.kind === 'FloatingLiteral' ||
+    node.kind === 'CXXNullPtrLiteralExpr'
+  ) {
     return [[locate(node), displayedType(node)]];
   }
   const children = node.array_filler?.slice(1) ?? node.inner ?? [];
-  return children.flatMap(child => typedParts(child, locate, names));
+  return children.flatMap(child => typedParts(child, locate, names, records));
 }
 
 function compareTyped([a, at]: Typed, [b, bt]: Typed): number {
@@ -1158,7 +1316,7 @@ function analyzeStatement(
       pointerDepth({ type: referred }, records);
     } else {
       pointer = pointerDepth(variable, records) > 0;
-      size = pointer ? POINTER_SIZE : (integerType(variable)?.size ?? null);
+      size = pointer ? POINTER_SIZE : ((integerType(variable, records) ?? floatType(variable, records))?.size ?? null);
     }
     const aggregate = recordName(variable);
     record = !reference && !pointer && Object.hasOwn(records, aggregate) ? aggregate : null;
@@ -1245,7 +1403,7 @@ function analyzeStatement(
     }
     if (
       root.kind === 'ImplicitCastExpr' &&
-      root.castKind === 'BitCast' &&
+      (root.castKind === 'BitCast' || root.castKind === 'NoOp') &&
       typeSpelling(root) === 'const void *' &&
       (root.inner ?? []).length === 1
     ) {
@@ -1323,9 +1481,10 @@ function analyzeStatement(
 
   const evaluator = new Evaluator(state, locate, records, references);
   const names = new Set([...Object.keys(state), ...Object.keys(references)]);
-  const typed = [...(left !== null ? typedParts(left, locate, names) : []), ...typedParts(root, locate, names)].sort(
-    compareTyped
-  );
+  const typed = [
+    ...(left !== null ? typedParts(left, locate, names, records) : []),
+    ...typedParts(root, locate, names, records),
+  ].sort(compareTyped);
   if (reference) {
     const bound = evaluator.lvalue(root);
     if (evaluator.temporary) {
@@ -1694,8 +1853,15 @@ export function observeExecution(
             ? addresses[value.target]
             : 0
           : value;
-      if (row[name].value !== bits) {
-        if (value instanceof Pointer && row[name].value && !addrValues.has(row[name].value)) {
+      const observed = row[name].value;
+      const matches =
+        observed === bits ||
+        (typeof observed === 'number' &&
+          typeof bits === 'number' &&
+          cells[name].kind !== 'ptr' &&
+          formatFloat(observed) === formatFloat(bits));
+      if (!matches) {
+        if (value instanceof Pointer && observed && !addrValues.has(observed)) {
           throw new Unsupported(`runtime value of ${name} is not the address of a variable`);
         }
         throw new Unsupported(`runtime verification failed: ${name} disagrees`);
@@ -1735,13 +1901,19 @@ class Pane {
     });
   }
 
+  /** Whether `[start, end)` lies strictly inside one of the pane's typed parts. */
+  insideTyped(start: number, end: number): boolean {
+    const same = ([begin, finish]: Span): boolean => begin === start && finish === end;
+    return this.typed.some(([span]) => span[0] <= start && end <= span[1] && !same(span));
+  }
+
   /**
    * The original `[start, end)` is now one value of `type`: its parts are no longer. Inside a
    * typed part (the `rs` of `rs.f`) nothing changes: the part keeps its type.
    */
   retype(start: number, end: number, type: string | null): void {
     const same = ([begin, finish]: Span): boolean => begin === start && finish === end;
-    if (this.typed.some(([span]) => span[0] <= start && end <= span[1] && !same(span))) return;
+    if (this.insideTyped(start, end)) return;
     const kept = type || this.typed.find(([span]) => same(span))?.[1];
     this.typed = this.typed.filter(([span]) => !(start <= span[0] && span[1] <= end));
     if (kept) this.typed.push([[start, end], kept]);
@@ -1850,7 +2022,8 @@ class Renderer {
         .map(item => this.show(item))
         .join(', ')}}`;
     }
-    return String(this.stored(value));
+    const val = this.stored(value);
+    return Number.isInteger(val) ? String(val) : formatFloat(val);
   }
 
   stored(value: Value): number {
@@ -1858,7 +2031,7 @@ class Renderer {
       return value.target ? this.addresses[value.target] : 0;
     }
     if (typeof value !== 'number') throw new Error('only an integer or a pointer is stored in a cell');
-    return value;
+    return Number.isInteger(value) ? value : Number(formatFloat(value));
   }
 
   add(
@@ -1941,7 +2114,11 @@ class Renderer {
         const target = (reduction.value ?? asPointer(load(before, reduction.name))).target!;
         text = codeName(target);
         op = { kind: 'deref', target, via: reduction.name };
-      } else if (reduction.kind === 'convert' && this.types) {
+      } else if (
+        reduction.kind === 'convert' &&
+        this.types &&
+        !pane.insideTyped(reduction.span[0], reduction.span[1])
+      ) {
         text = this.show(reduction.value);
         op = { kind: 'convert', value: text, from: reduction.source, to: reduction.type };
       } else {
@@ -1981,16 +2158,16 @@ class Renderer {
       this.add(line, pane, expr, after, op, 1.2);
       return;
     }
-    if (
-      typeof statement.value === 'number' &&
-      pane.read(statement.result[0], statement.result[1]) !== String(statement.value)
-    ) {
-      const op = {
-        kind: 'eval' as const,
-        value: String(statement.value),
-        span: pane.replace(statement.result[0], statement.result[1], String(statement.value)),
-      };
-      this.add(line, pane, expr, before, op);
+    if (typeof statement.value === 'number') {
+      const shown = this.show(statement.value);
+      if (pane.read(statement.result[0], statement.result[1]) !== shown) {
+        const op = {
+          kind: 'eval' as const,
+          value: shown,
+          span: pane.replace(statement.result[0], statement.result[1], shown),
+        };
+        this.add(line, pane, expr, before, op);
+      }
     }
     let span = pane.locate(statement.result[0], statement.result[1]);
     let text = pane.read(statement.result[0], statement.result[1]);
@@ -2138,7 +2315,11 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
       );
     }
   }
-  if (bits && (Object.keys(references).length > 0 || variables.some(v => v.kind !== 'int'))) {
+  if (
+    bits &&
+    (Object.keys(references).length > 0 ||
+      variables.some(v => v.kind !== 'int' || !integerSpelled(v.type ?? '', aliases)))
+  ) {
     throw new Unsupported('bits draw integer variables only');
   }
   let addresses: Record<string, number>;

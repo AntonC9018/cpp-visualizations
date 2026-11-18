@@ -277,9 +277,21 @@ c=b.n; b.n={5, 6}; std::cout << c.g;`;
     assert.equal(dumpsSorted(first), dumpsSorted(tracing.trace(STRUCT_POINTERS)));
   });
 
+  test('fields_of_different_types_and_brace_conversions', () => {
+    const traced = tracing.trace(
+      'struct Mixed { uint8_t tag; float ratio; void* ptr; }; ' +
+        'int x = 10; uint8_t t = 7; Mixed m{ t, 2, &x }; std::cout << m.ratio << std::endl;'
+    );
+    const last = traced.steps[traced.steps.length - 1];
+    assert.equal(last.values['m.tag'], 7);
+    assert.equal(last.values['m.ratio'], 2);
+    assert.equal(last.targets['m.ptr'], 'x');
+    assert.equal(last.stdout, '2\n');
+  });
+
   test('unsupported_definitions_and_reads_never_execute', () => {
     const cases: Record<string, RegExp> = {
-      'struct S {double x;}; S s{};': /unsupported field type double/,
+      'struct S {bool x;}; S s{};': /unsupported field type bool/,
       'struct S {int x[2];}; S s{};': /unsupported field type int/,
       'struct S {int x:2;}; S s{};': /bitfields/,
       'struct S {int x=1;}; S s{};': /default initializers/,

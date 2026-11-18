@@ -2,6 +2,7 @@
 
 import { arrayType, checkArrayExtent, elementLabel } from './arrays.ts';
 import { type AstNode, type CompilerFrontend, Unsupported } from './errors.ts';
+import { integerSpelled } from './integers.ts';
 import type { ScalarKind } from './trace_format.ts';
 
 export interface RecordFieldInfo {
@@ -145,6 +146,7 @@ export function layoutsFromFrontend(
     }
     function collect(node: AstNode): void {
       collectType(canonicalType(node));
+      if (node.argType) collectType(canonicalType({ type: node.argType }));
       for (const child of node.inner ?? []) collect(child);
       for (const child of node.array_filler ?? []) collect(child);
     }
@@ -153,6 +155,7 @@ export function layoutsFromFrontend(
   if (Object.keys(definitions).length === 0 && arrayTypes.size === 0) {
     return {};
   }
+  const floatSpelled = (spelling: string): boolean => spelling === 'float' || spelling === 'double';
   for (const [name, node] of Object.entries(definitions)) {
     if (node.tagUsed !== 'struct' || (node.bases && node.bases.length > 0)) {
       throw new Unsupported('only plain aggregate structs without inheritance are supported');
@@ -165,8 +168,16 @@ export function layoutsFromFrontend(
       }
       const qualified = typeSpelling(child);
       const canonical = canonicalType(child);
-      let allowed = qualified === 'int' || /^int \*+$/.test(qualified);
-      allowed ||= Object.keys(definitions).some(record => qualified === `${record} *`);
+      const base = canonical.replace(/^struct /, '').replace(/ \*+$/, '');
+      const isPtr = canonical.endsWith('*') && !qualified.startsWith('const ');
+      const shadowed = Object.hasOwn(definitions, qualified.replace(/^const /, '').replace(/^std::/, '').replace(/ \*+$/, ''));
+      let allowed =
+        (!shadowed && (Boolean(integerSpelled(canonical)) || floatSpelled(canonical)) && !qualified.startsWith('const ')) ||
+        (isPtr &&
+          ((!shadowed && (Boolean(integerSpelled(base)) || floatSpelled(base))) ||
+            base === 'void' ||
+            Object.hasOwn(definitions, base) ||
+            arrayTypes.has(base)));
       allowed ||= Object.hasOwn(definitions, qualified) && qualified !== name;
       allowed ||= arrayTypes.has(recordName(child));
       if (layoutOnly) {
@@ -269,12 +280,12 @@ export function layoutsFromFrontend(
         throw new Unsupported(`Clang omitted a contiguous layout for ${name}`);
       }
       const nested = arrayType(array.element) || Object.hasOwn(records, array.element);
-      const integer = /^(?:(?:signed|unsigned) char|(?:unsigned )?(?:short|int|long(?: long)?))$/;
+      const scalarElem = /^(?:(?:signed|unsigned) char|(?:unsigned )?(?:short|int|long(?: long)?)|float|double)$/;
       const pointee = /^(.*) \*+$/.exec(array.element)?.[1];
       const pointer = pointee !== undefined && (
-        integer.test(pointee) || Object.hasOwn(records, pointee) || Boolean(arrayType(pointee))
+        scalarElem.test(pointee) || pointee === 'void' || Object.hasOwn(records, pointee) || Boolean(arrayType(pointee))
       );
-      if (!nested && !pointer && !integer.test(array.element)) {
+      if (!nested && !pointer && !scalarElem.test(array.element)) {
         throw new Unsupported(`unsupported std::array element type ${array.element}`);
       }
       const count = array.count * (nested ? countCells(array.element) : 1);

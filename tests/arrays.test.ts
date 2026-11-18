@@ -139,6 +139,22 @@ test('an array of structs supports aggregate writes and independent copies', () 
   assert.equal(last.values['copy.b'], 5);
 });
 
+test('arrays of floats, doubles, narrow integers and void pointers', () => {
+  const result = trace(`
+    int x = 9;
+    std::array<double, 2> d{ 1.5, 2.25 };
+    std::array<void*, 2> vp{ &x, nullptr };
+    double sum = d[0] + d[1];
+    std::cout << sum << std::endl;
+  `);
+  const last = result.steps.at(-1)!;
+  assert.equal(last.values['d.[0]'], 1.5);
+  assert.equal(last.values['d.[1]'], 2.25);
+  assert.equal(last.values.sum, 3.75);
+  assert.equal(last.targets['vp.[0]'], 'x');
+  assert.equal(last.stdout, '3.75\n');
+});
+
 test('the tracer rejects invalid array operations before execution', () => {
   for (const [source, reason] of [
     ['std::array<int, 2> a{}; a[2] = 1;', /index 2 is out of bounds/],
@@ -146,7 +162,7 @@ test('the tracer rejects invalid array operations before execution', () => {
     ['std::array<int, 2> a; int b = a[1];', /reading uninitialized/],
     ['std::array<int, 0> a{};', /requires 1–32 elements/],
     ['std::array<std::array<int, 9>, 9> a{};', /at most 64 scalar cells/],
-    ['std::array<double, 2> a{};', /unsupported std::array element type/],
+    ['std::array<char, 2> a{};', /unsupported std::array element type/],
   ] as const) {
     assert.throws(() => trace(source, { runtime: false }), { name: Unsupported.name, message: reason });
   }

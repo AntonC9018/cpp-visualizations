@@ -146,16 +146,33 @@ describe('ConversionTests', () => {
     assert.equal(t.steps.at(-1)!.values.a, 255);
   });
 
-  test('what_is_not_an_integer_conversion_is_rejected', () => {
+  test('floating_point_and_void_pointer_conversions_and_brace_conversions', () => {
+    const t = trace(
+      'int seven = 7; double half = static_cast<double>(seven) / 2; int three = half; ' +
+        'struct A { int f; void* p; }; uint8_t u{ 3 }; A a{ u, &seven }; int* ip = static_cast<int*>(a.p);'
+    );
+    assert.deepEqual(conversions(t, 1), [
+      ['double half = static_cast<double>(7) / 2', 'double half = 7 / 2', 'int', 'double'],
+      ['double half = 7 / 2', 'double half = 7 / 2', 'int', 'double'],
+    ]);
+    assert.deepEqual(conversions(t, 2), [['int three = 3.5', 'int three = 3', 'double', 'int']]);
+    assert.equal(t.steps.at(-1)!.values.half, 3.5);
+    assert.equal(t.steps.at(-1)!.values.three, 3);
+    assert.equal(t.steps.at(-1)!.values['a.f'], 3);
+    assert.equal(t.steps.at(-1)!.targets.ip, 'seven');
+  });
+
+  test('what_is_not_a_supported_conversion_is_rejected', () => {
     const cases: Record<string, RegExp> = {
-      'int value{ 7 }; double half{ static_cast<double>(value) / 2 };': /not double/,
+      'int value{ 7 }; long double half{ static_cast<long double>(value) / 2 };': /not long double/,
       'bool b{ true }; int a = b;': /not bool/,
       'char c{ 5 }; int a = c;': /not char/,
       'uint8_t a{ 65 }; std::cout << a;': /prints a one-byte integer as a character/,
       'int a{ 5 }; short s{ a };': /cannot be narrowed/,
       'int a{ 2147483647 }; long b = a + 1;': /signed integer overflow/,
       'unsigned long a = 18446744073709551615ul;': /beyond 2\^53/,
-      "struct A { int f; }; uint8_t u{ 3 }; A a{ u };": /inside a struct's braces/,
+      'double d = 1e20; int a = static_cast<int>(d);': /overflows integer type/,
+      'double d = 1.0 / 0.0;': /undefined floating-point division/,
     };
     for (const [source, reason] of Object.entries(cases)) {
       throwsUnsupported(() => trace(source), reason);
@@ -225,6 +242,20 @@ describe('RuntimeConversionTests', () => {
       f: 8,
     });
   });
+
+  test('gdb_agrees_on_floats_void_pointers_and_sizeof', () => {
+    const t = tracing.trace(
+      'int seven = 7; double half = static_cast<double>(seven) / 2; float quarter = half / 2.0f; ' +
+        'void* vp = &seven; int* ip = static_cast<int*>(vp); size_t sz = sizeof(*ip) + sizeof(double); ' +
+        'std::cout << half << std::endl; std::cout << quarter << std::endl; std::cout << sz << std::endl;'
+    );
+    assert.deepEqual(t.steps.at(-1)!.values.half, 3.5);
+    assert.deepEqual(t.steps.at(-1)!.values.quarter, 1.75);
+    assert.deepEqual(t.steps.at(-1)!.values.sz, 12);
+    assert.equal(t.steps.at(-1)!.targets.vp, 'seven');
+    assert.equal(t.steps.at(-1)!.targets.ip, 'seven');
+    assert.equal(t.steps.at(-1)!.stdout, '3.5\n1.75\n12\n');
+  });
 });
 
 describe('BitsTests', () => {
@@ -247,6 +278,7 @@ describe('BitsTests', () => {
     throwsUnsupported(() => bits('int a{ 5 }; int* p{ &a };'), /integer variables only/);
     throwsUnsupported(() => bits('int a{ 5 }; int& r{ a };'), /integer variables only/);
     throwsUnsupported(() => bits('struct A { int x; }; A a{ 1 };'), /integer variables only/);
+    throwsUnsupported(() => bits('double d{ 1.5 };'), /integer variables only/);
   });
 
   test('bits_resolve_every_standard_alias', () => {

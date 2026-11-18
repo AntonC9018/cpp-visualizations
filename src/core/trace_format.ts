@@ -524,7 +524,7 @@ function checkReferences(
 
 function checkValue(value: unknown, where: string): void {
   check(
-    value === null || value === UNKNOWN || (Number.isInteger(value) && typeof value === 'number'),
+    value === null || value === UNKNOWN || (typeof value === 'number' && Number.isFinite(value)),
     where,
     'a value is an integer, "?" (declared, unknown) or null (no storage yet)'
   );
@@ -609,7 +609,7 @@ function replacement(before: string, after: string, span: Span, where: string): 
   return replaced;
 }
 
-const LITERAL = /^-?\d+$/;
+const LITERAL = /^-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i;
 
 function stored(text: string, where: string): (number | string)[] {
   const braced = /^(?:[A-Za-z_]\w*)?\{[\s\S]*\}$/.test(text);
@@ -622,7 +622,7 @@ function stored(text: string, where: string): (number | string)[] {
       where,
       `${pyRepr(inner)} is not a value: expected an integer, nullptr, "?" or {…} of them`
     );
-    result.push(item === 'nullptr' ? 0 : item === UNKNOWN ? item : Number.parseInt(item, 10));
+    result.push(item === 'nullptr' ? 0 : item === UNKNOWN ? item : Number(item));
   }
   return result;
 }
