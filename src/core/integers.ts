@@ -60,6 +60,36 @@ const ALIASES: Readonly<Record<string, string>> = Object.freeze({
   uint32_t: 'unsigned int',
   int64_t: 'long',
   uint64_t: 'unsigned long',
+  int_least8_t: 'signed char',
+  uint_least8_t: 'unsigned char',
+  int_least16_t: 'short',
+  uint_least16_t: 'unsigned short',
+  int_least32_t: 'int',
+  uint_least32_t: 'unsigned int',
+  int_least64_t: 'long',
+  uint_least64_t: 'unsigned long',
+  int_fast8_t: 'signed char',
+  uint_fast8_t: 'unsigned char',
+  int_fast16_t: 'long',
+  uint_fast16_t: 'unsigned long',
+  int_fast32_t: 'long',
+  uint_fast32_t: 'unsigned long',
+  int_fast64_t: 'long',
+  uint_fast64_t: 'unsigned long',
+  intmax_t: 'long',
+  uintmax_t: 'unsigned long',
+  signed: 'int',
+  unsigned: 'unsigned int',
+  'signed int': 'int',
+  'short int': 'short',
+  'signed short': 'short',
+  'unsigned short int': 'unsigned short',
+  'long int': 'long',
+  'signed long': 'long',
+  'unsigned long int': 'unsigned long',
+  'long long int': 'long long',
+  'signed long long': 'long long',
+  'unsigned long long int': 'unsigned long long',
 });
 
 /** The integer type a spelling names (`uint8_t`, `const int`, `std::size_t`), if any. */
@@ -67,4 +97,19 @@ export function integerSpelled(spelling: string): Integer | null {
   const name = spelling.replace(/^const /, '').replace(/^std::/, '');
   const canonical = Object.hasOwn(ALIASES, name) ? ALIASES[name] : name;
   return Object.hasOwn(INTEGERS, canonical) ? INTEGERS[canonical] : null;
+}
+
+/**
+ * The value of an integer literal as C++ spells it, after an optional sign: decimal, `0x`, `0b`
+ * or octal digits, `'` separators and a `u`/`l`/`z` suffix (`-0xFF`, `1'000`, `42ull`).
+ */
+export function integerLiteral(spelling: string): bigint | null {
+  const match = spelling
+    .trim()
+    .match(/^([-+]?)\s*(0[xX][0-9a-fA-F']+|0[bB][01']+|0[0-7']*|[1-9][0-9']*)(?:[uU](?:ll|LL|[lLzZ])?|(?:ll|LL|[lLzZ])[uU]?)?$/);
+  if (!match || match[2].endsWith("'")) return null;
+  const digits = match[2].replaceAll("'", '');
+  const octal = /^0[0-7]+$/.test(digits) ? `0o${digits.slice(1)}` : digits;
+  const value = BigInt(octal);
+  return match[1] === '-' ? -value : value;
 }

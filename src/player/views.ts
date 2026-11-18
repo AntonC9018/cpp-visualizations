@@ -7,7 +7,7 @@ import { type PreparedModel, stepSeconds } from './model.ts';
 import { type SceneContext, scene } from './scene.ts';
 
 export interface TraceView {
-  geometry?: GeometryOptions;
+  geometry?(m: PreparedModel): GeometryOptions;
   /** CSS pixels: narrower players stack code above memory. */
   stackBelow: number;
   /** CSS pixels per unit at most. */

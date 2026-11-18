@@ -298,7 +298,7 @@ export class Player {
     const width = this.root.clientWidth;
     if (width !== this.layoutWidth) {
       this.stacked = width > 0 && width < this.view.stackBelow;
-      this.g = geometry(this.m, this.P, this.stacked, width, this.view.geometry);
+      this.g = geometry(this.m, this.P, this.stacked, width, this.view.geometry?.(this.m));
       this.layoutWidth = width;
       this.shownType = null;
       this.typeBox.hidden = true;

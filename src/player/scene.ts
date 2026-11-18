@@ -418,6 +418,17 @@ function tags(c: SceneContext, at: number): string {
   return out;
 }
 
+/** Dashed boxes over the alignment gaps between cells `height` units tall. */
+function gaps(c: SceneContext, height: number): string {
+  return c.g.gaps
+    .map(
+      ([x, w, y]) =>
+        `<rect x="${round(x + 3)}" y="${y + 3}" width="${round(w - 6)}" ` +
+        `height="${height - 6}" fill="none" stroke="${c.P.gapStroke}" stroke-dasharray="5 5"/>`
+    )
+    .join('');
+}
+
 function memory(c: SceneContext): string {
   const { g, P, step, prev, op } = c;
   const values = op && op.kind === 'write' && prev ? prev.values : step.values;
@@ -426,11 +437,7 @@ function memory(c: SceneContext): string {
   const live = (l: { name: string }): boolean => values[l.name] !== null || writing.has(l.name);
   let out = '';
 
-  for (const [x, w, y] of g.gaps) {
-    out +=
-      `<rect x="${round(x + 3)}" y="${y + 3}" width="${round(w - 6)}" ` +
-      `height="58" fill="none" stroke="${P.gapStroke}" stroke-dasharray="5 5"/>`;
-  }
+  out += gaps(c, CELL);
   const arrays = new Set(g.groups.filter(s => arrayType(s.type ?? '')).map(s => s.name));
   const inArray = (name: string): boolean => [...arrays].some(a => name.startsWith(a + '.'));
   // An element shows its address while something points at it, or at what starts with it.
@@ -865,7 +872,7 @@ function output(c: SceneContext): string {
   return out;
 }
 
-export { arrows, code, dim, output, pane, tether, transfers, typeColour, typeLabel };
+export { arrows, code, dim, gaps, output, pane, tether, transfers, typeColour, typeLabel };
 
 export function scene(c: SceneContext): string {
   const { step, prev, animate } = c;

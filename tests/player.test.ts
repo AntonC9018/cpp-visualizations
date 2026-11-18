@@ -444,6 +444,34 @@ test('a bits trace draws bytes in either order and copies the sign bit, in both 
   assert.deepEqual(errors, []);
 });
 
+test('a bits trace reads hex literals and fits eight bytes in a narrow player', async () => {
+  const bits = traceSource('int16_t a{ 0x1234 }; int64_t b{ a };', { runtime: false, bits: true });
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.setViewportSize({ width: 391, height: 900 });
+  await page.setContent(PAGE.replace(trace, JSON.stringify(bits).replace(/</g, '\\u003c')));
+  await page.evaluate(() => window.CourseVisualization!.scan());
+  await page.waitForSelector('.cv-player');
+  const host = page.locator('.course-visualization');
+  const converts = bits.steps.flatMap((step, i) => (step.op?.kind === 'convert' ? [i] : []));
+  const workbench = (step: number) =>
+    host.evaluate((h: PlayerElement, step) => {
+      h.cvPlayer.settle(step);
+      const stage = h.cvPlayer.svg.getBoundingClientRect();
+      return [...h.cvPlayer.svg.querySelectorAll('.cv-bit-byte')].map(g => {
+        const box = g.getBoundingClientRect();
+        return { bits: g.getAttribute('data-bits')!, inside: box.left >= stage.left && box.right <= stage.right };
+      });
+    }, step);
+
+  const narrowed = await workbench(converts[0]);
+  assert.deepEqual(narrowed.map(b => b.bits).slice(-2), ['00010010', '00110100']);
+  const widened = await workbench(converts[1]);
+  assert.equal(widened.length, 8);
+  assert.deepEqual(widened.filter(b => !b.inside), []);
+  assert.deepEqual(errors, []);
+});
+
 test('a trace without bits has no byte order switch', async () => {
   await page.waitForSelector('.cv-player');
   assert.equal(await page.locator('.cv-endian').count(), 0);

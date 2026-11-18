@@ -606,12 +606,50 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     int32_t: "int",
     uint32_t: "unsigned int",
     int64_t: "long",
-    uint64_t: "unsigned long"
+    uint64_t: "unsigned long",
+    int_least8_t: "signed char",
+    uint_least8_t: "unsigned char",
+    int_least16_t: "short",
+    uint_least16_t: "unsigned short",
+    int_least32_t: "int",
+    uint_least32_t: "unsigned int",
+    int_least64_t: "long",
+    uint_least64_t: "unsigned long",
+    int_fast8_t: "signed char",
+    uint_fast8_t: "unsigned char",
+    int_fast16_t: "long",
+    uint_fast16_t: "unsigned long",
+    int_fast32_t: "long",
+    uint_fast32_t: "unsigned long",
+    int_fast64_t: "long",
+    uint_fast64_t: "unsigned long",
+    intmax_t: "long",
+    uintmax_t: "unsigned long",
+    signed: "int",
+    unsigned: "unsigned int",
+    "signed int": "int",
+    "short int": "short",
+    "signed short": "short",
+    "unsigned short int": "unsigned short",
+    "long int": "long",
+    "signed long": "long",
+    "unsigned long int": "unsigned long",
+    "long long int": "long long",
+    "signed long long": "long long",
+    "unsigned long long int": "unsigned long long"
   });
   function integerSpelled(spelling) {
     const name = spelling.replace(/^const /, "").replace(/^std::/, "");
     const canonical = Object.hasOwn(ALIASES, name) ? ALIASES[name] : name;
     return Object.hasOwn(INTEGERS, canonical) ? INTEGERS[canonical] : null;
+  }
+  function integerLiteral(spelling) {
+    const match = spelling.trim().match(/^([-+]?)\s*(0[xX][0-9a-fA-F']+|0[bB][01']+|0[0-7']*|[1-9][0-9']*)(?:[uU](?:ll|LL|[lLzZ])?|(?:ll|LL|[lLzZ])[uU]?)?$/);
+    if (!match || match[2].endsWith("'")) return null;
+    const digits = match[2].replaceAll("'", "");
+    const octal = /^0[0-7]+$/.test(digits) ? `0o${digits.slice(1)}` : digits;
+    const value = BigInt(octal);
+    return match[1] === "-" ? -value : value;
   }
   const FORMAT = 1;
   const SCALAR_KINDS = ["int", "ptr"];
@@ -1328,12 +1366,30 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         }
         checkChanges(step, previous, storage, where);
       }
+      if (trace.bits) {
+        checkBitsStep(step, where);
+      }
       check(
         index === steps.length - 1 || ((_a = step.op) == null ? void 0 : _a.kind) !== "clash",
         `${where}.op`,
         "nothing runs after a statement that does not compile"
       );
       previous = step;
+    }
+  }
+  function checkBitsStep(step, where) {
+    check(
+      (step.types ?? []).every((part) => integerSpelled(part.type) !== null),
+      `${where}.types`,
+      "expected integer types in a bits trace"
+    );
+    const { op } = step;
+    if ((op == null ? void 0 : op.kind) === "convert") {
+      check(
+        integerSpelled(op.from) !== null && integerSpelled(op.to) !== null && integerLiteral(op.value) !== null,
+        `${where}.op`,
+        "expected an integer value converted between integer types in a bits trace"
+      );
     }
   }
   const REFERENCE = "reference";

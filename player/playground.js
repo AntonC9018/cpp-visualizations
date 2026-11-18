@@ -626,9 +626,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return { labels, height: edge.length ? edge.length * LABEL.row + 6 : 0 };
   }
-  const labelWidth = (c) => String(c.address).length * 16 * CHAR;
+  const labelWidth$1 = (c) => String(c.address).length * 16 * CHAR;
   const labelCentre = (c) => [
-    c.x + 3 + labelWidth(c) / 2,
+    c.x + 3 + labelWidth$1(c) / 2,
     c.y - 18
   ];
   const valueCentre = (c) => [
@@ -662,7 +662,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const margin = Math.min(12, cell.w / 2);
       const left = cell.x + margin;
       const high = cell.x + cell.w - margin;
-      const clearance = cell.x + 3 + labelWidth(cell) + 14;
+      const clearance = cell.x + 3 + labelWidth$1(cell) + 14;
       const intervals = ends.length - 1;
       const low = !g.isStruct(cell) && clearance + 20 * intervals <= high ? Math.max(left, clearance) : left;
       const spacing = intervals ? Math.min(20, (high - low) / intervals) : 0;
@@ -722,10 +722,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   const WRAP_HEIGHT_FACTOR = 1.5;
   function placement(m, byte, rowOf) {
     const spans = /* @__PURE__ */ new Map();
-    const gaps = [];
+    const gaps2 = [];
     let row = 0;
     const unused = (x2, bytes) => {
-      if (bytes > 0) gaps.push([x2, bytes * byte, row]);
+      if (bytes > 0) gaps2.push([x2, bytes * byte, row]);
       return Math.max(0, bytes) * byte;
     };
     const put = (item, x2) => {
@@ -759,7 +759,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       address = item.address + item.size;
       width = Math.max(width, x);
     }
-    return { spans, gaps, width };
+    return { spans, gaps: gaps2, width };
   }
   function typeTargets(m, g) {
     const names = Object.keys(m.types);
@@ -984,7 +984,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const code2 = { x: codeX, y: codeY, w: codeW, h: codeH };
     const codeRows = placeCodeRows(rows, code2.y + 50);
     const lineY = (i) => codeRows[i][0].y;
-    const gaps = placed.gaps.map(([x, w, row]) => [
+    const gaps2 = placed.gaps.map(([x, w, row]) => [
       memX + x,
       w,
       memY + row * pitch
@@ -1039,7 +1039,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       out,
       lineY,
       codeRows,
-      gaps,
+      gaps: gaps2,
       leaves,
       groups,
       box,
@@ -1488,6 +1488,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return out;
   }
+  function gaps(c, height) {
+    return c.g.gaps.map(
+      ([x, w, y]) => `<rect x="${round(x + 3)}" y="${y + 3}" width="${round(w - 6)}" height="${height - 6}" fill="none" stroke="${c.P.gapStroke}" stroke-dasharray="5 5"/>`
+    ).join("");
+  }
   function memory$1(c) {
     const { g, P, step, prev, op } = c;
     const values = op && op.kind === "write" && prev ? prev.values : step.values;
@@ -1495,9 +1500,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const writing = new Set(op && op.kind === "write" ? g.cellsOf(op.name).map((l) => l.name) : []);
     const live = (l) => values[l.name] !== null || writing.has(l.name);
     let out = "";
-    for (const [x, w, y] of g.gaps) {
-      out += `<rect x="${round(x + 3)}" y="${y + 3}" width="${round(w - 6)}" height="58" fill="none" stroke="${P.gapStroke}" stroke-dasharray="5 5"/>`;
-    }
+    out += gaps(c, CELL);
     const arrays = new Set(g.groups.filter((s) => arrayType(s.type ?? "")).map((s) => s.name));
     const inArray = (name) => [...arrays].some((a) => name.startsWith(a + "."));
     const startsAt = (target, cell) => {
@@ -1549,7 +1552,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     if (op && op.kind === "addr") {
       const cell = g.cellsOf(op.name)[0];
       const [lx, ly] = labelCentre(cell);
-      out += `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.2, at + 0.1)}` + rect(lx - labelWidth(cell) / 2 - 5, ly - 13, labelWidth(cell) + 10, 24, P.readFill, P.read, 5, 2) + "</g>";
+      out += `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.2, at + 0.1)}` + rect(lx - labelWidth$1(cell) / 2 - 5, ly - 13, labelWidth$1(cell) + 10, 24, P.readFill, P.read, 5, 2) + "</g>";
     }
     for (const cell of g.leaves) {
       const on = live(cell);
@@ -1907,18 +1910,56 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     int32_t: "int",
     uint32_t: "unsigned int",
     int64_t: "long",
-    uint64_t: "unsigned long"
+    uint64_t: "unsigned long",
+    int_least8_t: "signed char",
+    uint_least8_t: "unsigned char",
+    int_least16_t: "short",
+    uint_least16_t: "unsigned short",
+    int_least32_t: "int",
+    uint_least32_t: "unsigned int",
+    int_least64_t: "long",
+    uint_least64_t: "unsigned long",
+    int_fast8_t: "signed char",
+    uint_fast8_t: "unsigned char",
+    int_fast16_t: "long",
+    uint_fast16_t: "unsigned long",
+    int_fast32_t: "long",
+    uint_fast32_t: "unsigned long",
+    int_fast64_t: "long",
+    uint_fast64_t: "unsigned long",
+    intmax_t: "long",
+    uintmax_t: "unsigned long",
+    signed: "int",
+    unsigned: "unsigned int",
+    "signed int": "int",
+    "short int": "short",
+    "signed short": "short",
+    "unsigned short int": "unsigned short",
+    "long int": "long",
+    "signed long": "long",
+    "unsigned long int": "unsigned long",
+    "long long int": "long long",
+    "signed long long": "long long",
+    "unsigned long long int": "unsigned long long"
   });
   function integerSpelled(spelling) {
     const name = spelling.replace(/^const /, "").replace(/^std::/, "");
     const canonical = Object.hasOwn(ALIASES, name) ? ALIASES[name] : name;
     return Object.hasOwn(INTEGERS, canonical) ? INTEGERS[canonical] : null;
   }
+  function integerLiteral(spelling) {
+    const match = spelling.trim().match(/^([-+]?)\s*(0[xX][0-9a-fA-F']+|0[bB][01']+|0[0-7']*|[1-9][0-9']*)(?:[uU](?:ll|LL|[lLzZ])?|(?:ll|LL|[lLzZ])[uU]?)?$/);
+    if (!match || match[2].endsWith("'")) return null;
+    const digits = match[2].replaceAll("'", "");
+    const octal = /^0[0-7]+$/.test(digits) ? `0o${digits.slice(1)}` : digits;
+    const value = BigInt(octal);
+    return match[1] === "-" ? -value : value;
+  }
   function integerOf(spelling) {
     return integerSpelled(spelling ?? "int") ?? integerSpelled("int");
   }
   function toBytesMSB(value, bytes) {
-    const unsigned = BigInt.asUintN(bytes * 8, BigInt(value));
+    const unsigned = BigInt.asUintN(bytes * 8, value);
     const out = [];
     for (let i = bytes - 1; i >= 0; i--) {
       out.push(Number(unsigned >> BigInt(i * 8) & 0xffn));
@@ -1929,20 +1970,32 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return toBytesMSB(value, bytes).reverse();
   }
   const hexByte = (b) => b.toString(16).toUpperCase().padStart(2, "0");
-  function extractInt(fragment) {
+  function typedText(step, span, type) {
     var _a;
-    const inner = ((_a = fragment.match(/\(([^()]+)\)\s*$/)) == null ? void 0 : _a[1]) ?? fragment;
-    const match = inner.match(/-?\d+/);
-    return match ? Number.parseInt(match[0], 10) : null;
+    const part = (_a = step.types) == null ? void 0 : _a.find((t) => !t.slot && t.type === type && t.span[0] >= span[0] && t.span[1] <= span[1]);
+    return part ? step.pane.slice(...part.span) : null;
+  }
+  function invertedOperand(prev, step) {
+    var _a, _b;
+    if (((_a = step.op) == null ? void 0 : _a.kind) !== "eval" || !prev) return null;
+    const operand = (_b = prev.pane.slice(...step.op.span).match(/^\s*~(.*)$/)) == null ? void 0 : _b[1];
+    return operand === void 0 ? null : integerLiteral(operand);
+  }
+  function signCopies(step) {
+    const { op } = step;
+    if ((op == null ? void 0 : op.kind) !== "convert") return 0;
+    const from = integerOf(op.from);
+    return from.signed ? Math.max(0, integerOf(op.to).size - from.size) : 0;
   }
   function activeBitAction(c) {
     var _a, _b, _c;
     const { step, prev, m } = c;
     const op = step.op;
     if ((op == null ? void 0 : op.kind) === "convert") {
-      const beforeRaw = prev ? prev.pane.slice(...op.span) : op.value;
-      const beforeVal = extractInt(beforeRaw) ?? Number.parseInt(op.value, 10);
-      const afterVal = Number.parseInt(op.value, 10);
+      const written = prev ? typedText(prev, op.span, op.from) ?? prev.pane.slice(...op.span) : op.value;
+      const beforeVal = integerLiteral(written);
+      const afterVal = integerLiteral(op.value);
+      if (beforeVal === null || afterVal === null) return null;
       const fromInfo = integerOf(op.from);
       const toInfo = integerOf(op.to);
       let kind = "reinterpret";
@@ -1952,65 +2005,53 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       } else if (toInfo.size > fromInfo.size) {
         if (fromInfo.signed) {
           kind = "sign-extend";
-          signBit = beforeVal < 0 ? 1 : 0;
+          signBit = fromInfo.wrap(beforeVal) < 0n ? 1 : 0;
         } else {
           kind = "zero-extend";
         }
       }
       return { kind, signBit, fromType: op.from, toType: op.to, fromInfo, toInfo, beforeVal, afterVal };
     }
-    if ((op == null ? void 0 : op.kind) === "eval" && prev) {
-      const raw = prev.pane.slice(...op.span);
-      if (/^\s*~\s*-?\d+\s*$/.test(raw)) {
-        const beforeVal = extractInt(raw) ?? 0;
-        const afterVal = Number.parseInt(op.value, 10);
-        const type = ((_b = (_a = step.types) == null ? void 0 : _a.find((t) => !t.slot && t.span[0] === op.span[0])) == null ? void 0 : _b.type) ?? "int";
-        return { kind: "invert", type, info: integerOf(type), beforeVal, afterVal };
+    if ((op == null ? void 0 : op.kind) === "eval") {
+      const value = integerLiteral(op.value);
+      const type = (_b = (_a = step.types) == null ? void 0 : _a.find((t) => !t.slot && t.span[0] === op.span[0])) == null ? void 0 : _b.type;
+      if (value === null || !type) return null;
+      const beforeVal = invertedOperand(prev, step);
+      if (beforeVal !== null) {
+        return { kind: "invert", type, info: integerOf(type), beforeVal, afterVal: value };
       }
+      return { kind: "value", type, info: integerOf(type), value };
     }
     if (op && (op.kind === "read" || op.kind === "write")) {
-      const num = /^-?\d+$/.test(op.value) ? Number.parseInt(op.value, 10) : null;
-      if (num !== null) {
-        const variable = m.leaves.find((l) => l.name === op.name);
-        const type = (variable == null ? void 0 : variable.type) ?? "int";
-        return {
-          kind: "value",
-          label: op.kind === "write" ? `${op.name} = ${num}` : op.name,
-          type,
-          info: integerOf(type),
-          value: num
-        };
-      }
+      const value = integerLiteral(op.value);
+      if (value === null) return null;
+      const type = ((_c = m.leaves.find((l) => l.name === op.name)) == null ? void 0 : _c.type) ?? "int";
+      return { kind: "value", type, info: integerOf(type), value };
     }
-    const lit = (_c = step.types) == null ? void 0 : _c.find((t) => !t.slot);
-    if (lit) {
-      const slice = step.pane.slice(...lit.span);
-      if (/^-?\d+$/.test(slice)) {
-        return {
-          kind: "value",
-          label: slice,
-          type: lit.type,
-          info: integerOf(lit.type),
-          value: Number.parseInt(slice, 10)
-        };
+    const literals = op === null ? (step.types ?? []).filter((t) => !t.slot) : [];
+    if (literals.length === 1) {
+      const value = integerLiteral(step.pane.slice(...literals[0].span));
+      if (value !== null) {
+        const { type } = literals[0];
+        return { kind: "value", type, info: integerOf(type), value };
       }
     }
     return null;
   }
-  function isBitwiseInvert(steps, i) {
-    var _a;
-    const step = steps[i];
-    if (((_a = step.op) == null ? void 0 : _a.kind) !== "eval" || i === 0) return false;
-    return /^\s*~\s*-?\d+\s*$/.test(steps[i - 1].pane.slice(...step.op.span));
-  }
+  const STAGGER = 0.2;
+  const TRAVEL = 0.55;
+  const signSeconds = (copies2) => (copies2 - 1) * STAGGER + TRAVEL + 0.7;
   function bitStepSeconds(steps, i) {
     var _a;
     const step = steps[i];
-    if (((_a = step.op) == null ? void 0 : _a.kind) === "convert" || isBitwiseInvert(steps, i)) {
-      return step.hold + 2.1;
+    if (((_a = step.op) == null ? void 0 : _a.kind) === "convert" || invertedOperand(steps[i - 1] ?? null, step) !== null) {
+      const copies2 = signCopies(step);
+      const signDone = copies2 > 0 ? arrival(step.op) + signSeconds(copies2) : 0;
+      return step.hold + Math.max(2.1, signDone);
     }
     return stepSeconds(steps, i);
   }
+  const BITS_CELL = 88;
   function drawTypeLabels(c, live) {
     const { g, P } = c;
     let out = "";
@@ -2028,7 +2069,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const at = op ? arrival(op) : 0;
     const writing = new Set(op && op.kind === "write" ? g.cellsOf(op.name).map((l) => l.name) : []);
     const live = (l) => values[l.name] !== null || writing.has(l.name);
-    let out = "";
+    let out = gaps(c, BITS_CELL);
     for (const cell of g.leaves) {
       const on = live(cell);
       const changing = writing.has(cell.name);
@@ -2063,7 +2104,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         3
       );
       if (on) {
-        const bytesOf = (v) => littleEndian ? toBytesLSB(v, cell.size) : toBytesMSB(v, cell.size);
+        const bytesOf = (v) => littleEndian ? toBytesLSB(BigInt(v), cell.size) : toBytesMSB(BigInt(v), cell.size);
         const renderCellBody = (val) => {
           if (typeof val !== "number") {
             return text(cell.x + cell.w / 2, cell.y + 36, String(val), 26, P.grey, "middle");
@@ -2121,6 +2162,25 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   const BYTE_W = 2 * NIBBLE_W + NIB_GAP;
   const BYTE_GAP = 26;
   const CARD_PAD = 12;
+  const extents = /* @__PURE__ */ new WeakMap();
+  function workbenchExtent(m) {
+    let extent = extents.get(m);
+    if (extent) return extent;
+    const sizes = m.leaves.map((l) => l.size);
+    let labelChars = 0;
+    for (const step of m.steps) {
+      for (const part of step.types ?? []) sizes.push(integerOf(part.type).size);
+      const { op } = step;
+      if ((op == null ? void 0 : op.kind) === "convert") sizes.push(integerOf(op.from).size, integerOf(op.to).size);
+      if (op && "value" in op) labelChars = Math.max(labelChars, op.value.length + 2);
+    }
+    extent = { bytes: Math.max(1, ...sizes), labelChars };
+    extents.set(m, extent);
+    return extent;
+  }
+  const slotsWidth = (bytes) => bytes * BYTE_W + (bytes - 1) * BYTE_GAP;
+  const RESULT_GAP = 20;
+  const labelWidth = (label) => (typeof label === "number" ? label : label.length) * RESULT_FONT * CHAR;
   const bitCx = (x, i) => x + (i < 4 ? 0 : NIBBLE_W + NIB_GAP) + (i % 4 + 0.5) * BIT_STEP;
   function drawByte(x, yBits, yHex, byte, ink) {
     const bits = byte.toString(2).padStart(8, "0");
@@ -2152,16 +2212,16 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const yHex = yBits + 34;
     const yRes = yBits + 16;
     const cardBottom = yHex + CARD_PAD;
-    const rightAnchor = g.tx + 12 + 4 * BYTE_W + 3 * BYTE_GAP;
+    const rightAnchor = g.tx + 12 + slotsWidth(workbenchExtent(c.m).bytes);
     const slotX = (bytesFromLSB) => rightAnchor - (bytesFromLSB + 1) * BYTE_W - bytesFromLSB * BYTE_GAP;
     const card = (bytes, resultLabel) => {
       const left = slotX(bytes - 1) - CARD_PAD - 4;
-      const right = rightAnchor + 20 + resultLabel.length * RESULT_FONT * CHAR + CARD_PAD + 4;
+      const right = rightAnchor + RESULT_GAP + labelWidth(resultLabel) + CARD_PAD + 4;
       return rect(left, cardTop, right - left, cardBottom - cardTop, P.panel, P.gapStroke, 8, 1.5);
     };
     const reveal = (at2, markup) => animate && at2 > 0 ? `<g opacity="0">${fade(0, 1, 0.22, at2)}${markup}</g>` : markup;
     const swap = (at2, before, after) => animate ? `<g>${hide(at2)}${before}</g><g opacity="0">${show(at2)}${after}</g>` : after;
-    const result = (at2, label2, color) => reveal(at2, text(rightAnchor + 20, yRes, label2, RESULT_FONT, color));
+    const result = (at2, label2, color) => reveal(at2, text(rightAnchor + RESULT_GAP, yRes, label2, RESULT_FONT, color));
     const plainValue = (value, info, hexInk) => {
       const bytes = toBytesMSB(value, info.size);
       let out2 = "";
@@ -2181,7 +2241,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const label2 = `= ${act.value}`;
       return reveal(
         appearAt,
-        card(act.info.size, label2) + plainValue(act.value, act.info, col) + text(rightAnchor + 20, yRes, label2, RESULT_FONT, col)
+        card(act.info.size, label2) + plainValue(act.value, act.info, col) + text(rightAnchor + RESULT_GAP, yRes, label2, RESULT_FONT, col)
       );
     }
     if (act.kind === "invert") {
@@ -2225,12 +2285,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         const lsbPos = toBytes.length - 1 - idx;
         const isExt = lsbPos >= fromBytes.length;
         const block = drawByte(slotX(lsbPos), yBits, yHex, b, {
-          bits: isExt ? P.grey : P.fg,
-          hex: isExt ? P.grey : toCol
+          bits: isExt ? P.muted : P.fg,
+          hex: isExt ? P.muted : toCol
         });
         if (!isExt) out += block;
-        else if (animate) out += `<g opacity="0">${fade(0, 0.72, 0.35, at)}${block}</g>`;
-        else out += `<g opacity="0.72">${block}</g>`;
+        else if (animate) out += `<g opacity="0">${fade(0, 1, 0.35, at)}${block}</g>`;
+        else out += block;
       });
       return out + result(at + 0.35, label, toCol);
     }
@@ -2250,10 +2310,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         const plain = drawByte(bx, yBits, yHex, b, { bits: P.fg, hex: toCol });
         out += animate ? swap(litAt, plain, scaled(msbX, yBits - 8, lit, litAt)) : lit;
       });
-      const stagger = 0.2;
-      const travel = 0.55;
       const extCount = toBytes.length - fromBytes.length;
-      const doneAt = at + (extCount - 1) * stagger + travel;
+      const doneAt = at + (extCount - 1) * STAGGER + TRAVEL;
       const startY = yBits - BOX_TOP - 2;
       let arcs = "";
       for (let k = 0; k < extCount; k++) {
@@ -2264,8 +2322,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           out += copy;
           continue;
         }
-        const begin = at + k * stagger;
-        const land = begin + travel;
+        const begin = at + k * STAGGER;
+        const land = begin + TRAVEL;
         const tipX = bx + BYTE_W / 2;
         const tipY = yBits - BIT_FONT - 2;
         const peakY = startY - 16 - k * 9;
@@ -2279,7 +2337,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         const path = (x, y) => `M ${round(msbX)} ${round(startY)} Q ${round(ctrlX)} ${round(ctrlY)}, ${round(x)} ${round(y)}`;
         arcs += `<path d="${path(ex, ey)}" fill="none" stroke="${ext.stroke}" stroke-width="2.2" stroke-linecap="round" data-grow="${round(begin)}"/>`;
         arcs += `<g opacity="0">${show(land - 0.06)}${arrowheadAt(tipX, tipY, dx, dy, ext.stroke)}</g>`;
-        arcs += `<g opacity="0">${show(begin)}${hide(land + 0.04)}<circle r="10" fill="${ext.fill}" stroke="${ext.stroke}" stroke-width="1.6"/>` + text(0, 5, String(act.signBit), 15, ext.stroke, "middle") + `<animateMotion begin="${round(begin)}s" dur="${travel}s" path="${path(tipX, tipY)}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
+        arcs += `<g opacity="0">${show(begin)}${hide(land + 0.04)}<circle r="10" fill="${ext.fill}" stroke="${ext.stroke}" stroke-width="1.6"/>` + text(0, 5, String(act.signBit), 15, ext.stroke, "middle") + `<animateMotion begin="${round(begin)}s" dur="${TRAVEL}s" path="${path(tipX, tipY)}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
         out += `<g opacity="0">${show(land)}${scaled(tipX, yBits, copy, land)}</g>`;
       }
       if (arcs) out += `<g>${fade(1, 0, 0.32, doneAt + 0.35)}${arcs}</g>`;
@@ -2295,12 +2353,16 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return code(c, oldLine) + tether(c, oldLine) + arrows(c) + memory(c) + pane(c, animate && copies(c.m.steps, c.index)) + workbench(c) + output(c) + transfers(c);
   }
   const BITS_VIEW = {
-    geometry: {
-      minByteWidth: 66,
-      minColumnWidth: 680,
-      cellHeight: 88,
-      extraPaneHeight: 120,
-      skipWrap: true
+    geometry(m) {
+      const { bytes, labelChars } = workbenchExtent(m);
+      const workbench2 = 12 + slotsWidth(bytes) + RESULT_GAP + labelWidth(labelChars) + CARD_PAD + 28;
+      return {
+        minByteWidth: 66,
+        minColumnWidth: Math.max(680, Math.ceil(workbench2)),
+        cellHeight: BITS_CELL,
+        extraPaneHeight: 120,
+        skipWrap: true
+      };
     },
     stackBelow: 900,
     maxScale: 0.78,
@@ -2539,10 +2601,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       if (this.animated) this.seek(this.elapsed);
     }
     render(animate) {
+      var _a, _b;
       const width = this.root.clientWidth;
       if (width !== this.layoutWidth) {
         this.stacked = width > 0 && width < this.view.stackBelow;
-        this.g = geometry(this.m, this.P, this.stacked, width, this.view.geometry);
+        this.g = geometry(this.m, this.P, this.stacked, width, (_b = (_a = this.view).geometry) == null ? void 0 : _b.call(_a, this.m));
         this.layoutWidth = width;
         this.shownType = null;
         this.typeBox.hidden = true;

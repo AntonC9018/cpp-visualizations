@@ -6,7 +6,7 @@
 // `player/README.md` documents every field.
 
 import { arrayType, codeName, elementLabel } from './arrays.ts';
-import { integerSpelled } from './integers.ts';
+import { integerLiteral, integerSpelled } from './integers.ts';
 
 export const FORMAT = 1;
 export type ScalarKind = 'int' | 'ptr';
@@ -1075,12 +1075,32 @@ export function validate(trace: unknown): asserts trace is AnyTrace {
       }
       checkChanges(step, previous, storage, where);
     }
+    if (trace.bits) {
+      checkBitsStep(step as TraceStep, where);
+    }
     check(
       index === steps.length - 1 || step.op?.kind !== 'clash',
       `${where}.op`,
       'nothing runs after a statement that does not compile'
     );
     previous = step;
+  }
+}
+
+/** A bits trace types every part with an integer and converts integer to integer. */
+function checkBitsStep(step: TraceStep, where: string): void {
+  check(
+    (step.types ?? []).every(part => integerSpelled(part.type) !== null),
+    `${where}.types`,
+    'expected integer types in a bits trace'
+  );
+  const { op } = step;
+  if (op?.kind === 'convert') {
+    check(
+      integerSpelled(op.from) !== null && integerSpelled(op.to) !== null && integerLiteral(op.value) !== null,
+      `${where}.op`,
+      'expected an integer value converted between integer types in a bits trace'
+    );
   }
 }
 

@@ -11,6 +11,7 @@ import {
 } from '../src/core/trace_format.ts';
 import * as tracing from '../src/node/tracing.ts';
 import { INTEGERS, Unsupported } from '../src/node/tracing.ts';
+import { integerLiteral } from '../src/core/integers.ts';
 
 type Conversion = [before: string, after: string, from: string, to: string];
 
@@ -246,6 +247,51 @@ describe('BitsTests', () => {
     throwsUnsupported(() => bits('int a{ 5 }; int* p{ &a };'), /integer variables only/);
     throwsUnsupported(() => bits('int a{ 5 }; int& r{ a };'), /integer variables only/);
     throwsUnsupported(() => bits('struct A { int x; }; A a{ 1 };'), /integer variables only/);
+  });
+
+  test('bits_resolve_every_standard_alias', () => {
+    const t = bits('std::uint_fast16_t a{ 300 }; int8_t b{ static_cast<int8_t>(a) };');
+    assert.deepEqual(
+      t.variables.map(v => [v.name, v.size]),
+      [
+        ['b', 1],
+        ['a', 8],
+      ]
+    );
+  });
+
+  test('integer_literals_parse_as_cpp_spells_them', () => {
+    const cases: [string, bigint | null][] = [
+      ['42', 42n],
+      ['-200', -200n],
+      ["1'000", 1000n],
+      ['0x1234', 0x1234n],
+      ['-0XfF', -255n],
+      ['0b1010', 10n],
+      ['017', 15n],
+      ['0', 0n],
+      ['42ull', 42n],
+      ['7LLu', 7n],
+      ['08', null],
+      ["1'", null],
+      ['abc', null],
+      ['1.5', null],
+    ];
+    for (const [spelling, value] of cases) assert.equal(integerLiteral(spelling), value, spelling);
+  });
+
+  test('a_bits_trace_types_and_converts_integers_only', () => {
+    const t = bits('int8_t a{ -3 }; int b{ static_cast<int>(a) };');
+    const at = t.steps.findIndex(step => step.op?.kind === 'convert');
+    const withStep = (change: (step: any) => void): ExecutionTrace => {
+      const copy = structuredClone(t);
+      change(copy.steps[at]);
+      return copy;
+    };
+    validate(t);
+    assert.throws(() => validate(withStep(step => (step.op.value = 'minus three'))), FormatError);
+    assert.throws(() => validate(withStep(step => (step.op.to = 'double'))), FormatError);
+    assert.throws(() => validate(withStep(step => (step.types[0].type = 'bool'))), FormatError);
   });
 
   test('a_bits_trace_with_a_pointer_is_invalid', () => {
