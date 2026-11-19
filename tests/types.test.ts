@@ -264,6 +264,11 @@ describe('DiscoverTypesHintTests', () => {
         () => discover(repo, { tag: ['labs/a.md:3'] }),
         (err: unknown) => err instanceof Error && /labs\/a\.md:3 \(.*\(--types\)/.test(err.message)
       );
+      discover(repo, { tag: ['labs/a.md:3'], flags: { types: true } });
+      assert.throws(
+        () => discover(repo, { tag: ['labs/a.md:3'] }),
+        (err: unknown) => err instanceof Error && /labs\/a\.md:3 \(already has a visualization tag\)/.test(err.message)
+      );
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }

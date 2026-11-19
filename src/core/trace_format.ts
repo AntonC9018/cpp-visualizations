@@ -568,9 +568,10 @@ function checkValue(
   if (cell?.kind !== 'int') return;
   // Without its type, a cell holds what some integer of its size can, signed or not.
   const integer = integerSpelled(cell.type ?? '', aliases);
+  check(integer === null || integer.size === cell.size, where, `${cell.type} is not ${cell.size} bytes`);
   const bits = BigInt(8 * cell.size);
   const stored = BigInt(value as number);
-  const fits = integer?.size === cell.size ? integer.holds(stored) : -(1n << (bits - 1n)) <= stored && stored < 1n << bits;
+  const fits = integer ? integer.holds(stored) : -(1n << (bits - 1n)) <= stored && stored < 1n << bits;
   check(fits, where, `${value} does not fit in ${cell.type ?? `${cell.size} bytes`}`);
 }
 
@@ -716,7 +717,10 @@ function storedItems(text: string, where: string): string[] {
 function showsCell(item: string, value: unknown, cell: ScalarVariable | ScalarField | undefined): boolean {
   if (item === UNKNOWN || value === UNKNOWN) return item === value;
   if (item === 'nullptr') return cell?.kind === 'ptr' && value === 0;
-  if (cell?.floating && typeof value === 'number') return item === displayFloat(value, cell.size);
+  if (cell?.floating && typeof value === 'number') {
+    // Traces from before the short display spell a whole float with all its digits.
+    return item === displayFloat(value, cell.size) || (Number.isSafeInteger(value) && item === String(value));
+  }
   return !item.startsWith('≈') && Object.is(Number(item), value);
 }
 

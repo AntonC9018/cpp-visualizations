@@ -407,7 +407,7 @@ export function discover(
       const entry = { path: relPosix, line: fence.line, source: fence.source };
       if (reason) {
         skipped.push({ ...entry, reason });
-        if (pending.has(chosen)) refused.set(chosen, reason);
+        if (pending.has(chosen)) refused.set(chosen, tagged.has(fence.start) ? 'already has a visualization tag' : reason);
         continue;
       }
       selected.push({ ...entry, already_tagged: tagged.has(fence.start) });

@@ -329,6 +329,29 @@ describe('FloatFormatTests', () => {
     assert.throws(() => validate(read('1.00000012')), FormatError);
   });
 
+  /** `trace` with the value `from` spelled `to`, its spans moved to match. */
+  function respelled(trace: ExecutionTrace, from: string, to: string): ExecutionTrace {
+    const copy = structuredClone(trace);
+    const shift = (pane: string) => {
+      const at = pane.indexOf(from);
+      return ([start, end]: [number, number]): [number, number] =>
+        [start, end].map(x => (at >= 0 && x > at ? x + to.length - from.length : x)) as [number, number];
+    };
+    copy.steps.forEach((step, i) => {
+      const now = shift(trace.steps[i].pane);
+      const before = shift(trace.steps[Math.max(0, i - 1)].pane);
+      if (step.expr) step.expr = now(step.expr);
+      for (const part of step.types ?? []) part.span = now(part.span);
+      const op = step.op as { kind: string; span?: [number, number]; destination?: [number, number]; value?: string } | null;
+      if (op?.span) op.span = op.kind === 'write' ? now(op.span) : before(op.span);
+      if (op?.destination) op.destination = now(op.destination);
+      if (op?.value === from) op.value = to;
+      step.pane = step.pane.replace(from, to);
+    });
+    assert.notDeepEqual(copy, trace);
+    return copy;
+  }
+
   test('validation_rejects_values_a_cell_cannot_hold', () => {
     const t = tracing.trace('float f = 0; int i = 1; float g = f;', { runtime: false });
     validate(t);
@@ -352,6 +375,14 @@ describe('FloatFormatTests', () => {
     const wide = structuredClone(bits);
     everywhere(wide, 'a', 256);
     rejects(wide, /256 does not fit in uint8_t/);
+    const typed = tracing.trace('long n = 2147483648L;', { runtime: false, types: true });
+    validate(typed);
+    const narrowed = structuredClone(typed);
+    (narrowed.variables[0] as { type?: string }).type = 'int';
+    rejects(narrowed, /int is not 8 bytes/);
+    // Older traces spell a whole float with all its digits; that still reads back exactly.
+    const whole = tracing.trace('float f = 1e15f; float g = f;', { runtime: false });
+    validate(respelled(whole, '1e+15', '999999986991104'));
     // A floating zero is no null pointer: the read of f may not say nullptr.
     rejects(
       broken(copy => {

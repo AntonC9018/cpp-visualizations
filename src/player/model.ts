@@ -270,18 +270,34 @@ function statementStart(m: PreparedModel, i: number): number {
 }
 
 /**
- * What step `j` of the statement starting at `start` reaches. A dereference or alias whose
- * struct the statement goes on into, as `(*p).a` does, reaches none of it: the field does.
+ * What step `j` reaches. A dereference or alias whose struct the statement goes on into, as
+ * `(*p).a` does, reaches none of it: the field does.
  */
-function reachedIn(m: PreparedModel, start: number, j: number): { name: string; at: number } | null {
+function reachedIn(m: PreparedModel, j: number): { name: string; at: number } | null {
   const target = reached(m.steps[j].op);
-  const kind = m.steps[j].op?.kind;
-  if (!target || (kind !== 'deref' && kind !== 'alias')) return target;
-  for (let k = start; k < m.steps.length && m.steps[k].line === m.steps[start].line; k++) {
-    const later = reached(m.steps[k].op)?.name;
-    if (later && later !== target.name && covers(target.name, later)) return null;
+  const op = m.steps[j].op;
+  if (!target || (op?.kind !== 'deref' && op?.kind !== 'alias')) return target;
+  return goesInto(m, j, target.name) ? null : target;
+}
+
+/**
+ * Whether a later step of the statement reads or writes a field of `name` right where step `j`
+ * left it in the pane: the struct it named was only the way to that field.
+ */
+function goesInto(m: PreparedModel, j: number, name: string): boolean {
+  let at = (m.steps[j].op as { span: Span }).span[0];
+  for (let k = j + 1; k < m.steps.length && m.steps[k].line === m.steps[j].line; k++) {
+    const op = m.steps[k].op;
+    if (!op || !('span' in op)) continue;
+    const later = reached(op)?.name;
+    const where = op.kind === 'write' ? op.destination[0] : op.span[0];
+    if (later && later !== name && covers(name, later) && where === at) return true;
+    if (m.steps[k].pane === m.steps[k - 1].pane) continue;
+    const [s, e] = op.span;
+    if (at >= e) at += m.steps[k].pane.length - m.steps[k - 1].pane.length;
+    else if (at >= s) return false;
   }
-  return target;
+  return false;
 }
 
 /**
@@ -294,7 +310,7 @@ function litAt(m: PreparedModel, i: number): Set<string> {
   const start = statementStart(m, i);
   const names: string[] = [];
   for (let j = start; j <= i; j++) {
-    const name = reachedIn(m, start, j)?.name;
+    const name = reachedIn(m, j)?.name;
     if (name) names.push(name);
   }
   const shown = new Set(tops);
@@ -321,7 +337,7 @@ export function stepFocus(m: PreparedModel, i: number, animate: boolean): Focus 
   const begin = new Map<string, number>();
   if (!animate || i === 0) return { now, before: now, begin };
   const before = litAt(m, i - 1);
-  const target = reachedIn(m, statementStart(m, i), i);
+  const target = reachedIn(m, i);
   if (target) {
     const top = target.name.split('.')[0];
     for (const name of now) {

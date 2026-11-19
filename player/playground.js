@@ -1290,16 +1290,27 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     while (start > 0 && m.steps[start - 1].line === m.steps[i].line) start--;
     return start;
   }
-  function reachedIn(m, start, j) {
-    var _a, _b;
+  function reachedIn(m, j) {
     const target = reached(m.steps[j].op);
-    const kind = (_a = m.steps[j].op) == null ? void 0 : _a.kind;
-    if (!target || kind !== "deref" && kind !== "alias") return target;
-    for (let k = start; k < m.steps.length && m.steps[k].line === m.steps[start].line; k++) {
-      const later = (_b = reached(m.steps[k].op)) == null ? void 0 : _b.name;
-      if (later && later !== target.name && covers(target.name, later)) return null;
+    const op = m.steps[j].op;
+    if (!target || (op == null ? void 0 : op.kind) !== "deref" && (op == null ? void 0 : op.kind) !== "alias") return target;
+    return goesInto(m, j, target.name) ? null : target;
+  }
+  function goesInto(m, j, name) {
+    var _a;
+    let at = m.steps[j].op.span[0];
+    for (let k = j + 1; k < m.steps.length && m.steps[k].line === m.steps[j].line; k++) {
+      const op = m.steps[k].op;
+      if (!op || !("span" in op)) continue;
+      const later = (_a = reached(op)) == null ? void 0 : _a.name;
+      const where = op.kind === "write" ? op.destination[0] : op.span[0];
+      if (later && later !== name && covers(name, later) && where === at) return true;
+      if (m.steps[k].pane === m.steps[k - 1].pane) continue;
+      const [s, e] = op.span;
+      if (at >= e) at += m.steps[k].pane.length - m.steps[k - 1].pane.length;
+      else if (at >= s) return false;
     }
-    return target;
+    return false;
   }
   function litAt(m, i) {
     var _a;
@@ -1307,7 +1318,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const start = statementStart(m, i);
     const names = [];
     for (let j = start; j <= i; j++) {
-      const name = (_a = reachedIn(m, start, j)) == null ? void 0 : _a.name;
+      const name = (_a = reachedIn(m, j)) == null ? void 0 : _a.name;
       if (name) names.push(name);
     }
     const shown = new Set(tops);
@@ -1322,7 +1333,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const begin = /* @__PURE__ */ new Map();
     if (!animate || i === 0) return { now, before: now, begin };
     const before = litAt(m, i - 1);
-    const target = reachedIn(m, statementStart(m, i), i);
+    const target = reachedIn(m, i);
     if (target) {
       const top = target.name.split(".")[0];
       for (const name of now) {

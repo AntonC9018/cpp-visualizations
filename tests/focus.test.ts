@@ -107,3 +107,12 @@ test('a dereferenced struct the statement goes into lights only the field, as th
   assert.deepEqual(changes(d, write), { 's.a': arrival(d.steps[write].op!) });
   assert.deepEqual(cells(stepFocus(d, write, true).now), ['s.a']);
 });
+
+test('a field read elsewhere in the statement leaves a whole dereferenced struct lit', () => {
+  const t = model('struct S { int a; int b; }; struct T { S v; int i; }; S s{ 1, 2 }; S* p = &s; T t{ *p, s.a };');
+  const deref = stepOf(t, 'deref', 's');
+  assert.deepEqual(cells(stepFocus(t, deref, true).now), ['s.a', 's.b']);
+  const w = model('struct S { int a; int b; }; S s{ 1, 2 }; S* p = &s; *p = S{ s.a, 4 };');
+  const target = stepOf(w, 'deref', 's');
+  assert.deepEqual(cells(stepFocus(w, target, true).now), ['s.a', 's.b']);
+});
