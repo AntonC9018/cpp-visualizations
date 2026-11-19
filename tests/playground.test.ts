@@ -8,6 +8,8 @@ import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { type Browser, chromium } from 'playwright';
 
+import { DEFAULT_CACHE_NAME } from '../src/browser/cache.ts';
+
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PLAYER_DIR = resolve(ROOT, 'player');
 const REAL_WASM_PATH =
@@ -99,11 +101,11 @@ test('playground respects configurable wasmUrl and caches in Cache API across re
     await page.waitForSelector('.pg-clear-cache-btn');
     // tiny.wasm passes WASM compilation & Cache API storage, then fails on missing _start.
     await page.waitForSelector('.pg-error-box:not([hidden])');
-    const cachedCount = await page.evaluate(async () => {
-      const cache = await caches.open('clang-trace-frontend-v1');
+    const cachedCount = await page.evaluate(async cacheName => {
+      const cache = await caches.open(cacheName);
       const keys = await cache.keys();
       return keys.map(req => new URL(req.url).pathname);
-    });
+    }, DEFAULT_CACHE_NAME);
     assert.deepEqual(wasmFetchPaths, ['/tiny.wasm']);
     assert.deepEqual(cachedCount, ['/tiny.wasm']);
 
@@ -118,10 +120,10 @@ test('playground respects configurable wasmUrl and caches in Cache API across re
       const txt = document.querySelector('.pg-status-text')?.textContent || '';
       return /cleared/i.test(txt);
     });
-    const keysAfterClear = await page.evaluate(async () => {
-      const cache = await caches.open('clang-trace-frontend-v1');
+    const keysAfterClear = await page.evaluate(async cacheName => {
+      const cache = await caches.open(cacheName);
       return (await cache.keys()).length;
-    });
+    }, DEFAULT_CACHE_NAME);
     assert.equal(keysAfterClear, 0);
 
     // Reloading after clear re-fetches /tiny.wasm from the network.
