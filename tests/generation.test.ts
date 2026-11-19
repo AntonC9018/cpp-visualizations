@@ -79,6 +79,7 @@ describe('SpacingTests', () => {
       fixtures.reassign(),
       '    int a{ 5 };\nstd::cout << "a  b";  // two  spaces\nchar c{ \'  \' };'
     );
+    applicable(fixtures.reassign(), 'int n = sizeof(R"(say "two  words")");');
   });
 });
 

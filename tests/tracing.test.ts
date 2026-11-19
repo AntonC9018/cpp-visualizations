@@ -666,6 +666,10 @@ describe('CompoundAssignmentTests', () => {
     assert.deepEqual(final(tracing.trace(source, { runtime: false })), { b: 2 });
   });
 
+  test('remapped source locations are rejected before building spans', () => {
+    unsupported('int a=1;\n#line 4 "lesson"\na=2;', /physical source locations/);
+  });
+
   test('tokens inside a raw string cannot be mistaken for diagnostics', () => {
     const source = 'int n = sizeof(R"(abc: error: text)");';
     assert.deepEqual(final(tracing.trace(source, { runtime: false })), { n: 17 });
