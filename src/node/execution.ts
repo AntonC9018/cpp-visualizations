@@ -26,7 +26,7 @@ __attribute__((noinline)) void __course_checkpoint(int position, ...) {
 int main() {
 `;
 
-const SCRIPT = `import gdb, json, shlex
+const SCRIPT = `import gdb, json, math, shlex
 expected, output, report = json.loads(EXPECTED), OUTPUT, REPORT
 records, failures, exits = [], [], []
 class Checkpoint(gdb.Breakpoint):
@@ -61,7 +61,8 @@ class Checkpoint(gdb.Breakpoint):
                 val = (float(value) if kind == gdb.TYPE_CODE_FLT else int(value)) if defined else None
                 row[name] = {"address": int(value.address), "size": int(value.type.sizeof),
                              "pointer": kind == gdb.TYPE_CODE_PTR,
-                             "value": val}
+                             "value": val,
+                             **({"negZero": True} if kind == gdb.TYPE_CODE_FLT and val == 0.0 and math.copysign(1.0, val) < 0 else {})}
                 if member:
                     row[name].update(objectAddress=object_address, objectSize=object_size)
             records.append({"position": position, "variables": row})
@@ -136,7 +137,12 @@ export function execute(
   if (result.returncode || !existsSync(report)) {
     throw new Unsupported('GDB could not collect the runtime trace');
   }
-  const observed = JSON.parse(readFileSync(report, 'utf8')) as GdbObservedReport;
+  const observed = JSON.parse(readFileSync(report, 'utf8'), (_key, val) => {
+    if (val && typeof val === 'object' && 'negZero' in val && val.negZero && val.value === 0) {
+      val.value = -0;
+    }
+    return val;
+  }) as GdbObservedReport;
   const records = observed.records;
   if (
     observed.failures.length > 0 ||

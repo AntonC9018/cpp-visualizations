@@ -142,13 +142,7 @@ function floatType(node: AstNode | null | undefined, records: unknown = {}): { s
   return floatNamed(canonicalType(node), records);
 }
 
-/** Format a floating-point number the way `std::cout` defaultfloat (precision 6) prints it. */
-export function formatFloat(value: number): string {
-  if (Object.is(value, -0)) return '-0';
-  if (value === 0) return '0';
-  const sign = value < 0 ? '-' : '';
-  const [m, e] = Math.abs(value).toExponential(5).split('e');
-  const exp = Number(e);
+function formatExponentialParts(sign: string, m: string, exp: number): string {
   if (exp < -4 || exp >= 6) {
     const trimmed = m.replace(/\.?0+$/, '');
     const expSign = exp < 0 ? '-' : '+';
@@ -163,6 +157,56 @@ export function formatFloat(value: number): string {
         ? digits + '0'.repeat(point - digits.length)
         : digits.slice(0, point) + '.' + digits.slice(point);
   return sign + (fixed.includes('.') ? fixed.replace(/\.?0+$/, '') : fixed);
+}
+
+/** Format a floating-point number the way `std::cout` defaultfloat (precision 6) prints it. */
+export function formatFloat(value: number): string {
+  if (Object.is(value, -0)) return '-0';
+  if (value === 0) return '0';
+  const sign = value < 0 ? '-' : '';
+  const [m, e] = Math.abs(value).toExponential(5).split('e');
+  return formatExponentialParts(sign, m, Number(e));
+}
+
+function stdoutMatches(parts: Set<string>[], actual: string): boolean {
+  let offsets = new Set<number>([0]);
+  for (const candidates of parts) {
+    const next = new Set<number>();
+    for (const pos of offsets) {
+      for (const candidate of candidates) {
+        if (actual.startsWith(candidate, pos)) {
+          next.add(pos + candidate.length);
+        }
+      }
+    }
+    if (next.size === 0) return false;
+    offsets = next;
+  }
+  return offsets.has(actual.length);
+}
+
+function formatFloatCandidates(value: number): Set<string> {
+  const candidates = new Set<string>([formatFloat(value)]);
+  if (value === 0 || !Number.isFinite(value)) return candidates;
+  const sign = value < 0 ? '-' : '';
+  const [m, e] = Math.abs(value).toExponential(5).split('e');
+  const exp = Number(e);
+  const scaled = Math.round(Number(m) * 1e5);
+  for (const delta of [-1, 1]) {
+    let adj = scaled + delta;
+    let adjExp = exp;
+    if (adj >= 1000000) {
+      adj = 100000;
+      adjExp += 1;
+    } else if (adj < 100000) {
+      adj = 999999;
+      adjExp -= 1;
+    }
+    const adjStr = String(adj);
+    const adjM = adjStr[0] + '.' + adjStr.slice(1);
+    candidates.add(formatExponentialParts(sign, adjM, adjExp));
+  }
+  return candidates;
 }
 
 export class Pointer {
@@ -565,20 +609,43 @@ class Evaluator {
   reductions: Reduction[];
   records: Record<string, RecordInfo>;
   references: Record<string, string>;
+  storageTypes: Record<string, string>;
   temporary: boolean;
 
   constructor(
     state: State,
     locate: (item: AstNode) => Span,
     records: Record<string, RecordInfo>,
-    references: Record<string, string> = {}
+    references: Record<string, string> = {},
+    storageTypes: Record<string, string> = {}
   ) {
     this.state = state;
     this.locate = locate;
     this.reductions = [];
     this.records = records;
     this.references = references;
+    this.storageTypes = storageTypes;
     this.temporary = false;
+  }
+
+  private normalizeStorageType(spelling: string): string {
+    const m = /^([\w: ]+?)(?: (\*+))?$/.exec(spelling.replace(/^struct /, ""));
+    if (!m) return spelling;
+    const base = integerSpelled(m[1]) && !hasRecord(this.records, bareSpelling(m[1]))
+      ? Object.entries(INTEGERS).find(([, int]) => int === integerSpelled(m[1]))?.[0] ?? m[1]
+      : m[1];
+    return m[2] ? `${base} ${m[2]}` : base;
+  }
+
+  private checkPointeeType(ptrNode: AstNode, target: string): void {
+    const actual = this.storageTypes[target];
+    if (!actual) return;
+    const rawExpected = canonicalType(ptrNode).replace(/^struct /, "").replace(/\s?\*$/, "");
+    const expected = this.normalizeStorageType(rawExpected);
+    const normActual = this.normalizeStorageType(actual);
+    if (normActual !== expected) {
+      throw new Unsupported(`dereferencing pointer to ${expected} when target ${target} has type ${normActual}`);
+    }
   }
 
   private reduce(node: AstNode, details: ReductionDetails): void {
@@ -654,6 +721,7 @@ class Evaluator {
     if (via === null || pointer.target === null) {
       throw new Unsupported('array member access requires a non-null pointer variable');
     }
+    this.checkPointeeType(base, pointer.target);
     return pointer.target;
   }
 
@@ -689,6 +757,7 @@ class Evaluator {
         if (pointer.target === null) {
           throw new Unsupported(`dereferencing the null pointer ${via} is undefined`);
         }
+        this.checkPointeeType(children[0], pointer.target);
         const name = `${pointer.target}.${node.name}`;
         this.reduce(outer ?? node, { kind: 'deref', name: via, value: new Pointer(name) });
         return name;
@@ -704,6 +773,7 @@ class Evaluator {
       if (pointer.target === null) {
         throw new Unsupported(`dereferencing the null pointer ${via} is undefined`);
       }
+      this.checkPointeeType(children[0], pointer.target);
       this.reduce(outer ?? node, { kind: 'deref', name: via, value: null });
       return pointer.target;
     }
@@ -1266,12 +1336,28 @@ function outputSuffix(operands: AstNode[]): string {
   return suffix;
 }
 
+function recordPaths(
+  prefix: string,
+  rec: RecordInfo,
+  records: Record<string, RecordInfo>,
+  storageTypes: Record<string, string>
+): void {
+  for (const field of rec.fields) {
+    const path = `${prefix}.${field.name}`;
+    if (field.canonical) storageTypes[path] = field.canonical;
+    if (field.kind === 'struct' && field.type && Object.hasOwn(records, field.type)) {
+      recordPaths(path, records[field.type], records, storageTypes);
+    }
+  }
+}
+
 function analyzeStatement(
   node: AstNode,
   program: string,
   state: State,
   records: Record<string, RecordInfo>,
-  references: Record<string, string>
+  references: Record<string, string>,
+  storageTypes: Record<string, string> = {}
 ): Statement {
   let cur = node;
   while (cur?.kind === 'ExprWithCleanups' && (cur.inner ?? []).length === 1) {
@@ -1340,6 +1426,14 @@ function analyzeStatement(
     }
     if (variable.storageClass || variable.constexpr) {
       throw new Unsupported('static and constexpr storage are outside this category');
+    }
+    if (!reference && declared) {
+      if (record) {
+        storageTypes[declared] = record;
+        recordPaths(declared, records[record], records, storageTypes);
+      } else {
+        storageTypes[declared] = canonicalType(variable).replace(/^struct /, "");
+      }
     }
     nameOffset = variable.loc?.offset ?? null;
     if (nameOffset === null) {
@@ -1489,7 +1583,7 @@ function analyzeStatement(
     });
   }
 
-  const evaluator = new Evaluator(state, locate, records, references);
+  const evaluator = new Evaluator(state, locate, records, references, storageTypes);
   const names = new Set([...Object.keys(state), ...Object.keys(references)]);
   const typed = [
     ...(left !== null ? typedParts(left, locate, names, records) : []),
@@ -1705,6 +1799,7 @@ export function analyzeWithFrontend(
   const statements: Statement[] = [];
   let state: State = {};
   const references: Record<string, string> = {};
+  const storageTypes: Record<string, string> = {};
   const inner = ast.inner ?? [];
   for (let i = 0; i < inner.length; i++) {
     const node = inner[i];
@@ -1720,7 +1815,7 @@ export function analyzeWithFrontend(
       }
       throw new Unsupported('only a final return 0 is supported');
     }
-    const statement = analyzeStatement(node, program, state, records, references);
+    const statement = analyzeStatement(node, program, state, records, references, storageTypes);
     if (statement.declared && statements.some(earlier => earlier.temporary)) {
       throw new Unsupported(
         'a declaration after a materialized temporary needs a separate memory-layout visualization'
@@ -1864,7 +1959,7 @@ export function observeExecution(
             ? addresses[value.target]
             : 0
           : value;
-      if (row[name].value !== bits) {
+      if (row[name].value !== bits || (bits === 0 && !Object.is(row[name].value, bits))) {
         if (value instanceof Pointer && row[name].value && !addrValues.has(row[name].value)) {
           throw new Unsupported(`runtime value of ${name} is not the address of a variable`);
         }
@@ -1990,6 +2085,7 @@ class Renderer {
   stdout: string;
   real: Record<string, number>;
   realStdout: string;
+  realStdoutParts: Set<string>[];
   floatingCells: Set<string>;
 
   constructor(
@@ -2009,6 +2105,7 @@ class Renderer {
     this.stdout = '';
     this.real = real ?? addresses;
     this.realStdout = '';
+    this.realStdoutParts = [];
     this.floatingCells = floatingCells;
   }
 
@@ -2032,18 +2129,17 @@ class Renderer {
         })
         .join(', ')}}`;
     }
-    const val = this.stored(value, floating);
+    const val = this.stored(value);
     if (Object.is(val, -0)) return '-0';
-    return floating || !Number.isInteger(val) ? formatFloat(val) : String(val);
+    return floating || !Number.isInteger(val) ? String(val) : String(val);
   }
 
-  stored(value: Value, floating = false): number {
+  stored(value: Value): number {
     if (value instanceof Pointer) {
       return value.target ? this.addresses[value.target] : 0;
     }
     if (typeof value !== 'number') throw new Error('only an integer or a pointer is stored in a cell');
-    if (Object.is(value, -0)) return -0;
-    return floating || !Number.isInteger(value) ? Number(formatFloat(value)) : value;
+    return value;
   }
 
   add(
@@ -2061,7 +2157,7 @@ class Renderer {
         ? null
         : flat[name] === null
           ? UNKNOWN
-          : this.stored(flat[name], this.floatingCells.has(name));
+          : this.stored(flat[name]);
     }
     const targets: Record<string, string> = {};
     for (const [name, value] of Object.entries(flat)) {
@@ -2175,7 +2271,10 @@ class Renderer {
       return;
     }
     if (typeof statement.value === 'number') {
-      const shown = this.show(statement.value, statement.floating);
+      const shown =
+        statement.outputSuffix !== null && statement.floating
+          ? formatFloat(statement.value)
+          : this.show(statement.value, statement.floating);
       if (pane.read(statement.result[0], statement.result[1]) !== shown) {
         const op = {
           kind: 'eval' as const,
@@ -2205,6 +2304,11 @@ class Renderer {
     }
     if (statement.outputSuffix !== null) {
       this.realStdout += real + statement.outputSuffix;
+      const candidates =
+        statement.floating && typeof statement.value === 'number'
+          ? new Set([...formatFloatCandidates(statement.value)].map(c => c + statement.outputSuffix!))
+          : new Set([real + statement.outputSuffix]);
+      this.realStdoutParts.push(candidates);
       this.stdout += text + statement.outputSuffix;
       this.add(line, pane, expr, after, { kind: 'print', value: text, span }, 1.2);
       return;
@@ -2412,7 +2516,7 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
     renderer.statement(line, statement, previous, after);
     previous = after;
   }
-  if (runtime && execution && renderer.realStdout !== execution.stdout) {
+  if (runtime && execution && !stdoutMatches(renderer.realStdoutParts, execution.stdout)) {
     throw new Unsupported('runtime output disagrees with the expression trace');
   }
   const shownStatements: { source: string; span: Span | null }[] = shown.map(([s]) => s);

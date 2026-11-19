@@ -627,8 +627,16 @@ function stored(text: string, where: string): (number | string)[] {
   return result;
 }
 
+function valuesMatch(a: unknown, b: unknown): boolean {
+  if (typeof a === 'number' && typeof b === 'number') {
+    if (a === 0 && b === 0) return Object.is(a, b);
+    return a === b || Math.fround(a) === Math.fround(b);
+  }
+  return a === b;
+}
+
 function arraysEqual(a: unknown[], b: unknown[]): boolean {
-  return a.length === b.length && a.every((v, i) => v === b[i]);
+  return a.length === b.length && a.every((v, i) => valuesMatch(v, b[i]));
 }
 
 interface StorageContext {
@@ -866,7 +874,7 @@ function checkChanges(
   for (const [name, value] of Object.entries(step.values)) {
     const old = previous.values[name];
     check(
-      value === old || written.has(name) || (!step.op && old === null && value === UNKNOWN),
+      Object.is(value, old) || written.has(name) || (!step.op && old === null && value === UNKNOWN),
       `${where}.values.${name}`,
       'only a write, or a declaration ("?"), changes a value'
     );

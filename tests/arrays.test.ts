@@ -142,17 +142,21 @@ test('an array of structs supports aggregate writes and independent copies', () 
 test('arrays of floats, doubles, narrow integers and void pointers', () => {
   const result = trace(`
     int x = 9;
-    std::array<double, 2> d{ 1.5, 2.25 };
+    std::array<float, 2> f{ 1.5f, 2.25f };
+    std::array<uint8_t, 2> u{ 3, 4 };
+    std::array<double, 2> d{ f[0], f[1] };
     std::array<void*, 2> vp{ &x, nullptr };
-    double sum = d[0] + d[1];
+    double sum = d[0] + d[1] + u[0];
     std::cout << sum << std::endl;
   `);
   const last = result.steps.at(-1)!;
+  assert.equal(last.values['f.[0]'], 1.5);
+  assert.equal(last.values['u.[0]'], 3);
   assert.equal(last.values['d.[0]'], 1.5);
   assert.equal(last.values['d.[1]'], 2.25);
-  assert.equal(last.values.sum, 3.75);
+  assert.equal(last.values.sum, 6.75);
   assert.equal(last.targets['vp.[0]'], 'x');
-  assert.equal(last.stdout, '3.75\n');
+  assert.equal(last.stdout, '6.75\n');
 });
 
 test('the tracer rejects invalid array operations before execution', () => {

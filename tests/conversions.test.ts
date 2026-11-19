@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
+import { dumpsSorted } from '../src/core/json_format.ts';
 import {
   type ConvertOperation,
   type ExecutionTrace,
@@ -9,6 +10,7 @@ import {
   type TraceStep,
   validate,
 } from '../src/core/trace_format.ts';
+import { text as svgText } from '../src/player/svg.ts';
 import * as tracing from '../src/node/tracing.ts';
 import { INTEGERS, Unsupported } from '../src/node/tracing.ts';
 import { integerLiteral } from '../src/core/integers.ts';
@@ -173,6 +175,7 @@ describe('ConversionTests', () => {
       'unsigned long a = 18446744073709551615ul;': /beyond 2\^53/,
       'double d = 1e20; int a = static_cast<int>(d);': /overflows integer type/,
       'double d = 1.0 / 0.0;': /undefined floating-point division/,
+      'float f = 3e38f; float g = f * 2.0f;': /undefined floating-point/,
     };
     for (const [source, reason] of Object.entries(cases)) {
       throwsUnsupported(() => trace(source), reason);
@@ -254,11 +257,32 @@ describe('RuntimeConversionTests', () => {
     assert.deepEqual(t.steps.at(-1)!.values.half, 3.5);
     assert.deepEqual(t.steps.at(-1)!.values.quarter, 1.75);
     assert.equal(Object.is(t.steps.at(-1)!.values.negZero, -0), true);
+    const reparsed = JSON.parse(dumpsSorted(t)) as ExecutionTrace;
+    assert.equal(Object.is(reparsed.steps.at(-1)!.values.negZero, -0), true);
+    assert.ok(svgText(0, 0, reparsed.steps.at(-1)!.values.negZero, 20, "#fff").includes(">-0</text>"));
     assert.deepEqual(t.steps.at(-1)!.values.big, 1000000);
     assert.deepEqual(t.steps.at(-1)!.values.sz, 12);
     assert.equal(t.steps.at(-1)!.targets.vp, 'seven');
     assert.equal(t.steps.at(-1)!.targets.ip, 'seven');
     assert.equal(t.steps.at(-1)!.stdout, '3.5\n1.75\n-0\n1e+06\n12\n');
+  });
+
+  test('float_precision_ties_truncation_and_subnormals', () => {
+    const t = tracing.trace(
+      'double d = 1.0000001; double q = d - 1.0; ' +
+        'double tie = 123456.5; int negTrunc = static_cast<int>(-3.9); ' +
+        'float f = 0.1f; double sub = 5e-324; double under = sub / 2.0; ' +
+        'std::cout << tie << std::endl;'
+    );
+    const last = t.steps.at(-1)!;
+    assert.equal(last.values.d, 1.0000001);
+    assert.equal(last.values.q, 1.0000001 - 1.0);
+    assert.equal(last.values.negTrunc, -3);
+    assert.equal(last.values.f, Math.fround(0.1));
+    assert.equal(last.values.sub, 5e-324);
+    assert.equal(last.values.under, 0);
+    const readStep = t.steps.find(s => s.op?.kind === 'read' && s.op.name === 'd')!;
+    assert.equal(readStep.op?.kind === 'read' && readStep.op.value, '1.0000001');
   });
 });
 

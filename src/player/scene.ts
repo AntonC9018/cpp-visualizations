@@ -528,16 +528,17 @@ function memory(c: SceneContext): string {
     );
     if (on) {
       const shown = (value: unknown): string => {
-        const length = String(value).length;
+        const display = Object.is(value, -0) ? '-0' : String(value);
+        const length = display.length;
         const size = Math.min(30, (cell.w - Math.min(12, cell.w / 5)) / (length * CHAR));
-        return text(0, size / 3 + 1, value, round(size), value === '?' ? P.grey : P.fg, 'middle');
+        return text(0, size / 3 + 1, display, round(size), value === '?' ? P.grey : P.fg, 'middle');
       };
       markup +=
         `<g transform="translate(${round(cell.x + cell.w / 2)} ${cell.y + cell.h / 2})"><g>` +
         (changing ? pulse(at - 0.2) : '');
       const before = prev ? prev.values[cell.name] : null;
       const after = step.values[cell.name];
-      if (changing && before !== after) {
+      if (changing && !Object.is(before, after)) {
         if (before !== null) markup += `<g>${hide(at)}${shown(before)}</g>`;
         markup += `<g opacity="0">${show(at)}${shown(after)}</g>`;
       } else {

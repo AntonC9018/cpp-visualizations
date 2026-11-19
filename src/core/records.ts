@@ -10,6 +10,7 @@ export interface RecordFieldInfo {
   offset: number;
   kind: ScalarKind | 'struct';
   type?: string;
+  canonical?: string;
   size: number;
   floating?: boolean;
 }
@@ -237,6 +238,7 @@ export function layoutsFromFrontend(
         offset,
         kind: nested ? 'struct' : isPointer(node) ? 'ptr' : 'int',
         size: 0,
+        ...(!layoutOnly ? { canonical: canonicalType(node).replace(/^struct /, '') } : {}),
         ...(floatSpelled(canonicalType(node)) ? { floating: true } : {}),
       };
       if (layoutOnly || nested) {
@@ -299,6 +301,7 @@ export function layoutsFromFrontend(
         offset: index * size,
         kind: nested ? 'struct' : pointer ? 'ptr' : 'int',
         ...(nested ? { type: array.element } : {}),
+        ...(!layoutOnly ? { canonical: array.element } : {}),
         ...(isFloatElem ? { floating: true } : {}),
         size,
       }));
