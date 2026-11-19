@@ -6,6 +6,7 @@
 // `player/README.md` documents every field.
 
 import { arrayType, codeName, elementLabel } from './arrays.ts';
+import { COMPOUND_OPERATORS, openCompound } from './compound.ts';
 import { displayFloat } from './floats.ts';
 import { INTEGERS, integerLiteral, integerSpelled } from './integers.ts';
 
@@ -640,7 +641,36 @@ function replacement(before: string, after: string, span: Span, where: string): 
   return replaced;
 }
 
-const COMPOUND = ['+', '-', '*', '/', '%'];
+/**
+ * The read that opens `a += b` into `a = 5 + b`: `a` names the one scalar cell read, and the
+ * pane opens as `openCompound` spells it, with the right side in parentheses or not.
+ */
+function checkCompoundRead(
+  op: Record<string, any>,
+  step: Record<string, any>,
+  previous: Record<string, any>,
+  storage: StorageContext,
+  where: string
+): void {
+  check(COMPOUND_OPERATORS.includes(op.compound), `${where}.compound`, 'is not an arithmetic operator');
+  const span = checkSpan(op.span, previous.pane, `${where}.span`);
+  const spelling = `${op.compound}=`;
+  check(previous.pane.slice(...span) === spelling, `${where}.span`, `does not cover ${spelling}`);
+  check(
+    previous.pane.slice(0, span[0]).trim() === codeName(op.name),
+    `${where}.name`,
+    `${pyRepr(previous.pane.slice(0, span[0]).trim())} does not designate ${op.name}`
+  );
+  const cell = storage.cells[op.name];
+  check(
+    cell !== undefined && cell.kind !== 'ptr' && arraysEqual(storage.cellsOf(op.name), [op.name]),
+    `${where}.name`,
+    'is not one arithmetic cell'
+  );
+  check(op.value !== UNKNOWN, `${where}.value`, 'reads an uninitialized value');
+  const opened = [false, true].map(grouped => openCompound(previous.pane, span, op.value, op.compound, grouped).text);
+  check(opened.includes(step.pane), where, `${pyRepr(step.pane)} is not ${pyRepr(opened[0])} or ${pyRepr(opened[1])}`);
+}
 
 const LITERAL = /^≈?-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i;
 
@@ -874,22 +904,13 @@ function checkOperation(
       `${op.via} does not point to ${op.target}`
     );
   }
-  if (['read', 'addr', 'deref', 'eval', 'convert'].includes(kind)) {
+  if (Object.hasOwn(op, 'compound')) {
+    checkCompoundRead(op, step, previous, storage, where);
+  } else if (['read', 'addr', 'deref', 'eval', 'convert'].includes(kind)) {
     const span = checkSpan(op.span, previous.pane, `${where}.span`);
     const replaced = replacement(previous.pane, step.pane, span, where);
-    let expected = kind === 'deref' ? codeName(op.target) : op.value;
-    if (Object.hasOwn(op, 'compound')) {
-      check(COMPOUND.includes(op.compound), `${where}.compound`, 'is not an arithmetic operator');
-      check(
-        previous.pane.slice(...span) === `${op.compound}=`,
-        `${where}.span`,
-        `does not cover ${op.compound}=`
-      );
-      expected = `= ${op.value} ${op.compound}`;
-    }
-    // `a+=b` opens spaced out: `a = 5 + b`.
-    const compared = Object.hasOwn(op, 'compound') ? replaced.trim() : replaced;
-    check(compared === expected, where, `the replacement ${pyRepr(replaced)} is not ${pyRepr(expected)}`);
+    const expected = kind === 'deref' ? codeName(op.target) : op.value;
+    check(replaced === expected, where, `the replacement ${pyRepr(replaced)} is not ${pyRepr(expected)}`);
     if (kind === 'convert') {
       check(convertedFrom(previous, span) === op.from, `${where}.from`, 'is not the type of the converted value');
       check(

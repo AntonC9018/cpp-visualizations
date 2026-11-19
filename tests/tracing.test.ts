@@ -537,7 +537,7 @@ describe('CompoundAssignmentTests', () => {
   });
 
   test('the_validator_checks_the_opened_operator', () => {
-    const trace = tracing.trace('int a = 5; a -= 2;', { runtime: false });
+    const trace = tracing.trace('int b = 1; int a = 5; a -= 2;', { runtime: false });
     const index = trace.steps.findIndex(step => step.op?.kind === 'read');
     const rejects = (message: RegExp, change: (op: Record<string, unknown>) => void): void => {
       const broken = structuredClone(trace);
@@ -548,6 +548,59 @@ describe('CompoundAssignmentTests', () => {
     rejects(/does not cover \+=/, op => (op.compound = '+'));
     rejects(/not an arithmetic operator/, op => (op.compound = '<<'));
     rejects(/the replacement '= 5 -' is not '5'/, op => delete op.compound);
+    rejects(/'a' does not designate b/, op => (op.name = 'b'));
+    rejects(/reads an uninitialized value/, op => (op.value = '?'));
+    const merged = structuredClone(trace);
+    merged.steps[index].pane = 'a = 5 -2';
+    merged.steps[index].expr = [4, 8];
+    assert.throws(() => validate(merged), (err: unknown) => err instanceof FormatError && /is not 'a = 5 - 2'/.test(err.message));
+  });
+
+  test('the_validator_reads_only_one_arithmetic_cell', () => {
+    const trace = tracing.trace('int a = 5; int* p = &a; a -= 2;', { runtime: false });
+    const index = trace.steps.findIndex(step => step.op?.kind === 'read');
+    const broken = structuredClone(trace);
+    const op = broken.steps[index].op as unknown as Record<string, unknown>;
+    broken.steps[index - 1].pane = broken.steps[index - 1].pane.replace(/^a/, 'p');
+    op.name = 'p';
+    assert.throws(() => validate(broken), (err: unknown) => err instanceof FormatError && /not one arithmetic cell/.test(err.message));
+  });
+
+  test('a_right_side_that_binds_looser_keeps_its_parentheses', () => {
+    const trace = tracing.trace(
+      'int a = 5; int b = 2; int c = 3; a *= b + c; a -= b - c; a += b * c; a += +b; double d = 1.5; d *= b + 1;',
+      { runtime: false }
+    );
+    assert.deepEqual(panes(trace, 3), [
+      'a *= b + c',
+      'a = 5 * (b + c)',
+      'a = 5 * (2 + c)',
+      'a = 5 * (2 + 3)',
+      'a = 5 * (5)',
+      'a = 5 * 5',
+      'a = 25',
+      'a = 25',
+    ]);
+    assert.equal(panes(trace, 4)[1], 'a = 25 - (b - c)');
+    assert.equal(panes(trace, 5)[1], 'a = 26 + b * c');
+    assert.equal(panes(trace, 6)[1], 'a = 32 + +b');
+    assert.equal(panes(trace, 8)[1], 'd = 1.5 * (b + 1)');
+    assert.deepEqual(final(trace), { a: 34, b: 2, c: 3, d: 4.5 });
+  });
+
+  test('a_target_written_otherwise_is_spelled_as_its_name_first', () => {
+    const trace = tracing.trace('struct S { int x; }; S s{1}; (s.x) += 2; s . x *= 3; (s.x) = 4;', {
+      runtime: false,
+    });
+    assert.deepEqual(panes(trace, 1), ['(s.x) += 2', 's.x += 2', 's.x = 1 + 2', 's.x = 3', 's.x = 3']);
+    assert.deepEqual(panes(trace, 2), ['s . x *= 3', 's.x *= 3', 's.x = 3 * 3', 's.x = 9', 's.x = 9']);
+    assert.deepEqual(panes(trace, 3), ['(s.x) = 4', 's.x = 4', 's.x = 4']);
+  });
+
+  test('spaces_and_comments_before_the_semicolon_still_run', () => {
+    const trace = tracing.trace('int a = 5; a += 2 ; a *= 3 /* thrice */ ;');
+    assert.deepEqual(panes(trace, 1), ['a += 2', 'a = 5 + 2', 'a = 7', 'a = 7']);
+    assert.deepEqual(final(trace), { a: 21 });
   });
 
   test('runtime_values_agree', () => {

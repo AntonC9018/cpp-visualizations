@@ -776,8 +776,8 @@ test('a compound assignment reads into its operator in both languages', async ()
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
   for (const [lang, theme, status] of [
-    ['en', 'dark', 'Read s.x: 1, since s.x += x is s.x = s.x + x'],
-    ['ru', 'light', 'Чтение s.x: 1, ведь s.x += x — это s.x = s.x + x'],
+    ['en', 'dark', 'Read s.x: 1; s.x += … becomes s.x = 1 + …'],
+    ['ru', 'light', 'Чтение s.x: 1; s.x += … превращается в s.x = 1 + …'],
   ] as const) {
     await page.setContent(
       PAGE.replace(trace, JSON.stringify(generated).replace(/</g, '\\u003c')).replace(
@@ -797,7 +797,7 @@ test('a compound assignment reads into its operator in both languages', async ()
       }
       return shown;
     }, read);
-    assert.ok(texts[0].includes('+='), 'the operator shows until the value arrives');
+    assert.ok(texts[0].join('').includes('s.x += 4'), 'the pane reads as written until the value arrives');
     assert.ok(texts[1].join('').includes('= 1 +'), 'then the pane reads s.x = 1 + 4');
     assert.equal(await page.locator('.cv-status').textContent(), status);
   }

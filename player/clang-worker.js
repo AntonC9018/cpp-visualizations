@@ -677,6 +677,20 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return records;
   }
+  const COMPOUND_OPERATORS = ["+", "-", "*", "/", "%"];
+  function openCompound(pane, span, left, operator, grouped) {
+    const [start, end] = span;
+    const head = pane.slice(0, start).trimEnd() + " = ";
+    const rest = pane.slice(end);
+    const from = end + rest.length - rest.trimStart().length;
+    const middle = `${head}${left} ${operator} ${grouped ? "(" : ""}`;
+    return {
+      text: middle + pane.slice(from) + (grouped ? ")" : ""),
+      left: [head.length, head.length + left.length],
+      right: middle.length,
+      from
+    };
+  }
   const PRINTED_DIGITS = 6;
   function binaryParts(value) {
     const view = new DataView(new ArrayBuffer(8));
@@ -1064,7 +1078,26 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     check(replaced.length > 0, where, "the replacement is empty");
     return replaced;
   }
-  const COMPOUND = ["+", "-", "*", "/", "%"];
+  function checkCompoundRead(op, step, previous, storage, where) {
+    check(COMPOUND_OPERATORS.includes(op.compound), `${where}.compound`, "is not an arithmetic operator");
+    const span = checkSpan(op.span, previous.pane, `${where}.span`);
+    const spelling = `${op.compound}=`;
+    check(previous.pane.slice(...span) === spelling, `${where}.span`, `does not cover ${spelling}`);
+    check(
+      previous.pane.slice(0, span[0]).trim() === codeName(op.name),
+      `${where}.name`,
+      `${pyRepr(previous.pane.slice(0, span[0]).trim())} does not designate ${op.name}`
+    );
+    const cell = storage.cells[op.name];
+    check(
+      cell !== void 0 && cell.kind !== "ptr" && arraysEqual(storage.cellsOf(op.name), [op.name]),
+      `${where}.name`,
+      "is not one arithmetic cell"
+    );
+    check(op.value !== UNKNOWN, `${where}.value`, "reads an uninitialized value");
+    const opened = [false, true].map((grouped) => openCompound(previous.pane, span, op.value, op.compound, grouped).text);
+    check(opened.includes(step.pane), where, `${pyRepr(step.pane)} is not ${pyRepr(opened[0])} or ${pyRepr(opened[1])}`);
+  }
   const LITERAL = /^≈?-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i;
   function storedItems(text, where) {
     const braced = /^(?:[A-Za-z_]\w*)?\{[\s\S]*\}$/.test(text);
@@ -1252,21 +1285,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         `${op.via} does not point to ${op.target}`
       );
     }
-    if (["read", "addr", "deref", "eval", "convert"].includes(kind)) {
+    if (Object.hasOwn(op, "compound")) {
+      checkCompoundRead(op, step, previous, storage, where);
+    } else if (["read", "addr", "deref", "eval", "convert"].includes(kind)) {
       const span = checkSpan(op.span, previous.pane, `${where}.span`);
       const replaced = replacement(previous.pane, step.pane, span, where);
-      let expected = kind === "deref" ? codeName(op.target) : op.value;
-      if (Object.hasOwn(op, "compound")) {
-        check(COMPOUND.includes(op.compound), `${where}.compound`, "is not an arithmetic operator");
-        check(
-          previous.pane.slice(...span) === `${op.compound}=`,
-          `${where}.span`,
-          `does not cover ${op.compound}=`
-        );
-        expected = `= ${op.value} ${op.compound}`;
-      }
-      const compared = Object.hasOwn(op, "compound") ? replaced.trim() : replaced;
-      check(compared === expected, where, `the replacement ${pyRepr(replaced)} is not ${pyRepr(expected)}`);
+      const expected = kind === "deref" ? codeName(op.target) : op.value;
+      check(replaced === expected, where, `the replacement ${pyRepr(replaced)} is not ${pyRepr(expected)}`);
       if (kind === "convert") {
         check(convertedFrom(previous, span) === op.from, `${where}.from`, "is not the type of the converted value");
         check(
@@ -1929,10 +1954,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     /**
      * `left op= right`, already designated as `target`: the value it holds, read into the pane's
-     * hidden copy of `left` at `copy`, then the operation over `result` in the type Clang computes
-     * it in, and back in the type of `left`.
+     * hidden copy of `left` at `copy`; the right side, then its parentheses at `group`, if any;
+     * then the operation over `result` in the type Clang computes it in, and back in the type of
+     * `left`.
      */
-    compound(node, target, copy, result) {
+    compound(node, target, copy, result, group) {
       const [left, right] = node.inner;
       const operator = node.opcode.slice(0, -1);
       const held = this.load(target);
@@ -1943,9 +1969,17 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const computation = { type: node.computeLHSType };
       const resultType = { type: node.computeResultType };
       const operand = this.convertedAt(copy, held, computation, left);
-      const value = this.operate(resultType, operator, operand, right);
+      const other = this.numericOperand(right);
+      if (group) this.reduceAt(group, right, { kind: "eval", value: other, record: null });
+      const value = this.operate(resultType, operator, operand, other);
       this.reduceAt(result, resultType, { kind: "eval", value, record: null });
       return this.convertedAt(result, value, left, resultType);
+    }
+    /** `node`, which designates `target`, spelled as `target` is: `(s.x)` becomes `s.x`. */
+    respell(node, target, written) {
+      const span = this.locate(node);
+      const spelled = this.reductions.some((item) => item.span[0] === span[0] && item.span[1] === span[1]);
+      if (!spelled && written !== codeName(target)) this.reduce(node, { kind: "select", name: target });
     }
     /** `value`, of the type of `source`, in the type of `node`; a step at `span` if the type changes. */
     convertedAt(span, value, node, source) {
@@ -2206,23 +2240,21 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         value = exact(integerTypeOf(node).wrap(~BigInt(this.integerOperand(children[0]))));
       } else if (kind === "BinaryOperator" && ["+", "-", "*", "/", "%"].includes(node.opcode ?? "") && children.length === 2) {
         rejectPointerOperator(node);
-        value = this.operate(node, node.opcode, this.numericOperand(children[0]), children[1]);
+        value = this.operate(node, node.opcode, this.numericOperand(children[0]), this.numericOperand(children[1]));
       } else {
         throw new Unsupported(`unsupported expression: ${kind} ${(node == null ? void 0 : node.opcode) ?? ""}`.trimEnd());
       }
       this.reduce(node, { kind: "eval", value, record: null });
       return [value, null];
     }
-    /** `left operation right` in the integer or floating type of `node`; `left` is already evaluated. */
+    /** `left operation right`, both evaluated, in the integer or floating type of `node`. */
     operate(node, operation, left, right) {
       const float = floatType(node, this.records);
-      if (float) {
-        return Evaluator.floatArithmetic(float, operation, left, this.numericOperand(right));
-      }
-      if (!Number.isInteger(left)) {
+      if (float) return Evaluator.floatArithmetic(float, operation, left, right);
+      if (!Number.isInteger(left) || !Number.isInteger(right)) {
         throw new Unsupported(`only integer arithmetic is supported, not ${typeSpelling(node) || "this type"}`);
       }
-      return Evaluator.arithmetic(integerTypeOf(node), operation, left, this.integerOperand(right));
+      return Evaluator.arithmetic(integerTypeOf(node), operation, left, right);
     }
     byteSizeOf(node) {
       if (pointerDepth(node, this.records) > 0) return POINTER_SIZE;
@@ -2519,11 +2551,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     while ((cur == null ? void 0 : cur.kind) === "ExprWithCleanups" && (cur.inner ?? []).length === 1) {
       cur = cur.inner[0];
     }
-    let [start, end] = bounds(cur);
-    if (end < program.length && program[end] === ";") {
-      end += 1;
-    }
-    const [source, mapping] = compact(program.slice(start, end));
+    const [start, end] = bounds(cur);
+    const terminated = /^(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*\n)*;/.test(program.slice(end));
+    const [compacted, mapping] = compact(program.slice(start, end));
+    const source = terminated ? `${compacted};` : compacted;
     let left = null;
     let declared = null;
     let outSuffix = null;
@@ -2735,6 +2766,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     if (left !== null) {
       target = evaluator.lvalue(left);
       destination = locate(left);
+      evaluator.respell(left, target, pane.slice(...destination));
       let renamed = 0;
       while (renamed < evaluator.reductions.length && evaluator.reductions[renamed].kind === "alias") {
         renamed++;
@@ -2776,7 +2808,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       shape: shapeOf(declared ? variable : root, records)
     });
   }
-  const COMPOUND_OPERATORS = ["+", "-", "*", "/", "%"];
   function analyzeCompound(node, source, toSource, context) {
     const { state, records, references, storageTypes } = context;
     const spelling = node.opcode;
@@ -2799,23 +2830,27 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       throw new Unsupported("macro-expanded statements are not supported");
     }
     const t1 = t0 + spelling.length;
-    const lead = written[t0 - 1] === " " ? "" : " ";
-    const trail = written[t1] === " " ? "" : " ";
     const copied = written.slice(l0, l1);
-    const opened = `${lead}= ${copied} ${operator}${trail}`;
-    const pane = written.slice(0, t0) + opened + written.slice(t1);
-    const shift = opened.length - spelling.length;
+    const grouped = needsGroup(operator, right);
+    const opened = openCompound(written, [t0, t1], copied, operator, grouped);
+    const pane = opened.text;
     const toPane = (offset) => {
       const at = toSource(offset);
-      return at >= t1 ? at + shift : at;
+      return at >= opened.from ? at - opened.from + opened.right : at;
     };
     const locate = (item) => {
       const [b0, b1] = bounds(item);
       return [toPane(b0), toPane(b1)];
     };
-    const copy = [t0 + lead.length + 2, t0 + lead.length + 2 + copied.length];
-    const folded = [t0, t0 + opened.length];
-    const result = [copy[0], locate(node)[1]];
+    const copy = opened.left;
+    const result = [copy[0], pane.length];
+    const head = written.slice(0, t0).trimEnd().length;
+    const fold = [
+      [head, copy[0], written.slice(head, t0)],
+      [copy[0], copy[1], spelling],
+      [copy[1], opened.right, written.slice(t1, opened.from)],
+      ...grouped ? [[pane.length - 1, pane.length, ""]] : []
+    ];
     const evaluator = new Evaluator(state, locate, records, references, storageTypes);
     const names = /* @__PURE__ */ new Set([...Object.keys(state), ...Object.keys(references)]);
     const typed = [
@@ -2823,13 +2858,15 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       ...typedParts(right, locate, names, records)
     ].sort(compareTyped);
     const target = evaluator.lvalue(left);
-    const value = evaluator.compound(node, target, copy, result);
+    evaluator.respell(left, target, copied);
+    const group = grouped ? [opened.right - 1, pane.length] : null;
+    const value = evaluator.compound(node, target, copy, result, group);
     const [first, last] = bounds(node).map(toSource);
     return new Statement({
       source,
       span: [first, last],
       pane,
-      fold: { span: folded, edits: [[folded[0], copy[0], ""], [copy[0], folded[1], spelling]] },
+      fold,
       expr: result,
       result,
       value,
@@ -2839,6 +2876,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       typed,
       shape: shapeOf(left, records)
     });
+  }
+  function needsGroup(operator, right) {
+    let bare = right;
+    while ((bare == null ? void 0 : bare.kind) === "ImplicitCastExpr" && (bare.inner ?? []).length === 1) bare = bare.inner[0];
+    if ((bare == null ? void 0 : bare.kind) === "ConditionalOperator") return true;
+    if ((bare == null ? void 0 : bare.kind) !== "BinaryOperator") return false;
+    const tighter = ["*", "/", "%"].includes(bare.opcode ?? "") && (operator === "+" || operator === "-");
+    return !tighter;
   }
   function storedAt(value, path, newValue) {
     if (path.length === 0) {
@@ -3073,19 +3118,21 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       // The typed parts, in original coordinates; `slot` is one of them.
       __publicField(this, "typed");
       __publicField(this, "slot");
-      __publicField(this, "folded");
+      __publicField(this, "fold");
+      this.fold = fold ?? [];
+      this.edits = this.fold.map((edit) => [...edit]);
       this.original = text;
-      this.edits = fold ? fold.edits.map((edit) => [...edit]) : [];
       this.typed = [...typed];
       this.slot = slot;
-      this.folded = fold ? fold.span : null;
     }
-    /** Show the folded text, with `[start, end)` inside it replaced; returns the old span of the fold. */
+    /**
+     * Show the original text the fold hid, with `[start, end)` replaced; returns the span that
+     * `[start, end)` covered in the folded text.
+     */
     unfold(start, end, newText, type) {
-      const [first, last] = this.folded;
-      const span = this.locate(first, last);
-      this.edits = this.edits.filter((edit) => !(first <= edit[0] && edit[1] <= last));
-      this.folded = null;
+      const span = this.locate(start, end);
+      this.edits = this.edits.filter((edit) => !this.fold.some(([s, e]) => s === edit[0] && e === edit[1]));
+      this.fold = [];
       this.replace(start, end, newText, type);
       return span;
     }

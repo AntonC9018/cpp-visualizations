@@ -6,6 +6,7 @@
 
 import { arrayType, codeName, elementLabel, operatorName, resolveArrayAliases } from './arrays.ts';
 import { type AstNode, type CompilerFrontend, IllFormed, NeedsFlag, Unsupported } from './errors.ts';
+import { COMPOUND_OPERATORS, openCompound } from './compound.ts';
 import { INTEGERS, Integer, bareSpelling, integerName, integerSpelled } from './integers.ts';
 import type { Flags } from './settings.ts';
 import {
@@ -631,10 +632,11 @@ class Evaluator {
 
   /**
    * `left op= right`, already designated as `target`: the value it holds, read into the pane's
-   * hidden copy of `left` at `copy`, then the operation over `result` in the type Clang computes
-   * it in, and back in the type of `left`.
+   * hidden copy of `left` at `copy`; the right side, then its parentheses at `group`, if any;
+   * then the operation over `result` in the type Clang computes it in, and back in the type of
+   * `left`.
    */
-  compound(node: AstNode, target: string, copy: Span, result: Span): number {
+  compound(node: AstNode, target: string, copy: Span, result: Span, group: Span | null): number {
     const [left, right] = node.inner!;
     const operator = node.opcode!.slice(0, -1);
     const held = this.load(target);
@@ -645,9 +647,18 @@ class Evaluator {
     const computation: AstNode = { type: node.computeLHSType };
     const resultType: AstNode = { type: node.computeResultType };
     const operand = this.convertedAt(copy, held, computation, left);
-    const value = this.operate(resultType, operator, operand, right);
+    const other = this.numericOperand(right);
+    if (group) this.reduceAt(group, right, { kind: 'eval', value: other, record: null });
+    const value = this.operate(resultType, operator, operand, other);
     this.reduceAt(result, resultType, { kind: 'eval', value, record: null });
     return this.convertedAt(result, value, left, resultType);
+  }
+
+  /** `node`, which designates `target`, spelled as `target` is: `(s.x)` becomes `s.x`. */
+  respell(node: AstNode, target: string, written: string): void {
+    const span = this.locate(node);
+    const spelled = this.reductions.some(item => item.span[0] === span[0] && item.span[1] === span[1]);
+    if (!spelled && written !== codeName(target)) this.reduce(node, { kind: 'select', name: target });
   }
 
   /** `value`, of the type of `source`, in the type of `node`; a step at `span` if the type changes. */
@@ -965,7 +976,7 @@ class Evaluator {
       children.length === 2
     ) {
       rejectPointerOperator(node);
-      value = this.operate(node, node.opcode!, this.numericOperand(children[0]), children[1]);
+      value = this.operate(node, node.opcode!, this.numericOperand(children[0]), this.numericOperand(children[1]));
     } else {
       throw new Unsupported(`unsupported expression: ${kind} ${node?.opcode ?? ''}`.trimEnd());
     }
@@ -973,16 +984,14 @@ class Evaluator {
     return [value, null];
   }
 
-  /** `left operation right` in the integer or floating type of `node`; `left` is already evaluated. */
-  private operate(node: AstNode, operation: string, left: number, right: AstNode): number {
+  /** `left operation right`, both evaluated, in the integer or floating type of `node`. */
+  private operate(node: AstNode, operation: string, left: number, right: number): number {
     const float = floatType(node, this.records);
-    if (float) {
-      return Evaluator.floatArithmetic(float, operation, left, this.numericOperand(right));
-    }
-    if (!Number.isInteger(left)) {
+    if (float) return Evaluator.floatArithmetic(float, operation, left, right);
+    if (!Number.isInteger(left) || !Number.isInteger(right)) {
       throw new Unsupported(`only integer arithmetic is supported, not ${typeSpelling(node) || 'this type'}`);
     }
-    return Evaluator.arithmetic(integerTypeOf(node), operation, left, this.integerOperand(right));
+    return Evaluator.arithmetic(integerTypeOf(node), operation, left, right);
   }
 
   private byteSizeOf(node: AstNode): number {
@@ -1131,13 +1140,10 @@ function stripParentheses(node: AstNode): AstNode {
 // Statements -------------------------------------------------------------------------------
 
 /**
- * Original pane text that first shows as written: `a = a + b` reads `a += b` until the
- * compound read opens it. `span` covers the hidden text, which `edits` spell as written.
+ * The edits that make original pane text first show as written: `a = a + b` reads `a += b`
+ * until the compound read opens it.
  */
-export interface Fold {
-  span: Span;
-  edits: [number, number, string][];
-}
+export type Fold = [number, number, string][];
 
 /** A part of the pane with a type before anything is reduced: its span and its type. */
 export type Typed = [Span, string];
@@ -1384,11 +1390,11 @@ function analyzeStatement(
   while (cur?.kind === 'ExprWithCleanups' && (cur.inner ?? []).length === 1) {
     cur = cur.inner![0];
   }
-  let [start, end] = bounds(cur);
-  if (end < program.length && program[end] === ';') {
-    end += 1;
-  }
-  const [source, mapping] = compact(program.slice(start, end));
+  const [start, end] = bounds(cur);
+  // The statement as GDB runs it ends with its `;`, wherever spaces or comments put it.
+  const terminated = /^(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*\n)*;/.test(program.slice(end));
+  const [compacted, mapping] = compact(program.slice(start, end));
+  const source = terminated ? `${compacted};` : compacted;
   let left: AstNode | null = null;
   let declared: string | null = null;
   let outSuffix: string | null = null;
@@ -1644,6 +1650,7 @@ function analyzeStatement(
   if (left !== null) {
     target = evaluator.lvalue(left);
     destination = locate(left);
+    evaluator.respell(left, target, pane.slice(...destination));
     let renamed = 0;
     while (
       renamed < evaluator.reductions.length &&
@@ -1689,8 +1696,6 @@ function analyzeStatement(
   });
 }
 
-const COMPOUND_OPERATORS = ['+', '-', '*', '/', '%'];
-
 /**
  * `a += b` as `a = a + b`: the pane's original text spells the second form, folded to show the
  * first until the compound read of `a` opens it.
@@ -1727,23 +1732,29 @@ function analyzeCompound(
     throw new Unsupported('macro-expanded statements are not supported');
   }
   const t1 = t0 + spelling.length;
-  const lead = written[t0 - 1] === ' ' ? '' : ' ';
-  const trail = written[t1] === ' ' ? '' : ' ';
   const copied = written.slice(l0, l1);
-  const opened = `${lead}= ${copied} ${operator}${trail}`;
-  const pane = written.slice(0, t0) + opened + written.slice(t1);
-  const shift = opened.length - spelling.length;
+  const grouped = needsGroup(operator, right);
+  const opened = openCompound(written, [t0, t1], copied, operator, grouped);
+  const pane = opened.text;
   const toPane = (offset: number): number => {
     const at = toSource(offset);
-    return at >= t1 ? at + shift : at;
+    return at >= opened.from ? at - opened.from + opened.right : at;
   };
   const locate = (item: AstNode): Span => {
     const [b0, b1] = bounds(item);
     return [toPane(b0), toPane(b1)];
   };
-  const copy: Span = [t0 + lead.length + 2, t0 + lead.length + 2 + copied.length];
-  const folded: Span = [t0, t0 + opened.length];
-  const result: Span = [copy[0], locate(node)[1]];
+  const copy = opened.left;
+  const result: Span = [copy[0], pane.length];
+  // Shown as written: the operator stands in for the copy of `a`, the spaces around it for the
+  // rest of the hidden text, and the closing parenthesis is not there yet.
+  const head = written.slice(0, t0).trimEnd().length;
+  const fold: Fold = [
+    [head, copy[0], written.slice(head, t0)],
+    [copy[0], copy[1], spelling],
+    [copy[1], opened.right, written.slice(t1, opened.from)],
+    ...(grouped ? [[pane.length - 1, pane.length, ''] as [number, number, string]] : []),
+  ];
 
   const evaluator = new Evaluator(state, locate, records, references, storageTypes);
   const names = new Set([...Object.keys(state), ...Object.keys(references)]);
@@ -1753,13 +1764,15 @@ function analyzeCompound(
   ].sort(compareTyped);
   // The written order: the target, its old value, then the right side.
   const target = evaluator.lvalue(left);
-  const value = evaluator.compound(node, target, copy, result);
+  evaluator.respell(left, target, copied);
+  const group: Span | null = grouped ? [opened.right - 1, pane.length] : null;
+  const value = evaluator.compound(node, target, copy, result, group);
   const [first, last] = bounds(node).map(toSource);
   return new Statement({
     source,
     span: [first, last],
     pane,
-    fold: { span: folded, edits: [[folded[0], copy[0], ''], [copy[0], folded[1], spelling]] },
+    fold,
     expr: result,
     result,
     value,
@@ -1769,6 +1782,19 @@ function analyzeCompound(
     typed,
     shape: shapeOf(left, records),
   });
+}
+
+/**
+ * Whether the right side of `a op= b` keeps its parentheses once opened: unless its operator
+ * binds tighter than `op`, `a = 5 * b + c` would compute something else.
+ */
+function needsGroup(operator: string, right: AstNode): boolean {
+  let bare = right;
+  while (bare?.kind === 'ImplicitCastExpr' && (bare.inner ?? []).length === 1) bare = bare.inner![0];
+  if (bare?.kind === 'ConditionalOperator') return true;
+  if (bare?.kind !== 'BinaryOperator') return false;
+  const tighter = ['*', '/', '%'].includes(bare.opcode ?? '') && (operator === '+' || operator === '-');
+  return !tighter;
 }
 
 function storedAt(value: Value, path: string[], newValue: Value): Value {
@@ -2093,22 +2119,24 @@ class Pane {
   // The typed parts, in original coordinates; `slot` is one of them.
   typed: Typed[];
   slot: Span | null;
-  folded: Span | null;
+  fold: Fold;
 
   constructor(text: string, typed: Typed[] = [], slot: Span | null = null, fold: Fold | null = null) {
+    this.fold = fold ?? [];
+    this.edits = this.fold.map(edit => [...edit]); // [start, end, text] in original coordinates
     this.original = text;
-    this.edits = fold ? fold.edits.map(edit => [...edit]) : []; // [start, end, text] in original coordinates
     this.typed = [...typed];
     this.slot = slot;
-    this.folded = fold ? fold.span : null;
   }
 
-  /** Show the folded text, with `[start, end)` inside it replaced; returns the old span of the fold. */
+  /**
+   * Show the original text the fold hid, with `[start, end)` replaced; returns the span that
+   * `[start, end)` covered in the folded text.
+   */
   unfold(start: number, end: number, newText: string, type: string): Span {
-    const [first, last] = this.folded!;
-    const span = this.locate(first, last);
-    this.edits = this.edits.filter(edit => !(first <= edit[0] && edit[1] <= last));
-    this.folded = null;
+    const span = this.locate(start, end);
+    this.edits = this.edits.filter(edit => !this.fold.some(([s, e]) => s === edit[0] && e === edit[1]));
+    this.fold = [];
     this.replace(start, end, newText, type);
     return span;
   }

@@ -157,7 +157,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       jump: "Jump to line {line}: {code}",
       copy: "Line {line}: {code}",
       read: "Read {name}: {value}",
-      compound: "Read {name}: {value}, since {name} {compound}= x is {name} = {name} {compound} x",
+      compound: "Read {name}: {value}; {name} {compound}= … becomes {name} = {value} {compound} …",
       addr: "Take the address of {name}: {value}",
       deref: "Follow the address in {via} to {target}",
       eval: "Evaluate: {value}",
@@ -190,7 +190,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       jump: "Перейти к строке {line}: {code}",
       copy: "Строка {line}: {code}",
       read: "Чтение {name}: {value}",
-      compound: "Чтение {name}: {value}, ведь {name} {compound}= x — это {name} = {name} {compound} x",
+      compound: "Чтение {name}: {value}; {name} {compound}= … превращается в {name} = {value} {compound} …",
       addr: "Адрес {name}: {value}",
       deref: "Переход по адресу из {via} к {target}",
       eval: "Вычисление: {value}",
@@ -1850,6 +1850,15 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       out += `<g><animateMotion dur="${round(total)}s" path="M ${round(sx)} ${sy} L ${tx} ${ty}" keyPoints="0;0;1" keyTimes="0;${(begin / total).toFixed(4)};1" calcMode="spline" keySplines="0 0 1 1;0.4 0 0.2 1" fill="freeze"/><g transform="scale(${scale})"><animateTransform attributeName="transform" type="scale" from="${scale}" to="1" begin="${begin}s" dur="${T.copyTravel}s" ${EASE} fill="freeze"/><g opacity="0">${fade(0, 1, 0.15, begin - 0.15)}${fade(1, 0, 0.12, total)}` + rect(-8, -36, step.pane.length * c.g.paneChar + 16, 48, P.highlight, P.read, 7, 2) + "</g>" + settledPane(c, step, 0, 0) + "</g></g>";
       return out;
     }
+    if ((op == null ? void 0 : op.kind) === "read" && op.compound && prev) {
+      const [s, e] = op.span;
+      const at = arrival(op);
+      out += exprBackground(c, tx, ty, step.expr, prev.expr, at + 0.1);
+      out += `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.2, at - 0.1)}${markBox(tx + s * c.g.paneChar, ty, (e - s) * c.g.paneChar, P.read, P.readFill)}</g>`;
+      out += `<g>${fade(1, 0, 0.2, at - 0.1)}${paneText(c, tx, ty, prev.pane, 0, prev.pane.length, prev.expr)}</g>`;
+      out += `<g opacity="0">${fade(0, 1, 0.25, at)}${paneText(c, tx, ty, step.pane, 0, step.pane.length, step.expr)}</g>`;
+      return out;
+    }
     if (op && prev && (op.kind === "read" || op.kind === "addr" || op.kind === "deref" || op.kind === "eval" || op.kind === "alias" || op.kind === "convert")) {
       const before = prev.pane;
       const [s, e] = op.span;
@@ -1971,8 +1980,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         slot: step.pane.slice(...op.destination)
       });
     }
-    const template = op.kind === "read" && op.compound ? S.compound : S[op.kind];
-    return format(template, op);
+    if (op.kind === "read" && op.compound) return format(S.compound, { ...op, name: codeName(op.name) });
+    return format(S[op.kind], op);
   }
   class Integer {
     constructor(size, signed) {

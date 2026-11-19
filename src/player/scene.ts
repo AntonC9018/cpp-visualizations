@@ -1,5 +1,5 @@
 // SVG scene rendering for code, tether, pointer arcs, memory cells, evaluation pane, and stdout.
-import { arrayType } from '../core/arrays.ts';
+import { arrayType, codeName } from '../core/arrays.ts';
 import { displayNumber } from '../core/floats.ts';
 import type { Span, TraceStep } from '../core/trace_format.ts';
 import {
@@ -735,6 +735,19 @@ function paneBody(c: SceneContext, copying: boolean): string {
       '</g></g>';
     return out;
   }
+  if (op?.kind === 'read' && op.compound && prev) {
+    // `a += b` opens into `a = 5 + b`: the read value lands on the operator, and the pane, which
+    // changes all over, crossfades into its opened form.
+    const [s, e] = op.span;
+    const at = arrival(op);
+    out += exprBackground(c, tx, ty, step.expr, prev.expr, at + 0.1);
+    out +=
+      `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.2, at - 0.1)}` +
+      `${markBox(tx + s * c.g.paneChar, ty, (e - s) * c.g.paneChar, P.read, P.readFill)}</g>`;
+    out += `<g>${fade(1, 0, 0.2, at - 0.1)}${paneText(c, tx, ty, prev.pane, 0, prev.pane.length, prev.expr)}</g>`;
+    out += `<g opacity="0">${fade(0, 1, 0.25, at)}${paneText(c, tx, ty, step.pane, 0, step.pane.length, step.expr)}</g>`;
+    return out;
+  }
   if (
     op &&
     prev &&
@@ -900,6 +913,6 @@ export function describe(c: SceneContext): string {
       slot: step.pane.slice(...op.destination),
     });
   }
-  const template = op.kind === 'read' && op.compound ? S.compound : S[op.kind];
-  return format(template, op as unknown as Record<string, unknown>);
+  if (op.kind === 'read' && op.compound) return format(S.compound, { ...op, name: codeName(op.name) });
+  return format(S[op.kind], op as unknown as Record<string, unknown>);
 }
