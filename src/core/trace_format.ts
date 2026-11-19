@@ -1226,7 +1226,8 @@ export function convertOperand(previous: TraceStep, op: ConvertOperation): bigin
   const part = previous.types?.find(
     t => !t.slot && t.type === op.from && t.span[0] >= op.span[0] && t.span[1] <= op.span[1]
   );
-  return integerLiteral(previous.pane.slice(...(part?.span ?? op.span)));
+  // A value apart from the sign before it stands in parentheses: `-(-2)`.
+  return integerLiteral(previous.pane.slice(...(part?.span ?? op.span)).replace(/^\((.*)\)$/, '$1'));
 }
 
 // Hand-written traces --------------------------------------------------------------------------
@@ -1302,7 +1303,8 @@ export class Builder {
 
   _replace(token: string, newText: string): Span {
     const start = this._find(token);
-    this.pane = this.pane.slice(0, start) + newText + this.pane.slice(start + token.length);
+    const text = separated(this.pane.slice(0, start), newText);
+    this.pane = this.pane.slice(0, start) + text + this.pane.slice(start + token.length);
     return [start, start + token.length];
   }
 

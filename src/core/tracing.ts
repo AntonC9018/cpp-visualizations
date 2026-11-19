@@ -1393,7 +1393,7 @@ function analyzeStatement(
   }
   const [start, end] = bounds(cur);
   // The statement as GDB runs it ends with its `;`, wherever spaces or comments put it.
-  const terminated = /^(?:\s|\\\r?\n|\/\*[\s\S]*?\*\/|\/\/[^\n]*\n)*;/.test(program.slice(end));
+  const terminated = /^(?:\s|\\[ \t]*\r?\n|\/\*[\s\S]*?\*\/|\/\/[^\n]*\n)*;/.test(program.slice(end));
   const [compacted, mapping] = compact(program.slice(start, end));
   const source = terminated ? `${compacted};` : compacted;
   let left: AstNode | null = null;
@@ -2383,8 +2383,8 @@ class Renderer {
       }
       // A typed conversion is a step even when the digits stay: the type is what changes.
       // Untyped, it is an evaluation like any other, seen only when the text changes.
+      text = separated(pane.text.slice(0, pane.locate(reduction.span[0], reduction.span[1])[0]), text);
       if (pane.read(reduction.span[0], reduction.span[1]) !== text || op.kind === 'convert') {
-        text = separated(pane.text.slice(0, pane.locate(reduction.span[0], reduction.span[1])[0]), text);
         const span = pane.replace(reduction.span[0], reduction.span[1], text, reduction.type);
         this.add(line, pane, expr, before, { ...op, span });
       } else {

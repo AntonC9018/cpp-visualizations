@@ -41,31 +41,45 @@ const TOKEN =
 /** The operators that bind tighter than each compound operator's binary form. */
 const TIGHTER: Record<string, readonly string[]> = { '+': ['*', '/', '%'], '-': ['*', '/', '%'] };
 
+/** Keywords that take an operand after them, as a prefix operator does. */
+const PREFIX = ['sizeof', 'alignof', 'new', 'delete', 'throw', 'not', 'compl', 'co_await'];
+
+/** Keywords spelling a binary operator. */
+const BINARY = ['and', 'or', 'bitand', 'bitor', 'xor', 'not_eq', 'and_eq', 'or_eq', 'xor_eq'];
+
 /**
  * Whether `right`, the right side of `a operator= right`, keeps parentheses once opened: unless
  * every operator at its top level binds tighter than `operator`, `a = 5 * b + c` would compute
- * something else.
+ * something else. A `<` opens template arguments after a named cast or a qualified name; any
+ * other `<` is the comparison, and grouping it is never wrong.
  */
 export function groups(operator: string, right: string): boolean {
   const tighter = TIGHTER[operator] ?? [];
-  let depth = 0;
+  const open: string[] = []; // the brackets the tokens so far leave open
   let operand = false; // whether the tokens so far end in an operand, so an operator is binary
-  let cast = false; // whether a `<` opens the type of a named cast
+  let template = false; // whether a `<` here opens template arguments
+  let qualified = false; // whether the last token was `::`
   for (const [token] of right.matchAll(TOKEN)) {
-    if (/^\s/.test(token) || token === '++' || token === '--') continue;
-    if ('([{'.includes(token) || (cast && token === '<')) {
-      depth++;
-      operand = cast = false;
-    } else if (')]}'.includes(token) || (depth > 0 && token === '>')) {
-      depth--;
-      operand = true;
-    } else if (['.', '->', '.*', '->*', '::'].includes(token)) {
+    if (/^\s/.test(token)) continue;
+    const opensTemplate = template;
+    template = false;
+    const afterScope = qualified;
+    qualified = token === '::';
+    if (token === '++' || token === '--') continue;
+    if ('([{'.includes(token) || (opensTemplate && token === '<')) {
+      open.push(token);
       operand = false;
-    } else if (/^[\w."']/.test(token)) {
+    } else if (')]}'.includes(token) || (open.at(-1) === '<' && (token === '>' || token === '>>'))) {
+      const closes = token === '>>' && open.at(-2) === '<' ? 2 : 1;
+      open.length -= closes;
       operand = true;
-      cast = /_cast$/.test(token);
+    } else if (['.', '->', '.*', '->*', '::'].includes(token) || PREFIX.includes(token)) {
+      operand = false;
+    } else if (/^[\w."']/.test(token) && !BINARY.includes(token)) {
+      operand = true;
+      template = /_cast$/.test(token) || afterScope;
     } else {
-      if (depth === 0 && operand && !tighter.includes(token)) return true;
+      if (open.length === 0 && operand && !tighter.includes(token)) return true;
       operand = false;
     }
   }

@@ -2087,7 +2087,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const part = (_a = previous.types) == null ? void 0 : _a.find(
       (t) => !t.slot && t.type === op.from && t.span[0] >= op.span[0] && t.span[1] <= op.span[1]
     );
-    return integerLiteral(previous.pane.slice(...(part == null ? void 0 : part.span) ?? op.span));
+    return integerLiteral(previous.pane.slice(...(part == null ? void 0 : part.span) ?? op.span).replace(/^\((.*)\)$/, "$1"));
   }
   function integerOf(m, spelling) {
     return integerSpelled(spelling ?? "int", m.trace.integers) ?? integerSpelled("int");

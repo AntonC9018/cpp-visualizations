@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { dumpsSorted } from '../src/core/json_format.ts';
 import { groups } from '../src/core/compound.ts';
 import {
+  Builder,
   type ExecutionTrace,
   FormatError,
   type TraceOperation,
@@ -592,6 +593,13 @@ describe('CompoundAssignmentTests', () => {
       ['+', 'static_cast<int>(b) * c', false],
       ['*', 'b < c', true],
       ['*', 'b ? c : d', true],
+      ['*', 'sizeof(+(2 > 1)) + 3', true],
+      ['*', 'sizeof(std::array<int, 2>) + 3', true],
+      ['*', 'sizeof(static_cast<std::array<int, 2>>(x)) + 3', true],
+      ['*', 'std::array<int, 2>{}.size()', false],
+      ['*', 'sizeof -b', false],
+      ['*', 'b and c', true],
+      ['+', 'b * -c', false],
     ];
     for (const [operator, right, grouped] of cases) {
       assert.equal(groups(operator, right), grouped, `${operator}= ${right}`);
@@ -603,6 +611,20 @@ describe('CompoundAssignmentTests', () => {
     assert.equal(panes(trace, 3)[3], 'a = 5 * (8-(-2))');
     assert.deepEqual(panes(trace, 4).slice(0, 2), ['int y = -c', 'int y = -(-2)']);
     assert.deepEqual(final(trace), { a: 50, b: 8, c: -2, y: 2 });
+    const written = tracing.trace('int y = -(-2);', { runtime: false, types: true });
+    assert.deepEqual(panes(written, 0), ['int y = -(-2)', 'int y = 2', 'int y = 2']);
+    const bits = tracing.trace('short x = -2; int y = -x;', { runtime: false, bits: true });
+    assert.deepEqual(final(bits), { x: -2, y: 2 });
+  });
+
+  test('hand_written_traces_keep_signs_apart_too', () => {
+    const t = new Builder(['int x = -2;', 'int y = -x;'], [scalar('x', 64, 4), scalar('y', 68, 4)]);
+    t.statement(0).write('x');
+    t.statement(1).read('x').evaluate('-(-2)', 2).write('y');
+    assert.deepEqual(
+      t.build().steps.filter(step => step.line === 1).map(step => step.pane),
+      ['int y = -x', 'int y = -(-2)', 'int y = 2', 'int y = 2']
+    );
   });
 
   test('the_validator_reads_only_one_arithmetic_cell', () => {
@@ -647,9 +669,9 @@ describe('CompoundAssignmentTests', () => {
   });
 
   test('spaces_and_comments_before_the_semicolon_still_run', () => {
-    const trace = tracing.trace('int a = 5; a += 2 ; a *= 3 /* thrice */ ;\na -= 1 \\\n;');
+    const trace = tracing.trace('int a = 5; a += 2 ; a *= 3 /* thrice */ ;\na -= 1 \\\n; a *= 2 \\ \n;');
     assert.deepEqual(panes(trace, 1), ['a += 2', 'a = 5 + 2', 'a = 7', 'a = 7']);
-    assert.deepEqual(final(trace), { a: 20 });
+    assert.deepEqual(final(trace), { a: 40 });
   });
 
   test('runtime_values_agree', () => {

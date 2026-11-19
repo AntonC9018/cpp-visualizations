@@ -693,26 +693,35 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }
   const TOKEN = /\s+|\.?\d(?:[eEpP][+-]|[\w.'])*|[A-Za-z_]\w*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|->\*?|\.\*|::|\+\+|--|<=>|<<=?|>>=?|[<>=!]=|&&|\|\||[-+*/%^&|]=|[\s\S]/g;
   const TIGHTER = { "+": ["*", "/", "%"], "-": ["*", "/", "%"] };
+  const PREFIX = ["sizeof", "alignof", "new", "delete", "throw", "not", "compl", "co_await"];
+  const BINARY = ["and", "or", "bitand", "bitor", "xor", "not_eq", "and_eq", "or_eq", "xor_eq"];
   function groups(operator, right) {
     const tighter = TIGHTER[operator] ?? [];
-    let depth = 0;
+    const open = [];
     let operand = false;
-    let cast = false;
+    let template = false;
+    let qualified = false;
     for (const [token] of right.matchAll(TOKEN)) {
-      if (/^\s/.test(token) || token === "++" || token === "--") continue;
-      if ("([{".includes(token) || cast && token === "<") {
-        depth++;
-        operand = cast = false;
-      } else if (")]}".includes(token) || depth > 0 && token === ">") {
-        depth--;
-        operand = true;
-      } else if ([".", "->", ".*", "->*", "::"].includes(token)) {
+      if (/^\s/.test(token)) continue;
+      const opensTemplate = template;
+      template = false;
+      const afterScope = qualified;
+      qualified = token === "::";
+      if (token === "++" || token === "--") continue;
+      if ("([{".includes(token) || opensTemplate && token === "<") {
+        open.push(token);
         operand = false;
-      } else if (/^[\w."']/.test(token)) {
+      } else if (")]}".includes(token) || open.at(-1) === "<" && (token === ">" || token === ">>")) {
+        const closes = token === ">>" && open.at(-2) === "<" ? 2 : 1;
+        open.length -= closes;
         operand = true;
-        cast = /_cast$/.test(token);
+      } else if ([".", "->", ".*", "->*", "::"].includes(token) || PREFIX.includes(token)) {
+        operand = false;
+      } else if (/^[\w."']/.test(token) && !BINARY.includes(token)) {
+        operand = true;
+        template = /_cast$/.test(token) || afterScope;
       } else {
-        if (depth === 0 && operand && !tighter.includes(token)) return true;
+        if (open.length === 0 && operand && !tighter.includes(token)) return true;
         operand = false;
       }
     }
@@ -1603,7 +1612,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const part = (_a = previous.types) == null ? void 0 : _a.find(
       (t) => !t.slot && t.type === op.from && t.span[0] >= op.span[0] && t.span[1] <= op.span[1]
     );
-    return integerLiteral(previous.pane.slice(...(part == null ? void 0 : part.span) ?? op.span));
+    return integerLiteral(previous.pane.slice(...(part == null ? void 0 : part.span) ?? op.span).replace(/^\((.*)\)$/, "$1"));
   }
   const REFERENCE = "reference";
   const hooks = {
@@ -2585,7 +2594,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       cur = cur.inner[0];
     }
     const [start, end] = bounds(cur);
-    const terminated = /^(?:\s|\\\r?\n|\/\*[\s\S]*?\*\/|\/\/[^\n]*\n)*;/.test(program.slice(end));
+    const terminated = /^(?:\s|\\[ \t]*\r?\n|\/\*[\s\S]*?\*\/|\/\/[^\n]*\n)*;/.test(program.slice(end));
     const [compacted, mapping] = compact(program.slice(start, end));
     const source = terminated ? `${compacted};` : compacted;
     let left = null;
@@ -3361,8 +3370,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
             text2 = pane.read(reduction.span[0], reduction.span[1]);
           }
         }
+        text2 = separated(pane.text.slice(0, pane.locate(reduction.span[0], reduction.span[1])[0]), text2);
         if (pane.read(reduction.span[0], reduction.span[1]) !== text2 || op2.kind === "convert") {
-          text2 = separated(pane.text.slice(0, pane.locate(reduction.span[0], reduction.span[1])[0]), text2);
           const span2 = pane.replace(reduction.span[0], reduction.span[1], text2, reduction.type);
           this.add(line, pane, expr, before, { ...op2, span: span2 });
         } else {
