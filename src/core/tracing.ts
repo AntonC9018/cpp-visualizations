@@ -1640,6 +1640,7 @@ function analyzeStatement(
   ].sort(compareTyped);
   if (reference) {
     const bound = evaluator.lvalue(root);
+    evaluator.respell(root, bound, pane.slice(...locate(root)));
     if (evaluator.temporary) {
       throw new Unsupported('a reference bound to a temporary is not supported');
     }

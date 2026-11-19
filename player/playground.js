@@ -1307,8 +1307,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       if (later && later !== name && covers(name, later) && from <= at && at < to) return true;
       if (m.steps[k].pane === m.steps[k - 1].pane) continue;
       const [s, e] = op.span;
-      if (at >= e) at += m.steps[k].pane.length - m.steps[k - 1].pane.length;
-      else if (at > s) return false;
+      if (at >= e) {
+        at += m.steps[k].pane.length - m.steps[k - 1].pane.length;
+      } else if (at >= s) {
+        const spelled = codeName(name);
+        const pane2 = m.steps[k].pane;
+        if (!pane2.startsWith(spelled, s) || /\w/.test(pane2[s + spelled.length] ?? "")) return false;
+        at = s;
+      }
     }
     return false;
   }

@@ -1,4 +1,5 @@
 // Player model and timing: flattens execution trace storage into leaf cells and struct groups.
+import { codeName } from '../core/arrays.ts';
 import type {
   ExecutionTrace,
   Span,
@@ -283,7 +284,7 @@ function reachedIn(m: PreparedModel, j: number): { name: string; at: number } | 
 /**
  * Whether a later step of the statement reads, writes or binds a field of `name` from where
  * step `j` left it in the pane, as `(s).a` does: the struct it named was only the way to that
- * field. A rewrite that starts at the struct, as `s . a` to `s.a`, keeps it where it was.
+ * field.
  */
 function goesInto(m: PreparedModel, j: number, name: string): boolean {
   let at = (m.steps[j].op as { span: Span }).span[0];
@@ -297,8 +298,15 @@ function goesInto(m: PreparedModel, j: number, name: string): boolean {
     if (later && later !== name && covers(name, later) && from <= at && at < to) return true;
     if (m.steps[k].pane === m.steps[k - 1].pane) continue;
     const [s, e] = op.span;
-    if (at >= e) at += m.steps[k].pane.length - m.steps[k - 1].pane.length;
-    else if (at > s) return false;
+    if (at >= e) {
+      at += m.steps[k].pane.length - m.steps[k - 1].pane.length;
+    } else if (at >= s) {
+      // A rewrite around the struct, as `(s).a` to `s.a`, keeps it only if it now starts there.
+      const spelled = codeName(name);
+      const pane = m.steps[k].pane;
+      if (!pane.startsWith(spelled, s) || /\w/.test(pane[s + spelled.length] ?? '')) return false;
+      at = s;
+    }
   }
   return false;
 }

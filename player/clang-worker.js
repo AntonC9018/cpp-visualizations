@@ -2806,6 +2806,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     ].sort(compareTyped);
     if (reference2) {
       const bound = evaluator.lvalue(root);
+      evaluator.respell(root, bound, pane.slice(...locate(root)));
       if (evaluator.temporary) {
         throw new Unsupported("a reference bound to a temporary is not supported");
       }

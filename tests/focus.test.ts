@@ -124,6 +124,11 @@ test('a field reached through parentheses, spaces or a reference chain lights al
     ['(*p) . a = 3;', 'write'],
     ['int x = ((*p).a);', 'read'],
     ['S& r = s; S& q = r; int x = (q).a;', 'read'],
+    ['((*p).a) = 3;', 'write'],
+    ['((*p).a) += 3;', 'read'],
+    ['S& r = s; (r).a = 3;', 'write'],
+    ['int& r = ((*p).a);', 'bind'],
+    ['int& r = (*p) . a;', 'bind'],
   ] as const) {
     const t = model(setup + statement);
     const last = t.steps.length - 1;
@@ -132,7 +137,12 @@ test('a field reached through parentheses, spaces or a reference chain lights al
       const lit = cells(stepFocus(t, i, true).now);
       assert.ok(!lit.includes('s.b'), `${statement}: s.b lit at step ${i}`);
     }
-    const reach = t.steps.findIndex((step, i) => i >= first && step.op?.kind === kind && 'name' in step.op && step.op.name === 's.a');
+    const reach = t.steps.findIndex(
+      (step, i) =>
+        i >= first &&
+        step.op?.kind === kind &&
+        (step.op.kind === 'bind' ? step.op.target : 'name' in step.op ? step.op.name : '') === 's.a'
+    );
     assert.deepEqual(cells(stepFocus(t, reach, true).now), ['s.a'], statement);
   }
 });
