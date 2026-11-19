@@ -545,7 +545,12 @@ function checkReferences(
   return names;
 }
 
-function checkValue(value: unknown, cell: ScalarVariable | ScalarField | undefined, where: string): void {
+function checkValue(
+  value: unknown,
+  cell: ScalarVariable | ScalarField | undefined,
+  aliases: Record<string, string>,
+  where: string
+): void {
   if (value === null || value === UNKNOWN) return;
   if (cell?.floating) {
     check(
@@ -560,6 +565,13 @@ function checkValue(value: unknown, cell: ScalarVariable | ScalarField | undefin
     where,
     'a value is an integer, "?" (declared, unknown) or null (no storage yet)'
   );
+  if (cell?.kind !== 'int') return;
+  // Without its type, a cell holds what some integer of its size can, signed or not.
+  const integer = integerSpelled(cell.type ?? '', aliases);
+  const bits = BigInt(8 * cell.size);
+  const stored = BigInt(value as number);
+  const fits = integer?.size === cell.size ? integer.holds(stored) : -(1n << (bits - 1n)) <= stored && stored < 1n << bits;
+  check(fits, where, `${value} does not fit in ${cell.type ?? `${cell.size} bytes`}`);
 }
 
 /** Typed spans of the pane are disjoint; at most one of them is the statement's slot. */
@@ -1145,7 +1157,7 @@ export function validate(trace: unknown): asserts trace is AnyTrace {
       `expected exactly ${pyListRepr(sortedCellNames)}`
     );
     for (const [name, value] of Object.entries(step.values)) {
-      checkValue(value, storage.cells[name], `${where}.values.${name}`);
+      checkValue(value, storage.cells[name], aliases, `${where}.values.${name}`);
     }
     check(isPlainObject(step.targets), `${where}.targets`, 'expected an object');
     checkPointers(step, storage, where);

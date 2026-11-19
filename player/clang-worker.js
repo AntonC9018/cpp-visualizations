@@ -783,7 +783,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   const significantDigits = (text) => Number(text).toExponential().split("e")[0].replace(/[-.]/g, "").length;
   function displayFloat(value, size) {
     if (Object.is(value, -0)) return "-0";
-    if (Number.isSafeInteger(value)) return String(value);
+    if (Number.isSafeInteger(value)) return compact$1(shortestDecimal(value, size));
     const shortest = shortestDecimal(value, size);
     if (significantDigits(shortest) <= SHOWN_DIGITS) return compact$1(shortest);
     return "≈" + compact$1(String(Number(value.toPrecision(SHOWN_DIGITS))));
@@ -1038,7 +1038,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return names;
   }
-  function checkValue(value, cell, where) {
+  function checkValue(value, cell, aliases, where) {
     if (value === null || value === UNKNOWN) return;
     if (cell == null ? void 0 : cell.floating) {
       check(
@@ -1053,6 +1053,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       where,
       'a value is an integer, "?" (declared, unknown) or null (no storage yet)'
     );
+    if ((cell == null ? void 0 : cell.kind) !== "int") return;
+    const integer = integerSpelled(cell.type ?? "", aliases);
+    const bits = BigInt(8 * cell.size);
+    const stored2 = BigInt(value);
+    const fits = (integer == null ? void 0 : integer.size) === cell.size ? integer.holds(stored2) : -(1n << bits - 1n) <= stored2 && stored2 < 1n << bits;
+    check(fits, where, `${value} does not fit in ${cell.type ?? `${cell.size} bytes`}`);
   }
   function checkTypes(step, where) {
     const { types } = step;
@@ -1541,7 +1547,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         `expected exactly ${pyListRepr(sortedCellNames)}`
       );
       for (const [name, value] of Object.entries(step.values)) {
-        checkValue(value, storage.cells[name], `${where}.values.${name}`);
+        checkValue(value, storage.cells[name], aliases, `${where}.values.${name}`);
       }
       check(isPlainObject$1(step.targets), `${where}.targets`, "expected an object");
       checkPointers(step, storage, where);

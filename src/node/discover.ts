@@ -383,8 +383,11 @@ export function discover(
     }
     const tagged = new Set(scanned.tags.map(t => t.source.start));
     const insertions: Array<[number, string]> = [];
+    const relPosix = relative(repo, path).split(sep).join('/');
     for (const fence of scanned.fences) {
+      const chosen = `${relPosix}:${fence.line}`;
       if (fence.depth || !CPP_LANGUAGES.has(fence.language)) {
+        if (pending.has(chosen)) refused.set(chosen, fence.depth ? 'a fence nested in another block' : 'not a C++ fence');
         continue;
       }
       if (!cache.has(fence.source)) {
@@ -401,15 +404,14 @@ export function discover(
         }
       }
       const reason = cache.get(fence.source) ?? null;
-      const relPosix = relative(repo, path).split(sep).join('/');
       const entry = { path: relPosix, line: fence.line, source: fence.source };
-      const chosen = `${entry.path}:${fence.line}`;
       if (reason) {
         skipped.push({ ...entry, reason });
         if (pending.has(chosen)) refused.set(chosen, reason);
         continue;
       }
       selected.push({ ...entry, already_tagged: tagged.has(fence.start) });
+      if (tagged.has(fence.start) && pending.has(chosen)) refused.set(chosen, 'already has a visualization tag');
       if (tagged.has(fence.start) || !pending.has(chosen)) {
         continue;
       }
@@ -439,7 +441,7 @@ export function discover(
     }
   }
   if (pending.size > 0) {
-    const reasons = [...pending].sort().map(chosen => (refused.has(chosen) ? `${chosen} (${refused.get(chosen)})` : chosen));
+    const reasons = [...pending].sort().map(chosen => `${chosen} (${refused.get(chosen) ?? 'no code fence starts on this line'})`);
     throw new Error('not an untagged candidate: ' + reasons.join(', '));
   }
   for (const [path, text] of edited.entries()) {

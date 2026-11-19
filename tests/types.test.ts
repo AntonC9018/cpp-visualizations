@@ -268,4 +268,28 @@ describe('DiscoverTypesHintTests', () => {
       rmSync(repo, { recursive: true, force: true });
     }
   });
+
+  test('every_refused_tag_says_why', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'discover-'));
+    try {
+      writeFileSync(join(repo, 'course-publishing.json'), JSON.stringify({ visualizations: { roots: ['labs'] } }));
+      mkdirSync(join(repo, 'labs'));
+      writeFileSync(join(repo, 'labs', 'a.md'), '# A\n\n```cpp\nint a = 5;\nint b = a;\n```\n\n```python\na = 5\n```\n');
+      const refusal = (line: number): RegExp => new RegExp(`labs/a\\.md:${line} \\(([^)]*)\\)`);
+      const reason = (line: number): string => {
+        try {
+          discover(repo, { tag: [`labs/a.md:${line}`] });
+        } catch (err) {
+          return (err as Error).message.match(refusal(line))?.[1] ?? (err as Error).message;
+        }
+        return 'accepted';
+      };
+      assert.equal(reason(8), 'not a C++ fence');
+      assert.equal(reason(1), 'no code fence starts on this line');
+      assert.equal(reason(3), 'accepted');
+      assert.equal(reason(3), 'already has a visualization tag');
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
 });

@@ -96,11 +96,12 @@ const significantDigits = (text: string): number =>
 /**
  * A floating-point value of `size` bytes as a cell shows it: the shortest decimal that reads back
  * as the stored value (`0.1f` is `0.1`), or, past eight significant digits, `≈` and the value
- * rounded to eight (`0.1 + 0.2` is `≈0.3`). A whole number reads as itself.
+ * rounded to eight (`0.1 + 0.2` is `≈0.3`). A whole number keeps all its digits, unless
+ * fewer read back as it too: `1e15f` stores 999999986991104 and reads `1e+15`.
  */
 export function displayFloat(value: number, size: number): string {
   if (Object.is(value, -0)) return '-0';
-  if (Number.isSafeInteger(value)) return String(value);
+  if (Number.isSafeInteger(value)) return compact(shortestDecimal(value, size));
   const shortest = shortestDecimal(value, size);
   if (significantDigits(shortest) <= SHOWN_DIGITS) return compact(shortest);
   return '≈' + compact(String(Number(value.toPrecision(SHOWN_DIGITS))));

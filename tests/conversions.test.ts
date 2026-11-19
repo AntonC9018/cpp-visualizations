@@ -293,6 +293,12 @@ describe('FloatFormatTests', () => {
       // At a power of two the decimal nearest the float misses it; its neighbour reads back.
       [2 ** -96, 4, '1.2621775e-29'],
       [1e20, 8, '1e+20'],
+      // A whole number keeps its digits unless fewer read back as it.
+      [Math.fround(1e15), 4, '1e+15'],
+      [1e15, 8, '1e+15'],
+      [123456789, 8, '123456789'],
+      [3, 4, '3'],
+      [Math.fround(16777217), 4, '16777216'],
       [123456789012345680000, 8, '≈1.2345679e+20'],
     ];
     for (const [value, size, shown] of cases) assert.equal(displayFloat(value, size), shown, String(value));
@@ -337,6 +343,15 @@ describe('FloatFormatTests', () => {
     };
     rejects(broken(copy => (last(copy).values.f = 16777217)), /4-byte floating value/);
     rejects(broken(copy => (last(copy).values.i = 0.5)), /a value is an integer/);
+    const everywhere = (copy: ExecutionTrace, name: string, value: number): void => {
+      for (const step of copy.steps) if (typeof step.values[name] === 'number') step.values[name] = value;
+    };
+    rejects(broken(copy => everywhere(copy, 'i', 2 ** 32)), /4294967296 does not fit in 4 bytes/);
+    const bits = tracing.trace('uint8_t a = 255;', { runtime: false, bits: true });
+    validate(bits);
+    const wide = structuredClone(bits);
+    everywhere(wide, 'a', 256);
+    rejects(wide, /256 does not fit in uint8_t/);
     // A floating zero is no null pointer: the read of f may not say nullptr.
     rejects(
       broken(copy => {

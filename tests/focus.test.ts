@@ -98,3 +98,12 @@ function statementOf(mm: PreparedModel, i: number): number {
   while (start > 0 && mm.steps[start - 1].line === mm.steps[i].line) start--;
   return start;
 }
+
+test('a dereferenced struct the statement goes into lights only the field, as the value lands', () => {
+  const d = model('struct S { int a; int b; }; S s{ 1, 2 }; S* p = &s; (*p).a = 3;');
+  const deref = stepOf(d, 'deref', 's');
+  assert.deepEqual(cells(stepFocus(d, deref, true).now), []);
+  const write = stepOf(d, 'write', 's.a');
+  assert.deepEqual(changes(d, write), { 's.a': arrival(d.steps[write].op!) });
+  assert.deepEqual(cells(stepFocus(d, write, true).now), ['s.a']);
+});

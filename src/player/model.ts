@@ -270,15 +270,31 @@ function statementStart(m: PreparedModel, i: number): number {
 }
 
 /**
+ * What step `j` of the statement starting at `start` reaches. A dereference or alias whose
+ * struct the statement goes on into, as `(*p).a` does, reaches none of it: the field does.
+ */
+function reachedIn(m: PreparedModel, start: number, j: number): { name: string; at: number } | null {
+  const target = reached(m.steps[j].op);
+  const kind = m.steps[j].op?.kind;
+  if (!target || (kind !== 'deref' && kind !== 'alias')) return target;
+  for (let k = start; k < m.steps.length && m.steps[k].line === m.steps[start].line; k++) {
+    const later = reached(m.steps[k].op)?.name;
+    if (later && later !== target.name && covers(target.name, later)) return null;
+  }
+  return target;
+}
+
+/**
  * The variables and cells lit as step `i` ends. Every variable the statement uses is lit, and a
  * scalar with it; a struct's cells light only as the statement's operations reach them, and
  * stay lit to its end.
  */
 function litAt(m: PreparedModel, i: number): Set<string> {
   const tops = activeVariables(m, i);
+  const start = statementStart(m, i);
   const names: string[] = [];
-  for (let j = statementStart(m, i); j <= i; j++) {
-    const name = reached(m.steps[j].op)?.name;
+  for (let j = start; j <= i; j++) {
+    const name = reachedIn(m, start, j)?.name;
     if (name) names.push(name);
   }
   const shown = new Set(tops);
@@ -305,7 +321,7 @@ export function stepFocus(m: PreparedModel, i: number, animate: boolean): Focus 
   const begin = new Map<string, number>();
   if (!animate || i === 0) return { now, before: now, begin };
   const before = litAt(m, i - 1);
-  const target = reached(m.steps[i].op);
+  const target = reachedIn(m, statementStart(m, i), i);
   if (target) {
     const top = target.name.split('.')[0];
     for (const name of now) {

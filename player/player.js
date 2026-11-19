@@ -1226,12 +1226,24 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     while (start > 0 && m.steps[start - 1].line === m.steps[i].line) start--;
     return start;
   }
+  function reachedIn(m, start, j) {
+    var _a, _b;
+    const target = reached(m.steps[j].op);
+    const kind = (_a = m.steps[j].op) == null ? void 0 : _a.kind;
+    if (!target || kind !== "deref" && kind !== "alias") return target;
+    for (let k = start; k < m.steps.length && m.steps[k].line === m.steps[start].line; k++) {
+      const later = (_b = reached(m.steps[k].op)) == null ? void 0 : _b.name;
+      if (later && later !== target.name && covers(target.name, later)) return null;
+    }
+    return target;
+  }
   function litAt(m, i) {
     var _a;
     const tops = activeVariables(m, i);
+    const start = statementStart(m, i);
     const names = [];
-    for (let j = statementStart(m, i); j <= i; j++) {
-      const name = (_a = reached(m.steps[j].op)) == null ? void 0 : _a.name;
+    for (let j = start; j <= i; j++) {
+      const name = (_a = reachedIn(m, start, j)) == null ? void 0 : _a.name;
       if (name) names.push(name);
     }
     const shown = new Set(tops);
@@ -1246,7 +1258,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const begin = /* @__PURE__ */ new Map();
     if (!animate || i === 0) return { now, before: now, begin };
     const before = litAt(m, i - 1);
-    const target = reached(m.steps[i].op);
+    const target = reachedIn(m, statementStart(m, i), i);
     if (target) {
       const top = target.name.split(".")[0];
       for (const name of now) {
@@ -1275,7 +1287,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   const significantDigits = (text2) => Number(text2).toExponential().split("e")[0].replace(/[-.]/g, "").length;
   function displayFloat(value, size) {
     if (Object.is(value, -0)) return "-0";
-    if (Number.isSafeInteger(value)) return String(value);
+    if (Number.isSafeInteger(value)) return compact(shortestDecimal(value, size));
     const shortest = shortestDecimal(value, size);
     if (significantDigits(shortest) <= SHOWN_DIGITS) return compact(shortest);
     return "≈" + compact(String(Number(value.toPrecision(SHOWN_DIGITS))));
