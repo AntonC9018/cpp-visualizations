@@ -1,5 +1,6 @@
 // `a += b` as the plain assignment it stands for: one spelling, which the tracer writes and the
 // validator expects.
+import { RAW_STRING } from './lexical.ts';
 import type { Span } from './trace_format.ts';
 
 /** The compound assignments traced: those whose operator the tracer evaluates on its own. */
@@ -35,8 +36,11 @@ export function openCompound(pane: string, span: Span, left: string, operator: s
 }
 
 /** C++ tokens, longest first: pp-numbers, names, literals, then operators. */
-const TOKEN =
-  /\s+|\.?\d(?:[eEpP][+-]|[\w.'])*|[A-Za-z_]\w*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|->\*?|\.\*|::|\+\+|--|<=>|<%|%>|<:(?!:(?![:>]))|:>|<<=?|>>=?|[<>=!]=|&&|\|\||[-+*/%^&|]=|[\s\S]/g;
+const TOKEN = new RegExp(
+  RAW_STRING +
+    String.raw`|\s+|\.?\d(?:[eEpP][+-]|[\w.'])*|[A-Za-z_]\w*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|->\*?|\.\*|::|\+\+|--|<=>|<%|%>|<:(?!:(?![:>]))|:>|<<=?|>>=?|[<>=!]=|&&|\|\||[-+*/%^&|]=|[\s\S]`,
+  'g'
+);
 
 /** The brackets digraphs spell. */
 const DIGRAPHS: Record<string, string> = { '<:': '[', ':>': ']', '<%': '{', '%>': '}' };

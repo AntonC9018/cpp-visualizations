@@ -677,6 +677,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return records;
   }
+  const RAW_STRING = String.raw`(?:u8|[uUL])?R"([^()\\\s]{0,16})\([\s\S]*?\)\1"`;
+  const LINE_SPLICE = /\\[ \t\f\v]*(?:\r\n?|\n)/;
   const COMPOUND_OPERATORS = ["+", "-", "*", "/", "%"];
   function openCompound(pane, span, left, operator, grouped) {
     const [start, end] = span;
@@ -691,7 +693,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       from
     };
   }
-  const TOKEN = /\s+|\.?\d(?:[eEpP][+-]|[\w.'])*|[A-Za-z_]\w*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|->\*?|\.\*|::|\+\+|--|<=>|<%|%>|<:(?!:(?![:>]))|:>|<<=?|>>=?|[<>=!]=|&&|\|\||[-+*/%^&|]=|[\s\S]/g;
+  const TOKEN = new RegExp(
+    RAW_STRING + String.raw`|\s+|\.?\d(?:[eEpP][+-]|[\w.'])*|[A-Za-z_]\w*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|->\*?|\.\*|::|\+\+|--|<=>|<%|%>|<:(?!:(?![:>]))|:>|<<=?|>>=?|[<>=!]=|&&|\|\||[-+*/%^&|]=|[\s\S]`,
+    "g"
+  );
   const DIGRAPHS = { "<:": "[", ":>": "]", "<%": "{", "%>": "}" };
   const TIGHTER = { "+": ["*", "/", "%"], "-": ["*", "/", "%"] };
   const PREFIX = ["sizeof", "alignof", "new", "delete", "throw", "not", "compl", "co_await"];
@@ -1633,7 +1638,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   const MAX_EXACT = 2n ** 53n;
   const MAX_STATEMENTS = 20;
   const MAX_VARIABLES = 8;
-  const QUOTED_OR_COMMENT = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\/\/[^\n]*|\/\*[\s\S]*?\*\//g;
+  const QUOTED_OR_COMMENT = new RegExp(
+    String.raw`${RAW_STRING}|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\/\/[^\n]*|\/\*[\s\S]*?\*\/`,
+    "g"
+  );
+  const RAW_STRINGS = new RegExp(RAW_STRING, "g");
   const FLOATINGS = Object.freeze({
     float: Object.freeze({ size: 4, round: (value) => Math.fround(value) }),
     double: Object.freeze({ size: 8, round: (value) => value })
@@ -1743,7 +1752,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return true;
   }
   function snippetBody(source) {
-    if (/\\[ \t\f\v]*\r?\n/.test(source)) {
+    if (LINE_SPLICE.test(source.replace(RAW_STRINGS, ""))) {
       throw new Unsupported("a backslash at the end of a line (a line splice) is not supported");
     }
     let cleaned = source.replace(QUOTED_OR_COMMENT, (value) => {
@@ -2606,7 +2615,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       cur = cur.inner[0];
     }
     const [start, end] = bounds(cur);
-    const terminated = /^(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*\n)*;/.test(program.slice(end));
+    const terminated = /^(?:\s|\/\*(?:[^*]|\*(?!\/))*\*\/|\/\/[^\r\n]*[\r\n])*;/.test(program.slice(end));
     const [compacted, mapping] = compact(program.slice(start, end));
     const source = terminated ? `${compacted};` : compacted;
     let left = null;

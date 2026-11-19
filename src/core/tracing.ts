@@ -7,6 +7,7 @@
 import { arrayType, codeName, elementLabel, operatorName, resolveArrayAliases } from './arrays.ts';
 import { type AstNode, type CompilerFrontend, IllFormed, NeedsFlag, Unsupported } from './errors.ts';
 import { COMPOUND_OPERATORS, groups, openCompound } from './compound.ts';
+import { LINE_SPLICE, RAW_STRING } from './lexical.ts';
 import { INTEGERS, Integer, bareSpelling, integerName, integerSpelled } from './integers.ts';
 import type { Flags } from './settings.ts';
 import {
@@ -125,7 +126,11 @@ const POINTER_SIZE = 8;
 const MAX_EXACT = 2n ** 53n;
 const MAX_STATEMENTS = 20;
 const MAX_VARIABLES = 8;
-const QUOTED_OR_COMMENT = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\/\/[^\n]*|\/\*[\s\S]*?\*\//g;
+const QUOTED_OR_COMMENT = new RegExp(
+  String.raw`${RAW_STRING}|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\/\/[^\n]*|\/\*[\s\S]*?\*\/`,
+  'g'
+);
+const RAW_STRINGS = new RegExp(RAW_STRING, 'g');
 
 // Values -----------------------------------------------------------------------------------
 
@@ -293,7 +298,7 @@ function isAscii(str: string): boolean {
 export function snippetBody(source: string): string {
   // A backslash before a line break joins the lines before anything else is read, inside
   // comments and literals too; lessons never need one, so none is traced.
-  if (/\\[ \t\f\v]*\r?\n/.test(source)) {
+  if (LINE_SPLICE.test(source.replace(RAW_STRINGS, ''))) {
     throw new Unsupported('a backslash at the end of a line (a line splice) is not supported');
   }
   let cleaned = source.replace(QUOTED_OR_COMMENT, value => {
@@ -1398,7 +1403,7 @@ function analyzeStatement(
   }
   const [start, end] = bounds(cur);
   // The statement as GDB runs it ends with its `;`, wherever spaces or comments put it.
-  const terminated = /^(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*\n)*;/.test(program.slice(end));
+  const terminated = /^(?:\s|\/\*(?:[^*]|\*(?!\/))*\*\/|\/\/[^\r\n]*[\r\n])*;/.test(program.slice(end));
   const [compacted, mapping] = compact(program.slice(start, end));
   const source = terminated ? `${compacted};` : compacted;
   let left: AstNode | null = null;

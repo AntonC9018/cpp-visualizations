@@ -21,6 +21,7 @@ export const TRACER_SOURCES = [
   'src/core/arrays.ts',
   'src/core/errors.ts',
   'src/core/compound.ts',
+  'src/core/lexical.ts',
   'src/core/floats.ts',
   'src/core/integers.ts',
   'src/core/json_format.ts',

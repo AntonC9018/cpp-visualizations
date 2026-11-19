@@ -1,6 +1,7 @@
 // Behavioral coverage for compiler-backed traces and fail-closed eligibility.
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -17,6 +18,7 @@ import {
   validate,
 } from '../src/core/trace_format.ts';
 import { Cell, Execution } from '../src/node/execution.ts';
+import { createClangFrontend } from '../src/node/toolchain.ts';
 import * as tracing from '../src/node/tracing.ts';
 import { Pointer, Unsupported } from '../src/node/tracing.ts';
 
@@ -605,6 +607,8 @@ describe('CompoundAssignmentTests', () => {
       ['*', 'static_cast<decltype(+"x"[0:>)>(2) + 3', true],
       ['*', 'b<:0:> + c', true],
       ['+', 'b<:0:> * c', false],
+      ['*', 'sizeof(+R"("<:")"[0]) + 3', true],
+      ['*', 'sizeof(+R"x(")<:")x"[0])', false],
     ];
     for (const [operator, right, grouped] of cases) {
       assert.equal(groups(operator, right), grouped, `${operator}= ${right}`);
@@ -684,6 +688,22 @@ describe('CompoundAssignmentTests', () => {
     unsupported('int a = 5; a += 2 \\\n;', /line splice/);
     unsupported('int a = 1; // note \\ \na *= 3;', /line splice/);
     unsupported('int a = sizeof(+"a\\\n//b"[0]);', /line splice/);
+    unsupported('int a = 5; a *= 1\\\r2;', /line splice/);
+    // Inside a raw string a backslash and a line break are just characters.
+    assert.deepEqual(final(tracing.trace('int a = sizeof(+R"(a\\\nb)"[0]);', { runtime: false })), { a: 4 });
+  });
+
+  test('the_statement_ends_at_its_own_semicolon_past_comments', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'analyze-'));
+    try {
+      const frontend = createClangFrontend(directory);
+      const sources = (source: string): string[] =>
+        tracing.analyzeWithFrontend(source, frontend)[0].map(statement => statement.source);
+      assert.deepEqual(sources('int a = 5; /* before */ a *= 3 /* after */ ;'), ['int a = 5;', 'a *= 3;']);
+      assert.deepEqual(sources('int a = 5; a *= 3 // note\r;'), ['int a = 5;', 'a *= 3;']);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   test('runtime_values_agree', () => {
