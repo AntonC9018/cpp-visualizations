@@ -902,5 +902,6 @@ export function describe(c: SceneContext): string {
       slot: step.pane.slice(...op.destination),
     });
   }
-  return format(S[op.kind], op as unknown as Record<string, unknown>);
+  const template = op.kind === 'read' && op.compound ? S.compound : S[op.kind];
+  return format(template, op as unknown as Record<string, unknown>);
 }

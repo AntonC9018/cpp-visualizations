@@ -154,6 +154,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       jump: "Jump to line {line}: {code}",
       copy: "Line {line}: {code}",
       read: "Read {name}: {value}",
+      compound: "Read {name}: {value}, since {name} {compound}= x is {name} = {name} {compound} x",
       addr: "Take the address of {name}: {value}",
       deref: "Follow the address in {via} to {target}",
       eval: "Evaluate: {value}",
@@ -186,6 +187,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       jump: "Перейти к строке {line}: {code}",
       copy: "Строка {line}: {code}",
       read: "Чтение {name}: {value}",
+      compound: "Чтение {name}: {value}, ведь {name} {compound}= x — это {name} = {name} {compound} x",
       addr: "Адрес {name}: {value}",
       deref: "Переход по адресу из {via} к {target}",
       eval: "Вычисление: {value}",
@@ -1953,7 +1955,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         slot: step.pane.slice(...op.destination)
       });
     }
-    return format(S[op.kind], op);
+    const template = op.kind === "read" && op.compound ? S.compound : S[op.kind];
+    return format(template, op);
   }
   class Integer {
     constructor(size, signed) {

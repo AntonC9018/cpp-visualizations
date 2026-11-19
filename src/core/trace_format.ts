@@ -97,6 +97,8 @@ export type ReadOperation = {
   name: string;
   value: string;
   span: Span;
+  /** The read opens `a += b` into `a = 5 + b`: `span` covers `+=`, here `+`. */
+  compound?: string;
 };
 
 export type AddrOperation = {
@@ -629,6 +631,8 @@ function replacement(before: string, after: string, span: Span, where: string): 
   return replaced;
 }
 
+const COMPOUND = ['+', '-', '*', '/', '%'];
+
 const LITERAL = /^≈?-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i;
 
 /** The items a value text spells: one, or each of a brace list. */
@@ -826,7 +830,7 @@ function checkOperation(
     clash: ['span', 'destination', 'from', 'to'],
   };
   const fields = fieldMap[kind];
-  checkKeys(op, where, [...fields, 'kind']);
+  checkKeys(op, where, [...fields, 'kind'], kind === 'read' ? ['compound'] : []);
   for (const key of fields.filter(k => ['name', 'target', 'via', 'value', 'from', 'to'].includes(k))) {
     check(typeof op[key] === 'string' && op[key].length > 0, `${where}.${key}`, 'expected text');
   }
@@ -864,8 +868,19 @@ function checkOperation(
   if (['read', 'addr', 'deref', 'eval', 'convert'].includes(kind)) {
     const span = checkSpan(op.span, previous.pane, `${where}.span`);
     const replaced = replacement(previous.pane, step.pane, span, where);
-    const expected = kind === 'deref' ? codeName(op.target) : op.value;
-    check(replaced === expected, where, `the replacement ${pyRepr(replaced)} is not ${pyRepr(expected)}`);
+    let expected = kind === 'deref' ? codeName(op.target) : op.value;
+    if (Object.hasOwn(op, 'compound')) {
+      check(COMPOUND.includes(op.compound), `${where}.compound`, 'is not an arithmetic operator');
+      check(
+        previous.pane.slice(...span) === `${op.compound}=`,
+        `${where}.span`,
+        `does not cover ${op.compound}=`
+      );
+      expected = `= ${op.value} ${op.compound}`;
+    }
+    // `a+=b` opens spaced out: `a = 5 + b`.
+    const compared = Object.hasOwn(op, 'compound') ? replaced.trim() : replaced;
+    check(compared === expected, where, `the replacement ${pyRepr(replaced)} is not ${pyRepr(expected)}`);
     if (kind === 'convert') {
       check(convertedFrom(previous, span) === op.from, `${where}.from`, 'is not the type of the converted value');
       check(

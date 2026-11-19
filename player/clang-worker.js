@@ -1043,6 +1043,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     check(replaced.length > 0, where, "the replacement is empty");
     return replaced;
   }
+  const COMPOUND = ["+", "-", "*", "/", "%"];
   const LITERAL = /^≈?-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i;
   function storedItems(text, where) {
     const braced = /^(?:[A-Za-z_]\w*)?\{[\s\S]*\}$/.test(text);
@@ -1195,7 +1196,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       clash: ["span", "destination", "from", "to"]
     };
     const fields = fieldMap[kind];
-    checkKeys(op, where, [...fields, "kind"]);
+    checkKeys(op, where, [...fields, "kind"], kind === "read" ? ["compound"] : []);
     for (const key of fields.filter((k) => ["name", "target", "via", "value", "from", "to"].includes(k))) {
       check(typeof op[key] === "string" && op[key].length > 0, `${where}.${key}`, "expected text");
     }
@@ -1233,8 +1234,18 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     if (["read", "addr", "deref", "eval", "convert"].includes(kind)) {
       const span = checkSpan(op.span, previous.pane, `${where}.span`);
       const replaced = replacement(previous.pane, step.pane, span, where);
-      const expected = kind === "deref" ? codeName(op.target) : op.value;
-      check(replaced === expected, where, `the replacement ${pyRepr(replaced)} is not ${pyRepr(expected)}`);
+      let expected = kind === "deref" ? codeName(op.target) : op.value;
+      if (Object.hasOwn(op, "compound")) {
+        check(COMPOUND.includes(op.compound), `${where}.compound`, "is not an arithmetic operator");
+        check(
+          previous.pane.slice(...span) === `${op.compound}=`,
+          `${where}.span`,
+          `does not cover ${op.compound}=`
+        );
+        expected = `= ${op.value} ${op.compound}`;
+      }
+      const compared = Object.hasOwn(op, "compound") ? replaced.trim() : replaced;
+      check(compared === expected, where, `the replacement ${pyRepr(replaced)} is not ${pyRepr(expected)}`);
       if (kind === "convert") {
         check(convertedFrom(previous, span) === op.from, `${where}.from`, "is not the type of the converted value");
         check(
@@ -1884,12 +1895,43 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
     }
     reduce(node, details) {
+      this.reduceAt(this.locate(node), node, details);
+    }
+    /** A reduction at `span` to a value of the type of `typed`, a node or just its type. */
+    reduceAt(span, typed, details) {
       this.reductions.push({
         ...details,
-        span: this.locate(node),
-        type: displayedType(node),
-        shape: shapeOf(node, this.records)
+        span,
+        type: displayedType(typed),
+        shape: shapeOf(typed, this.records)
       });
+    }
+    /**
+     * `left op= right`, already designated as `target`: the value it holds, read into the pane's
+     * hidden copy of `left` at `copy`, then the operation over `result` in the type Clang computes
+     * it in, and back in the type of `left`.
+     */
+    compound(node, target, copy, result) {
+      const [left, right] = node.inner;
+      const operator = node.opcode.slice(0, -1);
+      const held = this.load(target);
+      if (typeof held !== "number") {
+        throw new Unsupported("pointer arithmetic and comparison are not supported");
+      }
+      this.reduceAt(copy, left, { kind: "read", name: target, record: null, compound: operator });
+      const computation = { type: node.computeLHSType };
+      const resultType = { type: node.computeResultType };
+      const operand = this.convertedAt(copy, held, computation, left);
+      const value = this.operate(resultType, operator, operand, right);
+      this.reduceAt(result, resultType, { kind: "eval", value, record: null });
+      return this.convertedAt(result, value, left, resultType);
+    }
+    /** `value`, of the type of `source`, in the type of `node`; a step at `span` if the type changes. */
+    convertedAt(span, value, node, source) {
+      if (displayedType(node) === displayedType(source)) return value;
+      const converted = this.conversion(node, source)(value);
+      this.reduceAt(span, node, { kind: "convert", value: converted, source: displayedType(source) });
+      return converted;
     }
     /** A brace list inside another one is part of its value, not an evaluation of its own. */
     absorb(child, value) {
@@ -2143,27 +2185,23 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         value = exact(integerTypeOf(node).wrap(~BigInt(this.integerOperand(children[0]))));
       } else if (kind === "BinaryOperator" && ["+", "-", "*", "/", "%"].includes(node.opcode ?? "") && children.length === 2) {
         rejectPointerOperator(node);
-        const float = floatType(node, this.records);
-        if (float) {
-          value = Evaluator.floatArithmetic(
-            float,
-            node.opcode,
-            this.numericOperand(children[0]),
-            this.numericOperand(children[1])
-          );
-        } else {
-          value = Evaluator.arithmetic(
-            integerTypeOf(node),
-            node.opcode,
-            this.integerOperand(children[0]),
-            this.integerOperand(children[1])
-          );
-        }
+        value = this.operate(node, node.opcode, this.numericOperand(children[0]), children[1]);
       } else {
         throw new Unsupported(`unsupported expression: ${kind} ${(node == null ? void 0 : node.opcode) ?? ""}`.trimEnd());
       }
       this.reduce(node, { kind: "eval", value, record: null });
       return [value, null];
+    }
+    /** `left operation right` in the integer or floating type of `node`; `left` is already evaluated. */
+    operate(node, operation, left, right) {
+      const float = floatType(node, this.records);
+      if (float) {
+        return Evaluator.floatArithmetic(float, operation, left, this.numericOperand(right));
+      }
+      if (!Number.isInteger(left)) {
+        throw new Unsupported(`only integer arithmetic is supported, not ${typeSpelling(node) || "this type"}`);
+      }
+      return Evaluator.arithmetic(integerTypeOf(node), operation, left, this.integerOperand(right));
     }
     byteSizeOf(node) {
       if (pointerDepth(node, this.records) > 0) return POINTER_SIZE;
@@ -2198,24 +2236,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         const [ptr] = this.rvalue(operand);
         value = asPointer(ptr);
       } else {
-        const targetInt = integerType(node, this.records);
-        const targetFloat = floatType(node, this.records);
-        const sourceInt = integerType(operand, this.records);
-        const sourceFloat = floatType(operand, this.records);
-        if (targetInt && sourceInt) {
-          value = exact(targetInt.wrap(BigInt(this.integerOperand(operand))));
-        } else if (targetFloat && (sourceInt || sourceFloat)) {
-          value = targetFloat.round(this.numericOperand(operand));
-          if (!Number.isFinite(value)) throw new Unsupported("non-finite floating-point value");
-        } else if (targetInt && sourceFloat) {
-          const truncated = Math.trunc(this.numericOperand(operand));
-          if (!Number.isFinite(truncated) || !targetInt.holds(BigInt(truncated))) {
-            throw new Unsupported("floating-point conversion overflows integer type");
-          }
-          value = exact(BigInt(truncated));
-        } else {
-          throw new Unsupported("only conversions between integer types are supported");
-        }
+        value = this.conversion(node, operand)(this.numericOperand(operand));
       }
       const source = displayedType(operand);
       if (source === displayedType(node)) {
@@ -2224,6 +2245,33 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         this.reduce(node, { kind: "convert", value, source });
       }
       return value;
+    }
+    /** How a number of the type of `source` becomes one of the type of `node`. */
+    conversion(node, source) {
+      const targetInt = integerType(node, this.records);
+      const targetFloat = floatType(node, this.records);
+      const sourceInt = integerType(source, this.records);
+      const sourceFloat = floatType(source, this.records);
+      if (targetInt && sourceInt) {
+        return (value) => exact(targetInt.wrap(BigInt(value)));
+      }
+      if (targetFloat && (sourceInt || sourceFloat)) {
+        return (value) => {
+          const rounded = targetFloat.round(value);
+          if (!Number.isFinite(rounded)) throw new Unsupported("non-finite floating-point value");
+          return rounded;
+        };
+      }
+      if (targetInt && sourceFloat) {
+        return (value) => {
+          const truncated = Math.trunc(value);
+          if (!Number.isFinite(truncated) || !targetInt.holds(BigInt(truncated))) {
+            throw new Unsupported("floating-point conversion overflows integer type");
+          }
+          return exact(BigInt(truncated));
+        };
+      }
+      throw new Unsupported("only conversions between integer types are supported");
     }
     braces(node, depth) {
       var _a;
@@ -2301,7 +2349,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       slot = null,
       type = null,
       size = null,
-      shape = null
+      shape = null,
+      fold = null
     }) {
       __publicField(this, "source");
       __publicField(this, "span");
@@ -2324,6 +2373,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       __publicField(this, "type");
       __publicField(this, "size");
       __publicField(this, "shape");
+      __publicField(this, "fold");
       this.source = source;
       this.span = span;
       this.pane = pane;
@@ -2345,6 +2395,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.type = type;
       this.size = size;
       this.shape = shape;
+      this.fold = fold;
     }
   }
   function typedParts(node, locate, names, records) {
@@ -2551,6 +2602,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         throw new Unsupported("a parenthesized variable as assignment target is not supported");
       }
       whole = left.kind !== "DeclRefExpr" || Object.hasOwn(references, ((_e = left.referencedDecl) == null ? void 0 : _e.name) ?? "");
+    } else if (cur.kind === "CompoundAssignOperator") {
+      return analyzeCompound(cur, source, (offset) => mapping[offset - start], {
+        state,
+        records,
+        references,
+        storageTypes
+      });
     } else if (cur.kind === "CXXOperatorCallExpr") {
       const operands = coutOperands(cur);
       if (operands.length === 0) {
@@ -2695,6 +2753,70 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       type: declared ? displayedType(variable) : null,
       size,
       shape: shapeOf(declared ? variable : root, records)
+    });
+  }
+  const COMPOUND_OPERATORS = ["+", "-", "*", "/", "%"];
+  function analyzeCompound(node, source, toSource, context) {
+    const { state, records, references, storageTypes } = context;
+    const spelling = node.opcode;
+    const operator = spelling.slice(0, -1);
+    if (!COMPOUND_OPERATORS.includes(operator)) {
+      throw new Unsupported(`unsupported compound assignment ${spelling}`);
+    }
+    const [left, right] = node.inner ?? [];
+    if (!left || !right || pointerDepth(left, records) > 0) {
+      throw new Unsupported("pointer arithmetic and comparison are not supported");
+    }
+    if (left.kind === "ParenExpr" && stripParentheses(left).kind === "DeclRefExpr") {
+      throw new Unsupported("a parenthesized variable as assignment target is not supported");
+    }
+    const written = source.replace(/;$/, "").replace(/\s+$/, "");
+    const [l0, l1] = bounds(left).map(toSource);
+    const [r0] = bounds(right).map(toSource);
+    const t0 = written.indexOf(spelling, l1);
+    if (t0 < 0 || t0 + spelling.length > r0) {
+      throw new Unsupported("macro-expanded statements are not supported");
+    }
+    const t1 = t0 + spelling.length;
+    const lead = written[t0 - 1] === " " ? "" : " ";
+    const trail = written[t1] === " " ? "" : " ";
+    const copied = written.slice(l0, l1);
+    const opened = `${lead}= ${copied} ${operator}${trail}`;
+    const pane = written.slice(0, t0) + opened + written.slice(t1);
+    const shift = opened.length - spelling.length;
+    const toPane = (offset) => {
+      const at = toSource(offset);
+      return at >= t1 ? at + shift : at;
+    };
+    const locate = (item) => {
+      const [b0, b1] = bounds(item);
+      return [toPane(b0), toPane(b1)];
+    };
+    const copy = [t0 + lead.length + 2, t0 + lead.length + 2 + copied.length];
+    const folded = [t0, t0 + opened.length];
+    const result = [copy[0], locate(node)[1]];
+    const evaluator = new Evaluator(state, locate, records, references, storageTypes);
+    const names = /* @__PURE__ */ new Set([...Object.keys(state), ...Object.keys(references)]);
+    const typed = [
+      ...typedParts(left, locate, names, records),
+      ...typedParts(right, locate, names, records)
+    ].sort(compareTyped);
+    const target = evaluator.lvalue(left);
+    const value = evaluator.compound(node, target, copy, result);
+    const [first, last] = bounds(node).map(toSource);
+    return new Statement({
+      source,
+      span: [first, last],
+      pane,
+      fold: { span: folded, edits: [[folded[0], copy[0], ""], [copy[0], folded[1], spelling]] },
+      expr: result,
+      result,
+      value,
+      reductions: evaluator.reductions,
+      target,
+      destination: locate(left),
+      typed,
+      shape: shapeOf(left, records)
     });
   }
   function storedAt(value, path, newValue) {
@@ -2924,16 +3046,27 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return text.replace(/\s+/g, "");
   }
   class Pane {
-    constructor(text, typed = [], slot = null) {
+    constructor(text, typed = [], slot = null, fold = null) {
       __publicField(this, "original");
       __publicField(this, "edits");
       // The typed parts, in original coordinates; `slot` is one of them.
       __publicField(this, "typed");
       __publicField(this, "slot");
+      __publicField(this, "folded");
       this.original = text;
-      this.edits = [];
+      this.edits = fold ? fold.edits.map((edit) => [...edit]) : [];
       this.typed = [...typed];
       this.slot = slot;
+      this.folded = fold ? fold.span : null;
+    }
+    /** Show the folded text, with `[start, end)` inside it replaced; returns the old span of the fold. */
+    unfold(start, end, newText, type) {
+      const [first, last] = this.folded;
+      const span = this.locate(first, last);
+      this.edits = this.edits.filter((edit) => !(first <= edit[0] && edit[1] <= last));
+      this.folded = null;
+      this.replace(start, end, newText, type);
+      return span;
     }
     /** The typed parts of the current text, in order. */
     get types() {
@@ -3094,13 +3227,21 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     statement(line, statement, before, after) {
       const typed = statement.slot ? [...statement.typed, [statement.slot, statement.type]] : statement.typed;
-      const pane = new Pane(statement.pane, typed, statement.slot);
+      const pane = new Pane(statement.pane, typed, statement.slot, statement.fold);
       const expr = statement.expr;
       const writes = statement.target !== null && statement.result !== null;
       this.add(line, pane, expr, writes ? before : after);
       for (const reduction of statement.reductions) {
         let text2;
         let op2;
+        if (reduction.kind === "read" && reduction.compound) {
+          text2 = this.show(load(before, reduction.name), reduction.shape);
+          const [start, end] = reduction.span;
+          const span2 = pane.unfold(start, end, text2, reduction.type);
+          const op3 = { kind: "read", name: reduction.name, value: text2, compound: reduction.compound };
+          this.add(line, pane, expr, before, { ...op3, span: span2 });
+          continue;
+        }
         if (reduction.kind === "read") {
           text2 = (reduction.record ?? "") + this.show(load(before, reduction.name), reduction.shape);
           op2 = { kind: "read", name: reduction.name, value: text2 };

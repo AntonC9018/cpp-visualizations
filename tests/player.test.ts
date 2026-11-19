@@ -730,3 +730,39 @@ test('static layout fits the tape and field names in a narrow host without clipp
     await page.locator('.course-visualization').screenshot({ path: `/tmp/layout-${name}.png` });
   }
 });
+
+// `a += b` opens into `a = 5 + b` as the old value of a arrives at the operator.
+test('a compound assignment reads into its operator in both languages', async () => {
+  const generated = traceSource('struct P { int x; int y; }; P s{1, 2}; s.x += 4;', { runtime: false });
+  const read = generated.steps.findIndex(step => step.op?.kind === 'read');
+  assert.equal(generated.steps[read].pane, 's.x = 1 + 4');
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  for (const [lang, theme, status] of [
+    ['en', 'dark', 'Read s.x: 1, since s.x += x is s.x = s.x + x'],
+    ['ru', 'light', 'Чтение s.x: 1, ведь s.x += x — это s.x = s.x + x'],
+  ] as const) {
+    await page.setContent(
+      PAGE.replace(trace, JSON.stringify(generated).replace(/</g, '\\u003c')).replace(
+        'lang="en" data-theme="dark"',
+        `lang="${lang}" data-theme="${theme}"`
+      )
+    );
+    await page.evaluate(() => window.CourseVisualization!.scan());
+    await page.waitForSelector('.cv-player');
+    const texts = await page.evaluate(stepIndex => {
+      const playerEl = (document.querySelector('.course-visualization') as PlayerElement).cvPlayer;
+      const shown: string[][] = [];
+      for (const progress of [0.1, 3]) {
+        playerEl.inspect(stepIndex, progress);
+        if (/NaN|undefined/.test(playerEl.svg.innerHTML)) throw new Error('invalid geometry');
+        shown.push([...playerEl.svg.querySelectorAll('text')].map(element => element.textContent ?? ''));
+      }
+      return shown;
+    }, read);
+    assert.ok(texts[0].includes('+='), 'the operator shows until the value arrives');
+    assert.ok(texts[1].join('').includes('= 1 +'), 'then the pane reads s.x = 1 + 4');
+    assert.equal(await page.locator('.cv-status').textContent(), status);
+  }
+  assert.deepEqual(errors, []);
+});

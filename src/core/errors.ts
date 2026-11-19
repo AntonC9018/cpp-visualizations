@@ -99,6 +99,9 @@ export interface AstNode {
   bases?: unknown[];
   type?: AstType;
   argType?: AstType;
+  // A compound assignment's operand and result types, `int` for `char c; c += 1`.
+  computeLHSType?: AstType;
+  computeResultType?: AstType;
   range?: AstRange;
   loc?: AstRangeEndpoint;
   referencedDecl?: AstReferencedDecl;

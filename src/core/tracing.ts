@@ -480,7 +480,8 @@ export function extractMainAstFromStdout(stdout: string, program: string): AstNo
  * One rewrite of the pane: the part at `span`, which indexes the statement's original pane,
  * becomes a value of `type`; inner reductions come first.
  * - `read`: the value of `name`; a struct value that has a type on its own keeps it in front,
- *   and `record` names it.
+ *   and `record` names it. With `compound`, it is the left operand of `a += b` read as it opens
+ *   into `a = 5 + b`: the read replaces the hidden copy of `a`, and the operator shows it.
  * - `addr`: the address of `name`.
  * - `deref`: the name of the variable that the pointer `name` points to (`value`, when known).
  * - `alias`: what the reference `name` is bound to, `spelling`.
@@ -489,7 +490,12 @@ export function extractMainAstFromStdout(stdout: string, program: string): AstNo
  *   reads the same.
  */
 export type Reduction = { readonly span: Span; readonly type: string; readonly shape: Shape } & (
-  | { readonly kind: 'read'; readonly name: string; readonly record: string | null }
+  | {
+      readonly kind: 'read';
+      readonly name: string;
+      readonly record: string | null;
+      readonly compound?: string;
+    }
   | { readonly kind: 'addr'; readonly name: string }
   | { readonly kind: 'deref'; readonly name: string; readonly value: Pointer | null }
   | { readonly kind: 'alias'; readonly name: string; readonly target: string }
@@ -610,12 +616,46 @@ class Evaluator {
   }
 
   private reduce(node: AstNode, details: ReductionDetails): void {
+    this.reduceAt(this.locate(node), node, details);
+  }
+
+  /** A reduction at `span` to a value of the type of `typed`, a node or just its type. */
+  private reduceAt(span: Span, typed: AstNode, details: ReductionDetails): void {
     this.reductions.push({
       ...details,
-      span: this.locate(node),
-      type: displayedType(node),
-      shape: shapeOf(node, this.records),
+      span,
+      type: displayedType(typed),
+      shape: shapeOf(typed, this.records),
     });
+  }
+
+  /**
+   * `left op= right`, already designated as `target`: the value it holds, read into the pane's
+   * hidden copy of `left` at `copy`, then the operation over `result` in the type Clang computes
+   * it in, and back in the type of `left`.
+   */
+  compound(node: AstNode, target: string, copy: Span, result: Span): number {
+    const [left, right] = node.inner!;
+    const operator = node.opcode!.slice(0, -1);
+    const held = this.load(target);
+    if (typeof held !== 'number') {
+      throw new Unsupported('pointer arithmetic and comparison are not supported');
+    }
+    this.reduceAt(copy, left, { kind: 'read', name: target, record: null, compound: operator });
+    const computation: AstNode = { type: node.computeLHSType };
+    const resultType: AstNode = { type: node.computeResultType };
+    const operand = this.convertedAt(copy, held, computation, left);
+    const value = this.operate(resultType, operator, operand, right);
+    this.reduceAt(result, resultType, { kind: 'eval', value, record: null });
+    return this.convertedAt(result, value, left, resultType);
+  }
+
+  /** `value`, of the type of `source`, in the type of `node`; a step at `span` if the type changes. */
+  private convertedAt(span: Span, value: number, node: AstNode, source: AstNode): number {
+    if (displayedType(node) === displayedType(source)) return value;
+    const converted = this.conversion(node, source)(value);
+    this.reduceAt(span, node, { kind: 'convert', value: converted, source: displayedType(source) });
+    return converted;
   }
 
   /** A brace list inside another one is part of its value, not an evaluation of its own. */
@@ -925,27 +965,24 @@ class Evaluator {
       children.length === 2
     ) {
       rejectPointerOperator(node);
-      const float = floatType(node, this.records);
-      if (float) {
-        value = Evaluator.floatArithmetic(
-          float,
-          node.opcode!,
-          this.numericOperand(children[0]),
-          this.numericOperand(children[1])
-        );
-      } else {
-        value = Evaluator.arithmetic(
-          integerTypeOf(node),
-          node.opcode!,
-          this.integerOperand(children[0]),
-          this.integerOperand(children[1])
-        );
-      }
+      value = this.operate(node, node.opcode!, this.numericOperand(children[0]), children[1]);
     } else {
       throw new Unsupported(`unsupported expression: ${kind} ${node?.opcode ?? ''}`.trimEnd());
     }
     this.reduce(node, { kind: 'eval', value, record: null });
     return [value, null];
+  }
+
+  /** `left operation right` in the integer or floating type of `node`; `left` is already evaluated. */
+  private operate(node: AstNode, operation: string, left: number, right: AstNode): number {
+    const float = floatType(node, this.records);
+    if (float) {
+      return Evaluator.floatArithmetic(float, operation, left, this.numericOperand(right));
+    }
+    if (!Number.isInteger(left)) {
+      throw new Unsupported(`only integer arithmetic is supported, not ${typeSpelling(node) || 'this type'}`);
+    }
+    return Evaluator.arithmetic(integerTypeOf(node), operation, left, this.integerOperand(right));
   }
 
   private byteSizeOf(node: AstNode): number {
@@ -984,24 +1021,7 @@ class Evaluator {
       const [ptr] = this.rvalue(operand);
       value = asPointer(ptr);
     } else {
-      const targetInt = integerType(node, this.records);
-      const targetFloat = floatType(node, this.records);
-      const sourceInt = integerType(operand, this.records);
-      const sourceFloat = floatType(operand, this.records);
-      if (targetInt && sourceInt) {
-        value = exact(targetInt.wrap(BigInt(this.integerOperand(operand))));
-      } else if (targetFloat && (sourceInt || sourceFloat)) {
-        value = targetFloat.round(this.numericOperand(operand));
-        if (!Number.isFinite(value)) throw new Unsupported('non-finite floating-point value');
-      } else if (targetInt && sourceFloat) {
-        const truncated = Math.trunc(this.numericOperand(operand));
-        if (!Number.isFinite(truncated) || !targetInt.holds(BigInt(truncated))) {
-          throw new Unsupported('floating-point conversion overflows integer type');
-        }
-        value = exact(BigInt(truncated));
-      } else {
-        throw new Unsupported('only conversions between integer types are supported');
-      }
+      value = this.conversion(node, operand)(this.numericOperand(operand));
     }
     const source = displayedType(operand);
     if (source === displayedType(node)) {
@@ -1011,6 +1031,34 @@ class Evaluator {
       this.reduce(node, { kind: 'convert', value, source });
     }
     return value;
+  }
+
+  /** How a number of the type of `source` becomes one of the type of `node`. */
+  private conversion(node: AstNode, source: AstNode): (value: number) => number {
+    const targetInt = integerType(node, this.records);
+    const targetFloat = floatType(node, this.records);
+    const sourceInt = integerType(source, this.records);
+    const sourceFloat = floatType(source, this.records);
+    if (targetInt && sourceInt) {
+      return value => exact(targetInt.wrap(BigInt(value)));
+    }
+    if (targetFloat && (sourceInt || sourceFloat)) {
+      return value => {
+        const rounded = targetFloat.round(value);
+        if (!Number.isFinite(rounded)) throw new Unsupported('non-finite floating-point value');
+        return rounded;
+      };
+    }
+    if (targetInt && sourceFloat) {
+      return value => {
+        const truncated = Math.trunc(value);
+        if (!Number.isFinite(truncated) || !targetInt.holds(BigInt(truncated))) {
+          throw new Unsupported('floating-point conversion overflows integer type');
+        }
+        return exact(BigInt(truncated));
+      };
+    }
+    throw new Unsupported('only conversions between integer types are supported');
   }
 
   private braces(node: AstNode, depth: number): Value {
@@ -1082,6 +1130,15 @@ function stripParentheses(node: AstNode): AstNode {
 
 // Statements -------------------------------------------------------------------------------
 
+/**
+ * Original pane text that first shows as written: `a = a + b` reads `a += b` until the
+ * compound read opens it. `span` covers the hidden text, which `edits` spell as written.
+ */
+export interface Fold {
+  span: Span;
+  edits: [number, number, string][];
+}
+
 /** A part of the pane with a type before anything is reduced: its span and its type. */
 export type Typed = [Span, string];
 
@@ -1112,6 +1169,7 @@ export class Statement {
   type: string | null;
   size: number | null;
   shape: Shape;
+  fold: Fold | null;
 
   constructor({
     source,
@@ -1135,6 +1193,7 @@ export class Statement {
     type = null,
     size = null,
     shape = null,
+    fold = null,
   }: {
     source: string;
     span: Span | null;
@@ -1157,6 +1216,7 @@ export class Statement {
     type?: string | null;
     size?: number | null;
     shape?: Shape;
+    fold?: Fold | null;
   }) {
     this.source = source;
     this.span = span;
@@ -1179,6 +1239,7 @@ export class Statement {
     this.type = type;
     this.size = size;
     this.shape = shape;
+    this.fold = fold;
   }
 }
 
@@ -1453,6 +1514,13 @@ function analyzeStatement(
     whole =
       left.kind !== 'DeclRefExpr' ||
       Object.hasOwn(references, left.referencedDecl?.name ?? '');
+  } else if (cur.kind === 'CompoundAssignOperator') {
+    return analyzeCompound(cur, source, (offset: number) => mapping[offset - start], {
+      state,
+      records,
+      references,
+      storageTypes,
+    });
   } else if (cur.kind === 'CXXOperatorCallExpr') {
     const operands = coutOperands(cur);
     if (operands.length === 0) {
@@ -1618,6 +1686,88 @@ function analyzeStatement(
     type: declared ? displayedType(variable) : null,
     size,
     shape: shapeOf(declared ? variable : root, records),
+  });
+}
+
+const COMPOUND_OPERATORS = ['+', '-', '*', '/', '%'];
+
+/**
+ * `a += b` as `a = a + b`: the pane's original text spells the second form, folded to show the
+ * first until the compound read of `a` opens it.
+ */
+function analyzeCompound(
+  node: AstNode,
+  source: string,
+  toSource: (offset: number) => number,
+  context: {
+    state: State;
+    records: Record<string, RecordInfo>;
+    references: Record<string, string>;
+    storageTypes: Record<string, string>;
+  }
+): Statement {
+  const { state, records, references, storageTypes } = context;
+  const spelling = node.opcode!;
+  const operator = spelling.slice(0, -1);
+  if (!COMPOUND_OPERATORS.includes(operator)) {
+    throw new Unsupported(`unsupported compound assignment ${spelling}`);
+  }
+  const [left, right] = node.inner ?? [];
+  if (!left || !right || pointerDepth(left, records) > 0) {
+    throw new Unsupported('pointer arithmetic and comparison are not supported');
+  }
+  if (left.kind === 'ParenExpr' && stripParentheses(left).kind === 'DeclRefExpr') {
+    throw new Unsupported('a parenthesized variable as assignment target is not supported');
+  }
+  const written = source.replace(/;$/, '').replace(/\s+$/, '');
+  const [l0, l1] = bounds(left).map(toSource);
+  const [r0] = bounds(right).map(toSource);
+  const t0 = written.indexOf(spelling, l1);
+  if (t0 < 0 || t0 + spelling.length > r0) {
+    throw new Unsupported('macro-expanded statements are not supported');
+  }
+  const t1 = t0 + spelling.length;
+  const lead = written[t0 - 1] === ' ' ? '' : ' ';
+  const trail = written[t1] === ' ' ? '' : ' ';
+  const copied = written.slice(l0, l1);
+  const opened = `${lead}= ${copied} ${operator}${trail}`;
+  const pane = written.slice(0, t0) + opened + written.slice(t1);
+  const shift = opened.length - spelling.length;
+  const toPane = (offset: number): number => {
+    const at = toSource(offset);
+    return at >= t1 ? at + shift : at;
+  };
+  const locate = (item: AstNode): Span => {
+    const [b0, b1] = bounds(item);
+    return [toPane(b0), toPane(b1)];
+  };
+  const copy: Span = [t0 + lead.length + 2, t0 + lead.length + 2 + copied.length];
+  const folded: Span = [t0, t0 + opened.length];
+  const result: Span = [copy[0], locate(node)[1]];
+
+  const evaluator = new Evaluator(state, locate, records, references, storageTypes);
+  const names = new Set([...Object.keys(state), ...Object.keys(references)]);
+  const typed = [
+    ...typedParts(left, locate, names, records),
+    ...typedParts(right, locate, names, records),
+  ].sort(compareTyped);
+  // The written order: the target, its old value, then the right side.
+  const target = evaluator.lvalue(left);
+  const value = evaluator.compound(node, target, copy, result);
+  const [first, last] = bounds(node).map(toSource);
+  return new Statement({
+    source,
+    span: [first, last],
+    pane,
+    fold: { span: folded, edits: [[folded[0], copy[0], ''], [copy[0], folded[1], spelling]] },
+    expr: result,
+    result,
+    value,
+    reductions: evaluator.reductions,
+    target,
+    destination: locate(left),
+    typed,
+    shape: shapeOf(left, records),
   });
 }
 
@@ -1943,12 +2093,24 @@ class Pane {
   // The typed parts, in original coordinates; `slot` is one of them.
   typed: Typed[];
   slot: Span | null;
+  folded: Span | null;
 
-  constructor(text: string, typed: Typed[] = [], slot: Span | null = null) {
+  constructor(text: string, typed: Typed[] = [], slot: Span | null = null, fold: Fold | null = null) {
     this.original = text;
-    this.edits = []; // [start, end, text] in original coordinates
+    this.edits = fold ? fold.edits.map(edit => [...edit]) : []; // [start, end, text] in original coordinates
     this.typed = [...typed];
     this.slot = slot;
+    this.folded = fold ? fold.span : null;
+  }
+
+  /** Show the folded text, with `[start, end)` inside it replaced; returns the old span of the fold. */
+  unfold(start: number, end: number, newText: string, type: string): Span {
+    const [first, last] = this.folded!;
+    const span = this.locate(first, last);
+    this.edits = this.edits.filter(edit => !(first <= edit[0] && edit[1] <= last));
+    this.folded = null;
+    this.replace(start, end, newText, type);
+    return span;
   }
 
   /** The typed parts of the current text, in order. */
@@ -2149,13 +2311,21 @@ class Renderer {
     after: State
   ): void {
     const typed: Typed[] = statement.slot ? [...statement.typed, [statement.slot, statement.type!]] : statement.typed;
-    const pane = new Pane(statement.pane, typed, statement.slot);
+    const pane = new Pane(statement.pane, typed, statement.slot, statement.fold);
     const expr = statement.expr;
     const writes = statement.target !== null && statement.result !== null;
     this.add(line, pane, expr, writes ? before : after);
     for (const reduction of statement.reductions) {
       let text: string;
       let op: Unplaced<TraceOperation>;
+      if (reduction.kind === 'read' && reduction.compound) {
+        text = this.show(load(before, reduction.name), reduction.shape);
+        const [start, end] = reduction.span;
+        const span = pane.unfold(start, end, text, reduction.type);
+        const op = { kind: 'read' as const, name: reduction.name, value: text, compound: reduction.compound };
+        this.add(line, pane, expr, before, { ...op, span });
+        continue;
+      }
       if (reduction.kind === 'read') {
         text =
           (reduction.record ?? '') +

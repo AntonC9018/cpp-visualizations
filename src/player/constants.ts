@@ -134,6 +134,7 @@ export interface PlayerStrings {
   jump: string;
   copy: string;
   read: string;
+  compound: string;
   addr: string;
   deref: string;
   eval: string;
@@ -168,6 +169,7 @@ export const STRINGS: Record<string, PlayerStrings> = {
     jump: 'Jump to line {line}: {code}',
     copy: 'Line {line}: {code}',
     read: 'Read {name}: {value}',
+    compound: 'Read {name}: {value}, since {name} {compound}= x is {name} = {name} {compound} x',
     addr: 'Take the address of {name}: {value}',
     deref: 'Follow the address in {via} to {target}',
     eval: 'Evaluate: {value}',
@@ -200,6 +202,7 @@ export const STRINGS: Record<string, PlayerStrings> = {
     jump: 'Перейти к строке {line}: {code}',
     copy: 'Строка {line}: {code}',
     read: 'Чтение {name}: {value}',
+    compound: 'Чтение {name}: {value}, ведь {name} {compound}= x — это {name} = {name} {compound} x',
     addr: 'Адрес {name}: {value}',
     deref: 'Переход по адресу из {via} к {target}',
     eval: 'Вычисление: {value}',

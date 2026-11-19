@@ -142,7 +142,7 @@ a value may only change from `null` to `"?"` (a declaration).
 
 | `kind` | Fields | Meaning |
 | --- | --- | --- |
-| `read` | `name`, `value`, `span` | `name`'s value replaces `span` of the previous pane. |
+| `read` | `name`, `value`, `span`, optional `compound` | `name`'s value replaces `span` of the previous pane. |
 | `addr` | `name`, `value`, `span` | `&name`, at `span`, becomes the address `value`. |
 | `deref` | `target`, `via`, `span` | `*…` at `span` becomes `target`, which `via` pointed to. |
 | `eval` | `value`, `span` | An operator, parentheses or `{}` at `span` reduce to `value`. |
@@ -155,6 +155,8 @@ a value may only change from `null` to `"?"` (a declaration).
 
 - For `read`, `addr`, `deref`, `eval` and `convert`, `span` indexes the previous pane, and the
   new pane is the previous one with that span replaced by `value` (`target` for `deref`).
+- A `read` with `compound` (`+`, `-`, `*`, `/` or `%`) opens `a += b` into `a = 5 + b`: its
+  `span` covers `+=`, and the replacement is `= 5 +`, spaced out when the code is not.
 - A `convert` replaces a typed part of type `from`, or a written cast around one
   (`static_cast<uint8_t>(256)`), by a typed part of type `to`. The text may stay the same
   (`0` → `0`): the label and underline change colour all the same.

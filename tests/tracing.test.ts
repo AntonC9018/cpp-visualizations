@@ -6,7 +6,14 @@ import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { dumpsSorted } from '../src/core/json_format.ts';
-import { type ExecutionTrace, type TraceOperation, type TraceStep, scalar } from '../src/core/trace_format.ts';
+import {
+  type ExecutionTrace,
+  FormatError,
+  type TraceOperation,
+  type TraceStep,
+  scalar,
+  validate,
+} from '../src/core/trace_format.ts';
 import { Cell, Execution } from '../src/node/execution.ts';
 import * as tracing from '../src/node/tracing.ts';
 import { Pointer, Unsupported } from '../src/node/tracing.ts';
@@ -433,7 +440,7 @@ describe('StaticPointerTraceTests', () => {
       'int* p{}; *p = 1;': /null pointer p/,
       'int* p; *p = 1;': /uninitialized variable p/,
       'int a{5}; int* b{&a}; int* c = b++;': /UnaryOperator/,
-      'int a{5}; int* p{&a}; *p += 1;': /CompoundAssignOperator/,
+      'int a{5}; int* p{&a}; *p <<= 1;': /unsupported compound assignment <<=/,
       'int a{5}; std::cout << std::endl << a;': /one integer output followed only by whitespace/,
       'int a{5}; int* p{&a}; std::cout << std::endl << p;':
         /one integer output followed only by whitespace/,
@@ -468,6 +475,86 @@ describe('StaticPointerTraceTests', () => {
         err instanceof Unsupported &&
         /^error: cannot initialize a variable of type 'int \*'/.test(err.message)
     );
+  });
+});
+
+describe('CompoundAssignmentTests', () => {
+  const unsupported = (source: string, reason: RegExp): void => {
+    assert.throws(
+      () => tracing.trace(source, { runtime: false }),
+      (err: unknown) => err instanceof Unsupported && reason.test(err.message)
+    );
+  };
+
+  test('the_read_opens_the_operator_into_a_plain_assignment', () => {
+    const trace = tracing.trace('int a = 5; int b = 2; a += b;', { runtime: false });
+    assert.deepEqual(panes(trace, 2), ['a += b', 'a = 5 + b', 'a = 5 + 2', 'a = 7', 'a = 7']);
+    assert.deepEqual(ops(trace, 2)[0], {
+      kind: 'read',
+      name: 'a',
+      value: '5',
+      compound: '+',
+      span: [2, 4],
+    });
+    const expressions = trace.steps.filter(step => step.line === 2).map(step => step.pane.slice(...step.expr!));
+    assert.deepEqual(expressions, ['+= b', '5 + b', '5 + 2', '7', '7']);
+    assert.deepEqual(final(trace), { a: 7, b: 2 });
+  });
+
+  test('the_target_is_designated_once_before_its_value_is_read', () => {
+    const trace = tracing.trace(
+      'struct P { int x; int y; }; P s{1, 2}; P* p = &s; p->x -= 3; s.y%=2; int& r = s.x; r *= 4;',
+      { runtime: false }
+    );
+    assert.deepEqual(panes(trace, 2), ['p->x -= 3', '72->x -= 3', 's.x -= 3', 's.x = 1 - 3', 's.x = -2', 's.x = -2']);
+    assert.deepEqual(panes(trace, 3), ['s.y%=2', 's.y = 2 % 2', 's.y = 0', 's.y = 0']);
+    assert.deepEqual(panes(trace, 5), ['r *= 4', 's.x *= 4', 's.x = -2 * 4', 's.x = -8', 's.x = -8']);
+    const deref = tracing.trace('int a{5}; int* p{&a}; *p += 1;', { runtime: false });
+    assert.deepEqual(panes(deref, 2), ['*p += 1', '*76 += 1', 'a += 1', 'a = 5 + 1', 'a = 6', 'a = 6']);
+  });
+
+  test('the_operation_runs_in_the_type_clang_computes_and_converts_back', () => {
+    const trace = tracing.trace('short c = 1; c += 1; int a = 7; a *= 1.5; float f = 1.5f; f /= 2;', {
+      runtime: false,
+      types: true,
+    });
+    const converts = (line: number): string[] =>
+      ops(trace, line).flatMap(op => (op.kind === 'convert' ? [`${op.from}->${op.to}`] : []));
+    assert.deepEqual(panes(trace, 1), ['c += 1', 'c = 1 + 1', 'c = 1 + 1', 'c = 2', 'c = 2', 'c = 2']);
+    assert.deepEqual(converts(1), ['short->int', 'int->short']);
+    assert.deepEqual(panes(trace, 3), ['a *= 1.5', 'a = 7 * 1.5', 'a = 7 * 1.5', 'a = 10.5', 'a = 10', 'a = 10']);
+    assert.deepEqual(converts(3), ['int->double', 'double->int']);
+    assert.deepEqual(converts(5), ['int->float']);
+    assert.deepEqual(final(trace), { c: 2, a: 10, f: 0.75 });
+  });
+
+  test('operators_without_a_binary_form_and_pointers_are_rejected', () => {
+    unsupported('int a = 5; a <<= 1;', /unsupported compound assignment <<=/);
+    unsupported('int a = 5; a |= 1;', /unsupported compound assignment \|=/);
+    unsupported('int a = 5; int* p = &a; p += 1;', /pointer arithmetic/);
+    unsupported('int a; a += 1;', /uninitialized variable a/);
+    unsupported('int a = 5; a /= 0;', /undefined integer division/);
+  });
+
+  test('the_validator_checks_the_opened_operator', () => {
+    const trace = tracing.trace('int a = 5; a -= 2;', { runtime: false });
+    const index = trace.steps.findIndex(step => step.op?.kind === 'read');
+    const rejects = (message: RegExp, change: (op: Record<string, unknown>) => void): void => {
+      const broken = structuredClone(trace);
+      change(broken.steps[index].op as unknown as Record<string, unknown>);
+      assert.throws(() => validate(broken), (err: unknown) => err instanceof FormatError && message.test(err.message));
+    };
+    validate(trace);
+    rejects(/does not cover \+=/, op => (op.compound = '+'));
+    rejects(/not an arithmetic operator/, op => (op.compound = '<<'));
+    rejects(/the replacement '= 5 -' is not '5'/, op => delete op.compound);
+  });
+
+  test('runtime_values_agree', () => {
+    const trace = tracing.trace(
+      'int a = 5; a += 2; a %= 4; unsigned u = 1; u -= 2; double d = 0.1; d *= 3; long l = 9; l /= -2;'
+    );
+    assert.deepEqual(final(trace), { a: 3, u: 4294967295, d: 0.30000000000000004, l: -4 });
   });
 });
 

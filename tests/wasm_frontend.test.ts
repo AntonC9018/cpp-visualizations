@@ -211,6 +211,7 @@ describe('ClangWasmParityTests', { skip: !existsSync(WASM_PATH) }, () => {
       'int a{}; std::cout << a;',
       'struct A { int f1; int f2; }; A a{ 1, 2 }; A b = A{ .f2 = 5 }; b = a;',
       'int x{ 0 }; int* px{ &x }; int* py{ px }; *px = 1; std::cout << *py;',
+      'struct P { int x; }; P s{ 5 }; P* p{ &s }; p->x -= 2; short c = 1; c += 1; double d = 1; d *= c;',
     ];
     for (const source of moreTraces) {
       assert.equal(
