@@ -1,4 +1,4 @@
-// The pinned compiler and debugger, and the error every rejected snippet raises.
+// Launch the pinned native Clang and translate its output into trace data.
 import { spawnSync } from 'node:child_process';
 import { accessSync, constants, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

@@ -199,7 +199,7 @@ test('a button disabled under focus hands focus to the player', async () => {
   assert.equal(await index(), 1);
 });
 
-// This fixture is emitted by the compiler/GDB tracer from lesson 05, example 26.
+// This fixture is emitted by the compiler-backed tracer from lesson 05, example 26.
 // Its copied pointer still points into s1, while s2.a keeps the old integer value.
 test('a generated struct trace plays shallow copies in both themes', async () => {
   const generated = JSON.parse(

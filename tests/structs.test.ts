@@ -1,4 +1,4 @@
-// Aggregate tracing against Clang's ABI and GDB, including pointer aliasing.
+// Aggregate tracing against Clang's ABI and constant evaluator, including pointer aliasing.
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

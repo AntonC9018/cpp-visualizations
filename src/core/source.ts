@@ -22,7 +22,8 @@ export function readTokens(dump: string, file: string, source: string): SourceTo
     if (expansion) throw new Unsupported('macro-expanded statements are not supported');
     const start = offsets[lines[Number(line) - 1] + Number(column) - 1];
     if (kind === 'eof') {
-      physicalEof = start === source.length || /^\r?\n$|^\r$/.test(source.slice(start));
+      physicalEof = start === source.length ||
+        (start !== undefined && /^(?:\r\n|\r|\n)$/.test(source.slice(start)));
       continue;
     }
     // The token dump reports presumed locations (e.g. following #line).
@@ -55,8 +56,11 @@ export class SourceFile {
     }
 
     const headers = HEADERS + arrayHeader(source, frontend) + 'using namespace std;\n';
-    const tokens = frontend.tokens(headers + source).filter(token => token.start >= headers.length)
-      .map(token => ({ ...token, start: token.start - headers.length, end: token.end - headers.length }));
+    // Only a directive can use convenience-header macros to choose which source is active.
+    // Avoid dumping all tokens in those headers for an ordinary statement fragment.
+    const context = /#|%:/.test(source) ? headers : '';
+    const tokens = frontend.tokens(context + source).filter(token => token.start >= context.length)
+      .map(token => ({ ...token, start: token.start - context.length, end: token.end - context.length }));
     // A function declarator followed by a body distinguishes a complete program from a
     // fragment calling a function. Clang checks the declarator and body after this choice.
     this.fragment = !tokens.some((token, i) => {

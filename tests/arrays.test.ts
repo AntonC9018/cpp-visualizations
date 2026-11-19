@@ -72,7 +72,7 @@ test('deduced arrays can be referenced and addressed', () => {
   assert.equal(last.values['a.[1]'], 8);
 });
 
-test('an array field of pointers has GDB-verified element offsets and targets', () => {
+test('an array field of pointers has compiler-verified element offsets and targets', () => {
   const result = trace(`
     struct Box { int guard; std::array<int*, 2> ptrs; };
     int n;

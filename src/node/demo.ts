@@ -4,7 +4,7 @@
 // `04_pointer.md` with the compiler-backed tracer and adds the pointer and struct fixtures. Each player sits in a
 // collapsed `<details>`, as on the site; the buttons in the header switch `<html data-theme>`
 // and `lang`, as Starlight does.
-// Run from the course root, inside the default shell (Clang and GDB):
+// Run from the course root, inside the default shell (Clang):
 //   nix develop --command node visualizations/player/demo.mjs
 // Then open player/demo.html (git-ignored).
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
