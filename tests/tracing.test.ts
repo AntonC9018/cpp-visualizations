@@ -602,6 +602,9 @@ describe('CompoundAssignmentTests', () => {
       ['*', 'sizeof -b', false],
       ['*', 'b and c', true],
       ['+', 'b * -c', false],
+      ['*', 'static_cast<decltype(+"x"[0:>)>(2) + 3', true],
+      ['*', 'b<:0:> + c', true],
+      ['+', 'b<:0:> * c', false],
     ];
     for (const [operator, right, grouped] of cases) {
       assert.equal(groups(operator, right), grouped, `${operator}= ${right}`);
@@ -671,10 +674,16 @@ describe('CompoundAssignmentTests', () => {
   });
 
   test('spaces_and_comments_before_the_semicolon_still_run', () => {
-    const trace = tracing.trace('int a = 5; a += 2 ; a *= 3 /* thrice */ ;\na -= 1 \\\n; a *= 2 \\ \f\n;\nint b = 1 \\ \t\n;');
+    const trace = tracing.trace('int a = 5; a += 2 ; a *= 3 /* thrice */ ;\nint b = 1 // one\n;');
     assert.deepEqual(panes(trace, 1), ['a += 2', 'a = 5 + 2', 'a = 7', 'a = 7']);
-    assert.deepEqual(final(trace), { a: 40, b: 1 });
-    assert.equal(trace.source.at(-1), 'int b = 1 ;');
+    assert.deepEqual(final(trace), { a: 21, b: 1 });
+    assert.deepEqual(trace.source.slice(1), ['a += 2;', 'a *= 3;', 'int b = 1 ;']);
+  });
+
+  test('line_splices_are_refused', () => {
+    unsupported('int a = 5; a += 2 \\\n;', /line splice/);
+    unsupported('int a = 1; // note \\ \na *= 3;', /line splice/);
+    unsupported('int a = sizeof(+"a\\\n//b"[0]);', /line splice/);
   });
 
   test('runtime_values_agree', () => {

@@ -691,7 +691,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       from
     };
   }
-  const TOKEN = /\s+|\.?\d(?:[eEpP][+-]|[\w.'])*|[A-Za-z_]\w*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|->\*?|\.\*|::|\+\+|--|<=>|<<=?|>>=?|[<>=!]=|&&|\|\||[-+*/%^&|]=|[\s\S]/g;
+  const TOKEN = /\s+|\.?\d(?:[eEpP][+-]|[\w.'])*|[A-Za-z_]\w*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|->\*?|\.\*|::|\+\+|--|<=>|<%|%>|<:(?!:(?![:>]))|:>|<<=?|>>=?|[<>=!]=|&&|\|\||[-+*/%^&|]=|[\s\S]/g;
+  const DIGRAPHS = { "<:": "[", ":>": "]", "<%": "{", "%>": "}" };
   const TIGHTER = { "+": ["*", "/", "%"], "-": ["*", "/", "%"] };
   const PREFIX = ["sizeof", "alignof", "new", "delete", "throw", "not", "compl", "co_await"];
   const BINARY = ["and", "or", "bitand", "bitor", "xor", "not_eq", "and_eq", "or_eq", "xor_eq"];
@@ -701,8 +702,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const open = [];
     let operand = false;
     let template = false;
-    for (const [token] of right.matchAll(TOKEN)) {
-      if (/^\s/.test(token)) continue;
+    for (const [spelled] of right.matchAll(TOKEN)) {
+      if (/^\s/.test(spelled)) continue;
+      const token = DIGRAPHS[spelled] ?? spelled;
       const opensTemplate = template;
       template = false;
       if (token === "++" || token === "--") continue;
@@ -1628,7 +1630,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   const MAX_EXACT = 2n ** 53n;
   const MAX_STATEMENTS = 20;
   const MAX_VARIABLES = 8;
-  const QUOTED_OR_COMMENT = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\/\/[^\n]*|\/\*[\s\S]*?\*\/|\\[ \t\f\v]*\r?\n/g;
+  const QUOTED_OR_COMMENT = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\/\/[^\n]*|\/\*[\s\S]*?\*\//g;
   const FLOATINGS = Object.freeze({
     float: Object.freeze({ size: 4, round: (value) => Math.fround(value) }),
     double: Object.freeze({ size: 8, round: (value) => value })
@@ -1738,8 +1740,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return true;
   }
   function snippetBody(source) {
+    if (/\\[ \t\f\v]*\r?\n/.test(source)) {
+      throw new Unsupported("a backslash at the end of a line (a line splice) is not supported");
+    }
     let cleaned = source.replace(QUOTED_OR_COMMENT, (value) => {
-      if (value.startsWith("\\")) return "";
       if (value.startsWith("//") || value.startsWith("/*")) {
         const newlines = (value.match(/\n/g) || []).length;
         return "\n".repeat(newlines) + " ";
@@ -2599,7 +2603,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       cur = cur.inner[0];
     }
     const [start, end] = bounds(cur);
-    const terminated = /^\s*;/.test(program.slice(end));
+    const terminated = /^(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*\n)*;/.test(program.slice(end));
     const [compacted, mapping] = compact(program.slice(start, end));
     const source = terminated ? `${compacted};` : compacted;
     let left = null;

@@ -125,7 +125,7 @@ const POINTER_SIZE = 8;
 const MAX_EXACT = 2n ** 53n;
 const MAX_STATEMENTS = 20;
 const MAX_VARIABLES = 8;
-const QUOTED_OR_COMMENT = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\/\/[^\n]*|\/\*[\s\S]*?\*\/|\\[ \t\f\v]*\r?\n/g;
+const QUOTED_OR_COMMENT = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\/\/[^\n]*|\/\*[\s\S]*?\*\//g;
 
 // Values -----------------------------------------------------------------------------------
 
@@ -291,9 +291,12 @@ function isAscii(str: string): boolean {
 }
 
 export function snippetBody(source: string): string {
+  // A backslash before a line break joins the lines before anything else is read, inside
+  // comments and literals too; lessons never need one, so none is traced.
+  if (/\\[ \t\f\v]*\r?\n/.test(source)) {
+    throw new Unsupported('a backslash at the end of a line (a line splice) is not supported');
+  }
   let cleaned = source.replace(QUOTED_OR_COMMENT, value => {
-    // A backslash before a line break joins the lines, as the compiler does.
-    if (value.startsWith('\\')) return '';
     if (value.startsWith('//') || value.startsWith('/*')) {
       const newlines = (value.match(/\n/g) || []).length;
       return '\n'.repeat(newlines) + ' ';
@@ -1394,9 +1397,8 @@ function analyzeStatement(
     cur = cur.inner![0];
   }
   const [start, end] = bounds(cur);
-  // The statement as GDB runs it ends with its `;`, wherever spaces put it; the snippet has
-  // neither comments nor line splices by now.
-  const terminated = /^\s*;/.test(program.slice(end));
+  // The statement as GDB runs it ends with its `;`, wherever spaces or comments put it.
+  const terminated = /^(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*\n)*;/.test(program.slice(end));
   const [compacted, mapping] = compact(program.slice(start, end));
   const source = terminated ? `${compacted};` : compacted;
   let left: AstNode | null = null;

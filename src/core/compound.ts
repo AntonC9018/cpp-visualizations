@@ -36,7 +36,10 @@ export function openCompound(pane: string, span: Span, left: string, operator: s
 
 /** C++ tokens, longest first: pp-numbers, names, literals, then operators. */
 const TOKEN =
-  /\s+|\.?\d(?:[eEpP][+-]|[\w.'])*|[A-Za-z_]\w*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|->\*?|\.\*|::|\+\+|--|<=>|<<=?|>>=?|[<>=!]=|&&|\|\||[-+*/%^&|]=|[\s\S]/g;
+  /\s+|\.?\d(?:[eEpP][+-]|[\w.'])*|[A-Za-z_]\w*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|->\*?|\.\*|::|\+\+|--|<=>|<%|%>|<:(?!:(?![:>]))|:>|<<=?|>>=?|[<>=!]=|&&|\|\||[-+*/%^&|]=|[\s\S]/g;
+
+/** The brackets digraphs spell. */
+const DIGRAPHS: Record<string, string> = { '<:': '[', ':>': ']', '<%': '{', '%>': '}' };
 
 /** The operators that bind tighter than each compound operator's binary form. */
 const TIGHTER: Record<string, readonly string[]> = { '+': ['*', '/', '%'], '-': ['*', '/', '%'] };
@@ -62,8 +65,9 @@ export function groups(operator: string, right: string): boolean {
   const open: string[] = []; // the brackets the tokens so far leave open
   let operand = false; // whether the tokens so far end in an operand, so an operator is binary
   let template = false; // whether a `<` here opens template arguments
-  for (const [token] of right.matchAll(TOKEN)) {
-    if (/^\s/.test(token)) continue;
+  for (const [spelled] of right.matchAll(TOKEN)) {
+    if (/^\s/.test(spelled)) continue;
+    const token = DIGRAPHS[spelled] ?? spelled;
     const opensTemplate = template;
     template = false;
     if (token === '++' || token === '--') continue;
