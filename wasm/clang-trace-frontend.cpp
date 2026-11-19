@@ -13,6 +13,7 @@
 static const char *kVirtualStdHeader = R"cpp(
 #ifndef COURSE_VIRTUAL_STD_H
 #define COURSE_VIRTUAL_STD_H
+#define UINT8_MAX 255
 namespace std {
   using size_t = decltype(sizeof(0));
   using ptrdiff_t = decltype(static_cast<char*>(nullptr) - static_cast<char*>(nullptr));
@@ -60,12 +61,10 @@ using uintptr_t = std::uintptr_t;
 
 int main(int argc, char **argv) {
   auto VFS = llvm::makeIntrusiveRefCnt<llvm::vfs::InMemoryFileSystem>();
-  VFS->addFile("/virtual/include/iostream", 0,
-               llvm::MemoryBuffer::getMemBuffer(kVirtualStdHeader));
-  VFS->addFile("/virtual/include/cstdint", 0,
-               llvm::MemoryBuffer::getMemBuffer(kVirtualStdHeader));
-  VFS->addFile("/virtual/include/cstddef", 0,
-               llvm::MemoryBuffer::getMemBuffer(kVirtualStdHeader));
+  for (const char *header : {"iostream", "cstdint", "cstddef", "stdint.h", "stddef.h"}) {
+    VFS->addFile(std::string("/virtual/include/") + header, 0,
+                 llvm::MemoryBuffer::getMemBuffer(kVirtualStdHeader));
+  }
 
   // The array declarations are supplied in the trace preamble.
   VFS->addFile("/virtual/include/array", 0,

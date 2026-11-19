@@ -11,21 +11,27 @@ export interface SourceToken {
 export function readTokens(dump: string, file: string, source: string): SourceToken[] {
   const { lines, offsets } = sourceCoordinates(source);
   const tokens: SourceToken[] = [];
+  let physicalEof = false;
   // DumpTokens quotes original spellings, which can themselves contain quotes and newlines.
   const entry = /^(\w+) '([\s\S]*?)'\t[^\n]*?\tLoc=<([^\n]*)>\r?$/gm;
   for (const [, kind, spelling, location] of dump.matchAll(entry)) {
-    if (kind === 'eof' || !location.startsWith(file + ':')) continue;
+    if (!location.startsWith(file + ':')) continue;
     const coordinates = /^(\d+):(\d+)(.*)$/.exec(location.slice(file.length + 1));
     if (!coordinates) continue;
     const [, line, column, expansion] = coordinates;
     if (expansion) throw new Unsupported('macro-expanded statements are not supported');
     const start = offsets[lines[Number(line) - 1] + Number(column) - 1];
+    if (kind === 'eof') {
+      physicalEof = start === source.length;
+      continue;
+    }
     // The token dump reports presumed locations (e.g. following #line).
     if (!spelling || start < (tokens.at(-1)?.end ?? 0) || source.slice(start, start + spelling.length) !== spelling) {
       throw new Unsupported('Clang did not report a source spelling for a token');
     }
     tokens.push({ kind, start, end: start + spelling.length });
   }
+  if (!physicalEof) throw new Unsupported('Clang did not report physical source locations');
   return tokens;
 }
 
@@ -48,11 +54,9 @@ export class SourceFile {
       throw new Unsupported('a backslash at the end of a line (a line splice) is not supported');
     }
 
-    const tokens = frontend.tokens(source);
-    if (tokens.some(token => /[^\x00-\x7f]/.test(source.slice(token.start, token.end)))) {
-      throw new Unsupported('non-ASCII source tokens are not supported');
-    }
     const headers = HEADERS + arrayHeader(source, frontend) + 'using namespace std;\n';
+    const tokens = frontend.tokens(headers + source).filter(token => token.start >= headers.length)
+      .map(token => ({ ...token, start: token.start - headers.length, end: token.end - headers.length }));
     // A function declarator followed by a body distinguishes a complete program from a
     // fragment calling a function. Clang checks the declarator and body after this choice.
     this.fragment = !tokens.some((token, i) => {
@@ -101,7 +105,16 @@ export class SourceFile {
       text += this.program.slice(token.start, token.end);
       last = token.end;
     }
+    if (mapping[0] === undefined || mapping[end - start] === undefined) {
+      throw new Unsupported('Clang did not report physical source locations for the statement');
+    }
     return [text, mapping];
+  }
+
+  /** Whether pane formatting would collapse deliberate horizontal spacing between tokens. */
+  preservesSpacing(): boolean {
+    return !this.tokens.some((token, i) =>
+      i > 0 && /^[ \t]{2,}$/.test(this.program.slice(this.tokens[i - 1].end, token.start)));
   }
 
   /** Single signs Clang found directly before another token. */

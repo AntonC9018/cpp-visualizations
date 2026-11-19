@@ -80,7 +80,7 @@ export function createClangFrontend(directory?: string): CompilerFrontend {
           tool('CLANGXX', 'clang++'), '-std=c++20', '-fsyntax-only', '-fno-color-diagnostics',
           '-Werror=extra-tokens', '-Xclang', '-dump-tokens', path,
         ]);
-        if (result.returncode !== 0 || /^.*: error:/m.test(result.stderr)) {
+        if (result.returncode !== 0) {
           throw illFormed(result.stderr, program);
         }
         return readTokens(result.stderr, path, program);

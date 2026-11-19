@@ -497,6 +497,7 @@ describe('CompoundAssignmentTests', () => {
       name: 'a',
       value: '5',
       compound: '+',
+      grouped: false,
       span: [2, 4],
     });
     const expressions = trace.steps.filter(step => step.line === 2).map(step => step.pane.slice(...step.expr!));
@@ -550,7 +551,7 @@ describe('CompoundAssignmentTests', () => {
     validate(trace);
     rejects(/does not cover \+=/, op => (op.compound = '+'));
     rejects(/not an arithmetic operator/, op => (op.compound = '<<'));
-    rejects(/the replacement '= 5 -' is not '5'/, op => delete op.compound);
+    rejects(/expected a boolean on a compound read/, op => delete op.compound);
     rejects(/'a' does not designate b/, op => (op.name = 'b'));
     rejects(/reads an uninitialized value/, op => (op.value = '?'));
     const merged = structuredClone(trace);
@@ -568,7 +569,7 @@ describe('CompoundAssignmentTests', () => {
     broken.steps[index].expr = [4, 13];
     assert.throws(
       () => validate(broken),
-      (err: unknown) => err instanceof FormatError && /replaced/.test(err.message)
+      (err: unknown) => err instanceof FormatError && /is not 'a = 5 \* \(b \+ c\)'/.test(err.message)
     );
   });
 
@@ -595,6 +596,13 @@ describe('CompoundAssignmentTests', () => {
     assert.deepEqual(panes(written, 0), ['int y = -(-2)', 'int y = 2', 'int y = 2']);
     const bits = tracing.trace('short x = -2; int y = -x;', { runtime: false, bits: true });
     assert.deepEqual(final(bits), { x: -2, y: 2 });
+  });
+
+  test('signs in the target of a compound assignment stay separate', () => {
+    const source = 'std::array a{1,2}; int i=-1; a[0-i] += 3;';
+    const trace = tracing.trace(source, { runtime: false });
+    assert.ok(panes(trace, 2).includes('a[0-(-1)] += 3'));
+    assert.deepEqual(final(trace), { 'a.[0]': 1, 'a.[1]': 5, i: -1 });
   });
 
   test('hand_written_traces_keep_signs_apart_too', () => {
@@ -679,6 +687,16 @@ describe('CompoundAssignmentTests', () => {
     unsupported('int n = 1;\n#include <cstdint> /* already\nincluded */ n += 3;', /extra tokens at end of #include|one variable/);
     // A lone carriage return ends a directive as it ends any line.
     assert.deepEqual(final(tracing.trace('int n = 1;\r#include <cstdint>\rn += 3;', { runtime: false })), { n: 4 });
+  });
+
+  test('compiler headers are in scope when finding the first active token', () => {
+    const source = '#ifndef UINT8_MAX\nint skipped=1;\n#endif\nint b=2;';
+    assert.deepEqual(final(tracing.trace(source, { runtime: false })), { b: 2 });
+  });
+
+  test('tokens inside a raw string cannot be mistaken for diagnostics', () => {
+    const source = 'int n = sizeof(R"(abc: error: text)");';
+    assert.deepEqual(final(tracing.trace(source, { runtime: false })), { n: 17 });
   });
 
   test('the_statement_ends_at_its_own_semicolon_past_comments', () => {

@@ -5,6 +5,7 @@
 // `revision` versions every trace. The template and flags come from `../core/settings.ts`.
 import { readFileSync } from 'node:fs';
 
+import { SourceFile } from '../core/source.ts';
 import { dumpsSorted } from '../core/json_format.ts';
 import { type AnyTrace, type ExecutionTrace, type TraceVariable, contiguous } from '../core/trace_format.ts';
 import {
@@ -16,6 +17,7 @@ import {
   parseSettings,
 } from '../core/settings.ts';
 import { revision } from './revision.ts';
+import { createClangFrontend } from './toolchain.ts';
 import { Unsupported, traceNatively } from './tracing.ts';
 
 export const TEMPLATE = DEFAULT_TEMPLATE;
@@ -32,20 +34,8 @@ export function checkContiguousStorage(variables: TraceVariable[]): void {
   }
 }
 
-const LITERAL = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g;
-const LITERAL_OR_COMMENT = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\/\*[\s\S]*?\*\/|\/\/.*/g;
-
 export function spacingSurvives(snippet: string): boolean {
-  const stripped = snippet.replace(LITERAL_OR_COMMENT, match =>
-    match.startsWith('"') || match.startsWith("'")
-      ? '""'
-      : match.startsWith('/*')
-        ? match.replace(/[^\r\n]/g, '')
-        : ''
-  );
-  return !stripped
-    .split(/\r?\n/)
-    .some(line => /\S[ \t]{2,}\S/.test(line.trim()));
+  return new SourceFile(snippet, createClangFrontend()).preservesSpacing();
 }
 
 export function applicable(traceData: ExecutionTrace, snippet: string): void {

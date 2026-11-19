@@ -100,6 +100,8 @@ export type ReadOperation = {
   span: Span;
   /** The read opens `a += b` into `a = 5 + b`: `span` covers `+=`, here `+`. */
   compound?: string;
+  /** Parentheses required by the compound assignment’s right operand. */
+  grouped?: boolean;
 };
 
 export type AddrOperation = {
@@ -691,9 +693,10 @@ function checkCompoundRead(
   );
   check(op.value !== UNKNOWN, `${where}.value`, 'reads an uninitialized value');
   check(LITERAL.test(op.value), `${where}.value`, `${pyRepr(op.value)} is not one number`);
-  const candidates = [false, true].map(grouped =>
+  const grouping = Object.hasOwn(op, 'grouped') ? [op.grouped] : [false, true];
+  const candidates = grouping.map(grouped =>
     openCompound(previous.pane, span, op.value, op.compound, grouped).text);
-  check(candidates.includes(step.pane), where, `${pyRepr(step.pane)} is not ${pyRepr(candidates[0])} or ${pyRepr(candidates[1])}`);
+  check(candidates.includes(step.pane), where, `${pyRepr(step.pane)} is not ${candidates.map(pyRepr).join(' or ')}`);
 }
 
 const LITERAL = /^≈?-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i;
@@ -896,7 +899,11 @@ function checkOperation(
     clash: ['span', 'destination', 'from', 'to'],
   };
   const fields = fieldMap[kind];
-  checkKeys(op, where, [...fields, 'kind'], kind === 'read' ? ['compound'] : []);
+  checkKeys(op, where, [...fields, 'kind'], kind === 'read' ? ['compound', 'grouped'] : []);
+  if (Object.hasOwn(op, 'grouped')) {
+    check(Object.hasOwn(op, 'compound') && typeof op.grouped === 'boolean', `${where}.grouped`,
+      'expected a boolean on a compound read');
+  }
   for (const key of fields.filter(k => ['name', 'target', 'via', 'value', 'from', 'to'].includes(k))) {
     check(typeof op[key] === 'string' && op[key].length > 0, `${where}.${key}`, 'expected text');
   }

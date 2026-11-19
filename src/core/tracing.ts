@@ -329,6 +329,7 @@ export type Reduction = { readonly span: Span; readonly type: string; readonly s
       readonly name: string;
       readonly record: string | null;
       readonly compound?: string;
+      readonly grouped?: boolean;
     }
   | { readonly kind: 'addr'; readonly name: string }
   | { readonly kind: 'deref'; readonly name: string; readonly value: Pointer | null }
@@ -476,7 +477,7 @@ class Evaluator {
     if (typeof held !== 'number') {
       throw new Unsupported('pointer arithmetic and comparison are not supported');
     }
-    this.reduceAt(copy, left, { kind: 'read', name: target, record: null, compound: operator });
+    this.reduceAt(copy, left, { kind: 'read', name: target, record: null, compound: operator, grouped: group !== null });
     const computation: AstNode = { type: node.computeLHSType };
     const resultType: AstNode = { type: node.computeResultType };
     const operand = this.convertedAt(copy, held, computation, left);
@@ -1014,6 +1015,7 @@ export class Statement {
   fold: Fold | null;
   signs: Map<number, string>;
   definition: [string, string] | null;
+  typeOnly: boolean;
 
   constructor({
     source,
@@ -1040,6 +1042,7 @@ export class Statement {
     fold = null,
     signs = new Map(),
     definition = null,
+    typeOnly = false,
   }: {
     source: string;
     span: Span | null;
@@ -1065,6 +1068,7 @@ export class Statement {
     fold?: Fold | null;
     signs?: Map<number, string>;
     definition?: [string, string] | null;
+    typeOnly?: boolean;
   }) {
     this.source = source;
     this.span = span;
@@ -1090,6 +1094,7 @@ export class Statement {
     this.fold = fold;
     this.signs = signs;
     this.definition = definition;
+    this.typeOnly = typeOnly;
   }
 }
 
@@ -1259,7 +1264,8 @@ function analyzeStatement(
         source,
         span: null,
         pane: source.replace(/;$/, ''),
-        definition: [children[0].name!, recordSource(file, start, finish)],
+        typeOnly: true,
+        definition: children[0].completeDefinition ? [children[0].name!, recordSource(file, start, finish)] : null,
       });
     }
     if (children.length !== 1 || children[0]?.kind !== 'VarDecl') {
@@ -1632,7 +1638,7 @@ function analyzeCompound(
     destination: locate(left),
     typed,
     shape: shapeOf(left, records),
-    signs: file.signs(bounds(right)[0], bounds(right)[1], toPane),
+    signs: file.signs(bounds(node)[0], bounds(node)[1], toPane),
   });
 }
 
@@ -2185,7 +2191,10 @@ class Renderer {
         text = this.show(load(before, reduction.name), reduction.shape);
         const [start, end] = reduction.span;
         const span = pane.unfold(start, end, text, reduction.type);
-        const op = { kind: 'read' as const, name: reduction.name, value: text, compound: reduction.compound };
+        const op = {
+          kind: 'read' as const, name: reduction.name, value: text,
+          compound: reduction.compound, grouped: reduction.grouped,
+        };
         this.add(line, pane, expr, before, { ...op, span });
         continue;
       }
@@ -2507,7 +2516,7 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
 
   const shown: [Statement, State][] = [];
   for (let i = 0; i < statements.length; i++) {
-    if (!statements[i].definition) {
+    if (!statements[i].typeOnly) {
       shown.push([statements[i], states[i]]);
     }
   }
