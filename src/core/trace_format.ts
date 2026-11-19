@@ -1212,8 +1212,7 @@ export function validate(trace: unknown): asserts trace is AnyTrace {
 }
 
 /**
- * A bits trace types every part with an integer, and a conversion's value is its operand
- * converted, so the bits drawn agree with it.
+ * Both panes must contain representable integers so the player can draw the conversion.
  */
 function checkBitsStep(
   step: TraceStep,
@@ -1238,9 +1237,9 @@ function checkBitsStep(
   );
   const operand = previous && convertOperand(previous, op);
   check(
-    operand !== null && to!.wrap(operand) === value,
+    operand !== null && from!.holds(operand) && to!.holds(value!),
     `${where}.op.value`,
-    `expected the operand converted to ${op.to}`
+    'the conversion needs values that fit in their integer types'
   );
 }
 

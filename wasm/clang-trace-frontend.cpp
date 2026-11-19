@@ -36,6 +36,7 @@ namespace std {
     ostream& operator<<(unsigned long);
     ostream& operator<<(long long);
     ostream& operator<<(unsigned long long);
+    ostream& operator<<(float);
     ostream& operator<<(double);
     ostream& operator<<(char);
     ostream& operator<<(const char*);

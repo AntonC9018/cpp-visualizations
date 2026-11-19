@@ -223,6 +223,13 @@ describe('ClangWasmParityTests', { skip: !existsSync(WASM_PATH) }, () => {
       );
     }
 
+    const floatOutput = 'float f=0.5f; std::cout << f;';
+    const typed = { template: 'expression-timeline', flags: { types: true } } as const;
+    assert.deepEqual(
+      traceWithWasmModule(floatOutput, wasmModule, typed),
+      traceSnippet(floatOutput, typed, { frontend: nativeFrontend })
+    );
+
     const layout = { template: 'layout', flags: {} } as const;
     const offsetSource = '#include <cstddef>\nstruct S { int a; int b; }; int main() { return offsetof(S, b); }';
     assert.deepEqual(

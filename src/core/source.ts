@@ -52,6 +52,7 @@ export function arrayHeader(source: string, frontend?: CompilerFrontend): string
 
 export class SourceFile {
   readonly program: string;
+  readonly preamble: string;
   readonly tokens: SourceToken[];
   readonly fragment: boolean;
   private readonly source: string;
@@ -67,10 +68,10 @@ export class SourceFile {
       throw new Unsupported('a backslash at the end of a line (a line splice) is not supported');
     }
 
-    const headers = HEADERS + arrayHeader(source, frontend) + 'using namespace std;\n';
+    this.preamble = HEADERS + arrayHeader(source, frontend) + 'using namespace std;\n';
     // Only a directive can use convenience-header macros to choose which source is active.
     // Avoid dumping all tokens in those headers for an ordinary statement fragment.
-    const context = /#|%:/.test(source) ? headers : '';
+    const context = /#|%:/.test(source) ? this.preamble : '';
     const tokens = frontend.tokens(context + source, { ignoreExpansions }).filter(token => token.start >= context.length)
       .map(token => ({ ...token, start: token.start - context.length, end: token.end - context.length }));
     // A function declarator followed by a body distinguishes a complete program from a
@@ -82,8 +83,8 @@ export class SourceFile {
     });
     const first = tokens[0]?.start ?? source.length;
     const prefix = this.fragment
-      ? headers + source.slice(0, first) + '\nint main() {\n'
-      : headers;
+      ? this.preamble + source.slice(0, first) + '\nint main() {\n'
+      : this.preamble;
     this.program = prefix + source.slice(this.fragment ? first : 0) + (this.fragment ? '\n}\n' : '\n');
     this.source = source;
     this.shift = prefix.length - (this.fragment ? first : 0);
@@ -159,7 +160,7 @@ export class SourceFile {
     return signs;
   }
 
-  ast(frontend: CompilerFrontend): [AstNode, AstNode] {
+  ast(frontend: CompilerFrontend): AstNode {
     const { offsets } = sourceCoordinates(this.program);
     const main = frontend.mainAst(this.program);
     useCharacterOffsets(main, offsets);
@@ -172,7 +173,7 @@ export class SourceFile {
       if (bounds(body)[1] !== this.program.length - 1) {
         throw new Unsupported('declarations outside main are unsupported');
       }
-      return [body, main];
+      return body;
     }
 
     const [start, end] = bounds(main);
@@ -206,7 +207,7 @@ export class SourceFile {
       globals.push({ kind: 'DeclStmt', inner: [record], range: record.range });
       i = semi + 1;
     }
-    return [{ ...body, inner: [...globals, ...(body.inner ?? [])] }, main];
+    return { ...body, inner: [...globals, ...(body.inner ?? [])] };
   }
 }
 

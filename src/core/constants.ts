@@ -1,7 +1,6 @@
 // Transport Clang constant values through integer enum entries in the JSON AST.
 // Floating results are carried as IEEE bits, including signed zero.
 import { type AstNode, type CompilerFrontend, IllFormed, Unsupported } from './errors.ts';
-import type { SourceFile } from './source.ts';
 
 export function numberSpelling(value: number, type: string): string {
   if (type === 'float' || type === 'double') {
@@ -88,8 +87,7 @@ export class ClangNumbers {
 }
 
 export interface ReplayStep {
-  /** The original statement, including its semicolon. */
-  range: [number, number];
+  source: string;
   output: boolean;
   checks: string[];
 }
@@ -113,38 +111,21 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
 /** Check the actual C++ objects after each statement. Output is a player operation. */
 export function verifyReplay(
   frontend: CompilerFrontend,
-  file: SourceFile,
-  main: AstNode,
-  body: AstNode,
+  preamble: string,
   steps: ReplayStep[]
 ): void {
-  const { program } = file;
-  const open = body.range!.begin!;
-  const close = body.range!.end!;
-  const start = open.offset! + open.tokLen!;
-  const end = close.offset!;
-  let at = start;
-  const chunks = [
-    program.slice(0, main.range!.begin!.offset),
-    CHECKS,
-    'constexpr int __course_replay() {',
-  ];
+  const chunks = [preamble, CHECKS, 'constexpr int __course_replay() {\n'];
+  // These statements came from the C++20 token stream. Selecting them before replay
+  // keeps feature-test macros and conditional directives from choosing another branch.
   for (const [index, step] of steps.entries()) {
-    const [first, last] = step.range;
-    // Full programs may have type declarations preceding the real main.
-    if (first < start) continue;
-    chunks.push(program.slice(at, first));
-    chunks.push(step.output ? file.blankTokens(first, last) : program.slice(first, last));
+    if (!step.output) chunks.push(step.source, '\n');
     if (step.checks.length) {
-      chunks.push(`\nif (!(${step.checks.join(' && ')})) return ${index + 1};\n`);
+      chunks.push(`if (!(${step.checks.join(' && ')})) return ${index + 1};\n`);
     }
-    at = last;
   }
   chunks.push(
-    program.slice(at, end),
-    '\nreturn 0;\n}\n',
+    'return 0;\n}\n',
     'enum __course_checkpoint : int { __course_result = __course_replay() };\n',
-    program.slice(end + close.tokLen!)
   );
   // C++26 permits a cast back from void* during constant evaluation when the pointee
   // has the right type. The original AST has already been checked in C++20 mode.

@@ -890,7 +890,6 @@ export class Statement {
   signs: Map<number, string>;
   definition: [string, string] | null;
   typeOnly: boolean;
-  range: Span = [0, 0];
 
   constructor({
     source,
@@ -1637,15 +1636,15 @@ function integerAliases(node: AstNode, found: Record<string, string> = {}): Reco
 export function analyzeWithFrontend(
   source: string,
   frontend: CompilerFrontend
-): [Statement[], Record<string, RecordInfo>, Record<string, string>, AstNode, AstNode] {
+): [Statement[], Record<string, RecordInfo>, Record<string, string>] {
   return analyzeSource(new SourceFile(source, frontend), frontend);
 }
 
 function analyzeSource(
   file: SourceFile,
   frontend: CompilerFrontend
-): [Statement[], Record<string, RecordInfo>, Record<string, string>, AstNode, AstNode] {
-  const [ast, main] = file.ast(frontend);
+): [Statement[], Record<string, RecordInfo>, Record<string, string>] {
+  const ast = file.ast(frontend);
   resolveArrayAliases(ast);
   const records = layoutsFromFrontend(ast, file.program, frontend);
   const statements: Statement[] = [];
@@ -1671,8 +1670,6 @@ function analyzeSource(
     if (node.kind === 'DeclStmt' && node.inner?.length === 1 &&
         node.inner[0].kind === 'UsingDirectiveDecl' && node.inner[0].nominatedNamespace?.name === 'std') continue;
     const statement = analyzeStatement(node, file, state, records, references, storageTypes, numbers);
-    const [first, last] = bounds(node);
-    statement.range = [first, file.statementEnd(last)];
     if (statement.declared && statements.some(earlier => earlier.temporary)) {
       throw new Unsupported(
         'a declaration after a materialized temporary needs a separate memory-layout visualization'
@@ -1693,7 +1690,7 @@ function analyzeSource(
   if (Object.keys(state).length === 0) {
     throw new Unsupported('a variable timeline requires at least one variable');
   }
-  return [statements, records, integerAliases(ast), ast, main];
+  return [statements, records, integerAliases(ast)];
 }
 
 // Memory -----------------------------------------------------------------------------------
@@ -1738,7 +1735,7 @@ function replaySteps(statements: Statement[], states: State[]): ReplayStep[] {
     if (statement.bound && statement.declared) {
       checks.push(`__course_points_to(&${statement.declared}, &${codeName(statement.bound)})`);
     }
-    return { range: statement.range, output: statement.outputSuffix !== null, checks };
+    return { source: statement.source, output: statement.outputSuffix !== null, checks };
   });
 }
 
@@ -2162,10 +2159,8 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
   let statements: Statement[];
   let records: Record<string, RecordInfo>;
   let aliases: Record<string, string>;
-  let ast: AstNode;
-  let main: AstNode;
   try {
-    [statements, records, aliases, ast, main] = analyzeSource(file, frontend);
+    [statements, records, aliases] = analyzeSource(file, frontend);
   } catch (error) {
     if (!(error instanceof IllFormed)) throw error;
     if (!types) {
@@ -2173,7 +2168,7 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
     }
     // A last statement whose types do not fit is shown, not run: the rest is traced.
     [file, mismatch] = cutMismatch(file, error, frontend);
-    [statements, records, aliases, ast, main] = analyzeSource(file, frontend);
+    [statements, records, aliases] = analyzeSource(file, frontend);
   }
   const predicted: State[] = [];
   let state: State = {};
@@ -2181,7 +2176,7 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
     state = hooks.after(statement, state);
     predicted.push(state);
   }
-  verifyReplay(frontend, file, main, ast, replaySteps(statements, predicted));
+  verifyReplay(frontend, file.preamble, replaySteps(statements, predicted));
   const declarations = statements.filter(s => s.declared);
   const variables: TraceVariable[] = [];
   const references: Record<string, TraceReference> = {};

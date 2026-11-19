@@ -818,6 +818,24 @@ describe('CompilerTraceTests', () => {
     assert.equal(final(traced, 'stdout'), '5');
   });
 
+  test('replay checks the active C++20 branch of feature tests', () => {
+    const source = 'int n=1;\n#if __cpp_constexpr < 202211L\nn=2;\n#else\nn=3;\n#endif';
+    const original = tracing.hooks.after;
+    tracing.hooks.after = (statement, state) => {
+      const next = original(statement, state);
+      return next.n === 2 ? { ...next, n: 4 } : next;
+    };
+    try {
+      assert.throws(
+        () => tracing.trace(source),
+        (error: unknown) => error instanceof Unsupported && /verification failed after statement 2/.test(error.message)
+      );
+    } finally {
+      tracing.hooks.after = original;
+    }
+    assert.deepEqual(final(tracing.trace(source)), { n: 2 });
+  });
+
   test('compiler verification distinguishes objects at the same address', () => {
     const original = tracing.hooks.after;
     tracing.hooks.after = (statement, state) => {
