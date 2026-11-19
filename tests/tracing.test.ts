@@ -840,6 +840,21 @@ describe('CompilerTraceTests', () => {
     assert.deepEqual(final(tracing.trace(source)), { n: 2 });
   });
 
+  test('replay retains global record scope', () => {
+    const source = 'struct S { int x; }; int main() { std::array<int, sizeof(::S)> a{}; a[0] = 1; }';
+    assert.equal(final(tracing.trace(source))['a.[0]'], 1);
+  });
+
+  test('replay retains headers selected by preprocessing', () => {
+    const source = '#if __cpp_constexpr < 202211L\n#include <csignal>\n#endif\nstd::sig_atomic_t n = 7;';
+    assert.deepEqual(final(tracing.trace(source)), { n: 7 });
+  });
+
+  test('fragment wrapping preserves the line used in a preprocessor condition', () => {
+    const source = 'int n=1;\n#if __LINE__ == 6\nn=2;\n#else\nn=3;\n#endif';
+    assert.deepEqual(final(tracing.trace(source)), { n: 2 });
+  });
+
   test('compiler verification distinguishes objects at the same address', () => {
     const original = tracing.hooks.after;
     tracing.hooks.after = (statement, state) => {

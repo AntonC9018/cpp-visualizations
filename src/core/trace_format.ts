@@ -1212,7 +1212,7 @@ export function validate(trace: unknown): asserts trace is AnyTrace {
 }
 
 /**
- * Both panes must contain representable integers so the player can draw the conversion.
+ * The retained bits in the source and destination must agree for the player to draw them.
  */
 function checkBitsStep(
   step: TraceStep,
@@ -1237,9 +1237,9 @@ function checkBitsStep(
   );
   const operand = previous && convertOperand(previous, op);
   check(
-    operand !== null && from!.holds(operand) && to!.holds(value!),
+    operand !== null && from!.holds(operand) && to!.wrap(operand) === value,
     `${where}.op.value`,
-    'the conversion needs values that fit in their integer types'
+    'the conversion must preserve the retained bits'
   );
 }
 

@@ -30,6 +30,8 @@ namespace std {
   using intptr_t = long;
   using uintptr_t = unsigned long;
   struct ostream {
+    ostream& operator<<(short);
+    ostream& operator<<(unsigned short);
     ostream& operator<<(int);
     ostream& operator<<(unsigned int);
     ostream& operator<<(long);
@@ -129,6 +131,9 @@ int main(int argc, char **argv) {
   if (standard == "-std=c++2c") {
     cc1Args.push_back("-Wno-builtin-macro-redefined");
     cc1Args.push_back("-D__cplusplus=202002L");
+  }
+  if (dumpTokens) {
+    cc1Args.push_back("-H");
   }
   if (astDump) {
     cc1Args.push_back("-ast-dump=json");

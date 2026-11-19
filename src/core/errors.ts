@@ -1,4 +1,4 @@
-import type { SourceToken } from './source.ts';
+import type { TokenizedSource } from './source.ts';
 
 // Isomorphic domain error raised for any C++ snippet or construct outside the supported subset.
 
@@ -132,7 +132,7 @@ export interface AstNode {
 export interface CompilerFrontend {
   /** Declaration text for frontends that cannot include the native <array> header. */
   arrayPreamble?: string;
-  tokens(program: string, options?: { ignoreExpansions?: boolean }): SourceToken[];
+  tokens(program: string, options?: { ignoreExpansions?: boolean }): TokenizedSource;
   astDump(program: string, filter: string, standard?: 'c++20' | 'c++2c'): AstNode[];
   mainAst(program: string): AstNode;
   recordLayoutsDump(program: string): string;

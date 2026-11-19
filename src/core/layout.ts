@@ -7,7 +7,7 @@ import { FORMAT, type LayoutField, type LayoutTrace, validate } from './trace_fo
 
 export function traceLayout(source: string, frontend: CompilerFrontend): LayoutTrace {
   const file = new SourceFile(source, frontend, { ignoreExpansions: true });
-  const ast = file.ast(frontend);
+  const [ast] = file.ast(frontend);
   const records = layoutsFromFrontend(ast, file.program, frontend, { layoutOnly: true });
   if (Object.keys(records).length === 0) {
     throw new Unsupported('layout requires at least one plain struct definition');

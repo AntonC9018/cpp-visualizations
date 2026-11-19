@@ -8,40 +8,59 @@ export interface SourceToken {
   end: number;
 }
 
+export interface TokenizedSource {
+  tokens: SourceToken[];
+  includes: string[];
+}
+
 export function readTokens(
   dump: string,
   file: string,
   source: string,
   { ignoreExpansions = false }: { ignoreExpansions?: boolean } = {}
-): SourceToken[] {
+): TokenizedSource {
   const { lines, offsets } = sourceCoordinates(source);
   const tokens: SourceToken[] = [];
   let physicalEof = false;
+  let cursor = 0;
+  const includes: string[] = [];
   // DumpTokens quotes original spellings, which can themselves contain quotes and newlines.
   const entry = /^(\w+) '([\s\S]*?)'\t[^\n]*?\tLoc=<([^\n]*)>\r?$/gm;
-  for (const [, kind, spelling, location] of dump.matchAll(entry)) {
+  for (const match of dump.matchAll(entry)) {
+    const [record, kind, spelling, location] = match;
+    if (match.index > cursor + 2) {
+      for (const [, path] of dump.slice(cursor, match.index).matchAll(/^\. ([^\r\n]+)$/gm)) {
+        includes.push(path);
+      }
+    }
+    cursor = match.index + record.length;
     if (!location.startsWith(file + ':')) continue;
     const coordinates = /^(\d+):(\d+)(.*)$/.exec(location.slice(file.length + 1));
     if (!coordinates) continue;
     const [, line, column, expansion] = coordinates;
-    if (expansion) {
-      if (ignoreExpansions) continue;
-      throw new Unsupported('macro-expanded statements are not supported');
-    }
     const start = offsets[lines[Number(line) - 1] + Number(column) - 1];
+    if (expansion) {
+      if (!ignoreExpansions) throw new Unsupported('macro-expanded statements are not supported');
+      // Layouts can ignore expansions in the executable body. Keep their location
+      // so a macro-generated declaration outside main cannot be silently discarded.
+      if (start !== undefined && tokens.at(-1)?.start !== start) {
+        tokens.push({ kind: 'macro', start, end: start });
+      }
+      continue;
+    }
     if (kind === 'eof') {
       physicalEof = start === source.length ||
         (start !== undefined && /^(?:\r\n|\r|\n)$/.test(source.slice(start)));
       continue;
     }
     // The token dump reports presumed locations (e.g. following #line).
-    if (!spelling || start < (tokens.at(-1)?.end ?? 0) || source.slice(start, start + spelling.length) !== spelling) {
+    if (start === undefined || !spelling || start < (tokens.at(-1)?.end ?? 0) || source.slice(start, start + spelling.length) !== spelling) {
       throw new Unsupported('Clang did not report a source spelling for a token');
     }
     tokens.push({ kind, start, end: start + spelling.length });
   }
   if (!physicalEof) throw new Unsupported('Clang did not report physical source locations');
-  return tokens;
+  return { tokens, includes };
 }
 
 export const HEADERS = '#include <iostream>\n#include <cstdint>\n#include <cstddef>\n';
@@ -52,7 +71,7 @@ export function arrayHeader(source: string, frontend?: CompilerFrontend): string
 
 export class SourceFile {
   readonly program: string;
-  readonly preamble: string;
+  readonly replayPreamble: string;
   readonly tokens: SourceToken[];
   readonly fragment: boolean;
   private readonly source: string;
@@ -68,12 +87,23 @@ export class SourceFile {
       throw new Unsupported('a backslash at the end of a line (a line splice) is not supported');
     }
 
-    this.preamble = HEADERS + arrayHeader(source, frontend) + 'using namespace std;\n';
+    const array = arrayHeader(source, frontend);
+    const headers = HEADERS + array + 'using namespace std;\n';
     // Only a directive can use convenience-header macros to choose which source is active.
     // Avoid dumping all tokens in those headers for an ordinary statement fragment.
-    const context = /#|%:/.test(source) ? this.preamble : '';
-    const tokens = frontend.tokens(context + source, { ignoreExpansions }).filter(token => token.start >= context.length)
+    const context = /#|%:/.test(source) ? headers : '';
+    const lexed = frontend.tokens(context + source, { ignoreExpansions });
+    const tokens = lexed.tokens.filter(token => token.start >= context.length)
       .map(token => ({ ...token, start: token.start - context.length, end: token.end - context.length }));
+    const includes = lexed.includes.map(path => {
+      if (path.includes('>')) throw new Unsupported('Clang reported an unsupported include path');
+      return `#include <${path}>\n`;
+    }).join('');
+    // -H records the headers selected by the C++20 preprocessor. Browser array
+    // declarations are supplied as source in the preamble.
+    this.replayPreamble = includes && context
+      ? includes + (frontend.arrayPreamble && array ? array : '') + 'using namespace std;\n'
+      : headers;
     // A function declarator followed by a body distinguishes a complete program from a
     // fragment calling a function. Clang checks the declarator and body after this choice.
     this.fragment = !tokens.some((token, i) => {
@@ -83,8 +113,8 @@ export class SourceFile {
     });
     const first = tokens[0]?.start ?? source.length;
     const prefix = this.fragment
-      ? this.preamble + source.slice(0, first) + '\nint main() {\n'
-      : this.preamble;
+      ? headers + source.slice(0, first) + 'int main() { '
+      : headers;
     this.program = prefix + source.slice(this.fragment ? first : 0) + (this.fragment ? '\n}\n' : '\n');
     this.source = source;
     this.shift = prefix.length - (this.fragment ? first : 0);
@@ -160,7 +190,7 @@ export class SourceFile {
     return signs;
   }
 
-  ast(frontend: CompilerFrontend): AstNode {
+  ast(frontend: CompilerFrontend): [AstNode, number] {
     const { offsets } = sourceCoordinates(this.program);
     const main = frontend.mainAst(this.program);
     useCharacterOffsets(main, offsets);
@@ -173,7 +203,7 @@ export class SourceFile {
       if (bounds(body)[1] !== this.program.length - 1) {
         throw new Unsupported('declarations outside main are unsupported');
       }
-      return body;
+      return [body, 0];
     }
 
     const [start, end] = bounds(main);
@@ -192,6 +222,7 @@ export class SourceFile {
         i += 4;
         continue;
       }
+      if (token.kind === 'macro') throw new Unsupported('macro-expanded declarations outside main are unsupported');
       if (token.kind !== 'struct' || next?.kind !== 'identifier') {
         throw new Unsupported('only struct definitions may precede main');
       }
@@ -207,7 +238,7 @@ export class SourceFile {
       globals.push({ kind: 'DeclStmt', inner: [record], range: record.range });
       i = semi + 1;
     }
-    return { ...body, inner: [...globals, ...(body.inner ?? [])] };
+    return [{ ...body, inner: [...globals, ...(body.inner ?? [])] }, globals.length];
   }
 }
 

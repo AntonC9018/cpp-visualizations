@@ -890,6 +890,7 @@ export class Statement {
   signs: Map<number, string>;
   definition: [string, string] | null;
   typeOnly: boolean;
+  global = false;
 
   constructor({
     source,
@@ -1644,7 +1645,7 @@ function analyzeSource(
   file: SourceFile,
   frontend: CompilerFrontend
 ): [Statement[], Record<string, RecordInfo>, Record<string, string>] {
-  const ast = file.ast(frontend);
+  const [ast, globalCount] = file.ast(frontend);
   resolveArrayAliases(ast);
   const records = layoutsFromFrontend(ast, file.program, frontend);
   const statements: Statement[] = [];
@@ -1670,6 +1671,7 @@ function analyzeSource(
     if (node.kind === 'DeclStmt' && node.inner?.length === 1 &&
         node.inner[0].kind === 'UsingDirectiveDecl' && node.inner[0].nominatedNamespace?.name === 'std') continue;
     const statement = analyzeStatement(node, file, state, records, references, storageTypes, numbers);
+    statement.global = i < globalCount;
     if (statement.declared && statements.some(earlier => earlier.temporary)) {
       throw new Unsupported(
         'a declaration after a materialized temporary needs a separate memory-layout visualization'
@@ -1735,7 +1737,7 @@ function replaySteps(statements: Statement[], states: State[]): ReplayStep[] {
     if (statement.bound && statement.declared) {
       checks.push(`__course_points_to(&${statement.declared}, &${codeName(statement.bound)})`);
     }
-    return { source: statement.source, output: statement.outputSuffix !== null, checks };
+    return { source: statement.source, global: statement.global, output: statement.outputSuffix !== null, checks };
   });
 }
 
@@ -2176,7 +2178,7 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
     state = hooks.after(statement, state);
     predicted.push(state);
   }
-  verifyReplay(frontend, file.preamble, replaySteps(statements, predicted));
+  verifyReplay(frontend, file.replayPreamble, replaySteps(statements, predicted));
   const declarations = statements.filter(s => s.declared);
   const variables: TraceVariable[] = [];
   const references: Record<string, TraceReference> = {};

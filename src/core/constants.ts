@@ -24,7 +24,7 @@ function constant(node: AstNode): string | undefined {
   return undefined;
 }
 
-export function enumValue(nodes: AstNode[], name: string): bigint {
+function enumValue(nodes: AstNode[], name: string): bigint {
   for (const node of nodes) {
     if (node.kind !== 'EnumDecl' || node.name !== name) continue;
     const declaration = node.inner?.find(child => child.kind === 'EnumConstantDecl');
@@ -88,6 +88,7 @@ export class ClangNumbers {
 
 export interface ReplayStep {
   source: string;
+  global: boolean;
   output: boolean;
   checks: string[];
 }
@@ -114,10 +115,15 @@ export function verifyReplay(
   preamble: string,
   steps: ReplayStep[]
 ): void {
-  const chunks = [preamble, CHECKS, 'constexpr int __course_replay() {\n'];
+  const chunks = [preamble, CHECKS];
+  for (const step of steps) {
+    if (step.global) chunks.push(step.source, '\n');
+  }
+  chunks.push('constexpr int __course_replay() {\n');
   // These statements came from the C++20 token stream. Selecting them before replay
   // keeps feature-test macros and conditional directives from choosing another branch.
   for (const [index, step] of steps.entries()) {
+    if (step.global) continue;
     if (!step.output) chunks.push(step.source, '\n');
     if (step.checks.length) {
       chunks.push(`if (!(${step.checks.join(' && ')})) return ${index + 1};\n`);
