@@ -2028,13 +2028,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     holds(value) {
       return this.wrap(value) === value;
     }
-    /** The result of arithmetic in this type: unsigned wraps, signed overflow is undefined. */
-    result(value) {
-      if (this.signed && !this.holds(value)) {
-        throw new Unsupported("signed integer overflow is outside the timeline category");
-      }
-      return this.wrap(value);
-    }
   }
   const INTEGERS = Object.freeze({
     "signed char": new Integer(1, true),
@@ -3004,8 +2997,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.update();
     }
   }
-  const DEFAULT_CACHE_NAME = "clang-trace-frontend-v1";
-  const DEFAULT_WASM_URL = "./clang-trace-frontend.wasm";
+  const DEFAULT_CACHE_NAME = "clang-trace-frontend-v2";
+  const DEFAULT_WASM_URL = "./clang-trace-frontend.wasm?v=2";
   class ClangWasmClient {
     constructor(options = {}) {
       __publicField(this, "wasmUrl");

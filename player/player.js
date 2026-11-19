@@ -1017,12 +1017,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     g.typeTargets = typeTargets(m, g);
     return g;
   }
-  class Unsupported extends Error {
-    constructor(message) {
-      super(message);
-      this.name = "Unsupported";
-    }
-  }
   function arrayType(spelling) {
     var _a;
     const type = spelling.replace(/\b(?:struct|class) /g, "").replace(/^const /, "");
@@ -1963,13 +1957,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     holds(value) {
       return this.wrap(value) === value;
-    }
-    /** The result of arithmetic in this type: unsigned wraps, signed overflow is undefined. */
-    result(value) {
-      if (this.signed && !this.holds(value)) {
-        throw new Unsupported("signed integer overflow is outside the timeline category");
-      }
-      return this.wrap(value);
     }
   }
   const INTEGERS = Object.freeze({

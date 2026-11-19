@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Reproducible build script for clang-trace-frontend.wasm (LLVM/Clang 21.1.8 -> wasm32-unknown-wasi).
-# Produces a trimmed single-purpose C++20 AST/layout frontend matching x86_64-unknown-linux-gnu ABI.
+# Produces the Clang trace frontend matching the x86_64-unknown-linux-gnu ABI.
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
@@ -13,8 +13,9 @@ COMPAT_INC="$SCRIPT_DIR/wasi-compat-include"
 
 find_nix_store() {
   local pattern="$1"
+  local exclude="${2:-\.drv$}"
   local match
-  match="$(ls -d /nix/store/*"$pattern"* 2>/dev/null | grep -v '\.drv$' | head -n 1 || true)"
+  match="$(ls -d /nix/store/*"$pattern"* 2>/dev/null | grep -vE -- "$exclude" | head -n 1 || true)"
   printf '%s' "$match"
 }
 
@@ -26,8 +27,8 @@ CLANG_SRC="${CLANG_SRC:-$(find_nix_store 'clang-src-21.1.8')}"
 WASI_CLANG_PKG="${WASI_CLANG_PKG:-$(find_nix_store 'wasm32-unknown-wasi-clang-wrapper-21.1.8')}"
 WASI_BINUTILS_PKG="${WASI_BINUTILS_PKG:-$(find_nix_store 'wasm32-unknown-wasi-llvm-binutils-wrapper-21.1.8')}"
 LLD_PKG="${LLD_PKG:-$(find_nix_store 'lld-21.1.8')}"
-LIBCXX_PKG="${LIBCXX_PKG:-$(find_nix_store 'libcxx-static-wasm32-unknown-wasi-21.1.8' | grep -v '-dev$' || find_nix_store 'libcxx-static-wasm32-unknown-wasi-21.1.8')}"
-WASILIBC_PKG="${WASILIBC_PKG:-$(find_nix_store 'wasilibc-static-wasm32-unknown-wasi-27' | grep -vE '-(dev|share)$' || true)}"
+LIBCXX_PKG="${LIBCXX_PKG:-$(find_nix_store 'libcxx-static-wasm32-unknown-wasi-21.1.8' '\.drv$|-dev$')}"
+WASILIBC_PKG="${WASILIBC_PKG:-$(find_nix_store 'wasilibc-static-wasm32-unknown-wasi-27' '\.drv$|-(dev|share)$')}"
 TBLGEN_PKG="${TBLGEN_PKG:-$(find_nix_store 'llvm-tblgen-21.1.8')}"
 BINARYEN_PKG="${BINARYEN_PKG:-$(find_nix_store 'binaryen-')}"
 
@@ -104,7 +105,9 @@ if [[ ! -f "$BUILD_DIR/build.ninja" ]]; then
   sed -i 's/-DCLANG_EXPORTS/-DCLANG_BUILD_STATIC/g' "$BUILD_DIR/build.ninja"
 fi
 
-ninja -C "$BUILD_DIR" \
+NINJA_JOBS=()
+[[ -n "${JOBS:-}" ]] && NINJA_JOBS=(-j "$JOBS")
+ninja "${NINJA_JOBS[@]}" -C "$BUILD_DIR" \
   clangFrontend clangDriver clangParse clangSema clangAST clangLex clangBasic \
   clangEdit clangAnalysis clangASTMatchers clangSerialization clangSupport clangAPINotes \
   LLVMFrontendHLSL LLVMFrontendOpenMP LLVMFrontendOffloading \

@@ -1,0 +1,11 @@
+--- a/llvm/lib/Support/Unix/Path.inc
++++ b/llvm/lib/Support/Unix/Path.inc
+@@ -321,6 +321,8 @@
+       return std::string(real_path);
+     break; // Found entry, but realpath failed.
+   }
++#elif defined(__wasi__)
++  return argv0;
+ #elif defined(HAVE_DLOPEN)
+   // Use dladdr to get executable path if available.
+   Dl_info DLInfo;

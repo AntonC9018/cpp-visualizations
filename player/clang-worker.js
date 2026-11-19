@@ -28,28 +28,43 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.flag = flag;
     }
   }
+  function sourceCoordinates(source) {
+    const lines = [0, ...Array.from(source.matchAll(/\r\n|\r|\n/g), (match) => match.index + match[0].length)];
+    const offsets = [0];
+    let character = 0;
+    for (const point of source) {
+      const code = point.codePointAt(0);
+      const bytes = code < 128 ? 1 : code < 2048 ? 2 : code < 65536 ? 3 : 4;
+      for (let i = 1; i < bytes; i++) offsets.push(character);
+      character += point.length;
+      offsets.push(character);
+    }
+    return { lines: lines.map((character2) => offsets.indexOf(character2)), offsets };
+  }
   function illFormed(stderr, program) {
     const diagnostics = stderr.split(/\r?\n/);
-    const index = diagnostics.findIndex((line) => line.includes("error:"));
+    const messageLine = /^(?:.*?:\d+:\d+: )?(?:fatal )?error:/;
+    const index = diagnostics.findIndex((line) => messageLine.test(line));
     if (index < 0) return new IllFormed("error: ill-formed C++");
     const diagnostic = diagnostics[index];
-    const place = /^.*?:(\d+):(\d+): error:/.exec(diagnostic);
+    const place = /^.*?:(\d+):(\d+): (?:fatal )?error:/.exec(diagnostic);
     let offset = null;
     if (place) {
-      const lines = program.split(new RegExp("(?<=\\n)"));
-      offset = lines.slice(0, Number(place[1]) - 1).reduce((total, line) => total + line.length, 0) + Number(place[2]) - 1;
+      const { lines, offsets } = sourceCoordinates(program);
+      const line = lines[Number(place[1]) - 1];
+      if (line !== void 0) offset = offsets[line + Number(place[2]) - 1] ?? null;
     }
     let message = diagnostic.slice(diagnostic.indexOf("error:"));
-    if (message === "error: no viable overloaded '='") {
-      const note = diagnostics.slice(index + 1).find((line) => line.includes("note:") || line.includes("error:")) ?? "";
-      if (note.includes("note:") && note.includes("copy assignment operator")) {
-        message += "; " + note.slice(note.indexOf("note:"));
-      }
+    const note = diagnostics.slice(index + 1).find((line) => /^(?:.*?:\d+:\d+: )?note:/.test(line));
+    if (note && message === "error: no viable overloaded '='" && note.includes("copy assignment operator")) {
+      message += "; " + note.slice(note.indexOf("note:"));
+    } else if (note && message.includes("not a constant expression")) {
+      message += " (" + note.slice(note.indexOf("note:") + "note: ".length) + ")";
     }
     return new IllFormed(message, offset);
   }
-  const DEFAULT_CACHE_NAME = "clang-trace-frontend-v1";
-  const DEFAULT_WASM_URL = "./clang-trace-frontend.wasm";
+  const DEFAULT_CACHE_NAME = "clang-trace-frontend-v2";
+  const DEFAULT_WASM_URL = "./clang-trace-frontend.wasm?v=2";
   const inFlight = /* @__PURE__ */ new Map();
   function resolveWasmUrl(wasmUrl) {
     var _a;
@@ -324,13 +339,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     holds(value) {
       return this.wrap(value) === value;
     }
-    /** The result of arithmetic in this type: unsigned wraps, signed overflow is undefined. */
-    result(value) {
-      if (this.signed && !this.holds(value)) {
-        throw new Unsupported("signed integer overflow is outside the timeline category");
-      }
-      return this.wrap(value);
-    }
   }
   const INTEGERS = Object.freeze({
     "signed char": new Integer(1, true),
@@ -471,15 +479,15 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }
   function extractEnumConstantSizes(tree, types) {
     const enumValues = {};
-    function constant(item) {
+    function constant2(item) {
       if (item.kind === "ConstantExpr") {
         return Number.parseInt(item.value ?? "0", 10);
       }
-      return constant(item.inner[0]);
+      return constant2(item.inner[0]);
     }
     function walkTree(node) {
       if (node.kind === "EnumConstantDecl" && node.name) {
-        enumValues[node.name] = constant(node);
+        enumValues[node.name] = constant2(node);
       }
       for (const child of node.inner ?? []) {
         walkTree(child);
@@ -493,16 +501,16 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return result;
   }
   function layoutsFromFrontend(ast, program, frontend, { layoutOnly = false } = {}) {
-    const definitions2 = {};
+    const definitions = {};
     for (const statement of (ast == null ? void 0 : ast.inner) ?? []) {
       const inner = (statement == null ? void 0 : statement.kind) === "DeclStmt" ? statement.inner ?? [] : [];
       for (const node of inner) {
         if ((node == null ? void 0 : node.kind) === "CXXRecordDecl" && node.completeDefinition) {
           const name = node.name;
-          if (!name || Object.hasOwn(definitions2, name)) {
+          if (!name || Object.hasOwn(definitions, name)) {
             throw new Unsupported("structs require unique names");
           }
-          definitions2[name] = node;
+          definitions[name] = node;
         }
       }
     }
@@ -522,11 +530,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       };
       collect(ast);
     }
-    if (Object.keys(definitions2).length === 0 && arrayTypes.size === 0) {
+    if (Object.keys(definitions).length === 0 && arrayTypes.size === 0) {
       return {};
     }
     const floatSpelled = (spelling) => spelling === "float" || spelling === "double";
-    for (const [name, node] of Object.entries(definitions2)) {
+    for (const [name, node] of Object.entries(definitions)) {
       if (node.tagUsed !== "struct" || node.bases && node.bases.length > 0) {
         throw new Unsupported("only plain aggregate structs without inheritance are supported");
       }
@@ -540,9 +548,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         const canonical = canonicalType(child);
         const base = canonical.replace(/^struct /, "").replace(/ \*+$/, "");
         const isPtr = canonical.endsWith("*") && !qualified.startsWith("const ");
-        const shadowed = Object.hasOwn(definitions2, qualified.replace(/^const /, "").replace(/^std::/, "").replace(/ \*+$/, ""));
-        let allowed = !shadowed && (Boolean(integerSpelled(canonical)) || floatSpelled(canonical)) && !qualified.startsWith("const ") || isPtr && (!shadowed && (Boolean(integerSpelled(base)) || floatSpelled(base)) || base === "void" || Object.hasOwn(definitions2, base) || arrayTypes.has(base));
-        allowed || (allowed = Object.hasOwn(definitions2, qualified) && qualified !== name);
+        const shadowed = Object.hasOwn(definitions, qualified.replace(/^const /, "").replace(/^std::/, "").replace(/ \*+$/, ""));
+        let allowed = !shadowed && (Boolean(integerSpelled(canonical)) || floatSpelled(canonical)) && !qualified.startsWith("const ") || isPtr && (!shadowed && (Boolean(integerSpelled(base)) || floatSpelled(base)) || base === "void" || Object.hasOwn(definitions, base) || arrayTypes.has(base));
+        allowed || (allowed = Object.hasOwn(definitions, qualified) && qualified !== name);
         allowed || (allowed = arrayTypes.has(recordName(child)));
         if (layoutOnly) {
           allowed = LAYOUT_SPELLINGS.includes(qualified) && BUILTIN_INTEGERS.includes(canonical);
@@ -573,9 +581,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       if (array && arrayTypes.has(array.name) && sizes) {
         arrayLayouts.set(array.name, { size: Number(sizes[1]), alignment: Number(sizes[2]) });
       }
-      if (!Object.hasOwn(definitions2, name)) continue;
+      if (!Object.hasOwn(definitions, name)) continue;
       const rows = [...block.matchAll(/^\s*(\d+) \|   (\S.*?) (\w+)\s*$/gm)];
-      const nodes = (definitions2[name].inner ?? []).filter((c) => c.kind === "FieldDecl");
+      const nodes = (definitions[name].inner ?? []).filter((c) => c.kind === "FieldDecl");
       if (!sizes || rows.length !== nodes.length || rows.some((row, i) => row[3] !== nodes[i].name)) {
         throw new Unsupported(`Clang returned an incomplete layout for ${name}`);
       }
@@ -587,7 +595,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         const node = nodes[i];
         const spelling = typeSpelling(node);
         const nestedName = recordName(node);
-        const nested = !layoutOnly && (Object.hasOwn(definitions2, nestedName) || arrayTypes.has(nestedName)) ? nestedName : null;
+        const nested = !layoutOnly && (Object.hasOwn(definitions, nestedName) || arrayTypes.has(nestedName)) ? nestedName : null;
         const item = {
           name: member,
           offset,
@@ -612,7 +620,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       );
       canonicals[name] = recordCanonicals;
     }
-    const defKeys = Object.keys(definitions2);
+    const defKeys = Object.keys(definitions);
     const recKeys = Object.keys(records);
     if (defKeys.length !== recKeys.length || !defKeys.every((k) => Object.hasOwn(records, k))) {
       throw new Unsupported("Clang omitted a struct layout");
@@ -677,8 +685,235 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return records;
   }
-  const RAW_STRING = String.raw`(?:u8|[uUL])?R"([^()\\\s]{0,16})\([\s\S]*?\)\1"`;
-  const LINE_SPLICE = /\\[ \t\f\v]*(?:\r\n?|\n)/;
+  function readTokens(dump, file, source, { ignoreExpansions = false } = {}) {
+    var _a, _b;
+    const { lines, offsets } = sourceCoordinates(source);
+    const tokens = [];
+    let physicalEof = false;
+    let cursor = 0;
+    const includes = [];
+    const entry = /^(\w+) '([\s\S]*?)'\t[^\n]*?\tLoc=<([^\n]*)>\r?$/gm;
+    for (const match of dump.matchAll(entry)) {
+      const [record, kind, spelling, location] = match;
+      if (match.index > cursor + 2) {
+        for (const [, path] of dump.slice(cursor, match.index).matchAll(/^\. ([^\r\n]+)$/gm)) {
+          includes.push(path);
+        }
+      }
+      cursor = match.index + record.length;
+      if (!location.startsWith(file + ":")) continue;
+      const coordinates = /^(\d+):(\d+)(.*)$/.exec(location.slice(file.length + 1));
+      if (!coordinates) continue;
+      const [, line, column, expansion] = coordinates;
+      const start = offsets[lines[Number(line) - 1] + Number(column) - 1];
+      if (expansion) {
+        if (!ignoreExpansions) throw new Unsupported("macro-expanded statements are not supported");
+        if (start !== void 0 && ((_a = tokens.at(-1)) == null ? void 0 : _a.start) !== start) {
+          tokens.push({ kind: "macro", start, end: start });
+        }
+        continue;
+      }
+      if (kind === "eof") {
+        physicalEof = start === source.length || start !== void 0 && /^(?:\r\n|\r|\n)$/.test(source.slice(start));
+        continue;
+      }
+      if (start === void 0 || !spelling || start < (((_b = tokens.at(-1)) == null ? void 0 : _b.end) ?? 0) || source.slice(start, start + spelling.length) !== spelling) {
+        throw new Unsupported("Clang did not report a source spelling for a token");
+      }
+      tokens.push({ kind, start, end: start + spelling.length });
+    }
+    if (!physicalEof) throw new Unsupported("Clang did not report physical source locations");
+    return { tokens, includes };
+  }
+  const HEADERS = "#include <iostream>\n#include <cstdint>\n#include <cstddef>\n";
+  function arrayHeader(source, frontend) {
+    return /\barray\b/.test(source) ? (frontend == null ? void 0 : frontend.arrayPreamble) ?? "#include <array>\n" : "";
+  }
+  class SourceFile {
+    constructor(source, frontend, { ignoreExpansions = false } = {}) {
+      __publicField(this, "program");
+      __publicField(this, "replayPreamble");
+      __publicField(this, "tokens");
+      __publicField(this, "fragment");
+      __publicField(this, "source");
+      __publicField(this, "shift");
+      var _a;
+      if (!source.trim() || source.length > 1e4) throw new Unsupported("empty or oversized snippet");
+      if (/\\[ \t\f\v]*(?:\r\n?|\n)/.test(source)) {
+        throw new Unsupported("a backslash at the end of a line (a line splice) is not supported");
+      }
+      const array = arrayHeader(source, frontend);
+      const headers = HEADERS + array + "using namespace std;\n";
+      const context = /#|%:/.test(source) ? headers : "";
+      const lexed = frontend.tokens(context + source, { ignoreExpansions });
+      const tokens = lexed.tokens.filter((token) => token.start >= context.length).map((token) => ({ ...token, start: token.start - context.length, end: token.end - context.length }));
+      const includes = lexed.includes.map((path) => {
+        if (path.includes(">")) throw new Unsupported("Clang reported an unsupported include path");
+        return `#include <${path}>
+`;
+      }).join("");
+      this.replayPreamble = includes && context ? includes + (frontend.arrayPreamble && array ? array : "") + "using namespace std;\n" : headers;
+      this.fragment = !tokens.some((token, i) => {
+        var _a2, _b;
+        if (source.slice(token.start, token.end) !== "main" || ((_a2 = tokens[i + 1]) == null ? void 0 : _a2.kind) !== "l_paren") return false;
+        const close = tokens.findIndex((next, j) => j > i + 1 && next.kind === "r_paren");
+        return close !== -1 && ((_b = tokens[close + 1]) == null ? void 0 : _b.kind) === "l_brace";
+      });
+      const first = ((_a = tokens[0]) == null ? void 0 : _a.start) ?? source.length;
+      const prefix = this.fragment ? headers + source.slice(0, first) + "int main() { " : headers;
+      this.program = prefix + source.slice(this.fragment ? first : 0) + (this.fragment ? "\n}\n" : "\n");
+      this.source = source;
+      this.shift = prefix.length - (this.fragment ? first : 0);
+      this.tokens = tokens.map((token) => ({ ...token, start: token.start + this.shift, end: token.end + this.shift }));
+    }
+    /** Blank a statement while keeping source coordinates and line endings intact. */
+    without(start, end, frontend) {
+      const first = start - this.shift;
+      const last = end - this.shift;
+      const blank = this.blankTokens(start, end);
+      return new SourceFile(this.source.slice(0, first) + blank + this.source.slice(last), frontend);
+    }
+    /** Remove only active tokens, leaving directives, comments and line breaks in place. */
+    blankTokens(start, end) {
+      let at = start;
+      const parts = [];
+      for (const token of this.tokens) {
+        if (token.start < start || token.end > end) continue;
+        parts.push(this.program.slice(at, token.start));
+        parts.push(this.program.slice(token.start, token.end).replace(/[^\r\n]/g, " "));
+        at = token.end;
+      }
+      return parts.join("") + this.program.slice(at, end);
+    }
+    /** End at the next preprocessed semicolon when the AST's range leaves it out. */
+    statementEnd(end) {
+      const next = this.tokens.find((token) => token.start >= end);
+      return (next == null ? void 0 : next.kind) === "semi" ? next.end : end;
+    }
+    /** Compact gaps for the pane. Keep the spelling and interior spacing of each token. */
+    display(start, end) {
+      const mapping = [];
+      let text = "";
+      let last = start;
+      for (const token of this.tokens) {
+        if (token.start < start || token.end > end) continue;
+        if (last < token.start && text) {
+          mapping.fill(text.length, last - start, token.start - start);
+          text += " ";
+        }
+        for (let offset = token.start; offset <= token.end; offset++) {
+          mapping[offset - start] = text.length + offset - token.start;
+        }
+        text += this.program.slice(token.start, token.end);
+        last = token.end;
+      }
+      if (mapping[0] === void 0 || mapping[end - start] === void 0) {
+        throw new Unsupported("Clang did not report physical source locations for the statement");
+      }
+      return [text, mapping];
+    }
+    /** Whether pane formatting would collapse deliberate horizontal spacing between tokens. */
+    preservesSpacing() {
+      return !this.tokens.some((token, i) => i > 0 && /^[ \t]{2,}$/.test(this.program.slice(this.tokens[i - 1].end, token.start)));
+    }
+    /** Single signs Clang found directly before another token. */
+    signs(start, end, locate) {
+      const signs = /* @__PURE__ */ new Map();
+      for (let i = 1; i < this.tokens.length; i++) {
+        const { kind, start: before, end: after } = this.tokens[i - 1];
+        const token = this.tokens[i];
+        if (before >= start && token.start < end && after === token.start && (kind === "plus" || kind === "minus")) {
+          signs.set(locate(token.start), kind === "plus" ? "+" : "-");
+        }
+      }
+      return signs;
+    }
+    ast(frontend) {
+      var _a, _b, _c, _d;
+      const { offsets } = sourceCoordinates(this.program);
+      const main = frontend.mainAst(this.program);
+      useCharacterOffsets(main, offsets);
+      const body = (main.inner ?? []).find((node) => node.kind === "CompoundStmt");
+      if (!body) throw new Unsupported("main has no supported body");
+      if ((_a = main.inner) == null ? void 0 : _a.some((node) => node.kind === "ParmVarDecl")) {
+        throw new Unsupported("only a parameterless main is supported");
+      }
+      if (this.fragment) {
+        if (bounds(body)[1] !== this.program.length - 1) {
+          throw new Unsupported("declarations outside main are unsupported");
+        }
+        return [body, 0];
+      }
+      const [start, end] = bounds(main);
+      if (this.tokens.some((token) => token.start >= end)) {
+        throw new Unsupported("declarations after main are unsupported");
+      }
+      const globals = [];
+      const leading = this.tokens.filter((token) => token.end <= start);
+      for (let i = 0; i < leading.length; ) {
+        const token = leading[i];
+        const next = leading[i + 1];
+        if (token.kind === "using" && (next == null ? void 0 : next.kind) === "namespace" && this.program.slice((_b = leading[i + 2]) == null ? void 0 : _b.start, (_c = leading[i + 2]) == null ? void 0 : _c.end) === "std" && ((_d = leading[i + 3]) == null ? void 0 : _d.kind) === "semi") {
+          i += 4;
+          continue;
+        }
+        if (token.kind === "macro") throw new Unsupported("macro-expanded declarations outside main are unsupported");
+        if (token.kind !== "struct" || (next == null ? void 0 : next.kind) !== "identifier") {
+          throw new Unsupported("only struct definitions may precede main");
+        }
+        const name = this.program.slice(next.start, next.end);
+        const record = frontend.astDump(this.program, name).find((node) => {
+          var _a2, _b2;
+          return node.kind === "CXXRecordDecl" && node.completeDefinition && offsets[((_b2 = (_a2 = node.range) == null ? void 0 : _a2.begin) == null ? void 0 : _b2.offset) ?? -1] === token.start;
+        });
+        if (record) useCharacterOffsets(record, offsets);
+        if (!record) throw new Unsupported("only struct definitions may precede main");
+        const [, finish] = bounds(record);
+        const semi = leading.findIndex((item) => item.start >= finish);
+        if (semi < 0 || leading[semi].kind !== "semi") throw new Unsupported("only struct definitions may precede main");
+        globals.push({ kind: "DeclStmt", inner: [record], range: record.range });
+        i = semi + 1;
+      }
+      return [{ ...body, inner: [...globals, ...body.inner ?? []] }, globals.length];
+    }
+  }
+  function useCharacterOffsets(node, offsets) {
+    var _a, _b;
+    const convert = (place) => {
+      if ((place == null ? void 0 : place.offset) === void 0) return;
+      const start = offsets[place.offset];
+      if (place.tokLen !== void 0) place.tokLen = offsets[place.offset + place.tokLen] - start;
+      place.offset = start;
+    };
+    convert(node.loc);
+    convert((_a = node.range) == null ? void 0 : _a.begin);
+    convert((_b = node.range) == null ? void 0 : _b.end);
+    for (const child of [...node.inner ?? [], ...node.array_filler ?? []]) useCharacterOffsets(child, offsets);
+  }
+  function bounds(node) {
+    var _a, _b;
+    const first = (_a = node == null ? void 0 : node.range) == null ? void 0 : _a.begin;
+    const last = (_b = node == null ? void 0 : node.range) == null ? void 0 : _b.end;
+    if (typeof (first == null ? void 0 : first.offset) !== "number" || typeof (last == null ? void 0 : last.offset) !== "number" || typeof last.tokLen !== "number") {
+      throw new Unsupported("macro-expanded or implicit source ranges are not supported");
+    }
+    return [first.offset, last.offset + last.tokLen];
+  }
+  function parseAstDump(stdout) {
+    try {
+      return stdout.trim() ? stdout.trim().split(/\n(?=\{)/).map((json) => JSON.parse(json)) : [];
+    } catch {
+      throw new Unsupported("Clang returned invalid AST JSON");
+    }
+  }
+  function requireMain(nodes) {
+    const matches = nodes.filter((node) => {
+      var _a;
+      return node.kind === "FunctionDecl" && node.name === "main" && ((_a = node.inner) == null ? void 0 : _a.some((child) => child.kind === "CompoundStmt"));
+    });
+    if (matches.length !== 1) throw new Unsupported("expected one main function");
+    return matches[0];
+  }
   const COMPOUND_OPERATORS = ["+", "-", "*", "/", "%"];
   function openCompound(pane, span, left, operator, grouped) {
     const [start, end] = span;
@@ -692,45 +927,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       right: middle.length,
       from
     };
-  }
-  const TOKEN = new RegExp(
-    RAW_STRING + String.raw`|\s+|\.?\d(?:[eEpP][+-]|[\w.'])*|[A-Za-z_]\w*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|->\*?|\.\*|::|\+\+|--|<=>|<%|%>|<:(?!:(?![:>]))|:>|<<=?|>>=?|[<>=!]=|&&|\|\||[-+*/%^&|]=|[\s\S]`,
-    "g"
-  );
-  const DIGRAPHS = { "<:": "[", ":>": "]", "<%": "{", "%>": "}" };
-  const TIGHTER = { "+": ["*", "/", "%"], "-": ["*", "/", "%"] };
-  const PREFIX = ["sizeof", "alignof", "new", "delete", "throw", "not", "compl", "co_await"];
-  const BINARY = ["and", "or", "bitand", "bitor", "xor", "not_eq", "and_eq", "or_eq", "xor_eq"];
-  const CASTS = ["static_cast", "dynamic_cast", "const_cast", "reinterpret_cast"];
-  function groups(operator, right) {
-    const tighter = TIGHTER[operator] ?? [];
-    const open = [];
-    let operand = false;
-    let template = false;
-    for (const [spelled] of right.matchAll(TOKEN)) {
-      if (/^\s/.test(spelled)) continue;
-      const token = DIGRAPHS[spelled] ?? spelled;
-      const opensTemplate = template;
-      template = false;
-      if (token === "++" || token === "--") continue;
-      if ("([{".includes(token) || opensTemplate && token === "<") {
-        open.push(token);
-        operand = false;
-      } else if (")]}".includes(token) || open.at(-1) === "<" && (token === ">" || token === ">>")) {
-        const closes = token === ">>" && open.at(-2) === "<" ? 2 : 1;
-        open.length -= closes;
-        operand = true;
-      } else if ([".", "->", ".*", "->*", "::"].includes(token) || PREFIX.includes(token)) {
-        operand = false;
-      } else if (/^[\w."']/.test(token) && !BINARY.includes(token)) {
-        operand = true;
-        template = CASTS.includes(token);
-      } else {
-        if (open.length === 0 && operand && !tighter.includes(token)) return true;
-        operand = false;
-      }
-    }
-    return false;
   }
   const PRINTED_DIGITS = 6;
   function binaryParts(value) {
@@ -783,17 +979,17 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return String(value);
   }
-  function compact$1(text) {
+  function compact(text) {
     const scientific = Number(text).toExponential();
     return scientific.length < text.length ? scientific : text;
   }
   const significantDigits = (text) => Number(text).toExponential().split("e")[0].replace(/[-.]/g, "").length;
   function displayFloat(value, size) {
     if (Object.is(value, -0)) return "-0";
-    if (Number.isSafeInteger(value)) return compact$1(shortestDecimal(value, size));
+    if (Number.isSafeInteger(value)) return compact(shortestDecimal(value, size));
     const shortest = shortestDecimal(value, size);
-    if (significantDigits(shortest) <= SHOWN_DIGITS) return compact$1(shortest);
-    return "≈" + compact$1(String(Number(value.toPrecision(SHOWN_DIGITS))));
+    if (significantDigits(shortest) <= SHOWN_DIGITS) return compact(shortest);
+    return "≈" + compact(String(Number(value.toPrecision(SHOWN_DIGITS))));
   }
   function displayNumber(value, floatSize = null) {
     if (floatSize) return displayFloat(value, floatSize);
@@ -874,15 +1070,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
     }
     return result;
-  }
-  function contiguous(cells) {
-    const sorted = [...cells].sort((a, b) => a.address - b.address);
-    return sorted.every((lower, i) => {
-      const higher = sorted[i + 1];
-      if (!higher) return true;
-      const gap = higher.address - lower.address - lower.size;
-      return 0 <= gap && gap < lower.size;
-    });
   }
   function addresses(variables) {
     const result = {};
@@ -1148,9 +1335,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     );
     check(op.value !== UNKNOWN, `${where}.value`, "reads an uninitialized value");
     check(LITERAL.test(op.value), `${where}.value`, `${pyRepr(op.value)} is not one number`);
-    const grouped = groups(op.compound, previous.pane.slice(span[1]));
-    const opened = openCompound(previous.pane, span, op.value, op.compound, grouped).text;
-    check(step.pane === opened, where, `${pyRepr(step.pane)} is not ${pyRepr(opened)}`);
+    const grouping = Object.hasOwn(op, "grouped") ? [op.grouped] : [false, true];
+    const candidates = grouping.map((grouped) => openCompound(previous.pane, span, op.value, op.compound, grouped).text);
+    check(candidates.includes(step.pane), where, `${pyRepr(step.pane)} is not ${candidates.map(pyRepr).join(" or ")}`);
   }
   const LITERAL = /^≈?-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i;
   function storedItems(text, where) {
@@ -1306,7 +1493,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       clash: ["span", "destination", "from", "to"]
     };
     const fields = fieldMap[kind];
-    checkKeys(op, where, [...fields, "kind"], kind === "read" ? ["compound"] : []);
+    checkKeys(op, where, [...fields, "kind"], kind === "read" ? ["compound", "grouped"] : []);
+    if (Object.hasOwn(op, "grouped")) {
+      check(
+        Object.hasOwn(op, "compound") && typeof op.grouped === "boolean",
+        `${where}.grouped`,
+        "expected a boolean on a compound read"
+      );
+    }
     for (const key of fields.filter((k) => ["name", "target", "via", "value", "from", "to"].includes(k))) {
       check(typeof op[key] === "string" && op[key].length > 0, `${where}.${key}`, "expected text");
     }
@@ -1616,9 +1810,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     );
     const operand = previous && convertOperand(previous, op);
     check(
-      operand !== null && to.wrap(operand) === value,
+      operand !== null && from.holds(operand) && to.wrap(operand) === value,
       `${where}.op.value`,
-      `expected the operand converted to ${op.to}`
+      "the conversion must preserve the retained bits"
     );
   }
   function convertOperand(previous, op) {
@@ -1628,24 +1822,213 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     );
     return integerLiteral(previous.pane.slice(...(part == null ? void 0 : part.span) ?? op.span).replace(/^\((.*)\)$/, "$1"));
   }
-  const REFERENCE = "reference";
+  function traceLayout(source, frontend) {
+    const file = new SourceFile(source, frontend, { ignoreExpansions: true });
+    const [ast] = file.ast(frontend);
+    const records = layoutsFromFrontend(ast, file.program, frontend, { layoutOnly: true });
+    if (Object.keys(records).length === 0) {
+      throw new Unsupported("layout requires at least one plain struct definition");
+    }
+    const result = {
+      format: FORMAT,
+      kind: "layout",
+      records: Object.values(records).map((record) => ({
+        name: record.name,
+        size: record.size,
+        alignment: record.alignment,
+        fields: record.fields
+      }))
+    };
+    validate(result);
+    return result;
+  }
+  const TEMPLATES = {
+    "expression-timeline": {
+      label: { en: "Execution trace", ru: "Трассировка выполнения" }
+    },
+    layout: {
+      label: { en: "Struct layout", ru: "Раскладка структур" }
+    }
+  };
+  const DEFAULT_TEMPLATE = "expression-timeline";
+  const FLAGS = {
+    types: {
+      templates: ["expression-timeline"],
+      label: { en: "Types", ru: "Типы" },
+      description: {
+        en: "Show the type of every value, and a last statement whose types do not fit",
+        ru: "Показывать тип каждого значения и последнюю инструкцию с несовместимыми типами"
+      }
+    },
+    bits: {
+      templates: ["expression-timeline"],
+      label: { en: "Bits", ru: "Биты" },
+      description: {
+        en: "Show the bytes of every integer in memory and its bits as it is converted; implies types",
+        ru: "Показывать байты каждого целого в памяти и его биты при преобразовании; включает типы"
+      }
+    }
+  };
+  const FLAG_NAMES = Object.keys(FLAGS);
+  function isTemplate(name) {
+    return Object.hasOwn(TEMPLATES, name);
+  }
+  function isFlag(name) {
+    return Object.hasOwn(FLAGS, name);
+  }
+  function takesFlag(template, flag) {
+    return FLAGS[flag].templates.includes(template);
+  }
+  function enabledFlags(flags) {
+    return FLAG_NAMES.filter((flag) => flags[flag]);
+  }
+  function parseSettings(template, flags) {
+    const chosen = template ?? DEFAULT_TEMPLATE;
+    if (!isTemplate(chosen)) {
+      throw new Unsupported(`unknown template '${chosen}'`);
+    }
+    const parsed = {};
+    for (const flag of flags) {
+      if (!isFlag(flag)) {
+        throw new Unsupported(`unknown flag '${flag}'`);
+      }
+      if (!takesFlag(chosen, flag)) {
+        throw new Unsupported(`the ${chosen} template does not take '${flag}'`);
+      }
+      parsed[flag] = true;
+    }
+    return { template: chosen, flags: parsed };
+  }
+  function checkSettings(settings) {
+    return parseSettings(settings.template, enabledFlags(settings.flags));
+  }
+  function numberSpelling(value, type) {
+    if (type === "float" || type === "double") {
+      if (Object.is(value, -0)) return "-0.0";
+      const text = String(value);
+      return /[.e]/.test(text) ? text : text + ".0";
+    }
+    return BigInt(value).toString() + (type.startsWith("unsigned ") ? "ULL" : "LL");
+  }
+  function numberOperand(value, type) {
+    return `static_cast<${type}>(${numberSpelling(value, type)})`;
+  }
+  function constant(node) {
+    if (node.kind === "ConstantExpr" && node.value !== void 0) return node.value;
+    for (const child of node.inner ?? []) {
+      const found = constant(child);
+      if (found !== void 0) return found;
+    }
+    return void 0;
+  }
+  function enumValue(nodes, name) {
+    var _a;
+    for (const node of nodes) {
+      if (node.kind !== "EnumDecl" || node.name !== name) continue;
+      const declaration = (_a = node.inner) == null ? void 0 : _a.find((child) => child.kind === "EnumConstantDecl");
+      const value = declaration && constant(declaration);
+      if (value !== void 0 && /^-?\d+$/.test(value)) return BigInt(value);
+    }
+    throw new Unsupported("Clang did not return the requested constant value");
+  }
+  function drawnInteger(value) {
+    const number = Number(value);
+    if (!Number.isSafeInteger(number) && value !== 2n ** 53n && value !== -(2n ** 53n)) {
+      throw new Unsupported("integers beyond 2^53 are not drawn exactly");
+    }
+    return number;
+  }
+  class ClangNumbers {
+    constructor(frontend) {
+      __publicField(this, "values", /* @__PURE__ */ new Map());
+      __publicField(this, "frontend");
+      this.frontend = frontend;
+    }
+    evaluate(expression, type, diagnostic) {
+      const key = type + ":" + expression;
+      const previous = this.values.get(key);
+      if (previous !== void 0) return previous;
+      const bitsType = type === "float" ? "unsigned int" : type === "double" ? "unsigned long long" : null;
+      const initializer = bitsType ? `__builtin_bit_cast(${bitsType}, static_cast<${type}>(${expression}))` : `static_cast<${type}>(${expression})`;
+      const program = `enum __course_number : ${bitsType ?? type} { __course_value = ${initializer} };
+`;
+      let raw;
+      try {
+        raw = enumValue(this.frontend.astDump(program, "__course_number"), "__course_number");
+      } catch (error) {
+        if (error instanceof IllFormed && diagnostic) throw new Unsupported(diagnostic + " (" + error.message + ")");
+        throw error;
+      }
+      let number;
+      if (type === "float") {
+        const buffer = new DataView(new ArrayBuffer(4));
+        buffer.setUint32(0, Number(raw));
+        number = buffer.getFloat32(0);
+      } else if (type === "double") {
+        const buffer = new DataView(new ArrayBuffer(8));
+        buffer.setBigUint64(0, raw);
+        number = buffer.getFloat64(0);
+      } else {
+        number = drawnInteger(raw);
+      }
+      if (!Number.isFinite(number)) throw new Unsupported(diagnostic ?? "non-finite floating-point value");
+      this.values.set(key, number);
+      return number;
+    }
+  }
+  const CHECKS = `
+template<class T, class U> constexpr bool __course_equal(T actual, U expected) {
+  if constexpr (__is_same(T, float))
+    return __builtin_bit_cast(unsigned, actual) ==
+           __builtin_bit_cast(unsigned, static_cast<float>(expected));
+  else if constexpr (__is_same(T, double))
+    return __builtin_bit_cast(unsigned long long, actual) ==
+           __builtin_bit_cast(unsigned long long, static_cast<double>(expected));
+  else
+    return actual == static_cast<T>(expected);
+}
+template<class T, class U> constexpr bool __course_points_to(T* actual, U* expected) {
+  return static_cast<const U*>(static_cast<const void*>(actual)) == expected;
+}
+`;
+  function verifyReplay(frontend, preamble, steps) {
+    const chunks = [preamble, CHECKS];
+    for (const step of steps) {
+      if (step.global) chunks.push(step.source, "\n");
+    }
+    chunks.push("constexpr int __course_replay() {\n");
+    for (const [index, step] of steps.entries()) {
+      if (step.global) continue;
+      if (!step.output) chunks.push(step.source, "\n");
+      if (step.checks.length) {
+        chunks.push(`if (!(${step.checks.join(" && ")})) return ${index + 1};
+`);
+      }
+    }
+    chunks.push(
+      "return 0;\n}\n",
+      "enum __course_checkpoint : int { __course_result = __course_replay() };\n"
+    );
+    let result;
+    try {
+      result = enumValue(frontend.astDump(chunks.join(""), "__course_checkpoint", "c++2c"), "__course_checkpoint");
+    } catch (error) {
+      if (error instanceof IllFormed) throw new Unsupported("Clang could not evaluate the trace: " + error.message);
+      throw error;
+    }
+    if (result !== 0n) throw new Unsupported(`compiler verification failed after statement ${result}`);
+  }
   const hooks = {
-    execute: null,
+    /** Apply a statement to the rendered state. */
     after: (statement, state) => storeResult(statement, state)
   };
   const FIRST_ADDRESS = 64;
   const POINTER_SIZE = 8;
-  const MAX_EXACT = 2n ** 53n;
   const MAX_STATEMENTS = 20;
   const MAX_VARIABLES = 8;
-  const QUOTED_OR_COMMENT = new RegExp(
-    String.raw`${RAW_STRING}|[A-Za-z_]\w*|\.?\d(?:[eEpP][+-]|[\w.'])*|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|\/\/[^\r\n]*|\/\*[\s\S]*?\*\/`,
-    "g"
-  );
-  const IS_RAW_STRING = new RegExp(`^${RAW_STRING}$`);
   const FLOATINGS = Object.freeze({
-    float: Object.freeze({ size: 4, round: (value) => Math.fround(value) }),
-    double: Object.freeze({ size: 8, round: (value) => value })
+    float: Object.freeze({ size: 4 }),
+    double: Object.freeze({ size: 8 })
   });
   function floatNamed(spelling, records = {}) {
     const bare = spelling.replace(/^const /, "").replace(/^std::/, "");
@@ -1679,19 +2062,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }
   function integerType(node, records = {}) {
     return integerNamed(canonicalType(node), records);
-  }
-  function integerTypeOf(node) {
-    const type = integerType(node);
-    if (!type) {
-      throw new Unsupported(`only integer arithmetic is supported, not ${typeSpelling(node) || "this type"}`);
-    }
-    return type;
-  }
-  function exact(value) {
-    if (value > MAX_EXACT || value < -MAX_EXACT) {
-      throw new Unsupported("integers beyond 2^53 are not drawn exactly");
-    }
-    return Number(value);
   }
   function hasRecord(records, name) {
     if (!records) return false;
@@ -1745,73 +2115,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     throw new Unsupported(`only integer and pointer values are supported, not ${qualified || "this type"}`);
   }
-  function isAscii(str) {
-    for (let i = 0; i < str.length; i++) {
-      if (str.charCodeAt(i) > 127) return false;
-    }
-    return true;
-  }
-  function blankComments(source) {
-    let out = "";
-    let breaks = "";
-    let last = 0;
-    const copy = (text) => {
-      const end = text.search(/[\r\n]/);
-      if (breaks && end >= 0) {
-        out += text.slice(0, end) + breaks + text.slice(end);
-        breaks = "";
-      } else {
-        out += text;
-      }
-    };
-    for (const match of source.matchAll(QUOTED_OR_COMMENT)) {
-      const value = match[0];
-      copy(source.slice(last, match.index));
-      last = match.index + value.length;
-      if (IS_RAW_STRING.test(value)) throw new Unsupported("raw string literals are not supported");
-      if (value.startsWith("//") || value.startsWith("/*")) {
-        out += " ";
-        breaks += (value.match(/\r\n|\r|\n/g) ?? []).join("");
-      } else {
-        out += value;
-      }
-    }
-    copy(source.slice(last));
-    return out + breaks;
-  }
-  function snippetBody(source) {
-    if (LINE_SPLICE.test(source)) {
-      throw new Unsupported("a backslash at the end of a line (a line splice) is not supported");
-    }
-    let cleaned = blankComments(source);
-    const lines = cleaned.split(/\r\n|\r|\n/);
-    for (const line of lines) {
-      if (line.trimStart().startsWith("#") && !/^\s*#\s*include\s*[<"][\w./]+[>"]\s*$/.test(line)) {
-        throw new Unsupported("only ordinary include directives are supported");
-      }
-    }
-    cleaned = lines.map((line) => line.trimStart().startsWith("#") ? "" : line).join("\n").trim();
-    cleaned = cleaned.replace(/^using\s+namespace\s+std\s*;\s*/, "");
-    if (/\bmain\s*\(/.test(cleaned)) {
-      const match = /^([\s\S]*?)int\s+main\s*\(\s*(?:void\s*)?\)\s*\{([\s\S]*)\}\s*$/.exec(cleaned);
-      if (!match) {
-        throw new Unsupported("only a standalone parameterless main or statement fragment is supported");
-      }
-      if (match[1].replace(/\bstruct\s+\w+\s*\{[^{}]*\}\s*;/g, "").trim()) {
-        throw new Unsupported("only struct definitions may precede main");
-      }
-      cleaned = (match[1] + match[2]).trim();
-    }
-    if (!cleaned || cleaned.length > 1e4) {
-      throw new Unsupported("empty or oversized snippet");
-    }
-    if (!isAscii(cleaned)) {
-      throw new Unsupported("non-ASCII source text is not supported");
-    }
-    return cleaned;
-  }
-  const DEFINITION = /^struct\s+\w+\s*[{;]/;
-  const DEFINITION_TEXT = /(?:^([ \t]*)|\s*)(struct\s+(\w+)\s*\{[^{}]*\}\s*;)/gm;
   function dedent(text) {
     const lines = text.split("\n");
     let margin = null;
@@ -1832,116 +2135,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     if (!margin) return text;
     return lines.map((line) => line.startsWith(margin) ? line.slice(margin.length) : line.replace(/^[ \t]+$/, "")).join("\n");
-  }
-  function definitions(body) {
-    const result = {};
-    for (const match of body.matchAll(DEFINITION_TEXT)) {
-      result[match[3]] = dedent((match[1] ?? "") + match[2]);
-    }
-    return result;
-  }
-  function bounds(node) {
-    var _a, _b;
-    const first = (_a = node == null ? void 0 : node.range) == null ? void 0 : _a.begin;
-    const last = (_b = node == null ? void 0 : node.range) == null ? void 0 : _b.end;
-    if (!first || !last || typeof first.offset !== "number" || typeof last.offset !== "number" || typeof last.tokLen !== "number") {
-      throw new Unsupported("macro-expanded or implicit source ranges are not supported");
-    }
-    return [first.offset, last.offset + last.tokLen];
-  }
-  function compact(source) {
-    const out = [];
-    const mapping = new Array(source.length + 1).fill(0);
-    let index = 0;
-    const pattern = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\s+|[\s\S]/g;
-    for (const match of source.matchAll(pattern)) {
-      const token = match[0];
-      const start = match.index;
-      const end = start + token.length;
-      const isSpace = /^\s+$/.test(token);
-      let replacement2;
-      if (isSpace) {
-        replacement2 = out.length > 0 && out[out.length - 1] !== " " ? " " : "";
-      } else {
-        replacement2 = token;
-      }
-      for (let offset = start; offset < end; offset++) {
-        mapping[offset] = index + (!isSpace ? Math.min(offset - start, replacement2.length) : 0);
-      }
-      out.push(replacement2);
-      index += replacement2.length;
-      mapping[end] = index;
-    }
-    return [out.join("").replace(/\s+$/, ""), mapping];
-  }
-  function parseLeadingJson(text, startOffset) {
-    let i = startOffset;
-    const n = text.length;
-    while (i < n && /\s/.test(text[i])) i++;
-    if (i >= n) return null;
-    const start = i;
-    if (text[i] !== "{" && text[i] !== "[") {
-      throw new Error("Expected JSON object or array");
-    }
-    let depth = 0;
-    let inString = false;
-    let escape = false;
-    for (; i < n; i++) {
-      const ch = text[i];
-      if (inString) {
-        if (escape) {
-          escape = false;
-        } else if (ch === "\\") {
-          escape = true;
-        } else if (ch === '"') {
-          inString = false;
-        }
-      } else {
-        if (ch === '"') {
-          inString = true;
-        } else if (ch === "{" || ch === "[") {
-          depth++;
-        } else if (ch === "}" || ch === "]") {
-          depth--;
-          if (depth === 0) {
-            i++;
-            break;
-          }
-        }
-      }
-    }
-    if (depth !== 0 || inString) {
-      throw new Error("Unterminated JSON value");
-    }
-    return [JSON.parse(text.slice(start, i)), i];
-  }
-  function extractMainAstFromStdout(stdout, program) {
-    const selected = [];
-    let offset = 0;
-    try {
-      while (offset < stdout.length) {
-        const parsed = parseLeadingJson(stdout, offset);
-        if (!parsed) break;
-        const [node, nextOffset] = parsed;
-        offset = nextOffset;
-        if (node.kind === "FunctionDecl" && node.name === "main") {
-          selected.push(node);
-        }
-      }
-    } catch {
-      throw new Unsupported("Clang returned invalid AST JSON");
-    }
-    if (selected.length !== 1) {
-      throw new Unsupported("expected one main function");
-    }
-    const compound = (selected[0].inner ?? []).filter((node) => node.kind === "CompoundStmt");
-    if (compound.length !== 1) {
-      throw new Unsupported("main has no supported body");
-    }
-    if (bounds(compound[0])[1] !== program.lastIndexOf("}") + 1) {
-      throw new Unsupported("declarations outside main are unsupported");
-    }
-    return compound[0];
   }
   function load(state, name, missing = false) {
     const [owner, ...path] = name.split(".");
@@ -1988,8 +2181,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       throw new Unsupported("pointer arithmetic and comparison are not supported");
     }
   }
-  class Evaluator {
-    constructor(state, locate, records, references = {}, storageTypes = {}) {
+  class Reductions {
+    constructor(state, locate, records, references, storageTypes, numbers, file) {
       __publicField(this, "state");
       __publicField(this, "locate");
       __publicField(this, "reductions");
@@ -1997,7 +2190,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       __publicField(this, "references");
       __publicField(this, "storageTypes");
       __publicField(this, "temporary");
+      __publicField(this, "numbers");
+      __publicField(this, "file");
       this.state = state;
+      this.numbers = numbers;
+      this.file = file;
       this.locate = locate;
       this.reductions = [];
       this.records = records;
@@ -2051,7 +2248,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       if (typeof held !== "number") {
         throw new Unsupported("pointer arithmetic and comparison are not supported");
       }
-      this.reduceAt(copy, left, { kind: "read", name: target, record: null, compound: operator });
+      this.reduceAt(copy, left, { kind: "read", name: target, record: null, compound: operator, grouped: group !== null });
       const computation = { type: node.computeLHSType };
       const resultType = { type: node.computeResultType };
       const operand = this.convertedAt(copy, held, computation, left);
@@ -2070,7 +2267,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     /** `value`, of the type of `source`, in the type of `node`; a step at `span` if the type changes. */
     convertedAt(span, value, node, source) {
       if (displayedType(node) === displayedType(source)) return value;
-      const converted = this.conversion(node, source)(value);
+      const converted = this.convertNumber(value, node, source);
       this.reduceAt(span, node, { kind: "convert", value: converted, source: displayedType(source) });
       return converted;
     }
@@ -2225,7 +2422,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       if (kind === "UnaryExprOrTypeTraitExpr" && node.name === "sizeof") {
         const target = node.argType ? { type: node.argType } : children[0];
         if (!target) throw new Unsupported("malformed sizeof expression");
-        const size = this.byteSizeOf(target);
+        const argument = stripParentheses(target);
+        const stringExtent = argument.kind === "StringLiteral" && /^const (?:char|char8_t)\[(\d+)\]$/.exec(canonicalType(argument));
+        const size = stringExtent ? Number(stringExtent[1]) : this.byteSizeOf(target);
         this.reduce(node, { kind: "eval", value: size, record: null });
         return [size, null];
       }
@@ -2291,14 +2490,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         }
       }
       if (kind === "IntegerLiteral") {
-        return [exact(BigInt(node.value ?? "0")), null];
+        return [drawnInteger(BigInt(node.value)), null];
       }
       if (kind === "FloatingLiteral") {
-        const float = floatType(node, this.records);
-        if (!float) throw new Unsupported(`unsupported floating literal type ${typeSpelling(node)}`);
-        const value2 = float.round(Number(node.value ?? "0"));
-        if (!Number.isFinite(value2)) throw new Unsupported("non-finite floating-point value");
-        return [value2, null];
+        const type = this.numericType(node);
+        const spelling = this.file.program.slice(...bounds(node));
+        return [this.numbers.evaluate(spelling, type, "non-finite floating-point value"), null];
       }
       if (kind === "InitListExpr" || kind === "CXXFunctionalCastExpr") {
         return [this.braces(node, depth), null];
@@ -2313,17 +2510,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         const name = this.lvalue(children[0]);
         this.reduce(node, { kind: "addr", name });
         return [new Pointer(name), null];
-      } else if (kind === "UnaryOperator" && (node.opcode === "+" || node.opcode === "-") && children.length === 1 && !depth) {
-        const float = floatType(node, this.records);
-        if (float) {
-          const operand = this.numericOperand(children[0]);
-          value = float.round(node.opcode === "+" ? operand : -operand);
-        } else {
-          const operand = BigInt(this.integerOperand(children[0]));
-          value = exact(integerTypeOf(node).result(node.opcode === "+" ? operand : -operand));
-        }
-      } else if (kind === "UnaryOperator" && node.opcode === "~" && children.length === 1 && !depth) {
-        value = exact(integerTypeOf(node).wrap(~BigInt(this.integerOperand(children[0]))));
+      } else if (kind === "UnaryOperator" && ["+", "-", "~"].includes(node.opcode ?? "") && children.length === 1 && !depth) {
+        const operand = this.numericOperand(children[0]);
+        const type = this.numericType(node);
+        value = this.numbers.evaluate(
+          `${node.opcode}(${numberOperand(operand, type)})`,
+          type,
+          "signed integer overflow is outside the timeline category"
+        );
       } else if (kind === "BinaryOperator" && ["+", "-", "*", "/", "%"].includes(node.opcode ?? "") && children.length === 2) {
         rejectPointerOperator(node);
         value = this.operate(node, node.opcode, this.numericOperand(children[0]), this.numericOperand(children[1]));
@@ -2333,24 +2527,30 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.reduce(node, { kind: "eval", value, record: null });
       return [value, null];
     }
-    /** `left operation right`, both evaluated, in the integer or floating type of `node`. */
+    numericType(node) {
+      const canonical = canonicalType(node).replace(/^const /, "");
+      if (floatNamed(canonical, this.records)) return canonical;
+      const integer = integerName(canonical);
+      if (integer && !hasRecord(this.records, canonical)) return integer;
+      throw new Unsupported(`only numeric arithmetic is supported, not ${typeSpelling(node) || "this type"}`);
+    }
+    /** `left operation right`, with Clang's usual arithmetic conversions already applied. */
     operate(node, operation, left, right) {
-      const float = floatType(node, this.records);
-      if (float) return Evaluator.floatArithmetic(float, operation, left, right);
-      if (!Number.isInteger(left) || !Number.isInteger(right)) {
-        throw new Unsupported(`only integer arithmetic is supported, not ${typeSpelling(node) || "this type"}`);
+      const type = this.numericType(node);
+      const expression = `${numberOperand(left, type)} ${operation} ${numberOperand(right, type)}`;
+      let diagnostic = "signed integer overflow is outside the timeline category";
+      if (floatType(node, this.records)) {
+        diagnostic = operation === "/" ? "undefined floating-point division" : "undefined floating-point arithmetic";
+      } else if (operation === "/" || operation === "%") {
+        diagnostic = "undefined integer division";
       }
-      return Evaluator.arithmetic(integerTypeOf(node), operation, left, right);
+      return this.numbers.evaluate(expression, type, diagnostic);
     }
     byteSizeOf(node) {
-      if (pointerDepth(node, this.records) > 0) return POINTER_SIZE;
+      if (pointerDepth(node, this.records) > 0) return this.numbers.evaluate("sizeof(void*)", "unsigned long");
       const record = getRecord(this.records, recordName(node));
       if (record) return record.size;
-      const int = integerType(node, this.records);
-      if (int) return int.size;
-      const float = floatType(node, this.records);
-      if (float) return float.size;
-      throw new Unsupported(`cannot determine size of ${typeSpelling(node)}`);
+      return this.numbers.evaluate(`sizeof(${this.numericType(node)})`, "unsigned long");
     }
     numericOperand(node) {
       const [value] = this.rvalue(node);
@@ -2375,7 +2575,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         const [ptr] = this.rvalue(operand);
         value = asPointer(ptr);
       } else {
-        value = this.conversion(node, operand)(this.numericOperand(operand));
+        value = this.convertNumber(this.numericOperand(operand), node, operand);
       }
       const source = displayedType(operand);
       if (source === displayedType(node)) {
@@ -2385,32 +2585,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
       return value;
     }
-    /** How a number of the type of `source` becomes one of the type of `node`. */
-    conversion(node, source) {
-      const targetInt = integerType(node, this.records);
-      const targetFloat = floatType(node, this.records);
-      const sourceInt = integerType(source, this.records);
-      const sourceFloat = floatType(source, this.records);
-      if (targetInt && sourceInt) {
-        return (value) => exact(targetInt.wrap(BigInt(value)));
-      }
-      if (targetFloat && (sourceInt || sourceFloat)) {
-        return (value) => {
-          const rounded = targetFloat.round(value);
-          if (!Number.isFinite(rounded)) throw new Unsupported("non-finite floating-point value");
-          return rounded;
-        };
-      }
-      if (targetInt && sourceFloat) {
-        return (value) => {
-          const truncated = Math.trunc(value);
-          if (!Number.isFinite(truncated) || !targetInt.holds(BigInt(truncated))) {
-            throw new Unsupported("floating-point conversion overflows integer type");
-          }
-          return exact(BigInt(truncated));
-        };
-      }
-      throw new Unsupported("only conversions between integer types are supported");
+    convertNumber(value, node, source) {
+      const target = this.numericType(node);
+      const from = this.numericType(source);
+      if (target === from) return value;
+      const diagnostic = floatType(node, this.records) ? "non-finite floating-point value" : "floating-point conversion overflows integer type";
+      return this.numbers.evaluate(numberOperand(value, from), target, diagnostic);
     }
     braces(node, depth) {
       var _a;
@@ -2430,33 +2610,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
       this.reduce(node, { kind: "eval", value, record: null });
       return value;
-    }
-    static floatArithmetic(type, operation, left, right) {
-      let raw;
-      if (operation === "+") raw = left + right;
-      else if (operation === "-") raw = left - right;
-      else if (operation === "*") raw = left * right;
-      else if (operation === "/") raw = left / right;
-      else throw new Unsupported(`only integer arithmetic is supported, not ${operation}`);
-      const res = type.round(raw);
-      if (!Number.isFinite(res)) {
-        throw new Unsupported("undefined floating-point division");
-      }
-      return res;
-    }
-    static arithmetic(type, operation, left, right) {
-      const l = BigInt(left);
-      const r = BigInt(right);
-      if (operation === "/" || operation === "%") {
-        if (r === 0n || !type.holds(l / r)) {
-          throw new Unsupported("undefined integer division");
-        }
-        return exact(operation === "/" ? l / r : l % r);
-      }
-      if (operation === "+") return exact(type.result(l + r));
-      if (operation === "-") return exact(type.result(l - r));
-      if (operation === "*") return exact(type.result(l * r));
-      throw new Unsupported(`unsupported operator ${operation}`);
     }
   }
   function stripParentheses(node) {
@@ -2489,7 +2642,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       type = null,
       size = null,
       shape = null,
-      fold = null
+      fold = null,
+      signs = /* @__PURE__ */ new Map(),
+      definition = null,
+      typeOnly = false
     }) {
       __publicField(this, "source");
       __publicField(this, "span");
@@ -2513,6 +2669,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       __publicField(this, "size");
       __publicField(this, "shape");
       __publicField(this, "fold");
+      __publicField(this, "signs");
+      __publicField(this, "definition");
+      __publicField(this, "typeOnly");
+      __publicField(this, "global", false);
       this.source = source;
       this.span = span;
       this.pane = pane;
@@ -2535,6 +2695,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.size = size;
       this.shape = shape;
       this.fold = fold;
+      this.signs = signs;
+      this.definition = definition;
+      this.typeOnly = typeOnly;
     }
   }
   function typedParts(node, locate, names, records) {
@@ -2631,16 +2794,16 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
     }
   }
-  function analyzeStatement(node, program, state, records, references, storageTypes = {}) {
+  function analyzeStatement(node, file, state, records, references, storageTypes, numbers) {
     var _a, _b, _c, _d, _e, _f, _g;
     let cur = node;
     while ((cur == null ? void 0 : cur.kind) === "ExprWithCleanups" && (cur.inner ?? []).length === 1) {
       cur = cur.inner[0];
     }
     const [start, end] = bounds(cur);
-    const terminated = /^(?:\s|\/\*(?:[^*]|\*(?!\/))*\*\/|\/\/[^\r\n]*[\r\n])*;/.test(program.slice(end));
-    const [compacted, mapping] = compact(program.slice(start, end));
-    const source = terminated ? `${compacted};` : compacted;
+    const finish = file.statementEnd(end);
+    const [display, mapping] = file.display(start, end);
+    const source = finish > end ? display + ";" : display;
     let left = null;
     let declared = null;
     let outSuffix = null;
@@ -2660,7 +2823,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         return new Statement({
           source,
           span: null,
-          pane: source.replace(/;$/, "")
+          pane: source.replace(/;$/, ""),
+          typeOnly: true,
+          definition: children[0].completeDefinition ? [children[0].name, recordSource(file, start, finish)] : null
         });
       }
       if (children.length !== 1 || ((_b = children[0]) == null ? void 0 : _b.kind) !== "VarDecl") {
@@ -2741,12 +2906,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
       whole = left.kind !== "DeclRefExpr" || Object.hasOwn(references, ((_e = left.referencedDecl) == null ? void 0 : _e.name) ?? "");
     } else if (cur.kind === "CompoundAssignOperator") {
-      return analyzeCompound(cur, source, (offset) => mapping[offset - start], {
+      return analyzeCompound(cur, source, (offset) => mapping[offset - start], file, {
         state,
         records,
         references,
         storageTypes
-      });
+      }, numbers);
     } else if (cur.kind === "CXXOperatorCallExpr") {
       const operands = coutOperands(cur);
       if (operands.length === 0) {
@@ -2820,7 +2985,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         printed
       });
     }
-    const evaluator = new Evaluator(state, locate, records, references, storageTypes);
+    const evaluator = new Reductions(state, locate, records, references, storageTypes, numbers, file);
     const names = /* @__PURE__ */ new Set([...Object.keys(state), ...Object.keys(references)]);
     const typed = [
       ...left !== null ? typedParts(left, locate, names, records) : [],
@@ -2892,10 +3057,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       slot,
       type: declared ? displayedType(variable) : null,
       size,
-      shape: shapeOf(declared ? variable : root, records)
+      shape: shapeOf(declared ? variable : root, records),
+      signs: file.signs(start, end, toPane)
     });
   }
-  function analyzeCompound(node, source, toSource, context) {
+  function analyzeCompound(node, source, toSource, file, context, numbers) {
+    var _a;
     const { state, records, references, storageTypes } = context;
     const spelling = node.opcode;
     const operator = spelling.slice(0, -1);
@@ -2912,13 +3079,16 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const written = source.replace(/;$/, "").replace(/\s+$/, "");
     const [l0, l1] = bounds(left).map(toSource);
     const [r0] = bounds(right).map(toSource);
-    const t0 = written.indexOf(spelling, l1);
-    if (t0 < 0 || t0 + spelling.length > r0) {
+    const token = file.tokens.find((token2) => toSource(token2.start) >= l1);
+    const t0 = token ? toSource(token.start) : -1;
+    if (t0 < 0 || t0 + spelling.length > r0 || written.slice(t0, t0 + spelling.length) !== spelling) {
       throw new Unsupported("macro-expanded statements are not supported");
     }
     const t1 = t0 + spelling.length;
     const copied = written.slice(l0, l1);
-    const grouped = groups(operator, written.slice(t1));
+    let top = right;
+    while (top.kind === "ImplicitCastExpr" && ((_a = top.inner) == null ? void 0 : _a.length) === 1) top = top.inner[0];
+    const grouped = top.kind === "BinaryOperator" && !((operator === "+" || operator === "-") && ["*", "/", "%"].includes(top.opcode));
     const opened = openCompound(written, [t0, t1], copied, operator, grouped);
     const pane = opened.text;
     const toPane = (offset) => {
@@ -2938,7 +3108,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       [copy[1], opened.right, written.slice(t1, opened.from)],
       ...grouped ? [[pane.length - 1, pane.length, ""]] : []
     ];
-    const evaluator = new Evaluator(state, locate, records, references, storageTypes);
+    const evaluator = new Reductions(state, locate, records, references, storageTypes, numbers, file);
     const names = /* @__PURE__ */ new Set([...Object.keys(state), ...Object.keys(references)]);
     const typed = [
       ...typedParts(left, locate, names, records),
@@ -2961,7 +3131,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       target,
       destination: locate(left),
       typed,
-      shape: shapeOf(left, records)
+      shape: shapeOf(left, records),
+      signs: file.signs(bounds(node)[0], bounds(node)[1], toPane)
     });
   }
   function storedAt(value, path, newValue) {
@@ -2979,14 +3150,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return after;
   }
-  const HEADERS = "#include <iostream>\n#include <cstdint>\n";
-  const MAIN = "using namespace std;\nint main() {\n";
-  function arrayHeader(source, frontend) {
-    return /\barray\b/.test(source) ? (frontend == null ? void 0 : frontend.arrayPreamble) ?? "#include <array>\n" : "";
-  }
-  function preamble(source, frontend) {
-    return HEADERS + arrayHeader(source, frontend) + MAIN;
-  }
   const AKA = String.raw`(?: \(aka '[^']+'\))?`;
   const MISMATCHES = [
     String.raw`cannot initialize a variable of type '(?<to>[^']+)'${AKA} with an? \w+ of type '(?<from>[^']+)'`,
@@ -2995,39 +3158,40 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     // A struct on the left: overload resolution fails, and the note names the types.
     String.raw`no viable overloaded '='; note: .*?no known conversion from '(?<from>[^']+)'${AKA} ` + String.raw`to '(?:const )?(?<to>[^'&]+?)(?: &)?' for 1st argument`
   ].map((pattern) => new RegExp(pattern));
-  function lastBefore(text, character, end) {
-    return end > 0 ? text.lastIndexOf(character, end - 1) : -1;
-  }
-  const leading = (text) => text.length - text.trimStart().length;
-  function cutMismatch(body, error, prefixLength) {
-    var _a;
+  function cutMismatch(file, error, frontend) {
+    var _a, _b, _c, _d;
     const found = (_a = MISMATCHES.map((pattern) => pattern.exec(error.message)).find(Boolean)) == null ? void 0 : _a.groups;
-    let at = error.offset === null ? -1 : error.offset - prefixLength;
-    if (!found || at < 0 || at >= body.length) throw error;
-    const end = body.indexOf(";", at);
-    let start = Math.max(lastBefore(body, ";", at), lastBefore(body, "}", at)) + 1;
-    if (end < 0 || !/^\s*(?:return\s+0\s*;\s*)?$/.test(body.slice(end + 1)) || !body.slice(0, start).trim()) {
+    const at = error.offset;
+    if (!found || at === null) throw error;
+    const { tokens, program } = file;
+    let point = tokens.findIndex((token) => token.start === at);
+    if (point < 0) throw error;
+    const finish = tokens.findIndex((token, i) => i > point && token.kind === "semi");
+    if (finish < 0) throw error;
+    const tail = tokens.slice(finish + 1).map((token) => program.slice(token.start, token.end)).join(" ");
+    if (tail !== (file.fragment ? "" : "}") && tail !== (file.fragment ? "return 0 ;" : "return 0 ; }")) {
       throw error;
     }
-    start += leading(body.slice(start, at));
-    if (/^=(?!=)/.test(body.slice(at, end))) {
-      at += 1 + leading(body.slice(at + 1, end));
-    } else if (!/[={]$/.test(body.slice(start, at).trimEnd())) {
-      const assigned = /^\w+\s*=\s*/.exec(body.slice(at, end));
-      if (!assigned) throw error;
-      at += assigned[0].length;
+    let begin = point - 1;
+    while (begin >= 0 && tokens[begin].kind !== "semi") begin--;
+    if (begin < 0) throw error;
+    const start = tokens[begin + 1].start;
+    if (tokens[point].kind === "equal") {
+      point++;
+    } else if (((_b = tokens[point - 1]) == null ? void 0 : _b.kind) !== "equal" && ((_c = tokens[point - 1]) == null ? void 0 : _c.kind) !== "l_brace") {
+      if (tokens[point].kind !== "identifier" || ((_d = tokens[point + 1]) == null ? void 0 : _d.kind) !== "equal") throw error;
+      point += 2;
     }
-    const [source, mapping] = compact(body.slice(start, end + 1));
-    const braced = body.slice(start, at).trimEnd().endsWith("{");
-    const written = body.slice(at, end).trimEnd();
-    const valueEnd = braced ? written.replace(/\}$/, "").trimEnd() : written;
-    const span = [mapping[at - start], mapping[at - start + valueEnd.length]];
+    const braced = tokens[point - 1].kind === "l_brace" && tokens[finish - 1].kind === "r_brace";
+    const end = tokens[finish].end;
+    const [source, mapping] = file.display(start, end);
+    const span = [mapping[tokens[point].start - start], mapping[tokens[finish - (braced ? 2 : 1)].end - start]];
     const [prefix, suffix] = paneParts(source, span, false);
     const slot = prefix.trimEnd().replace(/=$/, "").trimEnd();
     if (suffix.trim() || !slot || source.includes('"') || source.includes("'")) throw error;
-    const text = source.slice(span[0], span[1]);
+    const text = source.slice(...span);
     return [
-      body.slice(0, start),
+      file.without(start, end, frontend),
       {
         source,
         span,
@@ -3038,6 +3202,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         given: displayed(found.from)
       }
     ];
+  }
+  function recordSource({ program }, start, finish) {
+    const line = Math.max(program.lastIndexOf("\n", start - 1), program.lastIndexOf("\r", start - 1)) + 1;
+    const indent = program.slice(line, start);
+    return dedent((/^[ \t]*$/.test(indent) ? indent : "") + program.slice(start, finish).replace(/\r\n?/g, "\n"));
   }
   function integerAliases(node, found = {}) {
     if (node.type) {
@@ -3050,16 +3219,16 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return found;
   }
-  function analyzeWithFrontend(source, frontend) {
-    var _a, _b;
-    const program = preamble(source, frontend) + source + "\n}\n";
-    const ast = frontend.mainAst(program);
+  function analyzeSource(file, frontend) {
+    var _a, _b, _c, _d;
+    const [ast, globalCount] = file.ast(frontend);
     resolveArrayAliases(ast);
-    const records = layoutsFromFrontend(ast, program, frontend);
+    const records = layoutsFromFrontend(ast, file.program, frontend);
     const statements = [];
     let state = {};
     const references = {};
     const storageTypes = {};
+    const numbers = new ClangNumbers(frontend);
     const inner = ast.inner ?? [];
     for (let i = 0; i < inner.length; i++) {
       const node = inner[i];
@@ -3070,7 +3239,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         }
         throw new Unsupported("only a final return 0 is supported");
       }
-      const statement = analyzeStatement(node, program, state, records, references, storageTypes);
+      if (node.kind === "DeclStmt" && ((_c = node.inner) == null ? void 0 : _c.length) === 1 && node.inner[0].kind === "UsingDirectiveDecl" && ((_d = node.inner[0].nominatedNamespace) == null ? void 0 : _d.name) === "std") continue;
+      const statement = analyzeStatement(node, file, state, records, references, storageTypes, numbers);
+      statement.global = i < globalCount;
       if (statement.declared && statements.some((earlier) => earlier.temporary)) {
         throw new Unsupported(
           "a declaration after a materialized temporary needs a separate memory-layout visualization"
@@ -3109,83 +3280,24 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return result;
   }
-  function withoutHiddenSlots(real, variables) {
-    const packed = addresses(variables);
-    const names = variables.map((v) => v.name);
-    const sortedReal = [...names].sort((a, b) => real[a] - real[b]);
-    const sortedPacked = [...names].sort((a, b) => packed[a] - packed[b]);
-    return sortedReal.every((n, i) => n === sortedPacked[i]) ? packed : null;
-  }
-  function observeExecution(execution, predicted, variables, references) {
-    const cells = leaves(variables);
-    const addresses$1 = {};
-    const owners = Object.fromEntries(variables.map((v) => [v.name, v]));
-    const offsets = addresses(variables);
-    const bindings = execution.checkpoints.map(
-      (row) => Object.fromEntries(Object.entries(row).filter(([, cell]) => cell.reference))
-    );
-    const checkpoints = execution.checkpoints.map(
-      (row) => Object.fromEntries(Object.entries(row).filter(([, cell]) => !cell.reference))
-    );
-    for (const row of checkpoints) {
-      for (const [name, cell] of Object.entries(row)) {
-        if (cell.size !== cells[name].size || cell.pointer !== (cells[name].kind === "ptr")) {
-          throw new Unsupported(`runtime storage of ${name} disagrees with Clang`);
-        }
-        if (!Object.hasOwn(addresses$1, name)) {
-          addresses$1[name] = cell.address;
-        } else if (addresses$1[name] !== cell.address) {
-          throw new Unsupported("variable address changed during the trace");
-        }
-        const dot = name.indexOf(".");
-        const owner = dot === -1 ? name : name.slice(0, dot);
-        const member = dot === -1 ? "" : name.slice(dot + 1);
-        if (member) {
-          const offset = offsets[name] - offsets[owner];
-          const base = cell.objectAddress;
-          if (!Object.hasOwn(addresses$1, owner)) {
-            addresses$1[owner] = base;
-          }
-          if (cell.objectSize !== owners[owner].size || cell.address !== base + offset || addresses$1[owner] !== base) {
-            throw new Unsupported(`runtime field offset of ${name} disagrees with Clang`);
-          }
+  function replaySteps(statements, states) {
+    return statements.map((statement, i) => {
+      const checks = [];
+      for (const [name, value] of Object.entries(flatten(states[i]))) {
+        if (value === null) continue;
+        const path = codeName(name);
+        if (value instanceof Pointer) {
+          checks.push(value.target ? `__course_points_to(${path}, &${codeName(value.target)})` : `${path} == nullptr`);
+        } else if (typeof value === "number") {
+          const literal = Number.isSafeInteger(value) && !Object.is(value, -0) ? numberSpelling(value, "long long") : numberSpelling(value, "double");
+          checks.push(`__course_equal(${path}, ${literal})`);
         }
       }
-    }
-    for (const [name, offset] of Object.entries(offsets)) {
-      const owner = name.split(".")[0];
-      if (Object.hasOwn(addresses$1, owner) && !Object.hasOwn(addresses$1, name)) {
-        addresses$1[name] = addresses$1[owner] + offset - offsets[owner];
+      if (statement.bound && statement.declared) {
+        checks.push(`__course_points_to(&${statement.declared}, &${codeName(statement.bound)})`);
       }
-    }
-    for (const row of bindings) {
-      for (const [name, cell] of Object.entries(row)) {
-        const refTarget = references[name];
-        if (cell.address !== addresses$1[refTarget]) {
-          throw new Unsupported(`runtime verification failed: the reference ${name} disagrees`);
-        }
-      }
-    }
-    for (let i = 0; i < checkpoints.length; i++) {
-      const row = checkpoints[i];
-      const expected = flatten(predicted[i]);
-      const rowKeys = Object.keys(row).sort();
-      const expKeys = Object.keys(expected).sort();
-      if (rowKeys.length !== expKeys.length || rowKeys.some((k, idx) => k !== expKeys[idx])) {
-        throw new Unsupported("runtime verification failed: incomplete frame");
-      }
-      const addrValues = new Set(Object.values(addresses$1));
-      for (const [name, value] of Object.entries(expected)) {
-        const bits = value instanceof Pointer ? value.target ? addresses$1[value.target] : 0 : value;
-        if (row[name].value !== bits || bits === 0 && !Object.is(row[name].value, bits)) {
-          if (value instanceof Pointer && row[name].value && !addrValues.has(row[name].value)) {
-            throw new Unsupported(`runtime value of ${name} is not the address of a variable`);
-          }
-          throw new Unsupported(`runtime verification failed: ${name} disagrees`);
-        }
-      }
-    }
-    return [addresses$1, predicted];
+      return { source: statement.source, global: statement.global, output: statement.outputSuffix !== null, checks };
+    });
   }
   function spaceless(text) {
     return text.replace(/\s+/g, "");
@@ -3292,7 +3404,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return false;
   }
   class Renderer {
-    constructor(addresses2, cells = null, real = null, hasReferences = false, types = false) {
+    constructor(addresses2, cells = null, hasReferences = false, types = false) {
       __publicField(this, "addresses");
       // Types are drawn only where an example asks for them: elsewhere they are noise.
       __publicField(this, "types");
@@ -3300,8 +3412,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       __publicField(this, "order");
       __publicField(this, "steps");
       __publicField(this, "stdout");
-      __publicField(this, "real");
-      __publicField(this, "realStdout");
       this.addresses = addresses2;
       this.types = types;
       this.refs = hasReferences ? {} : null;
@@ -3309,17 +3419,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.order = keys.sort((a, b) => addresses2[a] - addresses2[b]);
       this.steps = [];
       this.stdout = "";
-      this.real = real ?? addresses2;
-      this.realStdout = "";
     }
-    printed(pointer, addresses2) {
+    printed(pointer) {
       if (pointer.target === null) {
         return "0";
       }
-      const address = addresses2[pointer.target];
-      if (addresses2 === this.real && this.real !== this.addresses) {
-        return `0x${address.toString(16)}`;
-      }
+      const address = this.addresses[pointer.target];
       return `0x${address.toString(16).padStart(16, "0")}`;
     }
     show(value, shape) {
@@ -3385,7 +3490,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           text2 = this.show(load(before, reduction.name), reduction.shape);
           const [start, end] = reduction.span;
           const span2 = pane.unfold(start, end, text2, reduction.type);
-          const op3 = { kind: "read", name: reduction.name, value: text2, compound: reduction.compound };
+          const op3 = {
+            kind: "read",
+            name: reduction.name,
+            value: text2,
+            compound: reduction.compound,
+            grouped: reduction.grouped
+          };
           this.add(line, pane, expr, before, { ...op3, span: span2 });
           continue;
         }
@@ -3415,7 +3526,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
             text2 = pane.read(reduction.span[0], reduction.span[1]);
           }
         }
-        text2 = separated(pane.text.slice(0, pane.locate(reduction.span[0], reduction.span[1])[0]), text2);
+        const sign = statement.signs.get(reduction.span[0]);
+        if (sign && text2.startsWith(sign)) text2 = "(" + text2 + ")";
         if (pane.read(reduction.span[0], reduction.span[1]) !== text2 || op2.kind === "convert") {
           const span2 = pane.replace(reduction.span[0], reduction.span[1], text2, reduction.type);
           this.add(line, pane, expr, before, { ...op2, span: span2 });
@@ -3452,12 +3564,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
       let span = pane.locate(statement.result[0], statement.result[1]);
       let text = pane.read(statement.result[0], statement.result[1]);
-      let real = text;
       if (statement.printed !== null) {
-        real = text = statement.printed;
+        text = statement.printed;
       } else if (statement.outputSuffix !== null && statement.value instanceof Pointer) {
-        text = this.printed(statement.value, this.addresses);
-        real = this.printed(statement.value, this.real);
+        text = this.printed(statement.value);
         if (pane.read(statement.result[0], statement.result[1]) !== text) {
           const op2 = {
             kind: "eval",
@@ -3469,7 +3579,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         }
       }
       if (statement.outputSuffix !== null) {
-        this.realStdout += real + statement.outputSuffix;
         this.stdout += text + statement.outputSuffix;
         this.add(line, pane, expr, after, { kind: "print", value: text, span }, 1.2);
         return;
@@ -3516,22 +3625,22 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
   }
   function traceWithFrontend(source, options) {
-    const { runtime = true, bits = false, frontend, executor = hooks.execute, directory } = options;
+    const { bits = false, frontend } = options;
     const types = bits || (options.types ?? false);
-    let body = snippetBody(source);
+    let file = new SourceFile(source, frontend);
     let mismatch = null;
     let statements;
     let records;
     let aliases;
     try {
-      [statements, records, aliases] = analyzeWithFrontend(body, frontend);
+      [statements, records, aliases] = analyzeSource(file, frontend);
     } catch (error) {
       if (!(error instanceof IllFormed)) throw error;
       if (!types) {
         throw tracesWithTypes(source, options, error) ? new NeedsFlag(error.message, "types", error.offset) : error;
       }
-      [body, mismatch] = cutMismatch(body, error, preamble(body, frontend).length);
-      [statements, records, aliases] = analyzeWithFrontend(body, frontend);
+      [file, mismatch] = cutMismatch(file, error, frontend);
+      [statements, records, aliases] = analyzeSource(file, frontend);
     }
     const predicted = [];
     let state = {};
@@ -3539,6 +3648,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       state = hooks.after(statement, state);
       predicted.push(state);
     }
+    verifyReplay(frontend, file.replayPreamble, replaySteps(statements, predicted));
     const declarations = statements.filter((s) => s.declared);
     const variables = [];
     const references = {};
@@ -3599,75 +3709,32 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     if (bits && (Object.keys(references).length > 0 || variables.some((v) => v.kind !== "int" || !integerSpelled(v.type ?? "", aliases)))) {
       throw new Unsupported("bits draw integer variables only");
     }
-    let addresses$1;
-    let states;
-    let execution = null;
-    if (runtime) {
-      if (!executor) {
-        throw new Unsupported("runtime executor is required when runtime=true");
-      }
-      const scopes = [];
-      const bound = {};
-      for (let i = 0; i < statements.length; i++) {
-        const statement = statements[i];
-        const row = predicted[i];
-        if (statement.bound && statement.declared) {
-          bound[statement.declared] = statement.bound;
-        }
-        scopes.push([
-          ...Object.entries(flatten(row)).map(([name, value]) => [name, value !== null]),
-          ...Object.keys(bound).map((name) => [name, REFERENCE])
-        ]);
-      }
-      execution = executor(
-        statements.map((s) => s.source),
-        scopes,
-        directory
-      );
-      [addresses$1, states] = observeExecution(execution, predicted, variables, bound);
-    } else {
-      addresses$1 = addresses(variables);
-      states = predicted;
-    }
-    const real = addresses$1;
-    const packed = withoutHiddenSlots(real, variables);
-    if (Object.keys(references).length > 0) {
-      if (!packed) {
-        throw new Unsupported("runtime order of the variables disagrees with their declarations");
-      }
-      addresses$1 = packed;
-    } else if (packed && !contiguous(variables.map((v) => ({ address: real[v.name], size: v.size })))) {
-      addresses$1 = packed;
-    }
     const alignment = Math.max(
       ...Object.values(records).map((r) => r.alignment),
       ...declarations.filter((d) => !d.record && !d.bound).map((d) => d.size),
       4
     );
-    addresses$1 = normalizeAddresses(addresses$1, { ABI: alignment });
+    const addresses$1 = normalizeAddresses(addresses(variables), { ABI: alignment });
     for (const variable of variables) {
       variable.address = addresses$1[variable.name];
     }
     variables.sort((a, b) => a.address - b.address);
     const shown = [];
     for (let i = 0; i < statements.length; i++) {
-      if (!DEFINITION.test(statements[i].source)) {
-        shown.push([statements[i], states[i]]);
+      if (!statements[i].typeOnly) {
+        shown.push([statements[i], predicted[i]]);
       }
     }
     if (shown.length === 0) {
       throw new Unsupported("a snippet of only struct definitions has nothing to step through");
     }
     const hasRefs = Object.keys(references).length > 0;
-    const renderer = new Renderer(addresses$1, leaves(variables), real, hasRefs, types);
+    const renderer = new Renderer(addresses$1, leaves(variables), hasRefs, types);
     let previous = {};
     for (let line = 0; line < shown.length; line++) {
       const [statement, after] = shown[line];
       renderer.statement(line, statement, previous, after);
       previous = after;
-    }
-    if (runtime && execution && renderer.realStdout !== execution.stdout) {
-      throw new Unsupported("runtime output disagrees with the expression trace");
     }
     const shownStatements = shown.map(([s]) => s);
     if (mismatch) {
@@ -3682,7 +3749,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       variables,
       steps: renderer.steps
     };
-    const structs = definitions(body);
+    const structs = Object.fromEntries(statements.flatMap((s) => s.definition ? [s.definition] : []));
     if (Object.keys(structs).length > 0) {
       result.types = structs;
     }
@@ -3715,87 +3782,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       throw exc;
     }
     return result;
-  }
-  function traceLayout(source, frontend) {
-    const body = snippetBody(source);
-    const program = "#include <iostream>\n#include <cstdint>\n#include <cstddef>\nusing namespace std;\nint main() {\n" + body + "\n}\n";
-    const ast = frontend.mainAst(program);
-    const records = layoutsFromFrontend(ast, program, frontend, { layoutOnly: true });
-    if (Object.keys(records).length === 0) {
-      throw new Unsupported("layout requires at least one plain struct definition");
-    }
-    const result = {
-      format: FORMAT,
-      kind: "layout",
-      records: Object.values(records).map((record) => ({
-        name: record.name,
-        size: record.size,
-        alignment: record.alignment,
-        fields: record.fields
-      }))
-    };
-    validate(result);
-    return result;
-  }
-  const TEMPLATES = {
-    "expression-timeline": {
-      label: { en: "Execution trace", ru: "Трассировка выполнения" }
-    },
-    layout: {
-      label: { en: "Struct layout", ru: "Раскладка структур" }
-    }
-  };
-  const DEFAULT_TEMPLATE = "expression-timeline";
-  const FLAGS = {
-    types: {
-      templates: ["expression-timeline"],
-      label: { en: "Types", ru: "Типы" },
-      description: {
-        en: "Show the type of every value, and a last statement whose types do not fit",
-        ru: "Показывать тип каждого значения и последнюю инструкцию с несовместимыми типами"
-      }
-    },
-    bits: {
-      templates: ["expression-timeline"],
-      label: { en: "Bits", ru: "Биты" },
-      description: {
-        en: "Show the bytes of every integer in memory and its bits as it is converted; implies types",
-        ru: "Показывать байты каждого целого в памяти и его биты при преобразовании; включает типы"
-      }
-    }
-  };
-  const FLAG_NAMES = Object.keys(FLAGS);
-  function isTemplate(name) {
-    return Object.hasOwn(TEMPLATES, name);
-  }
-  function isFlag(name) {
-    return Object.hasOwn(FLAGS, name);
-  }
-  function takesFlag(template, flag) {
-    return FLAGS[flag].templates.includes(template);
-  }
-  function enabledFlags(flags) {
-    return FLAG_NAMES.filter((flag) => flags[flag]);
-  }
-  function parseSettings(template, flags) {
-    const chosen = template ?? DEFAULT_TEMPLATE;
-    if (!isTemplate(chosen)) {
-      throw new Unsupported(`unknown template '${chosen}'`);
-    }
-    const parsed = {};
-    for (const flag of flags) {
-      if (!isFlag(flag)) {
-        throw new Unsupported(`unknown flag '${flag}'`);
-      }
-      if (!takesFlag(chosen, flag)) {
-        throw new Unsupported(`the ${chosen} template does not take '${flag}'`);
-      }
-      parsed[flag] = true;
-    }
-    return { template: chosen, flags: parsed };
-  }
-  function checkSettings(settings) {
-    return parseSettings(settings.template, enabledFlags(settings.flags));
   }
   function traceSnippet(source, settings, context) {
     const { template, flags } = checkSettings(settings);
@@ -4047,22 +4033,32 @@ array(T, U...) -> array<T, 1 + sizeof...(U)>;
   function createWasmClangFrontend(module) {
     return {
       arrayPreamble: ARRAY_PREAMBLE,
-      mainAst(program) {
+      tokens(program, options) {
+        const result = runWasiModule(module, {
+          args: ["clang-trace-frontend", "-Xclang", "-dump-tokens", "-"],
+          stdin: program
+        });
+        if (result.returncode !== 0) throw illFormed(result.stderr, program);
+        return readTokens(result.stderr, "/virtual/source.cpp", program, options);
+      },
+      astDump(program, filter, standard = "c++20") {
         const result = runWasiModule(module, {
           args: [
             "clang-trace-frontend",
+            "-std=" + standard,
             "-Xclang",
             "-ast-dump=json",
             "-Xclang",
-            "-ast-dump-filter=main",
+            "-ast-dump-filter=" + filter,
             "-"
           ],
           stdin: program
         });
-        if (result.returncode !== 0) {
-          throw illFormed(result.stderr, program);
-        }
-        return extractMainAstFromStdout(result.stdout, program);
+        if (result.returncode !== 0) throw illFormed(result.stderr, program);
+        return parseAstDump(result.stdout);
+      },
+      mainAst(program) {
+        return requireMain(this.astDump(program, "main"));
       },
       recordLayoutsDump(program) {
         const result = runWasiModule(module, {
@@ -4090,7 +4086,7 @@ array(T, U...) -> array<T, 1 + sizeof...(U)>;
     };
   }
   function traceWithWasmModule(source, module, settings) {
-    return traceSnippet(source, settings, { runtime: false, frontend: createWasmClangFrontend(module) });
+    return traceSnippet(source, settings, { frontend: createWasmClangFrontend(module) });
   }
   const workerSelf = self;
   let activeKey = null;

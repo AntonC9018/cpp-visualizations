@@ -5,4 +5,5 @@ __pycache__/
 node_modules/
 player/demo.html
 *.wasm
+!player/clang-trace-frontend.wasm
 wasm/build/

@@ -30,7 +30,7 @@ from a host repository, prefix the paths with `visualizations/`.
   `playground.ts`), bundled into
   `player/clang-worker.js` and `player/playground.js`.
 - `wasm/` holds the trimmed Clang 21 WASM frontend (`clang-trace-frontend.cpp`, WASI compatibility
-  shims, and `build.sh` producing the git-ignored `player/clang-trace-frontend.wasm`).
+  shims, and `build.sh` producing the bundled `player/clang-trace-frontend.wasm`).
 - `discover.mjs` lists the lesson examples the tracer supports and tags the ones chosen by hand.
 - `generate.mjs` is the command line maintenance uses: `trace`, `probe` and `revision`.
 - `player/` holds the bundled site engine (`player.js`, `player.css`), the browser playground
@@ -183,6 +183,9 @@ edges on the tape and offsets at each slot; otherwise the offsets mark where fie
 Hover, click or keyboard focus links a field's row, name and bytes; `struct` and `sizeof`
 highlight the whole object, `alignof` the widest fields. Theme changes preserve focus.
 
+Constant evaluation supports casting from `void*` back to the pointee's original type.
+Casting it to a different pointee type is outside the trace category.
+
 ## Toolchain and tests
 
 The flake pins the tools. A host repository that traces in CI keeps a flake of its own
@@ -210,19 +213,23 @@ nix develop --command npm run dev
 ## Browser Clang WASM playground
 
 `player/playground.html` runs the isomorphic tracer (`src/core/`) inside a dedicated Web Worker
-against a trimmed Clang 21 WASM build (`player/clang-trace-frontend.wasm`, ~17 MB raw / ~4.2 MB
-brotli). The worker downloads the module once, stores it in the browser Cache API
-(`clang-trace-frontend-v2`), and reuses cached bytes across reloads without re-fetching.
+against the Clang 21 WASM frontend at `player/clang-trace-frontend.wasm`. The worker downloads
+the checked-in module and stores it in the browser Cache API (`clang-trace-frontend-v2`).
 
-`*.wasm` binaries are git-ignored; rebuild `player/clang-trace-frontend.wasm` from LLVM 21.1.8
-sources with:
+Rebuild the module with LLVM 21.1.8 sources, host TableGen tools and WASI clang. When using a
+pristine LLVM source tarball, apply the WASI executable-path patch in the source tree first.
 
 ```sh
-./wasm/build.sh
+patch -d /path/to/llvm-project-21.1.8.src -p1 < wasm/llvm-wasi.patch
+JOBS=4 ./wasm/build.sh
 ```
 
+`wasm/build.sh` accepts paths to the sources and tools through its environment variables.
+Update the browser cache name when changing the frontend protocol.
+
 The playground and `generate.mjs trace` share the tracer and use Clang's AST and constant
-evaluator. The playground runs its compiler in WASM. Its template buttons and flag toggles are those of `settings.ts`, kept in the URL as
+evaluator. The playground runs its compiler in WASM with virtual headers for `<iostream>`,
+`<cstdint>`, `<cstddef>` and `<array>`. Template and flag settings are kept in the URL as
 `?template=expression-timeline&types=1`.
 
 Override the compiler binary URL via `?wasm=https://.../clang-trace-frontend.wasm`,
