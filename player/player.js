@@ -35,7 +35,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     copyBegin: 0.15,
     copyTravel: 1,
     evaluate: 0.6,
-    clash: 1.6
+    clash: 1.6,
+    // Instant playback: how long each settled state shows before the next.
+    instantHold: 0.8
   };
   const KEYWORDS = /* @__PURE__ */ new Set(["int", "std", "cout", "endl", "struct", "auto", "const"]);
   const EASE = 'calcMode="spline" keyTimes="0;1" keySplines="0.4 0 0.2 1"';
@@ -73,6 +75,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       replay: "Replay step",
       reset: "Reset",
       speed: "Playback speed",
+      instant: "Instant",
       byteOrder: "Memory byte order",
       littleEndian: "Little-endian (least significant byte first)",
       bigEndian: "Big-endian (most significant byte first)",
@@ -104,6 +107,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       replay: "Повторить шаг",
       reset: "Сначала",
       speed: "Скорость",
+      instant: "Мгновенно",
       byteOrder: "Порядок байтов в памяти",
       littleEndian: "Little-endian (младший байт первым)",
       bigEndian: "Big-endian (старший байт первым)",
@@ -2427,6 +2431,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       __publicField(this, "elapsed");
       __publicField(this, "duration");
       __publicField(this, "rate");
+      /** Steps jump to their settled state instead of animating. */
+      __publicField(this, "instant");
       /** Memory's byte order, for a view that draws bytes. */
       __publicField(this, "littleEndian");
       __publicField(this, "running");
@@ -2459,6 +2465,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.elapsed = 0;
       this.duration = 0;
       this.rate = 1;
+      this.instant = false;
       this.littleEndian = true;
       this.running = false;
       this.continuous = false;
@@ -2483,7 +2490,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const button = (action, label, iconName, extra = "") => `<button type="button" class="cv-button${extra}" data-action="${action}" aria-label="${esc(label)}" title="${esc(label)}">${icon(iconName)}<span class="cv-label">${esc(label)}</span></button>`;
       const order = (side, label, title) => `<button type="button" class="cv-endian-seg" data-endian-side="${side}" aria-pressed="${side === "le" === this.littleEndian}" title="${esc(title)}">${esc(label)}</button>`;
       const endianToggle = this.view.byteOrder ? `<div class="cv-endian" role="group" aria-label="${esc(S.byteOrder)}">` + order("le", S.littleEndianShort, S.littleEndian) + order("be", S.bigEndianShort, S.bigEndian) + "</div>" : "";
-      root.innerHTML = `<div class="cv-view"><svg class="cv-stage" role="group" aria-label="${esc(S.stage)}" xmlns="http://www.w3.org/2000/svg"><g class="cv-scene" aria-hidden="true"></g><g class="cv-lines">${lineTargets(this.m, S)}</g></svg><div class="cv-type" aria-hidden="true" hidden></div></div><div class="cv-controls"><div class="cv-transport">` + button("play", S.play, "play", " cv-primary") + button("back", S.back, "back") + button("next", S.next, "next") + button("replay", S.replay, "replay", " cv-icon-only") + `<select class="cv-speed" aria-label="${esc(S.speed)}" title="${esc(S.speed)}">` + [0.5, 1, 1.5, 2].map((v) => `<option value="${v}"${v === 1 ? " selected" : ""}>${v}×</option>`).join("") + "</select>" + endianToggle + button("reset", S.reset, "reset", " cv-reset") + `</div><div class="cv-progress"><input class="cv-scrub" type="range" min="0" max="${this.m.steps.length - 1}" value="0" step="1" aria-label="${esc(S.scrub)}"><span class="cv-count"></span></div></div><div class="cv-status" aria-live="polite"></div>`;
+      root.innerHTML = `<div class="cv-view"><svg class="cv-stage" role="group" aria-label="${esc(S.stage)}" xmlns="http://www.w3.org/2000/svg"><g class="cv-scene" aria-hidden="true"></g><g class="cv-lines">${lineTargets(this.m, S)}</g></svg><div class="cv-type" aria-hidden="true" hidden></div></div><div class="cv-controls"><div class="cv-transport">` + button("play", S.play, "play", " cv-primary") + button("back", S.back, "back") + button("next", S.next, "next") + button("replay", S.replay, "replay", " cv-icon-only") + `<select class="cv-speed" aria-label="${esc(S.speed)}" title="${esc(S.speed)}">` + [0.5, 1, 1.5, 2].map((v) => `<option value="${v}"${v === 1 ? " selected" : ""}>${v}×</option>`).join("") + // A glyph keeps the menu as narrow as `1.5×`: a word would push the controls onto two rows.
+      `<option value="instant" title="${esc(S.instant)}" aria-label="${esc(S.instant)}">⚡</option></select>` + endianToggle + button("reset", S.reset, "reset", " cv-reset") + `</div><div class="cv-progress"><input class="cv-scrub" type="range" min="0" max="${this.m.steps.length - 1}" value="0" step="1" aria-label="${esc(S.scrub)}"><span class="cv-count"></span></div></div><div class="cv-status" aria-live="polite"></div>`;
       this.host.append(root);
       this.root = root;
       this.svg = root.querySelector(".cv-stage");
@@ -2503,7 +2511,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         if (side) this.byteOrder(side.dataset.endianSide === "le");
       });
       root.querySelector(".cv-speed").addEventListener("change", (event) => {
-        this.rate = Number(event.target.value);
+        const menu = event.target;
+        this.speed(menu.value);
+        const label = menu.value === "instant" ? `${S.speed}: ${S.instant}` : S.speed;
+        menu.title = label;
+        menu.setAttribute("aria-label", label);
       });
       this.scrub.addEventListener("input", () => {
         this.pristine = false;
@@ -2755,9 +2767,15 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.continuous = autoplay;
       this.index = index;
       this.elapsed = 0;
-      this.duration = this.view.stepSeconds(this.m, index);
-      this.render(true);
+      this.duration = this.instant ? autoplay ? T.instantHold : 0 : this.view.stepSeconds(this.m, index);
+      this.render(!this.instant);
       if (this.duration > 0 || autoplay) this.resume();
+    }
+    /** A speed menu choice: a playback rate, or `instant`. A running step restarts at it. */
+    speed(choice) {
+      this.instant = choice === "instant";
+      if (!this.instant) this.rate = Number(choice);
+      if (this.running && this.instant) this.start(this.index, this.continuous);
     }
     resume() {
       this.running = true;

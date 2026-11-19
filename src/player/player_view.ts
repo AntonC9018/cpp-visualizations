@@ -29,6 +29,8 @@ export class Player {
   elapsed: number;
   duration: number;
   rate: number;
+  /** Steps jump to their settled state instead of animating. */
+  instant: boolean;
   /** Memory's byte order, for a view that draws bytes. */
   littleEndian: boolean;
   running: boolean;
@@ -63,6 +65,7 @@ export class Player {
     this.elapsed = 0;
     this.duration = 0;
     this.rate = 1;
+    this.instant = false;
     this.littleEndian = true;
     this.running = false;
     this.continuous = false;
@@ -112,6 +115,8 @@ export class Player {
       [0.5, 1, 1.5, 2]
         .map(v => `<option value="${v}"${v === 1 ? ' selected' : ''}>${v}×</option>`)
         .join('') +
+      // A glyph keeps the menu as narrow as `1.5×`: a word would push the controls onto two rows.
+      `<option value="instant" title="${esc(S.instant)}" aria-label="${esc(S.instant)}">⚡</option>` +
       '</select>' +
       endianToggle +
       button('reset', S.reset, 'reset', ' cv-reset') +
@@ -137,7 +142,11 @@ export class Player {
       if (side) this.byteOrder(side.dataset.endianSide === 'le');
     });
     root.querySelector('.cv-speed')!.addEventListener('change', event => {
-      this.rate = Number((event.target as HTMLSelectElement).value);
+      const menu = event.target as HTMLSelectElement;
+      this.speed(menu.value);
+      const label = menu.value === 'instant' ? `${S.speed}: ${S.instant}` : S.speed;
+      menu.title = label;
+      menu.setAttribute('aria-label', label);
     });
     this.scrub.addEventListener('input', () => {
       this.pristine = false;
@@ -414,9 +423,17 @@ export class Player {
     this.continuous = autoplay;
     this.index = index;
     this.elapsed = 0;
-    this.duration = this.view.stepSeconds(this.m, index);
-    this.render(true);
+    // Instant, a step shows settled; playing, it holds there a moment before the next.
+    this.duration = this.instant ? (autoplay ? T.instantHold : 0) : this.view.stepSeconds(this.m, index);
+    this.render(!this.instant);
     if (this.duration > 0 || autoplay) this.resume();
+  }
+
+  /** A speed menu choice: a playback rate, or `instant`. A running step restarts at it. */
+  speed(choice: string): void {
+    this.instant = choice === 'instant';
+    if (!this.instant) this.rate = Number(choice);
+    if (this.running && this.instant) this.start(this.index, this.continuous);
   }
 
   resume(): void {

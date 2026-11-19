@@ -50,6 +50,8 @@ export const T = {
   copyTravel: 1.0,
   evaluate: 0.6,
   clash: 1.6,
+  // Instant playback: how long each settled state shows before the next.
+  instantHold: 0.8,
 } as const;
 
 export const KEYWORDS = new Set(['int', 'std', 'cout', 'endl', 'struct', 'auto', 'const']);
@@ -120,6 +122,7 @@ export interface PlayerStrings {
   replay: string;
   reset: string;
   speed: string;
+  instant: string;
   byteOrder: string;
   littleEndian: string;
   bigEndian: string;
@@ -153,6 +156,7 @@ export const STRINGS: Record<string, PlayerStrings> = {
     replay: 'Replay step',
     reset: 'Reset',
     speed: 'Playback speed',
+    instant: 'Instant',
     byteOrder: 'Memory byte order',
     littleEndian: 'Little-endian (least significant byte first)',
     bigEndian: 'Big-endian (most significant byte first)',
@@ -184,6 +188,7 @@ export const STRINGS: Record<string, PlayerStrings> = {
     replay: 'Повторить шаг',
     reset: 'Сначала',
     speed: 'Скорость',
+    instant: 'Мгновенно',
     byteOrder: 'Порядок байтов в памяти',
     littleEndian: 'Little-endian (младший байт первым)',
     bigEndian: 'Big-endian (старший байт первым)',

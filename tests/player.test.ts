@@ -90,6 +90,34 @@ test('Enter on a code line keeps focus there and the arrow keys step', async () 
   assert.equal(await index(), firstStep(1) + 2);
 });
 
+test('the instant speed jumps to each settled state, and playing holds each a moment', async () => {
+  const player = (): Promise<{ index: number; animated: boolean; steps: number }> =>
+    page.evaluate(() => {
+      const p = (document.querySelector('.course-visualization') as PlayerElement).cvPlayer as unknown as {
+        index: number;
+        animated: boolean;
+        m: { steps: unknown[] };
+      };
+      return { index: p.index, animated: p.animated, steps: p.m.steps.length };
+    });
+  assert.deepEqual(
+    await page.$$eval('.cv-speed option', options => options.map(o => o.textContent)),
+    ['0.5×', '1×', '1.5×', '2×', '⚡']
+  );
+  assert.equal(await page.getAttribute('.cv-speed option[value=instant]', 'aria-label'), 'Instant');
+  await page.selectOption('.cv-speed', 'instant');
+  await page.click('[data-action=next]');
+  assert.deepEqual(await player(), { ...(await player()), index: 1, animated: false });
+  await page.click('[data-action=play]');
+  await page.clock.runFor(500);
+  assert.equal((await player()).index, 2, 'the next state shows at once');
+  await page.clock.runFor(1000);
+  assert.equal((await player()).index, 3, 'and holds before the one after');
+  const { steps } = await player();
+  await page.clock.runFor(steps * 1000);
+  assert.equal((await player()).index, steps - 1);
+});
+
 test('a theme change keeps focus', async () => {
   await page.focus('.cv-line[data-line="2"]');
   await page.keyboard.press(' ');
