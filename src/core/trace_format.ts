@@ -551,6 +551,8 @@ function checkValue(
   aliases: Record<string, string>,
   where: string
 ): void {
+  const integer = cell?.kind === 'int' ? integerSpelled(cell.type ?? '', aliases) : null;
+  check(integer === null || integer.size === cell!.size, where, `${cell?.type} is not ${cell?.size} bytes`);
   if (value === null || value === UNKNOWN) return;
   if (cell?.floating) {
     check(
@@ -567,8 +569,6 @@ function checkValue(
   );
   if (cell?.kind !== 'int') return;
   // Without its type, a cell holds what some integer of its size can, signed or not.
-  const integer = integerSpelled(cell.type ?? '', aliases);
-  check(integer === null || integer.size === cell.size, where, `${cell.type} is not ${cell.size} bytes`);
   const bits = BigInt(8 * cell.size);
   const stored = BigInt(value as number);
   const fits = integer ? integer.holds(stored) : -(1n << (bits - 1n)) <= stored && stored < 1n << bits;
@@ -719,7 +719,7 @@ function showsCell(item: string, value: unknown, cell: ScalarVariable | ScalarFi
   if (item === 'nullptr') return cell?.kind === 'ptr' && value === 0;
   if (cell?.floating && typeof value === 'number') {
     // Traces from before the short display spell a whole float with all its digits.
-    return item === displayFloat(value, cell.size) || (Number.isSafeInteger(value) && item === String(value));
+    return item === displayFloat(value, cell.size) || (Number.isSafeInteger(value) && !Object.is(value, -0) && item === String(value));
   }
   return !item.startsWith('≈') && Object.is(Number(item), value);
 }

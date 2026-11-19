@@ -116,3 +116,23 @@ test('a field read elsewhere in the statement leaves a whole dereferenced struct
   const target = stepOf(w, 'deref', 's');
   assert.deepEqual(cells(stepFocus(w, target, true).now), ['s.a', 's.b']);
 });
+
+test('a field reached through parentheses, spaces or a reference chain lights alone', () => {
+  const setup = 'struct S { int a; int b; }; S s{ 1, 2 }; S* p = &s; ';
+  for (const [statement, kind] of [
+    ['(*p) . a += 3;', 'read'],
+    ['(*p) . a = 3;', 'write'],
+    ['int x = ((*p).a);', 'read'],
+    ['S& r = s; S& q = r; int x = (q).a;', 'read'],
+  ] as const) {
+    const t = model(setup + statement);
+    const last = t.steps.length - 1;
+    const first = statementOf(t, last);
+    for (let i = first; i <= last; i++) {
+      const lit = cells(stepFocus(t, i, true).now);
+      assert.ok(!lit.includes('s.b'), `${statement}: s.b lit at step ${i}`);
+    }
+    const reach = t.steps.findIndex((step, i) => i >= first && step.op?.kind === kind && 'name' in step.op && step.op.name === 's.a');
+    assert.deepEqual(cells(stepFocus(t, reach, true).now), ['s.a'], statement);
+  }
+});

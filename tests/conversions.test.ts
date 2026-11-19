@@ -380,6 +380,11 @@ describe('FloatFormatTests', () => {
     const narrowed = structuredClone(typed);
     (narrowed.variables[0] as { type?: string }).type = 'int';
     rejects(narrowed, /int is not 8 bytes/);
+    const declared = tracing.trace('int n;', { runtime: false, types: true });
+    validate(declared);
+    const widened = structuredClone(declared);
+    (widened.variables[0] as { type?: string }).type = 'long';
+    rejects(widened, /long is not 4 bytes/);
     // Older traces spell a whole float with all its digits; that still reads back exactly.
     const whole = tracing.trace('float f = 1e15f; float g = f;', { runtime: false });
     validate(respelled(whole, '1e+15', '999999986991104'));

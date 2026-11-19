@@ -1046,6 +1046,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return names;
   }
   function checkValue(value, cell, aliases, where) {
+    const integer = (cell == null ? void 0 : cell.kind) === "int" ? integerSpelled(cell.type ?? "", aliases) : null;
+    check(integer === null || integer.size === cell.size, where, `${cell == null ? void 0 : cell.type} is not ${cell == null ? void 0 : cell.size} bytes`);
     if (value === null || value === UNKNOWN) return;
     if (cell == null ? void 0 : cell.floating) {
       check(
@@ -1061,8 +1063,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       'a value is an integer, "?" (declared, unknown) or null (no storage yet)'
     );
     if ((cell == null ? void 0 : cell.kind) !== "int") return;
-    const integer = integerSpelled(cell.type ?? "", aliases);
-    check(integer === null || integer.size === cell.size, where, `${cell.type} is not ${cell.size} bytes`);
     const bits = BigInt(8 * cell.size);
     const stored2 = BigInt(value);
     const fits = integer ? integer.holds(stored2) : -(1n << bits - 1n) <= stored2 && stored2 < 1n << bits;
@@ -1170,7 +1170,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     if (item === UNKNOWN || value === UNKNOWN) return item === value;
     if (item === "nullptr") return (cell == null ? void 0 : cell.kind) === "ptr" && value === 0;
     if ((cell == null ? void 0 : cell.floating) && typeof value === "number") {
-      return item === displayFloat(value, cell.size) || Number.isSafeInteger(value) && item === String(value);
+      return item === displayFloat(value, cell.size) || Number.isSafeInteger(value) && !Object.is(value, -0) && item === String(value);
     }
     return !item.startsWith("≈") && Object.is(Number(item), value);
   }

@@ -1239,12 +1239,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const op = m.steps[k].op;
       if (!op || !("span" in op)) continue;
       const later = (_a = reached(op)) == null ? void 0 : _a.name;
-      const where = op.kind === "write" ? op.destination[0] : op.span[0];
-      if (later && later !== name && covers(name, later) && where === at) return true;
+      const [from, to] = op.kind === "write" ? op.destination : op.kind === "read" && op.compound ? [0, op.span[0]] : op.span;
+      if (later && later !== name && covers(name, later) && from <= at && at < to) return true;
       if (m.steps[k].pane === m.steps[k - 1].pane) continue;
       const [s, e] = op.span;
       if (at >= e) at += m.steps[k].pane.length - m.steps[k - 1].pane.length;
-      else if (at >= s) return false;
+      else if (at > s) return false;
     }
     return false;
   }

@@ -281,8 +281,9 @@ function reachedIn(m: PreparedModel, j: number): { name: string; at: number } | 
 }
 
 /**
- * Whether a later step of the statement reads or writes a field of `name` right where step `j`
- * left it in the pane: the struct it named was only the way to that field.
+ * Whether a later step of the statement reads, writes or binds a field of `name` from where
+ * step `j` left it in the pane, as `(s).a` does: the struct it named was only the way to that
+ * field. A rewrite that starts at the struct, as `s . a` to `s.a`, keeps it where it was.
  */
 function goesInto(m: PreparedModel, j: number, name: string): boolean {
   let at = (m.steps[j].op as { span: Span }).span[0];
@@ -290,12 +291,14 @@ function goesInto(m: PreparedModel, j: number, name: string): boolean {
     const op = m.steps[k].op;
     if (!op || !('span' in op)) continue;
     const later = reached(op)?.name;
-    const where = op.kind === 'write' ? op.destination[0] : op.span[0];
-    if (later && later !== name && covers(name, later) && where === at) return true;
+    // A compound read opens at its operator; the field it reads stands before it.
+    const [from, to] =
+      op.kind === 'write' ? op.destination : op.kind === 'read' && op.compound ? [0, op.span[0]] : op.span;
+    if (later && later !== name && covers(name, later) && from <= at && at < to) return true;
     if (m.steps[k].pane === m.steps[k - 1].pane) continue;
     const [s, e] = op.span;
     if (at >= e) at += m.steps[k].pane.length - m.steps[k - 1].pane.length;
-    else if (at >= s) return false;
+    else if (at > s) return false;
   }
   return false;
 }
