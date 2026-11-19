@@ -1639,10 +1639,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   const MAX_STATEMENTS = 20;
   const MAX_VARIABLES = 8;
   const QUOTED_OR_COMMENT = new RegExp(
-    String.raw`${RAW_STRING}|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\/\/[^\n]*|\/\*[\s\S]*?\*\/`,
+    String.raw`${RAW_STRING}|[A-Za-z_]\w*|\.?\d(?:[eEpP][+-]|[\w.'])*|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|\/\/[^\r\n]*|\/\*[\s\S]*?\*\/`,
     "g"
   );
-  const RAW_STRINGS = new RegExp(RAW_STRING, "g");
+  const IS_RAW_STRING = new RegExp(`^${RAW_STRING}$`);
   const FLOATINGS = Object.freeze({
     float: Object.freeze({ size: 4, round: (value) => Math.fround(value) }),
     double: Object.freeze({ size: 8, round: (value) => value })
@@ -1752,10 +1752,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return true;
   }
   function snippetBody(source) {
-    if (LINE_SPLICE.test(source.replace(RAW_STRINGS, ""))) {
+    if (LINE_SPLICE.test(source)) {
       throw new Unsupported("a backslash at the end of a line (a line splice) is not supported");
     }
     let cleaned = source.replace(QUOTED_OR_COMMENT, (value) => {
+      if (IS_RAW_STRING.test(value)) throw new Unsupported("raw string literals are not supported");
       if (value.startsWith("//") || value.startsWith("/*")) {
         const newlines = (value.match(/\n/g) || []).length;
         return "\n".repeat(newlines) + " ";

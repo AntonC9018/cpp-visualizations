@@ -689,8 +689,17 @@ describe('CompoundAssignmentTests', () => {
     unsupported('int a = 1; // note \\ \na *= 3;', /line splice/);
     unsupported('int a = sizeof(+"a\\\n//b"[0]);', /line splice/);
     unsupported('int a = 5; a *= 1\\\r2;', /line splice/);
-    // Inside a raw string a backslash and a line break are just characters.
-    assert.deepEqual(final(tracing.trace('int a = sizeof(+R"(a\\\nb)"[0]);', { runtime: false })), { a: 4 });
+    unsupported('int a = 1;\n// R"(example \\\na += 3; // )"', /line splice/);
+  });
+
+  test('raw_strings_are_refused_and_other_quotes_read_whole', () => {
+    unsupported('int n = sizeof(R"(say "two  words")");', /raw string/);
+    unsupported('int n = sizeof(u8R"x(\n#include <iostream>\n)x");', /raw string/);
+    // A digit separator is no quote, and quotes in a comment or string open nothing.
+    const trace = tracing.trace("int a = 1'000; // it's\nint b = 2'0; /* R\"( */ // R\"(\na += b;", { runtime: false });
+    assert.deepEqual(final(trace), { a: 1020, b: 20 });
+    // A line comment ends at a carriage return as well.
+    assert.deepEqual(final(tracing.trace('int a = 1; // note\ra += 3;', { runtime: false })), { a: 4 });
   });
 
   test('the_statement_ends_at_its_own_semicolon_past_comments', () => {
