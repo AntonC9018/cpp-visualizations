@@ -695,18 +695,16 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   const TIGHTER = { "+": ["*", "/", "%"], "-": ["*", "/", "%"] };
   const PREFIX = ["sizeof", "alignof", "new", "delete", "throw", "not", "compl", "co_await"];
   const BINARY = ["and", "or", "bitand", "bitor", "xor", "not_eq", "and_eq", "or_eq", "xor_eq"];
+  const CASTS = ["static_cast", "dynamic_cast", "const_cast", "reinterpret_cast"];
   function groups(operator, right) {
     const tighter = TIGHTER[operator] ?? [];
     const open = [];
     let operand = false;
     let template = false;
-    let qualified = false;
     for (const [token] of right.matchAll(TOKEN)) {
       if (/^\s/.test(token)) continue;
       const opensTemplate = template;
       template = false;
-      const afterScope = qualified;
-      qualified = token === "::";
       if (token === "++" || token === "--") continue;
       if ("([{".includes(token) || opensTemplate && token === "<") {
         open.push(token);
@@ -719,7 +717,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         operand = false;
       } else if (/^[\w."']/.test(token) && !BINARY.includes(token)) {
         operand = true;
-        template = /_cast$/.test(token) || afterScope;
+        template = CASTS.includes(token);
       } else {
         if (open.length === 0 && operand && !tighter.includes(token)) return true;
         operand = false;
@@ -1624,7 +1622,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   const MAX_EXACT = 2n ** 53n;
   const MAX_STATEMENTS = 20;
   const MAX_VARIABLES = 8;
-  const QUOTED_OR_COMMENT = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\/\/[^\n]*|\/\*[\s\S]*?\*\//g;
+  const QUOTED_OR_COMMENT = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\/\/[^\n]*|\/\*[\s\S]*?\*\/|\\[ \t\f\v]*\r?\n/g;
   const FLOATINGS = Object.freeze({
     float: Object.freeze({ size: 4, round: (value) => Math.fround(value) }),
     double: Object.freeze({ size: 8, round: (value) => value })
@@ -1735,6 +1733,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }
   function snippetBody(source) {
     let cleaned = source.replace(QUOTED_OR_COMMENT, (value) => {
+      if (value.startsWith("\\")) return "";
       if (value.startsWith("//") || value.startsWith("/*")) {
         const newlines = (value.match(/\n/g) || []).length;
         return "\n".repeat(newlines) + " ";
@@ -2594,7 +2593,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       cur = cur.inner[0];
     }
     const [start, end] = bounds(cur);
-    const terminated = /^(?:\s|\\[ \t]*\r?\n|\/\*[\s\S]*?\*\/|\/\/[^\n]*\n)*;/.test(program.slice(end));
+    const terminated = /^\s*;/.test(program.slice(end));
     const [compacted, mapping] = compact(program.slice(start, end));
     const source = terminated ? `${compacted};` : compacted;
     let left = null;

@@ -596,7 +596,9 @@ describe('CompoundAssignmentTests', () => {
       ['*', 'sizeof(+(2 > 1)) + 3', true],
       ['*', 'sizeof(std::array<int, 2>) + 3', true],
       ['*', 'sizeof(static_cast<std::array<int, 2>>(x)) + 3', true],
-      ['*', 'std::array<int, 2>{}.size()', false],
+      ['*', 'std::array<int, 2>{}.size()', true],
+      ['*', 'sizeof(+(std::ios_base::beg < 2)) + 3', true],
+      ['*', 'static_cast<std::array<int, 2> >(x)', true],
       ['*', 'sizeof -b', false],
       ['*', 'b and c', true],
       ['+', 'b * -c', false],
@@ -669,9 +671,10 @@ describe('CompoundAssignmentTests', () => {
   });
 
   test('spaces_and_comments_before_the_semicolon_still_run', () => {
-    const trace = tracing.trace('int a = 5; a += 2 ; a *= 3 /* thrice */ ;\na -= 1 \\\n; a *= 2 \\ \n;');
+    const trace = tracing.trace('int a = 5; a += 2 ; a *= 3 /* thrice */ ;\na -= 1 \\\n; a *= 2 \\ \f\n;\nint b = 1 \\ \t\n;');
     assert.deepEqual(panes(trace, 1), ['a += 2', 'a = 5 + 2', 'a = 7', 'a = 7']);
-    assert.deepEqual(final(trace), { a: 40 });
+    assert.deepEqual(final(trace), { a: 40, b: 1 });
+    assert.equal(trace.source.at(-1), 'int b = 1 ;');
   });
 
   test('runtime_values_agree', () => {

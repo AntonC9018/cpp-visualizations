@@ -47,24 +47,25 @@ const PREFIX = ['sizeof', 'alignof', 'new', 'delete', 'throw', 'not', 'compl', '
 /** Keywords spelling a binary operator. */
 const BINARY = ['and', 'or', 'bitand', 'bitor', 'xor', 'not_eq', 'and_eq', 'or_eq', 'xor_eq'];
 
+/** The casts whose name is always followed by template arguments. */
+const CASTS = ['static_cast', 'dynamic_cast', 'const_cast', 'reinterpret_cast'];
+
 /**
  * Whether `right`, the right side of `a operator= right`, keeps parentheses once opened: unless
  * every operator at its top level binds tighter than `operator`, `a = 5 * b + c` would compute
- * something else. A `<` opens template arguments after a named cast or a qualified name; any
- * other `<` is the comparison, and grouping it is never wrong.
+ * something else. Only a named cast surely opens template arguments with `<`; any other `<` and
+ * `>` count as comparisons, which at worst adds parentheses that change nothing, while taking a
+ * comparison for brackets could hide an operator that needs them.
  */
 export function groups(operator: string, right: string): boolean {
   const tighter = TIGHTER[operator] ?? [];
   const open: string[] = []; // the brackets the tokens so far leave open
   let operand = false; // whether the tokens so far end in an operand, so an operator is binary
   let template = false; // whether a `<` here opens template arguments
-  let qualified = false; // whether the last token was `::`
   for (const [token] of right.matchAll(TOKEN)) {
     if (/^\s/.test(token)) continue;
     const opensTemplate = template;
     template = false;
-    const afterScope = qualified;
-    qualified = token === '::';
     if (token === '++' || token === '--') continue;
     if ('([{'.includes(token) || (opensTemplate && token === '<')) {
       open.push(token);
@@ -77,7 +78,7 @@ export function groups(operator: string, right: string): boolean {
       operand = false;
     } else if (/^[\w."']/.test(token) && !BINARY.includes(token)) {
       operand = true;
-      template = /_cast$/.test(token) || afterScope;
+      template = CASTS.includes(token);
     } else {
       if (open.length === 0 && operand && !tighter.includes(token)) return true;
       operand = false;
