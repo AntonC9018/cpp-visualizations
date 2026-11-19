@@ -806,16 +806,31 @@ describe('CompilerTraceTests', () => {
     );
   });
 
-  test('static_layout_matches_the_frame', () => {
-    for (const source of [
-      'int a{1}; int* p{&a}; int b{2}; int** pp{&p}; int c{3};',
-      'int* p{}; int a{1}; int b{2}; int* q{&b};',
-      'int x{ 0 }; int* px{ &x }; int y{ x }; int* py{ px }; *px = 1;',
-    ]) {
-      assert.deepEqual(
-        addresses(tracing.trace(source)),
-        addresses(tracing.trace(source, { runtime: false }))
+  test('illustrative_addresses_keep_each_object_aligned', () => {
+    const traced = tracing.trace('int a{1}; int* p{&a}; int b{2}; int** pp{&p}; int c{3};');
+    assert.deepEqual(addresses(traced), { a: 100, p: 88, b: 84, pp: 72, c: 68 });
+  });
+
+  test('removing output preserves preprocessor directives in the replay', () => {
+    const source = 'int a=5; std::cout << a\n#if 1\n;\n#endif\na=7;';
+    const traced = tracing.trace(source);
+    assert.deepEqual(final(traced), { a: 7 });
+    assert.equal(final(traced, 'stdout'), '5');
+  });
+
+  test('compiler verification distinguishes objects at the same address', () => {
+    const original = tracing.hooks.after;
+    tracing.hooks.after = (statement, state) => {
+      const next = original(statement, state);
+      return statement.target === 'p' ? { ...next, p: new Pointer('s.x') } : next;
+    };
+    try {
+      assert.throws(
+        () => tracing.trace('struct S { int x; }; S s{1}; void* p=&s;'),
+        (error: unknown) => error instanceof Unsupported && /constant expression/.test(error.message)
       );
+    } finally {
+      tracing.hooks.after = original;
     }
   });
 

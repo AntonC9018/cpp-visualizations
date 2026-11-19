@@ -132,7 +132,7 @@ export interface AstNode {
 export interface CompilerFrontend {
   /** Declaration text for frontends that cannot include the native <array> header. */
   arrayPreamble?: string;
-  tokens(program: string): SourceToken[];
+  tokens(program: string, options?: { ignoreExpansions?: boolean }): SourceToken[];
   astDump(program: string, filter: string, standard?: 'c++20' | 'c++2c'): AstNode[];
   mainAst(program: string): AstNode;
   recordLayoutsDump(program: string): string;

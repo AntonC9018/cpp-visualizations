@@ -6,7 +6,7 @@ import { SourceFile } from './source.ts';
 import { FORMAT, type LayoutField, type LayoutTrace, validate } from './trace_format.ts';
 
 export function traceLayout(source: string, frontend: CompilerFrontend): LayoutTrace {
-  const file = new SourceFile(source, frontend);
+  const file = new SourceFile(source, frontend, { ignoreExpansions: true });
   const [ast] = file.ast(frontend);
   const records = layoutsFromFrontend(ast, file.program, frontend, { layoutOnly: true });
   if (Object.keys(records).length === 0) {

@@ -14,6 +14,15 @@ import { Unsupported } from '../src/node/toolchain.ts';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 describe('LayoutTests', () => {
+  test('layout reads records even when main uses the offsetof macro', () => {
+    const source = [
+      '#include <cstddef>',
+      'struct Packet { int first; int second; };',
+      'int main() { return offsetof(Packet, second); }',
+    ].join('\n');
+    assert.deepEqual(trace(source).records[0].fields.map(field => field.offset), [0, 4]);
+  });
+
   test('padding_and_types', () => {
     let result = trace('struct A { uint8_t f1; int f2; uint8_t f3; };');
     let record = result.records[0];

@@ -1,6 +1,7 @@
 // Transport Clang constant values through integer enum entries in the JSON AST.
 // Floating results are carried as IEEE bits, including signed zero.
 import { type AstNode, type CompilerFrontend, IllFormed, Unsupported } from './errors.ts';
+import type { SourceFile } from './source.ts';
 
 export function numberSpelling(value: number, type: string): string {
   if (type === 'float' || type === 'double') {
@@ -93,7 +94,7 @@ export interface ReplayStep {
   checks: string[];
 }
 
-const EQUAL = `
+const CHECKS = `
 template<class T, class U> constexpr bool __course_equal(T actual, U expected) {
   if constexpr (__is_same(T, float))
     return __builtin_bit_cast(unsigned, actual) ==
@@ -104,16 +105,20 @@ template<class T, class U> constexpr bool __course_equal(T actual, U expected) {
   else
     return actual == static_cast<T>(expected);
 }
+template<class T, class U> constexpr bool __course_points_to(T* actual, U* expected) {
+  return static_cast<const U*>(static_cast<const void*>(actual)) == expected;
+}
 `;
 
 /** Check the actual C++ objects after each statement. Output is a player operation. */
 export function verifyReplay(
   frontend: CompilerFrontend,
-  program: string,
+  file: SourceFile,
   main: AstNode,
   body: AstNode,
   steps: ReplayStep[]
 ): void {
+  const { program } = file;
   const open = body.range!.begin!;
   const close = body.range!.end!;
   const start = open.offset! + open.tokLen!;
@@ -121,7 +126,7 @@ export function verifyReplay(
   let at = start;
   const chunks = [
     program.slice(0, main.range!.begin!.offset),
-    EQUAL,
+    CHECKS,
     'constexpr int __course_replay() {',
   ];
   for (const [index, step] of steps.entries()) {
@@ -129,8 +134,7 @@ export function verifyReplay(
     // Full programs may have type declarations preceding the real main.
     if (first < start) continue;
     chunks.push(program.slice(at, first));
-    const statement = program.slice(first, last);
-    chunks.push(step.output ? statement.replace(/[^\r\n]/g, ' ') : statement);
+    chunks.push(step.output ? file.blankTokens(first, last) : program.slice(first, last));
     if (step.checks.length) {
       chunks.push(`\nif (!(${step.checks.join(' && ')})) return ${index + 1};\n`);
     }

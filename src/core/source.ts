@@ -8,7 +8,12 @@ export interface SourceToken {
   end: number;
 }
 
-export function readTokens(dump: string, file: string, source: string): SourceToken[] {
+export function readTokens(
+  dump: string,
+  file: string,
+  source: string,
+  { ignoreExpansions = false }: { ignoreExpansions?: boolean } = {}
+): SourceToken[] {
   const { lines, offsets } = sourceCoordinates(source);
   const tokens: SourceToken[] = [];
   let physicalEof = false;
@@ -19,7 +24,10 @@ export function readTokens(dump: string, file: string, source: string): SourceTo
     const coordinates = /^(\d+):(\d+)(.*)$/.exec(location.slice(file.length + 1));
     if (!coordinates) continue;
     const [, line, column, expansion] = coordinates;
-    if (expansion) throw new Unsupported('macro-expanded statements are not supported');
+    if (expansion) {
+      if (ignoreExpansions) continue;
+      throw new Unsupported('macro-expanded statements are not supported');
+    }
     const start = offsets[lines[Number(line) - 1] + Number(column) - 1];
     if (kind === 'eof') {
       physicalEof = start === source.length ||
@@ -49,7 +57,11 @@ export class SourceFile {
   private readonly source: string;
   private readonly shift: number;
 
-  constructor(source: string, frontend: CompilerFrontend) {
+  constructor(
+    source: string,
+    frontend: CompilerFrontend,
+    { ignoreExpansions = false }: { ignoreExpansions?: boolean } = {}
+  ) {
     if (!source.trim() || source.length > 10_000) throw new Unsupported('empty or oversized snippet');
     if (/\\[ \t\f\v]*(?:\r\n?|\n)/.test(source)) {
       throw new Unsupported('a backslash at the end of a line (a line splice) is not supported');
@@ -59,7 +71,7 @@ export class SourceFile {
     // Only a directive can use convenience-header macros to choose which source is active.
     // Avoid dumping all tokens in those headers for an ordinary statement fragment.
     const context = /#|%:/.test(source) ? headers : '';
-    const tokens = frontend.tokens(context + source).filter(token => token.start >= context.length)
+    const tokens = frontend.tokens(context + source, { ignoreExpansions }).filter(token => token.start >= context.length)
       .map(token => ({ ...token, start: token.start - context.length, end: token.end - context.length }));
     // A function declarator followed by a body distinguishes a complete program from a
     // fragment calling a function. Clang checks the declarator and body after this choice.
@@ -82,8 +94,21 @@ export class SourceFile {
   without(start: number, end: number, frontend: CompilerFrontend): SourceFile {
     const first = start - this.shift;
     const last = end - this.shift;
-    const blank = this.source.slice(first, last).replace(/[^\r\n]/g, ' ');
+    const blank = this.blankTokens(start, end);
     return new SourceFile(this.source.slice(0, first) + blank + this.source.slice(last), frontend);
+  }
+
+  /** Remove only active tokens, leaving directives, comments and line breaks in place. */
+  blankTokens(start: number, end: number): string {
+    let at = start;
+    const parts: string[] = [];
+    for (const token of this.tokens) {
+      if (token.start < start || token.end > end) continue;
+      parts.push(this.program.slice(at, token.start));
+      parts.push(this.program.slice(token.start, token.end).replace(/[^\r\n]/g, ' '));
+      at = token.end;
+    }
+    return parts.join('') + this.program.slice(at, end);
   }
 
   /** End at the next preprocessed semicolon when the AST's range leaves it out. */

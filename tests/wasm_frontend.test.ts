@@ -211,6 +211,9 @@ describe('ClangWasmParityTests', { skip: !existsSync(WASM_PATH) }, () => {
       'int a{}; std::cout << a;',
       'struct A { int f1; int f2; }; A a{ 1, 2 }; A b = A{ .f2 = 5 }; b = a;',
       'int x{ 0 }; int* px{ &x }; int* py{ px }; *px = 1; std::cout << *py;',
+      '%:include /* C header */ <stdint.h>\rint32_t a{2}; int b=sizeof(R"(two  words)") + a;',
+      'float f = 0.1f; double d = 0.1 + 0.2; float neg = -0.0f;',
+      'int n=3; void* p=&n; int* q=static_cast<int*>(p); *q += 2;',
       'struct P { int x; }; P s{ 5 }; P* p{ &s }; p->x -= 2; short c = 1; c += 1; double d = 1; d *= c;',
     ];
     for (const source of moreTraces) {
@@ -219,6 +222,13 @@ describe('ClangWasmParityTests', { skip: !existsSync(WASM_PATH) }, () => {
         dumpsSorted(traceWithFrontend(source, { runtime: false, frontend: nativeFrontend }))
       );
     }
+
+    const layout = { template: 'layout', flags: {} } as const;
+    const offsetSource = '#include <cstddef>\nstruct S { int a; int b; }; int main() { return offsetof(S, b); }';
+    assert.deepEqual(
+      traceWithWasmModule(offsetSource, wasmModule, layout),
+      traceSnippet(offsetSource, layout, { frontend: nativeFrontend })
+    );
 
     const badSnippets = [
       'int a = ;',

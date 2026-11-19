@@ -11,13 +11,13 @@ import { runWasiModule } from './wasi.ts';
 export function createWasmClangFrontend(module: WebAssembly.Module): CompilerFrontend {
   return {
     arrayPreamble: ARRAY_PREAMBLE,
-    tokens(program) {
+    tokens(program, options) {
       const result = runWasiModule(module, {
         args: ['clang-trace-frontend', '-Xclang', '-dump-tokens', '-'],
         stdin: program,
       });
       if (result.returncode !== 0) throw illFormed(result.stderr, program);
-      return readTokens(result.stderr, '/virtual/source.cpp', program);
+      return readTokens(result.stderr, '/virtual/source.cpp', program, options);
     },
 
     astDump(program, filter, standard = 'c++20') {

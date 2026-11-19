@@ -72,7 +72,7 @@ function withDirectory<T>(directory: string | undefined, fn: (dir: string) => T)
 
 export function createClangFrontend(directory?: string): CompilerFrontend {
   return {
-    tokens(program) {
+    tokens(program, options) {
       return withDirectory(directory, dir => {
         const path = join(dir, 'source.cpp');
         writeFileSync(path, program);
@@ -83,7 +83,7 @@ export function createClangFrontend(directory?: string): CompilerFrontend {
         if (result.returncode !== 0) {
           throw illFormed(result.stderr, program);
         }
-        return readTokens(result.stderr, path, program);
+        return readTokens(result.stderr, path, program, options);
       });
     },
 

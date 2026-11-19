@@ -14,6 +14,7 @@ static const char *kVirtualStdHeader = R"cpp(
 #ifndef COURSE_VIRTUAL_STD_H
 #define COURSE_VIRTUAL_STD_H
 #define UINT8_MAX 255
+#define offsetof(type, member) __builtin_offsetof(type, member)
 namespace std {
   using size_t = decltype(sizeof(0));
   using ptrdiff_t = decltype(static_cast<char*>(nullptr) - static_cast<char*>(nullptr));

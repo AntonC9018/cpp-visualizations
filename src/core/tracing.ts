@@ -752,11 +752,12 @@ class Reductions {
   private operate(node: AstNode, operation: string, left: number, right: number): number {
     const type = this.numericType(node);
     const expression = `${numberOperand(left, type)} ${operation} ${numberOperand(right, type)}`;
-    const diagnostic = floatType(node, this.records)
-      ? operation === '/' ? 'undefined floating-point division' : 'undefined floating-point arithmetic'
-      : operation === '/' || operation === '%'
-        ? 'undefined integer division'
-        : 'signed integer overflow is outside the timeline category';
+    let diagnostic = 'signed integer overflow is outside the timeline category';
+    if (floatType(node, this.records)) {
+      diagnostic = operation === '/' ? 'undefined floating-point division' : 'undefined floating-point arithmetic';
+    } else if (operation === '/' || operation === '%') {
+      diagnostic = 'undefined integer division';
+    }
     return this.numbers.evaluate(expression, type, diagnostic);
   }
 
@@ -1721,15 +1722,13 @@ export function normalizeAddresses(
 
 /** Compare known leaves and bindings against the objects in Clang's constant expression. */
 function replaySteps(statements: Statement[], states: State[]): ReplayStep[] {
-  const pointer = (expression: string): string => `static_cast<const void*>(${expression})`;
   return statements.map((statement, i) => {
     const checks: string[] = [];
     for (const [name, value] of Object.entries(flatten(states[i]))) {
       if (value === null) continue;
       const path = codeName(name);
       if (value instanceof Pointer) {
-        const target = value.target ? pointer('&' + codeName(value.target)) : 'nullptr';
-        checks.push(`${pointer(path)} == ${target}`);
+        checks.push(value.target ? `__course_points_to(${path}, &${codeName(value.target)})` : `${path} == nullptr`);
       } else if (typeof value === 'number') {
         const literal = Number.isSafeInteger(value) && !Object.is(value, -0)
           ? numberSpelling(value, 'long long') : numberSpelling(value, 'double');
@@ -1737,7 +1736,7 @@ function replaySteps(statements: Statement[], states: State[]): ReplayStep[] {
       }
     }
     if (statement.bound && statement.declared) {
-      checks.push(`${pointer('&' + statement.declared)} == ${pointer('&' + codeName(statement.bound))}`);
+      checks.push(`__course_points_to(&${statement.declared}, &${codeName(statement.bound)})`);
     }
     return { range: statement.range, output: statement.outputSuffix !== null, checks };
   });
@@ -2182,7 +2181,7 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
     state = hooks.after(statement, state);
     predicted.push(state);
   }
-  verifyReplay(frontend, file.program, main, ast, replaySteps(statements, predicted));
+  verifyReplay(frontend, file, main, ast, replaySteps(statements, predicted));
   const declarations = statements.filter(s => s.declared);
   const variables: TraceVariable[] = [];
   const references: Record<string, TraceReference> = {};

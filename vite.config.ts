@@ -82,7 +82,7 @@ export default defineConfig(({ mode }) => {
             if (url === '/playground.html' || url === '/player/playground.html') {
               const rawHtml = readFileSync(resolve(ROOT, 'player/playground.html'), 'utf8');
               const devConfig =
-                '<script>window.CoursePlaygroundConfig = Object.assign({ workerUrl: "/src/browser/worker.ts", workerType: "module", wasmUrl: "/player/clang-trace-frontend.wasm" }, window.CoursePlaygroundConfig || {});</script>\n';
+                '<script>window.CoursePlaygroundConfig = Object.assign({ workerUrl: "/src/browser/worker.ts", workerType: "module", wasmUrl: "/player/clang-trace-frontend.wasm?v=2" }, window.CoursePlaygroundConfig || {});</script>\n';
               const devHtml = rawHtml
                 .replace('href="player.css"', 'href="/player/player.css"')
                 .replace('href="playground.css"', 'href="/player/playground.css"')

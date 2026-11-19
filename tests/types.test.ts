@@ -138,6 +138,11 @@ describe('MismatchTests', () => {
     assert.deepEqual(typed(last), ['int* p:int*!', 'a:int']);
   });
 
+  test('a clash can span a preprocessor directive', () => {
+    const [, last] = clash('int a = 5; int* p = a\n#if 1\n;\n#endif');
+    assert.deepEqual(fromTo(last), ['int', 'int*']);
+  });
+
   test('an_assignment', () => {
     const [, last] = clash('int a = 5; int* p = &a; *p = &a;');
     assert.deepEqual(typed(last), ['*p:int!', '&a:int*']);
