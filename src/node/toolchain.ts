@@ -87,12 +87,13 @@ export function createClangFrontend(directory?: string): CompilerFrontend {
       });
     },
 
-    astDump(program, filter) {
+    astDump(program, filter, standard = 'c++20') {
       return withDirectory(directory, dir => {
         const path = join(dir, 'source.cpp');
         writeFileSync(path, program);
         const result = run([
-          tool('CLANGXX', 'clang++'), '-std=c++20', '-fsyntax-only', '-fno-color-diagnostics',
+          tool('CLANGXX', 'clang++'), '-std=' + standard, '-fsyntax-only', '-fno-color-diagnostics',
+          ...(standard === 'c++2c' ? ['-Wno-builtin-macro-redefined', '-D__cplusplus=202002L'] : []),
           '-Xclang', '-ast-dump=json',
           '-Xclang', '-ast-dump-filter=' + filter,
           path,

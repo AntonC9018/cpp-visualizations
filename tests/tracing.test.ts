@@ -16,7 +16,6 @@ import {
   scalar,
   validate,
 } from '../src/core/trace_format.ts';
-import { Cell, Execution } from '../src/node/execution.ts';
 import { createClangFrontend } from '../src/node/toolchain.ts';
 import * as tracing from '../src/node/tracing.ts';
 import { Pointer, Unsupported } from '../src/node/tracing.ts';
@@ -404,20 +403,7 @@ describe('StaticPointerTraceTests', () => {
       'int f() { return 1; }\nint main() { int a{ f() }; }',
       'int a{1}; int b{2}; int c{3}; int d{4}; int e{5}; int f{6}; int g{7}; int h{8}; int i{9};',
     ];
-    const original = tracing.hooks.execute;
-    let called = false;
-    tracing.hooks.execute = () => {
-      called = true;
-      throw new Error('unreachable');
-    };
-    try {
-      for (const source of sources) {
-        assert.throws(() => tracing.trace(source), Unsupported);
-      }
-      assert.equal(called, false);
-    } finally {
-      tracing.hooks.execute = original;
-    }
+    for (const source of sources) assert.throws(() => tracing.trace(source), Unsupported, source);
   });
 
   test('unsupported_pointer_constructs_never_execute', () => {
@@ -452,22 +438,8 @@ describe('StaticPointerTraceTests', () => {
       "int a{5}; std::cout << 'x';": /not char/,
       'int a; (a) = 5;': /parenthesized variable/,
     };
-    const original = tracing.hooks.execute;
     for (const [source, reason] of Object.entries(cases)) {
-      let called = false;
-      tracing.hooks.execute = () => {
-        called = true;
-        throw new Error('unreachable');
-      };
-      try {
-        assert.throws(
-          () => tracing.trace(source),
-          (err: unknown) => err instanceof Unsupported && reason.test(err.message)
-        );
-        assert.equal(called, false);
-      } finally {
-        tracing.hooks.execute = original;
-      }
+      assert.throws(() => tracing.trace(source), (err: unknown) => err instanceof Unsupported && reason.test(err.message));
     }
   });
 
@@ -720,44 +692,7 @@ describe('CompoundAssignmentTests', () => {
   });
 });
 
-describe('ObservationTests', () => {
-  const PREDICTED: tracing.State[] = [{ a: 5 }, { a: 5, p: new Pointer('a') }];
-  const VARIABLES = [scalar('a', 0, 4), scalar('p', 0, 8, 'ptr')];
-  const observed = (execution: Execution) => tracing.observeExecution(execution, PREDICTED, VARIABLES, {});
-
-  function makeExecution(pointerValue: number, size = 8): Execution {
-    const a = new Cell({ address: 0x7ffc_1004, size: 4, pointer: false, value: 5 });
-    const p = new Cell({ address: 0x7ffc_0ff8, size, pointer: true, value: pointerValue });
-    return new Execution([{ a }, { a, p }], '');
-  }
-
-  test('pointer_values_map_back_to_variables', () => {
-    const [addrs, states] = observed(makeExecution(0x7ffc_1004));
-    assert.deepEqual(states, PREDICTED);
-    assert.deepEqual(tracing.normalizeAddresses(addrs, { a: 4, p: 8 }), { a: 76, p: 64 });
-  });
-
-  test('a_pointer_to_anything_else_is_rejected', () => {
-    assert.throws(
-      () => observed(makeExecution(0x7ffc_1008)),
-      (err: unknown) => err instanceof Unsupported && /not the address of a variable/.test(err.message)
-    );
-  });
-
-  test('a_disagreeing_target_is_rejected', () => {
-    assert.throws(
-      () => observed(makeExecution(0)),
-      (err: unknown) => err instanceof Unsupported && /runtime verification failed: p/.test(err.message)
-    );
-  });
-
-  test('unexpected_storage_is_rejected', () => {
-    assert.throws(
-      () => observed(makeExecution(0x7ffc_1004, 4)),
-      (err: unknown) => err instanceof Unsupported && /runtime storage of p/.test(err.message)
-    );
-  });
-
+describe('MemoryLayoutTests', () => {
   test('normalization_keeps_alignment', () => {
     assert.deepEqual(
       tracing.normalizeAddresses({ a: 0x1004, p: 0x1008 }, { a: 4, p: 8 }),
@@ -770,8 +705,8 @@ describe('ObservationTests', () => {
   });
 });
 
-describe('RuntimeTraceTests', () => {
-  test('real_frame_values_and_relative_addresses', () => {
+describe('CompilerTraceTests', () => {
+  test('values_and_illustrative_addresses', () => {
     const trace = tracing.trace('int a{5}; int b{a + 6}; a = 7; std::cout << b << std::endl;');
     assert.deepEqual(final(trace), { a: 7, b: 11 });
     assert.equal(final(trace, 'stdout'), '11\n');
@@ -807,24 +742,10 @@ describe('RuntimeTraceTests', () => {
     }
   });
 
-  test('whitespace_output_is_verified_against_stdout', () => {
+  test('whitespace_output_is_rendered', () => {
     const source =
       "int a{5}; std::cout << std::endl; std::cout << a; std::cout << '\\n' << ' ' << std::endl;";
     assert.equal(final(tracing.trace(source), 'stdout'), '\n5\n \n');
-    const original = tracing.hooks.execute;
-    tracing.hooks.execute = () =>
-      new Execution(
-        Array(4).fill({ a: new Cell({ address: 0x1000, size: 4, pointer: false, value: 5 }) }),
-        '5\n \n'
-      );
-    try {
-      assert.throws(
-        () => tracing.trace(source),
-        (err: unknown) => err instanceof Unsupported && /runtime output disagrees/.test(err.message)
-      );
-    } finally {
-      tracing.hooks.execute = original;
-    }
   });
 
   test('generated_endl_browser_fixture_is_current', () => {
@@ -925,7 +846,7 @@ describe('RuntimeTraceTests', () => {
         assert.throws(
           () => tracing.trace(source),
           (err: unknown) =>
-            err instanceof Unsupported && /runtime verification failed/.test(err.message)
+            err instanceof Unsupported && /compiler verification failed/.test(err.message)
         );
       } finally {
         tracing.hooks.after = original;

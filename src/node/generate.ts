@@ -1,7 +1,7 @@
 // Compiler-backed tracer adapter consumed by course maintenance.
 //
-// `trace` prints one example's trace in the unified player format (`trace_format.ts`), run and
-// verified under GDB; `probe` says, without running anything, whether an example is supported;
+// `trace` prints one example's trace in the unified player format (`trace_format.ts`).
+// `probe` says whether an example is supported;
 // `revision` versions every trace. The template and flags come from `../core/settings.ts`.
 import { readFileSync } from 'node:fs';
 
@@ -132,7 +132,6 @@ export function main(
     settings = parseSettings(template, flags);
     const snippet = readFileSync(sourcePath, 'utf8');
     result = traceNatively(snippet, settings, {
-      runtime: operation !== 'probe',
       accept: traced => applicable(traced, snippet),
     });
     if (result.kind !== 'layout') {

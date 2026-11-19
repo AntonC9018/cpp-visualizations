@@ -59,10 +59,11 @@ export function sourceCoordinates(source: string): { lines: number[]; offsets: n
  */
 export function illFormed(stderr: string, program: string): IllFormed {
   const diagnostics = stderr.split(/\r?\n/);
-  const index = diagnostics.findIndex(line => line.includes('error:'));
+  const messageLine = /^(?:.*?:\d+:\d+: )?(?:fatal )?error:/;
+  const index = diagnostics.findIndex(line => messageLine.test(line));
   if (index < 0) return new IllFormed('error: ill-formed C++');
   const diagnostic = diagnostics[index];
-  const place = /^.*?:(\d+):(\d+): error:/.exec(diagnostic);
+  const place = /^.*?:(\d+):(\d+): (?:fatal )?error:/.exec(diagnostic);
   let offset: number | null = null;
   if (place) {
     const { lines, offsets } = sourceCoordinates(program);
@@ -70,11 +71,11 @@ export function illFormed(stderr: string, program: string): IllFormed {
     if (line !== undefined) offset = offsets[line + Number(place[2]) - 1] ?? null;
   }
   let message = diagnostic.slice(diagnostic.indexOf('error:'));
-  if (message === "error: no viable overloaded '='") {
-    const note = diagnostics.slice(index + 1).find(line => line.includes('note:') || line.includes('error:')) ?? '';
-    if (note.includes('note:') && note.includes('copy assignment operator')) {
-      message += '; ' + note.slice(note.indexOf('note:'));
-    }
+  const note = diagnostics.slice(index + 1).find(line => /^(?:.*?:\d+:\d+: )?note:/.test(line));
+  if (note && message === "error: no viable overloaded '='" && note.includes('copy assignment operator')) {
+    message += '; ' + note.slice(note.indexOf('note:'));
+  } else if (note && message.includes('not a constant expression')) {
+    message += ' (' + note.slice(note.indexOf('note:') + 'note: '.length) + ')';
   }
   return new IllFormed(message, offset);
 }
@@ -132,7 +133,7 @@ export interface CompilerFrontend {
   /** Declaration text for frontends that cannot include the native <array> header. */
   arrayPreamble?: string;
   tokens(program: string): SourceToken[];
-  astDump(program: string, filter: string): AstNode[];
+  astDump(program: string, filter: string, standard?: 'c++20' | 'c++2c'): AstNode[];
   mainAst(program: string): AstNode;
   recordLayoutsDump(program: string): string;
   typeSizes(types: string[]): Record<string, number>;

@@ -6,5 +6,5 @@ import { traceNatively } from './tracing.ts';
 export { traceLayout };
 
 export function trace(source: string): LayoutTrace {
-  return traceNatively(source, { template: 'layout', flags: {} }, { runtime: false });
+  return traceNatively(source, { template: 'layout', flags: {} });
 }

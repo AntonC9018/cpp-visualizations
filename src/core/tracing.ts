@@ -1,11 +1,12 @@
 // Compiler-backed execution traces of flat integer, pointer and aggregate struct examples (isomorphic core).
 //
-// Clang supplies syntax, types and record layouts via `CompilerFrontend`. A strict AST whitelist
-// predicts each statement's effects without executing arbitrary C++. An optional `RuntimeExecutor`
-// (such as GDB in Node) verifies every live scalar and struct field after every statement.
+// Clang supplies syntax, types, numeric values and record layouts via `CompilerFrontend`.
+// The AST visitor picks reductions and names memory locations. Clang checks the resulting
+// snapshots by replaying the traced statements in a constant expression.
 
 import { arrayType, codeName, elementLabel, operatorName, resolveArrayAliases } from './arrays.ts';
 import { type AstNode, type CompilerFrontend, IllFormed, NeedsFlag, Unsupported } from './errors.ts';
+import { ClangNumbers, drawnInteger, numberOperand, numberSpelling, verifyReplay, type ReplayStep } from './constants.ts';
 import { COMPOUND_OPERATORS, openCompound } from './compound.ts';
 import { SourceFile, arrayHeader, bounds } from './source.ts';
 import { INTEGERS, Integer, bareSpelling, integerName, integerSpelled } from './integers.ts';
@@ -36,7 +37,6 @@ import {
   type TraceOperation,
   UNKNOWN,
   addresses as storageAddresses,
-  contiguous,
   field as traceField,
   leaves,
   reference as traceReference,
@@ -51,95 +51,29 @@ export { INTEGERS, Integer } from './integers.ts';
 
 export { IllFormed, NeedsFlag, Unsupported };
 
-export interface CellInput {
-  address: number;
-  size: number;
-  pointer: boolean;
-  value: number | null;
-  objectAddress?: number | null;
-  objectSize?: number | null;
-  reference?: boolean;
-}
-
-export class Cell {
-  address: number;
-  size: number;
-  pointer: boolean;
-  value: number | null;
-  objectAddress: number | null;
-  objectSize: number | null;
-  reference: boolean;
-
-  constructor({
-    address,
-    size,
-    pointer,
-    value,
-    objectAddress = null,
-    objectSize = null,
-    reference = false,
-  }: CellInput) {
-    this.address = address;
-    this.size = size;
-    this.pointer = pointer;
-    this.value = value;
-    this.objectAddress = objectAddress;
-    this.objectSize = objectSize;
-    this.reference = reference;
-    Object.freeze(this);
-  }
-}
-
-export const REFERENCE = 'reference' as const;
-export type ScopeEntry = [string, boolean | typeof REFERENCE];
-
-export class Execution {
-  checkpoints: Record<string, Cell>[];
-  stdout: string;
-
-  constructor(checkpoints: Record<string, Cell>[], stdout: string) {
-    this.checkpoints = checkpoints;
-    this.stdout = stdout;
-    Object.freeze(this);
-  }
-}
-
-export type RuntimeExecutor = (
-  statements: string[],
-  expected: ScopeEntry[][],
-  directory?: string
-) => Execution;
-
-export const hooks: {
-  execute: RuntimeExecutor | null;
-  /** The state after a statement, from the state before it; tests swap it to break predictions. */
-  after: (statement: Statement, state: State) => State;
-} = {
-  execute: null,
-  after: (statement, state) => storeResult(statement, state),
+export const hooks = {
+  /** Apply a statement to the rendered state. */
+  after: (statement: Statement, state: State): State => storeResult(statement, state),
 };
 
 const FIRST_ADDRESS = 64;
 const POINTER_SIZE = 8;
-// JSON numbers are doubles in the player: larger magnitudes would not be drawn exactly.
-const MAX_EXACT = 2n ** 53n;
 const MAX_STATEMENTS = 20;
 const MAX_VARIABLES = 8;
 // Values -----------------------------------------------------------------------------------
 
-export const FLOATINGS: Readonly<Record<string, { size: number; round: (value: number) => number }>> =
-  Object.freeze({
-    float: Object.freeze({ size: 4, round: (value: number) => Math.fround(value) }),
-    double: Object.freeze({ size: 8, round: (value: number) => value }),
-  });
+const FLOATINGS: Readonly<Record<string, { size: number }>> = Object.freeze({
+  float: Object.freeze({ size: 4 }),
+  double: Object.freeze({ size: 8 }),
+});
 
-function floatNamed(spelling: string, records: unknown = {}): { size: number; round: (value: number) => number } | null {
+function floatNamed(spelling: string, records: unknown = {}): { size: number } | null {
   const bare = spelling.replace(/^const /, '').replace(/^std::/, '');
   if (hasRecord(records, bare)) return null;
   return Object.hasOwn(FLOATINGS, bare) ? FLOATINGS[bare] : null;
 }
 
-function floatType(node: AstNode | null | undefined, records: unknown = {}): { size: number; round: (value: number) => number } | null {
+function floatType(node: AstNode | null | undefined, records: unknown = {}): { size: number } | null {
   return floatNamed(canonicalType(node), records);
 }
 
@@ -191,22 +125,6 @@ function integerNamed(spelling: string, records: unknown = {}): Integer | null {
 /** The integer type of an expression or declaration, behind any alias (`uint8_t`). */
 function integerType(node: AstNode | null | undefined, records: unknown = {}): Integer | null {
   return integerNamed(canonicalType(node), records);
-}
-
-function integerTypeOf(node: AstNode): Integer {
-  const type = integerType(node);
-  if (!type) {
-    throw new Unsupported(`only integer arithmetic is supported, not ${typeSpelling(node) || 'this type'}`);
-  }
-  return type;
-}
-
-/** A value as the trace stores it: a JSON number, which must hold it exactly. */
-function exact(value: bigint): number {
-  if (value > MAX_EXACT || value < -MAX_EXACT) {
-    throw new Unsupported('integers beyond 2^53 are not drawn exactly');
-  }
-  return Number(value);
 }
 
 function hasRecord(records: unknown, name: string): boolean {
@@ -400,7 +318,8 @@ function rejectPointerOperator(node: AstNode | null | undefined): void {
   }
 }
 
-class Evaluator {
+/** Follows the AST to choose and label reductions. Clang computes their numeric values. */
+class Reductions {
   state: State;
   locate: (item: AstNode) => Span;
   reductions: Reduction[];
@@ -408,15 +327,21 @@ class Evaluator {
   references: Record<string, string>;
   storageTypes: Record<string, string>;
   temporary: boolean;
+  private readonly numbers: ClangNumbers;
+  private readonly file: SourceFile;
 
   constructor(
     state: State,
     locate: (item: AstNode) => Span,
     records: Record<string, RecordInfo>,
-    references: Record<string, string> = {},
-    storageTypes: Record<string, string> = {}
+    references: Record<string, string>,
+    storageTypes: Record<string, string>,
+    numbers: ClangNumbers,
+    file: SourceFile
   ) {
     this.state = state;
+    this.numbers = numbers;
+    this.file = file;
     this.locate = locate;
     this.reductions = [];
     this.records = records;
@@ -498,7 +423,7 @@ class Evaluator {
   /** `value`, of the type of `source`, in the type of `node`; a step at `span` if the type changes. */
   private convertedAt(span: Span, value: number, node: AstNode, source: AstNode): number {
     if (displayedType(node) === displayedType(source)) return value;
-    const converted = this.conversion(node, source)(value);
+    const converted = this.convertNumber(value, node, source);
     this.reduceAt(span, node, { kind: 'convert', value: converted, source: displayedType(source) });
     return converted;
   }
@@ -767,14 +692,12 @@ class Evaluator {
       }
     }
     if (kind === 'IntegerLiteral') {
-      return [exact(BigInt(node.value ?? '0')), null];
+      return [drawnInteger(BigInt(node.value!)), null];
     }
     if (kind === 'FloatingLiteral') {
-      const float = floatType(node, this.records);
-      if (!float) throw new Unsupported(`unsupported floating literal type ${typeSpelling(node)}`);
-      const value = float.round(Number(node.value ?? '0'));
-      if (!Number.isFinite(value)) throw new Unsupported('non-finite floating-point value');
-      return [value, null];
+      const type = this.numericType(node);
+      const spelling = this.file.program.slice(...bounds(node));
+      return [this.numbers.evaluate(spelling, type, 'non-finite floating-point value'), null];
     }
     if (kind === 'InitListExpr' || kind === 'CXXFunctionalCastExpr') {
       return [this.braces(node, depth), null];
@@ -792,21 +715,17 @@ class Evaluator {
       return [new Pointer(name), null];
     } else if (
       kind === 'UnaryOperator' &&
-      (node.opcode === '+' || node.opcode === '-') &&
+      ['+', '-', '~'].includes(node.opcode ?? '') &&
       children.length === 1 &&
       !depth
     ) {
-      const float = floatType(node, this.records);
-      if (float) {
-        const operand = this.numericOperand(children[0]);
-        value = float.round(node.opcode === '+' ? operand : -operand);
-      } else {
-        const operand = BigInt(this.integerOperand(children[0]));
-        value = exact(integerTypeOf(node).result(node.opcode === '+' ? operand : -operand));
-      }
-    } else if (kind === 'UnaryOperator' && node.opcode === '~' && children.length === 1 && !depth) {
-      // Every bit of the (promoted) operand flips; this never overflows, even when signed.
-      value = exact(integerTypeOf(node).wrap(~BigInt(this.integerOperand(children[0]))));
+      const operand = this.numericOperand(children[0]);
+      const type = this.numericType(node);
+      value = this.numbers.evaluate(
+        `${node.opcode}(${numberOperand(operand, type)})`,
+        type,
+        'signed integer overflow is outside the timeline category'
+      );
     } else if (
       kind === 'BinaryOperator' &&
       ['+', '-', '*', '/', '%'].includes(node.opcode ?? '') &&
@@ -821,25 +740,31 @@ class Evaluator {
     return [value, null];
   }
 
-  /** `left operation right`, both evaluated, in the integer or floating type of `node`. */
+  private numericType(node: AstNode): string {
+    const canonical = canonicalType(node).replace(/^const /, '');
+    if (floatNamed(canonical, this.records)) return canonical;
+    const integer = integerName(canonical);
+    if (integer && !hasRecord(this.records, canonical)) return integer;
+    throw new Unsupported(`only numeric arithmetic is supported, not ${typeSpelling(node) || 'this type'}`);
+  }
+
+  /** `left operation right`, with Clang's usual arithmetic conversions already applied. */
   private operate(node: AstNode, operation: string, left: number, right: number): number {
-    const float = floatType(node, this.records);
-    if (float) return Evaluator.floatArithmetic(float, operation, left, right);
-    if (!Number.isInteger(left) || !Number.isInteger(right)) {
-      throw new Unsupported(`only integer arithmetic is supported, not ${typeSpelling(node) || 'this type'}`);
-    }
-    return Evaluator.arithmetic(integerTypeOf(node), operation, left, right);
+    const type = this.numericType(node);
+    const expression = `${numberOperand(left, type)} ${operation} ${numberOperand(right, type)}`;
+    const diagnostic = floatType(node, this.records)
+      ? operation === '/' ? 'undefined floating-point division' : 'undefined floating-point arithmetic'
+      : operation === '/' || operation === '%'
+        ? 'undefined integer division'
+        : 'signed integer overflow is outside the timeline category';
+    return this.numbers.evaluate(expression, type, diagnostic);
   }
 
   private byteSizeOf(node: AstNode): number {
-    if (pointerDepth(node, this.records) > 0) return POINTER_SIZE;
+    if (pointerDepth(node, this.records) > 0) return this.numbers.evaluate('sizeof(void*)', 'unsigned long');
     const record = getRecord(this.records, recordName(node));
     if (record) return record.size;
-    const int = integerType(node, this.records);
-    if (int) return int.size;
-    const float = floatType(node, this.records);
-    if (float) return float.size;
-    throw new Unsupported(`cannot determine size of ${typeSpelling(node)}`);
+    return this.numbers.evaluate(`sizeof(${this.numericType(node)})`, 'unsigned long');
   }
 
   private numericOperand(node: AstNode): number {
@@ -867,7 +792,7 @@ class Evaluator {
       const [ptr] = this.rvalue(operand);
       value = asPointer(ptr);
     } else {
-      value = this.conversion(node, operand)(this.numericOperand(operand));
+      value = this.convertNumber(this.numericOperand(operand), node, operand);
     }
     const source = displayedType(operand);
     if (source === displayedType(node)) {
@@ -879,32 +804,14 @@ class Evaluator {
     return value;
   }
 
-  /** How a number of the type of `source` becomes one of the type of `node`. */
-  private conversion(node: AstNode, source: AstNode): (value: number) => number {
-    const targetInt = integerType(node, this.records);
-    const targetFloat = floatType(node, this.records);
-    const sourceInt = integerType(source, this.records);
-    const sourceFloat = floatType(source, this.records);
-    if (targetInt && sourceInt) {
-      return value => exact(targetInt.wrap(BigInt(value)));
-    }
-    if (targetFloat && (sourceInt || sourceFloat)) {
-      return value => {
-        const rounded = targetFloat.round(value);
-        if (!Number.isFinite(rounded)) throw new Unsupported('non-finite floating-point value');
-        return rounded;
-      };
-    }
-    if (targetInt && sourceFloat) {
-      return value => {
-        const truncated = Math.trunc(value);
-        if (!Number.isFinite(truncated) || !targetInt.holds(BigInt(truncated))) {
-          throw new Unsupported('floating-point conversion overflows integer type');
-        }
-        return exact(BigInt(truncated));
-      };
-    }
-    throw new Unsupported('only conversions between integer types are supported');
+  private convertNumber(value: number, node: AstNode, source: AstNode): number {
+    const target = this.numericType(node);
+    const from = this.numericType(source);
+    if (target === from) return value;
+    const diagnostic = floatType(node, this.records)
+      ? 'non-finite floating-point value'
+      : 'floating-point conversion overflows integer type';
+    return this.numbers.evaluate(numberOperand(value, from), target, diagnostic);
   }
 
   private braces(node: AstNode, depth: number): Value {
@@ -930,40 +837,6 @@ class Evaluator {
     return value;
   }
 
-  private static floatArithmetic(
-    type: { size: number; round: (value: number) => number },
-    operation: string,
-    left: number,
-    right: number
-  ): number {
-    let raw: number;
-    if (operation === '+') raw = left + right;
-    else if (operation === '-') raw = left - right;
-    else if (operation === '*') raw = left * right;
-    else if (operation === '/') raw = left / right;
-    else throw new Unsupported(`only integer arithmetic is supported, not ${operation}`);
-    const res = type.round(raw);
-    if (!Number.isFinite(res)) {
-      throw new Unsupported('undefined floating-point division');
-    }
-    return res;
-  }
-
-  private static arithmetic(type: Integer, operation: string, left: number, right: number): number {
-    const l = BigInt(left);
-    const r = BigInt(right);
-    if (operation === '/' || operation === '%') {
-      // bigint division truncates toward zero and the remainder takes the dividend's sign, as in C++.
-      if (r === 0n || !type.holds(l / r)) {
-        throw new Unsupported('undefined integer division');
-      }
-      return exact(operation === '/' ? l / r : l % r);
-    }
-    if (operation === '+') return exact(type.result(l + r));
-    if (operation === '-') return exact(type.result(l - r));
-    if (operation === '*') return exact(type.result(l * r));
-    throw new Unsupported(`unsupported operator ${operation}`);
-  }
 }
 
 function stripParentheses(node: AstNode): AstNode {
@@ -1016,6 +889,7 @@ export class Statement {
   signs: Map<number, string>;
   definition: [string, string] | null;
   typeOnly: boolean;
+  range: Span = [0, 0];
 
   constructor({
     source,
@@ -1233,7 +1107,8 @@ function analyzeStatement(
   state: State,
   records: Record<string, RecordInfo>,
   references: Record<string, string>,
-  storageTypes: Record<string, string> = {}
+  storageTypes: Record<string, string>,
+  numbers: ClangNumbers
 ): Statement {
   let cur = node;
   while (cur?.kind === 'ExprWithCleanups' && (cur.inner ?? []).length === 1) {
@@ -1376,7 +1251,7 @@ function analyzeStatement(
       records,
       references,
       storageTypes,
-    });
+    }, numbers);
   } else if (cur.kind === 'CXXOperatorCallExpr') {
     const operands = coutOperands(cur);
     if (operands.length === 0) {
@@ -1467,7 +1342,7 @@ function analyzeStatement(
     });
   }
 
-  const evaluator = new Evaluator(state, locate, records, references, storageTypes);
+  const evaluator = new Reductions(state, locate, records, references, storageTypes, numbers, file);
   const names = new Set([...Object.keys(state), ...Object.keys(references)]);
   const typed = [
     ...(left !== null ? typedParts(left, locate, names, records) : []),
@@ -1562,7 +1437,8 @@ function analyzeCompound(
     records: Record<string, RecordInfo>;
     references: Record<string, string>;
     storageTypes: Record<string, string>;
-  }
+  },
+  numbers: ClangNumbers
 ): Statement {
   const { state, records, references, storageTypes } = context;
   const spelling = node.opcode!;
@@ -1613,7 +1489,7 @@ function analyzeCompound(
     ...(grouped ? [[pane.length - 1, pane.length, ''] as [number, number, string]] : []),
   ];
 
-  const evaluator = new Evaluator(state, locate, records, references, storageTypes);
+  const evaluator = new Reductions(state, locate, records, references, storageTypes, numbers, file);
   const names = new Set([...Object.keys(state), ...Object.keys(references)]);
   const typed = [
     ...typedParts(left, locate, names, records),
@@ -1760,21 +1636,22 @@ function integerAliases(node: AstNode, found: Record<string, string> = {}): Reco
 export function analyzeWithFrontend(
   source: string,
   frontend: CompilerFrontend
-): [Statement[], Record<string, RecordInfo>, Record<string, string>] {
+): [Statement[], Record<string, RecordInfo>, Record<string, string>, AstNode, AstNode] {
   return analyzeSource(new SourceFile(source, frontend), frontend);
 }
 
 function analyzeSource(
   file: SourceFile,
   frontend: CompilerFrontend
-): [Statement[], Record<string, RecordInfo>, Record<string, string>] {
-  const ast = file.ast(frontend);
+): [Statement[], Record<string, RecordInfo>, Record<string, string>, AstNode, AstNode] {
+  const [ast, main] = file.ast(frontend);
   resolveArrayAliases(ast);
   const records = layoutsFromFrontend(ast, file.program, frontend);
   const statements: Statement[] = [];
   let state: State = {};
   const references: Record<string, string> = {};
   const storageTypes: Record<string, string> = {};
+  const numbers = new ClangNumbers(frontend);
   const inner = ast.inner ?? [];
   for (let i = 0; i < inner.length; i++) {
     const node = inner[i];
@@ -1792,7 +1669,9 @@ function analyzeSource(
     }
     if (node.kind === 'DeclStmt' && node.inner?.length === 1 &&
         node.inner[0].kind === 'UsingDirectiveDecl' && node.inner[0].nominatedNamespace?.name === 'std') continue;
-    const statement = analyzeStatement(node, file, state, records, references, storageTypes);
+    const statement = analyzeStatement(node, file, state, records, references, storageTypes, numbers);
+    const [first, last] = bounds(node);
+    statement.range = [first, file.statementEnd(last)];
     if (statement.declared && statements.some(earlier => earlier.temporary)) {
       throw new Unsupported(
         'a declaration after a materialized temporary needs a separate memory-layout visualization'
@@ -1813,7 +1692,7 @@ function analyzeSource(
   if (Object.keys(state).length === 0) {
     throw new Unsupported('a variable timeline requires at least one variable');
   }
-  return [statements, records, integerAliases(ast)];
+  return [statements, records, integerAliases(ast), ast, main];
 }
 
 // Memory -----------------------------------------------------------------------------------
@@ -1840,111 +1719,28 @@ export function normalizeAddresses(
   return result;
 }
 
-/**
- * The declared layout, without the slots the program holds but the drawing does not show:
- * a reference's storage, or a temporary such as the right side of `*p = { 3, 4 }`.
- */
-function withoutHiddenSlots(
-  real: Record<string, number>,
-  variables: TraceVariable[]
-): Record<string, number> | null {
-  const packed = storageAddresses(variables);
-  const names = variables.map(v => v.name);
-  const sortedReal = [...names].sort((a, b) => real[a] - real[b]);
-  const sortedPacked = [...names].sort((a, b) => packed[a] - packed[b]);
-  return sortedReal.every((n, i) => n === sortedPacked[i]) ? packed : null;
-}
-
-/**
- * Check every live leaf, including unchanged fields, against GDB after each statement.
- *
- * A struct and its first field can share an address. Keep the statically typed target and
- * verify its address rather than trying to recover an ambiguous target from that number.
- */
-export function observeExecution(
-  execution: Execution,
-  predicted: State[],
-  variables: TraceVariable[],
-  references: Record<string, string>
-): [Record<string, number>, State[]] {
-  const cells = leaves(variables);
-  const addresses: Record<string, number> = {};
-  const owners = Object.fromEntries(variables.map(v => [v.name, v]));
-  const offsets = storageAddresses(variables);
-  const bindings = execution.checkpoints.map(row =>
-    Object.fromEntries(Object.entries(row).filter(([, cell]) => cell.reference))
-  );
-  const checkpoints = execution.checkpoints.map(row =>
-    Object.fromEntries(Object.entries(row).filter(([, cell]) => !cell.reference))
-  );
-  for (const row of checkpoints) {
-    for (const [name, cell] of Object.entries(row)) {
-      if (cell.size !== cells[name].size || cell.pointer !== (cells[name].kind === 'ptr')) {
-        throw new Unsupported(`runtime storage of ${name} disagrees with Clang`);
-      }
-      if (!Object.hasOwn(addresses, name)) {
-        addresses[name] = cell.address;
-      } else if (addresses[name] !== cell.address) {
-        throw new Unsupported('variable address changed during the trace');
-      }
-      const dot = name.indexOf('.');
-      const owner = dot === -1 ? name : name.slice(0, dot);
-      const member = dot === -1 ? '' : name.slice(dot + 1);
-      if (member) {
-        const offset = offsets[name] - offsets[owner];
-        const base = cell.objectAddress!;
-        if (!Object.hasOwn(addresses, owner)) {
-          addresses[owner] = base;
-        }
-        if (
-          cell.objectSize !== owners[owner].size ||
-          cell.address !== base + offset ||
-          addresses[owner] !== base
-        ) {
-          throw new Unsupported(`runtime field offset of ${name} disagrees with Clang`);
-        }
+/** Compare known leaves and bindings against the objects in Clang's constant expression. */
+function replaySteps(statements: Statement[], states: State[]): ReplayStep[] {
+  const pointer = (expression: string): string => `static_cast<const void*>(${expression})`;
+  return statements.map((statement, i) => {
+    const checks: string[] = [];
+    for (const [name, value] of Object.entries(flatten(states[i]))) {
+      if (value === null) continue;
+      const path = codeName(name);
+      if (value instanceof Pointer) {
+        const target = value.target ? pointer('&' + codeName(value.target)) : 'nullptr';
+        checks.push(`${pointer(path)} == ${target}`);
+      } else if (typeof value === 'number') {
+        const literal = Number.isSafeInteger(value) && !Object.is(value, -0)
+          ? numberSpelling(value, 'long long') : numberSpelling(value, 'double');
+        checks.push(`__course_equal(${path}, ${literal})`);
       }
     }
-  }
-  for (const [name, offset] of Object.entries(offsets)) {
-    const owner = name.split('.')[0];
-    if (Object.hasOwn(addresses, owner) && !Object.hasOwn(addresses, name)) {
-      addresses[name] = addresses[owner] + offset - offsets[owner];
+    if (statement.bound && statement.declared) {
+      checks.push(`${pointer('&' + statement.declared)} == ${pointer('&' + codeName(statement.bound))}`);
     }
-  }
-  for (const row of bindings) {
-    for (const [name, cell] of Object.entries(row)) {
-      const refTarget = references[name];
-      if (cell.address !== addresses[refTarget]) {
-        throw new Unsupported(`runtime verification failed: the reference ${name} disagrees`);
-      }
-    }
-  }
-  for (let i = 0; i < checkpoints.length; i++) {
-    const row = checkpoints[i];
-    const expected = flatten(predicted[i]);
-    const rowKeys = Object.keys(row).sort();
-    const expKeys = Object.keys(expected).sort();
-    if (rowKeys.length !== expKeys.length || rowKeys.some((k, idx) => k !== expKeys[idx])) {
-      throw new Unsupported('runtime verification failed: incomplete frame');
-    }
-    const addrValues = new Set(Object.values(addresses));
-    for (const [name, value] of Object.entries(expected)) {
-      const bits =
-        value instanceof Pointer
-          ? value.target
-            ? addresses[value.target]
-            : 0
-          : value;
-      if (row[name].value !== bits || (bits === 0 && !Object.is(row[name].value, bits))) {
-        if (value instanceof Pointer && row[name].value && !addrValues.has(row[name].value)) {
-          throw new Unsupported(`runtime value of ${name} is not the address of a variable`);
-        }
-        throw new Unsupported(`runtime verification failed: ${name} disagrees`);
-      }
-    }
-  }
-  return [addresses, predicted];
+    return { range: statement.range, output: statement.outputSuffix !== null, checks };
+  });
 }
 
 // Rendering --------------------------------------------------------------------------------
@@ -2074,13 +1870,10 @@ class Renderer {
   order: string[];
   steps: TraceStep[];
   stdout: string;
-  real: Record<string, number>;
-  realStdout: string;
 
   constructor(
     addresses: Record<string, number>,
     cells: Record<string, unknown> | null = null,
-    real: Record<string, number> | null = null,
     hasReferences = false,
     types = false
   ) {
@@ -2091,18 +1884,13 @@ class Renderer {
     this.order = keys.sort((a, b) => addresses[a] - addresses[b]);
     this.steps = [];
     this.stdout = '';
-    this.real = real ?? addresses;
-    this.realStdout = '';
   }
 
-  printed(pointer: Pointer, addresses: Record<string, number>): string {
+  printed(pointer: Pointer): string {
     if (pointer.target === null) {
       return '0';
     }
-    const address = addresses[pointer.target];
-    if (addresses === this.real && this.real !== this.addresses) {
-      return `0x${address.toString(16)}`;
-    }
+    const address = this.addresses[pointer.target];
     return `0x${address.toString(16).padStart(16, '0')}`;
   }
 
@@ -2281,12 +2069,10 @@ class Renderer {
     }
     let span = pane.locate(statement.result[0], statement.result[1]);
     let text = pane.read(statement.result[0], statement.result[1]);
-    let real = text;
     if (statement.printed !== null) {
-      real = text = statement.printed;
+      text = statement.printed;
     } else if (statement.outputSuffix !== null && statement.value instanceof Pointer) {
-      text = this.printed(statement.value, this.addresses);
-      real = this.printed(statement.value, this.real);
+      text = this.printed(statement.value);
       if (pane.read(statement.result[0], statement.result[1]) !== text) {
         const op = {
           kind: 'eval' as const,
@@ -2298,7 +2084,6 @@ class Renderer {
       }
     }
     if (statement.outputSuffix !== null) {
-      this.realStdout += real + statement.outputSuffix;
       this.stdout += text + statement.outputSuffix;
       this.add(line, pane, expr, after, { kind: 'print', value: text, span }, 1.2);
       return;
@@ -2343,10 +2128,9 @@ class Renderer {
  * `types` and takes integer variables only.
  */
 export interface TraceOptions extends Flags {
+  /** Legacy option accepted by callers. All traces now use Clang constant evaluation. */
   runtime?: boolean;
   frontend: CompilerFrontend;
-  executor?: RuntimeExecutor | null;
-  directory?: string;
   /** The caller's own checks, which throw: a flag is suggested only for a trace they accept. */
   accept?: (trace: ExecutionTrace) => void;
 }
@@ -2369,19 +2153,20 @@ function tracesWithTypes(source: string, options: TraceOptions, error: IllFormed
 /**
  * Trace a snippet into a validated unified-format trace, rejecting unsupported constructs.
  *
- * With `runtime: false` (probing) nothing is executed: values are the predicted ones and the
- * layout is Clang's usual -O0 layout.
+ * Both CLI and browser use the same compiler-backed evaluation and illustrative memory layout.
  */
 export function traceWithFrontend(source: string, options: TraceOptions): ExecutionTrace {
-  const { runtime = true, bits = false, frontend, executor = hooks.execute, directory } = options;
+  const { bits = false, frontend } = options;
   const types = bits || (options.types ?? false);
   let file = new SourceFile(source, frontend);
   let mismatch: Mismatch | null = null;
   let statements: Statement[];
   let records: Record<string, RecordInfo>;
   let aliases: Record<string, string>;
+  let ast: AstNode;
+  let main: AstNode;
   try {
-    [statements, records, aliases] = analyzeSource(file, frontend);
+    [statements, records, aliases, ast, main] = analyzeSource(file, frontend);
   } catch (error) {
     if (!(error instanceof IllFormed)) throw error;
     if (!types) {
@@ -2389,7 +2174,7 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
     }
     // A last statement whose types do not fit is shown, not run: the rest is traced.
     [file, mismatch] = cutMismatch(file, error, frontend);
-    [statements, records, aliases] = analyzeSource(file, frontend);
+    [statements, records, aliases, ast, main] = analyzeSource(file, frontend);
   }
   const predicted: State[] = [];
   let state: State = {};
@@ -2397,6 +2182,7 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
     state = hooks.after(statement, state);
     predicted.push(state);
   }
+  verifyReplay(frontend, file.program, main, ast, replaySteps(statements, predicted));
   const declarations = statements.filter(s => s.declared);
   const variables: TraceVariable[] = [];
   const references: Record<string, TraceReference> = {};
@@ -2461,54 +2247,12 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
   ) {
     throw new Unsupported('bits draw integer variables only');
   }
-  let addresses: Record<string, number>;
-  let states: State[];
-  let execution: Execution | null = null;
-  if (runtime) {
-    if (!executor) {
-      throw new Unsupported('runtime executor is required when runtime=true');
-    }
-    const scopes: ScopeEntry[][] = [];
-    const bound: Record<string, string> = {};
-    for (let i = 0; i < statements.length; i++) {
-      const statement = statements[i];
-      const row = predicted[i];
-      if (statement.bound && statement.declared) {
-        bound[statement.declared] = statement.bound;
-      }
-      scopes.push([
-        ...Object.entries(flatten(row)).map(([name, value]): ScopeEntry => [name, value !== null]),
-        ...Object.keys(bound).map((name): ScopeEntry => [name, REFERENCE]),
-      ]);
-    }
-    execution = executor(
-      statements.map(s => s.source),
-      scopes,
-      directory
-    );
-    [addresses, states] = observeExecution(execution, predicted, variables, bound);
-  } else {
-    addresses = storageAddresses(variables);
-    states = predicted;
-  }
-  const real = addresses;
-  // A reference's slot is always dropped; a gap elsewhere only when the order allows it, and
-  // `applicable` rejects the trace otherwise.
-  const packed = withoutHiddenSlots(real, variables);
-  if (Object.keys(references).length > 0) {
-    if (!packed) {
-      throw new Unsupported('runtime order of the variables disagrees with their declarations');
-    }
-    addresses = packed;
-  } else if (packed && !contiguous(variables.map(v => ({ address: real[v.name], size: v.size })))) {
-    addresses = packed;
-  }
   const alignment = Math.max(
     ...Object.values(records).map(r => r.alignment),
     ...declarations.filter(d => !d.record && !d.bound).map(d => d.size!),
     4
   );
-  addresses = normalizeAddresses(addresses, { ABI: alignment });
+  const addresses = normalizeAddresses(storageAddresses(variables), { ABI: alignment });
   for (const variable of variables) {
     variable.address = addresses[variable.name];
   }
@@ -2517,22 +2261,19 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
   const shown: [Statement, State][] = [];
   for (let i = 0; i < statements.length; i++) {
     if (!statements[i].typeOnly) {
-      shown.push([statements[i], states[i]]);
+      shown.push([statements[i], predicted[i]]);
     }
   }
   if (shown.length === 0) {
     throw new Unsupported('a snippet of only struct definitions has nothing to step through');
   }
   const hasRefs = Object.keys(references).length > 0;
-  const renderer = new Renderer(addresses, leaves(variables), real, hasRefs, types);
+  const renderer = new Renderer(addresses, leaves(variables), hasRefs, types);
   let previous: State = {};
   for (let line = 0; line < shown.length; line++) {
     const [statement, after] = shown[line];
     renderer.statement(line, statement, previous, after);
     previous = after;
-  }
-  if (runtime && execution && renderer.realStdout !== execution.stdout) {
-    throw new Unsupported('runtime output disagrees with the expression trace');
   }
   const shownStatements: { source: string; span: Span | null }[] = shown.map(([s]) => s);
   if (mismatch) {

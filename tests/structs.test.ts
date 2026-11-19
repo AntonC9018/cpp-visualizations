@@ -8,7 +8,6 @@ import { fileURLToPath } from 'node:url';
 
 import { dumpsSorted } from '../src/core/json_format.ts';
 import { type ExecutionTrace, validate } from '../src/core/trace_format.ts';
-import { Cell } from '../src/node/execution.ts';
 import * as generate from '../src/node/generate.ts';
 import * as tracing from '../src/node/tracing.ts';
 import { Unsupported } from '../src/node/tracing.ts';
@@ -104,25 +103,13 @@ p->next->x=9; c=*p; (*p).x=7; std::cout << a.x;`;
         writeFileSync(path, source);
         let probeResult: { supported: boolean; reason: string } | null = null;
         let traceResult = '';
-        const original = tracing.hooks.execute;
         for (const operation of ['probe', 'trace'] as const) {
           let stdout = '';
           let stderr = '';
-          let called = false;
-          tracing.hooks.execute = () => {
-            called = true;
-            throw new Error('unreachable');
-          };
-          let status: number;
-          try {
-            status = generate.main([operation, '--source', path], {
-              stdout: { write: s => (stdout += s) },
-              stderr: { write: s => (stderr += s) },
-            });
-          } finally {
-            tracing.hooks.execute = original;
-          }
-          assert.equal(called, false);
+          const status = generate.main([operation, '--source', path], {
+            stdout: { write: s => (stdout += s) },
+            stderr: { write: s => (stderr += s) },
+          });
           if (operation === 'probe') {
             assert.equal(status, 0);
             probeResult = JSON.parse(stdout) as { supported: boolean; reason: string };
@@ -303,22 +290,8 @@ c=b.n; b.n={5, 6}; std::cout << c.g;`;
       'struct S {int x;}; S a; int b=a.x;': /uninitialized variable a\.x/,
       'struct S {int x;}; S *p{}; p->x=1;': /null pointer p/,
     };
-    const original = tracing.hooks.execute;
     for (const [source, reason] of Object.entries(cases)) {
-      let called = false;
-      tracing.hooks.execute = () => {
-        called = true;
-        throw new Error('unreachable');
-      };
-      try {
-        assert.throws(
-          () => tracing.trace(source),
-          (err: unknown) => err instanceof Unsupported && reason.test(err.message)
-        );
-        assert.equal(called, false);
-      } finally {
-        tracing.hooks.execute = original;
-      }
+      assert.throws(() => tracing.trace(source), (err: unknown) => err instanceof Unsupported && reason.test(err.message));
     }
   });
 
@@ -330,20 +303,19 @@ c=b.n; b.n={5, 6}; std::cout << c.g;`;
   });
 
   test('unchanged_field_mismatch_is_fatal', () => {
-    const original = tracing.hooks.execute!;
-    tracing.hooks.execute = (...args) => {
-      const execution = original(...args);
-      const last = execution.checkpoints[execution.checkpoints.length - 1];
-      last['s.x'] = new Cell({ ...last['s.x'], value: 999 });
-      return execution;
+    const original = tracing.hooks.after;
+    tracing.hooks.after = (statement, state) => {
+      const next = original(statement, state);
+      if (statement.target === 's.y') return { ...next, s: { ...(next.s as tracing.StructValue), x: 999 } };
+      return next;
     };
     try {
       assert.throws(
         () => tracing.trace('struct S {int x; int y;}; S s{1,2}; s.y=3;'),
-        (err: unknown) => err instanceof Unsupported && /s\.x disagrees/.test(err.message)
+        (err: unknown) => err instanceof Unsupported && /compiler verification failed/.test(err.message)
       );
     } finally {
-      tracing.hooks.execute = original;
+      tracing.hooks.after = original;
     }
   });
 });

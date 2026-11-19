@@ -26,7 +26,7 @@ jobs:
       - name: Cache Nix store
         uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
 
-      - name: Tracer tests (Clang and GDB)
+      - name: Tracer tests (Clang)
         run: nix develop .#visualizations --command npm run test:tracer
 
       # Chromium comes from the flake, so Playwright downloads no browser.

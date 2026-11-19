@@ -55,9 +55,9 @@ describe('IntegerTests', () => {
   });
 
   test('unsigned_arithmetic_wraps_and_signed_overflow_is_undefined', () => {
-    assert.equal(INTEGERS['unsigned int'].result(-1n), 4294967295n);
-    assert.equal(INTEGERS.short.result(-32768n), -32768n);
-    throwsUnsupported(() => INTEGERS.long.result(2n ** 63n), /signed integer overflow/);
+    const wrapped = tracing.trace('unsigned int n = 0; n -= 1;');
+    assert.equal(wrapped.steps.at(-1)!.values.n, 4294967295);
+    throwsUnsupported(() => tracing.trace('int n = 2147483647; n += 1;'), /signed integer overflow/);
   });
 });
 
@@ -236,19 +236,11 @@ describe('UntypedConversionTests', () => {
     );
   });
 
-  test('the_types_probe_only_predicts_and_honours_the_callers_checks', () => {
-    const original = tracing.hooks.execute;
-    tracing.hooks.execute = () => {
-      throw new Error('the probe ran the snippet');
-    };
-    try {
-      assert.throws(
-        () => tracing.trace('int a = 5; int* p = a;'),
-        (err: unknown) => err instanceof NeedsFlag && /\(--types\)/.test(err.message)
-      );
-    } finally {
-      tracing.hooks.execute = original;
-    }
+  test('the_types_probe_honours_the_callers_checks', () => {
+    assert.throws(
+      () => tracing.trace('int a = 5; int* p = a;'),
+      (err: unknown) => err instanceof NeedsFlag && /\(--types\)/.test(err.message)
+    );
     const refuse = (): void => {
       throw new Unsupported('too many variables');
     };
@@ -403,7 +395,7 @@ describe('FloatFormatTests', () => {
 });
 
 describe('RuntimeConversionTests', () => {
-  test('gdb_agrees_on_every_width_and_sign', () => {
+  test('compiler_agrees_on_every_width_and_sign', () => {
     const t = tracing.trace(
       'int8_t a{ -3 }; uint16_t b = a; int c{ -200 }; ' +
         'int8_t d{ static_cast<int8_t>(c) }; uint64_t e = b; long f = d - 60; ' +
@@ -421,7 +413,7 @@ describe('RuntimeConversionTests', () => {
     });
   });
 
-  test('gdb_agrees_on_floats_void_pointers_and_sizeof', () => {
+  test('compiler_agrees_on_floats_void_pointers_and_sizeof', () => {
     const t = tracing.trace(
       'int seven = 7; double half = static_cast<double>(seven) / 2; float quarter = half / 2.0f; ' +
         'double negZero = -0.0; double big = 1000000.0; ' +
@@ -461,7 +453,7 @@ describe('RuntimeConversionTests', () => {
     assert.equal(readStep.op?.kind === 'read' && readStep.op.value, '1.0000001');
   });
 
-  test('gdb_agrees_on_rounded_ties', () => {
+  test('compiler_agrees_on_rounded_ties', () => {
     const t = tracing.trace(
       'double a = 100000.5; double b = 1234565.0; double c = 1234575.0; double d = 999999.5; ' +
         'std::cout << a << std::endl; std::cout << b << std::endl; ' +

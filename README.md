@@ -19,7 +19,7 @@ from a host repository, prefix the paths with `visualizations/`.
   Node APIs so the same AST and layout logic can run in Node or a browser Web Worker.
   `settings.ts` lists the templates and flags a trace can be asked for, and `snippet.ts`
   traces a snippet with them: the one entry point of the command line and the browser.
-- `src/node/` holds the Node toolchain, GDB runtime verification, and CLI implementations
+- `src/node/` holds the native Clang adapter and CLI implementations
   (`toolchain.ts`, `execution.ts`, `records.ts`, `layout.ts`, `tracing.ts`, `generate.ts`,
   `discover.ts`, `fixtures.ts`, `demo.ts`).
 - `src/player/` holds the modular TypeScript browser player (`constants.ts`, `svg.ts`,
@@ -60,7 +60,7 @@ their original targets. Fields must be supported integers, `float`, `double`, po
 `void*`), another struct of the snippet by value, or `std::array`. A nested struct is copied,
 assigned and initialized as a whole
 (`a.inner = { 5 };`), and its fields are reached by path (`a.inner.x`, `p->inner.x`,
-`&a.inner.x`). Every live field is checked under GDB after every statement. The player draws
+`&a.inner.x`). Clang verifies the value of each initialized field after every statement. The player draws
 struct frames, a nested struct as a frame inside its owner's, per-field colours and separate
 arc endpoints for objects and fields.
 
@@ -77,7 +77,7 @@ what a pointer points to) is another name for storage, as the lessons put it. Bi
 step; wherever its name is used afterwards, the name first becomes what it stands for
 (`c = 2` → `a = 2`). At `-O0` the compiler keeps a hidden pointer-sized slot per reference; the
 program cannot name it, so memory is drawn without it, with the variables in their real order.
-GDB checks every binding after every statement.
+Clang checks each binding when it is made.
 
 Output prints one integer, floating-point or pointer value followed only by whitespace (`' '`, `'\t'`, `'\n'`) or
 `std::endl`. A statement of whitespace alone, such as `std::cout << std::endl;`, prints it as
@@ -151,12 +151,10 @@ use it for examples that are about types, such as a conversion or a type-checkin
 Course maintenance traces every tag in CI inside the pinned toolchain and stores the results by content, so only
 changed examples are traced again; a tag that cannot be traced fails the build.
 
-Generation uses Clang AST types and operation ranges to build expression reductions. GDB
-verifies every post-statement value, output, storage size and frame location. Pointer targets
-retain their typed object or field identity; GDB verifies their numeric addresses. Addresses
-are normalized relative to observed stack offsets, aligned near 64, so no ASLR addresses are
-published. Cells are ordered by address, so declaration order may differ from the source.
-Unchanged-value writes, such as the failed swap, remain visible writes.
+Clang's token stream and AST provide the structure of the snippet. Constant evaluation provides
+numeric reductions and verifies each initialized scalar, struct field and pointer target after
+each statement. The player uses illustrative addresses and Clang's sizes and field offsets.
+Writes that leave a value unchanged, such as in the failed swap, still appear in the timeline.
 
 ```sh
 node generate.mjs probe --source /tmp/snippet.cpp
@@ -188,10 +186,11 @@ highlight the whole object, `alignof` the widest fields. Theme changes preserve 
 ## Toolchain and tests
 
 The flake pins the tools. A host repository that traces in CI keeps a flake of its own
-with the same shells, so that its lock decides when its traces are stale. `nix develop .#visualizations` provides Clang with C++
-standard headers, Python-enabled GDB and Node, which is all tracing needs; CI uses the same shell.
+with the same shells so that its lock decides when its traces are stale.
+`nix develop .#visualizations` provides Clang with C++ standard headers and Node.
+CI uses the same shell.
 The default shell (`nix develop`) adds Chromium for headless screenshots of the demo.
-`CLANGXX` and `GDB` select the tools; both shells set them.
+Both shells set `CLANGXX` to the pinned compiler.
 
 ```sh
 nix develop .#visualizations --command npm run test:tracer
@@ -213,7 +212,7 @@ nix develop --command npm run dev
 `player/playground.html` runs the isomorphic tracer (`src/core/`) inside a dedicated Web Worker
 against a trimmed Clang 21 WASM build (`player/clang-trace-frontend.wasm`, ~17 MB raw / ~4.2 MB
 brotli). The worker downloads the module once, stores it in the browser Cache API
-(`clang-trace-frontend-v1`), and reuses cached bytes across reloads without re-fetching.
+(`clang-trace-frontend-v2`), and reuses cached bytes across reloads without re-fetching.
 
 `*.wasm` binaries are git-ignored; rebuild `player/clang-trace-frontend.wasm` from LLVM 21.1.8
 sources with:
@@ -222,9 +221,8 @@ sources with:
 ./wasm/build.sh
 ```
 
-The playground traces through the same entry point as `generate.mjs trace`, only without GDB;
-the compiler under it is Clang built to WASM instead of the native one, and both give the same
-AST. Its template buttons and flag toggles are those of `settings.ts`, kept in the URL as
+The playground and `generate.mjs trace` share the tracer and use Clang's AST and constant
+evaluator. The playground runs its compiler in WASM. Its template buttons and flag toggles are those of `settings.ts`, kept in the URL as
 `?template=expression-timeline&types=1`.
 
 Override the compiler binary URL via `?wasm=https://.../clang-trace-frontend.wasm`,

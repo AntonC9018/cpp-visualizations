@@ -75,6 +75,7 @@ int main(int argc, char **argv) {
   bool dumpTokens = false;
   bool dumpRecordLayoutsComplete = false;
   std::string inputPath;
+  std::string standard = "-std=c++20";
 
   for (int i = 1; i < argc; ++i) {
     llvm::StringRef arg(argv[i]);
@@ -89,6 +90,8 @@ int main(int argc, char **argv) {
       } else if (xarg == "-fdump-record-layouts-complete") {
         dumpRecordLayoutsComplete = true;
       }
+    } else if (arg == "-std=c++2c") {
+      standard = arg.str();
     } else if (arg == "-" || !arg.starts_with("-")) {
       inputPath = arg.str();
     }
@@ -113,7 +116,7 @@ int main(int argc, char **argv) {
   std::vector<const char *> cc1Args = {
       "-triple",
       "x86_64-unknown-linux-gnu",
-      "-std=c++20",
+      standard.c_str(),
       "-fsyntax-only",
       "-Werror=extra-tokens",
       "-nostdsysteminc",
@@ -121,6 +124,10 @@ int main(int argc, char **argv) {
       "-isystem",
       "/virtual/include",
   };
+  if (standard == "-std=c++2c") {
+    cc1Args.push_back("-Wno-builtin-macro-redefined");
+    cc1Args.push_back("-D__cplusplus=202002L");
+  }
   if (astDump) {
     cc1Args.push_back("-ast-dump=json");
   }

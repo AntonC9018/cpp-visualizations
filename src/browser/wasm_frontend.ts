@@ -20,9 +20,12 @@ export function createWasmClangFrontend(module: WebAssembly.Module): CompilerFro
       return readTokens(result.stderr, '/virtual/source.cpp', program);
     },
 
-    astDump(program, filter) {
+    astDump(program, filter, standard = 'c++20') {
       const result = runWasiModule(module, {
-        args: ['clang-trace-frontend', '-Xclang', '-ast-dump=json', '-Xclang', '-ast-dump-filter=' + filter, '-'],
+        args: [
+          'clang-trace-frontend', '-std=' + standard,
+          '-Xclang', '-ast-dump=json', '-Xclang', '-ast-dump-filter=' + filter, '-',
+        ],
         stdin: program,
       });
       if (result.returncode !== 0) throw illFormed(result.stderr, program);
@@ -59,11 +62,11 @@ export function createWasmClangFrontend(module: WebAssembly.Module): CompilerFro
   };
 }
 
-/** Trace as `generate.mjs` would, without running the snippet: the browser has no GDB. */
+/** Trace with the same constant-evaluation pipeline as the CLI. */
 export function traceWithWasmModule<T extends Template>(
   source: string,
   module: WebAssembly.Module,
   settings: TraceSettings & { template: T }
 ): TraceOf[T] {
-  return traceSnippet(source, settings, { runtime: false, frontend: createWasmClangFrontend(module) });
+  return traceSnippet(source, settings, { frontend: createWasmClangFrontend(module) });
 }

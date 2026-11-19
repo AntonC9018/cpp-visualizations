@@ -22,7 +22,7 @@ export function readTokens(dump: string, file: string, source: string): SourceTo
     if (expansion) throw new Unsupported('macro-expanded statements are not supported');
     const start = offsets[lines[Number(line) - 1] + Number(column) - 1];
     if (kind === 'eof') {
-      physicalEof = start === source.length;
+      physicalEof = start === source.length || /^\r?\n$|^\r$/.test(source.slice(start));
       continue;
     }
     // The token dump reports presumed locations (e.g. following #line).
@@ -130,7 +130,7 @@ export class SourceFile {
     return signs;
   }
 
-  ast(frontend: CompilerFrontend): AstNode {
+  ast(frontend: CompilerFrontend): [AstNode, AstNode] {
     const { offsets } = sourceCoordinates(this.program);
     const main = frontend.mainAst(this.program);
     useCharacterOffsets(main, offsets);
@@ -143,7 +143,7 @@ export class SourceFile {
       if (bounds(body)[1] !== this.program.length - 1) {
         throw new Unsupported('declarations outside main are unsupported');
       }
-      return body;
+      return [body, main];
     }
 
     const [start, end] = bounds(main);
@@ -177,7 +177,7 @@ export class SourceFile {
       globals.push({ kind: 'DeclStmt', inner: [record], range: record.range });
       i = semi + 1;
     }
-    return { ...body, inner: [...globals, ...(body.inner ?? [])] };
+    return [{ ...body, inner: [...globals, ...(body.inner ?? [])] }, main];
   }
 }
 

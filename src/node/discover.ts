@@ -393,7 +393,7 @@ export function discover(
       if (!cache.has(fence.source)) {
         try {
           const accept = (traced: ExecutionTrace): void => applicable(traced, fence.source);
-          accept(trace(fence.source, { runtime: false, accept, ...flags }));
+          accept(trace(fence.source, { accept, ...flags }));
           cache.set(fence.source, null);
         } catch (exc) {
           if (exc instanceof Unsupported) {
