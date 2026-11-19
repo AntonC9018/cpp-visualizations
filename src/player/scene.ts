@@ -30,8 +30,8 @@ import {
   typeLabelWidth,
   valueCentre,
 } from './geometry.ts';
-import { CHAIN_LEAD, chainOf, paneLevels, walkWindows } from './storage_path.ts';
-import { type PreparedModel, arrival, copies, copyBegin, departure, stores } from './model.ts';
+import { chainOf, memoryWalk, paneLevels, walkWindows } from './storage_path.ts';
+import { type Focus, type PreparedModel, arrival, copies, copyBegin, departure, stores } from './model.ts';
 import {
   animateAttr,
   animated,
@@ -51,11 +51,6 @@ import {
   text,
 } from './svg.ts';
 
-export interface SceneFocus {
-  now: Set<string>;
-  before: Set<string>;
-  begin: Map<string, number>;
-}
 
 export interface SceneContext {
   m: PreparedModel;
@@ -67,7 +62,7 @@ export interface SceneContext {
   prev: TraceStep | null;
   animate: boolean;
   op: TraceStep['op'];
-  focus: SceneFocus;
+  focus: Focus;
   littleEndian: boolean;
 }
 
@@ -162,12 +157,14 @@ function dim(c: SceneContext, name: string, markup: string): string {
   const { focus } = c;
   const on = focus.now.has(name);
   const was = focus.before.has(name);
-  const to = on ? 1 : DIM;
-  if (on === was) return to === 1 ? markup : `<g opacity="${DIM}">${markup}</g>`;
-  return (
-    `<g opacity="${was ? 1 : DIM}"><animate attributeName="opacity" from="${was ? 1 : DIM}" ` +
-    `to="${to}" dur="0.35s" begin="${round(focus.begin.get(name) ?? 0)}s" ${EASE} fill="freeze"/>${markup}</g>`
-  );
+  const fade = (from: number, to: number, begin: number): string =>
+    `<animate attributeName="opacity" from="${from}" to="${to}" dur="0.35s" begin="${round(begin)}s" ${EASE} fill="freeze"/>`;
+  const begin = focus.begin.get(name) ?? 0;
+  // Lit before and after, but dimmed while an operation reaches into its struct.
+  if (focus.dip.has(name)) return `<g>${fade(1, DIM, 0)}${fade(DIM, 1, begin)}${markup}</g>`;
+  if (on === was) return on ? markup : `<g opacity="${DIM}">${markup}</g>`;
+  const from = was ? 1 : DIM;
+  return `<g opacity="${from}">${fade(from, on ? 1 : DIM, begin)}${markup}</g>`;
 }
 
 // Types ------------------------------------------------------------------------------------
@@ -548,7 +545,7 @@ function memory(c: SceneContext): string {
       }
       markup += '</g></g>';
     }
-    out += dim(c, cell.group || cell.name, markup);
+    out += dim(c, cell.name, markup);
   }
   if (op && (op.kind === 'read' || op.kind === 'write')) {
     out += chainHighlight(c, op, at);
@@ -575,7 +572,7 @@ function chainHighlight(c: SceneContext, op: { kind: 'read' | 'write'; name: str
   const { g, P } = c;
   const color = op.kind === 'write' ? P.write : P.read;
   const levels = chainOf(op.name);
-  const windows = walkWindows(levels.length, at + 0.15, CHAIN_LEAD);
+  const windows = memoryWalk(op.name, at);
   return levels
     .map((level, k) => {
       const box = g.box(level);

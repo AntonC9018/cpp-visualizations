@@ -15,7 +15,7 @@ import {
   themeName,
 } from './constants.ts';
 import { type Geometry, type TypeTarget, geometry } from './geometry.ts';
-import { type PreparedModel, activeVariables, arrival, prepare } from './model.ts';
+import { type PreparedModel, prepare, stepFocus } from './model.ts';
 import { type SceneContext, describe, lineTargets, placeLineTargets } from './scene.ts';
 import { esc } from './svg.ts';
 import { type TraceView, viewOf } from './views.ts';
@@ -307,12 +307,6 @@ export class Player {
     const step = steps[this.index];
     const prev = this.index ? steps[this.index - 1] : null;
     const g = this.g;
-    const now = activeVariables(this.m, this.index);
-    const before = animate && this.index ? activeVariables(this.m, this.index - 1) : now;
-    const begin = new Map<string, number>();
-    if (animate && step.op && step.op.kind === 'deref') {
-      begin.set(step.op.target.split('.')[0], arrival(step.op) - 0.15);
-    }
     const c: SceneContext = {
       m: this.m,
       g,
@@ -323,7 +317,7 @@ export class Player {
       prev,
       animate,
       op: animate ? step.op : null,
-      focus: { now, before, begin },
+      focus: stepFocus(this.m, this.index, animate),
       littleEndian: this.littleEndian,
     };
     this.animated = animate;

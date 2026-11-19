@@ -8,7 +8,7 @@ import type {
   TraceStep,
   TraceVariable,
 } from '../core/trace_format.ts';
-import { chainDelay } from './storage_path.ts';
+import { chainDelay, memoryWalk } from './storage_path.ts';
 import { T, TYPE_COLOURS } from './constants.ts';
 
 export const stores = (op: TraceOperation): boolean =>
@@ -235,4 +235,88 @@ export function activeVariables(m: PreparedModel, i: number): Set<string> {
     }
   }
   return active;
+}
+
+/** The storage an operation reads, writes, points at or binds, by name. */
+function touched(op: TraceOperation | null): string | null {
+  if (!op) return null;
+  if (op.kind === 'read' || op.kind === 'write' || op.kind === 'addr') return op.name;
+  if (op.kind === 'deref' || op.kind === 'alias' || op.kind === 'bind') return op.target;
+  return null;
+}
+
+/** Part of a struct an operation reaches into: its variable, the cells reached, and when. */
+interface Reach {
+  top: string;
+  cells: Set<string>;
+  at: number;
+}
+
+const topOf = (leaf: ModelLeaf): string => leaf.group ?? leaf.name;
+
+/**
+ * When an operation reaches the cells it touches: a read as its walk lands on the last level, a
+ * write as its value lands, anything else as it arrives.
+ */
+function reachTime(op: TraceOperation): number {
+  const at = arrival(op);
+  if (op.kind !== 'read' && op.kind !== 'write') return at - 0.15;
+  const walked = memoryWalk(op.name, at).at(-1)![0];
+  return op.kind === 'write' ? Math.max(walked, at - 0.35) : walked;
+}
+
+/** The part of a struct `op` reaches into, or null when it takes whole variables. */
+function reachOf(m: PreparedModel, op: TraceOperation | null): Reach | null {
+  const name = touched(op);
+  if (!name?.includes('.')) return null;
+  const top = name.split('.')[0];
+  const all = m.leaves.filter(leaf => topOf(leaf) === top);
+  const cells = new Set(
+    all.filter(leaf => leaf.name === name || leaf.name.startsWith(name + '.')).map(leaf => leaf.name)
+  );
+  return cells.size < all.length ? { top, cells, at: reachTime(op!) } : null;
+}
+
+/** The variables and cells lit: every cell of a variable in use, but of a reached struct only its reached cells. */
+function lit(m: PreparedModel, tops: Set<string>, reach: Reach | null): Set<string> {
+  const shown = new Set(tops);
+  for (const leaf of m.leaves) {
+    const top = topOf(leaf);
+    if (tops.has(top) && (reach?.top !== top || reach.cells.has(leaf.name))) shown.add(leaf.name);
+  }
+  return shown;
+}
+
+/**
+ * What a step lights, by variable and cell name: `now` as it ends, `before` as it starts, and
+ * when each change begins. A step that reaches into part of a struct dims all of its cells and
+ * lights the reached ones only when it gets to them (`dip`: lit before, dimmed in between).
+ */
+export interface Focus {
+  now: Set<string>;
+  before: Set<string>;
+  begin: Map<string, number>;
+  dip: Set<string>;
+}
+
+export function stepFocus(m: PreparedModel, i: number, animate: boolean): Focus {
+  const op = m.steps[i].op;
+  const reach = reachOf(m, op);
+  const now = lit(m, activeVariables(m, i), reach);
+  const begin = new Map<string, number>();
+  const dip = new Set<string>();
+  if (!animate || i === 0) return { now, before: now, begin, dip };
+  const before = lit(m, activeVariables(m, i - 1), reachOf(m, m.steps[i - 1].op));
+  // A dereference lights its target as the arrow arrives.
+  if (op?.kind === 'deref') begin.set(op.target.split('.')[0], arrival(op) - 0.15);
+  for (const leaf of m.leaves) {
+    const top = topOf(leaf);
+    if (reach?.top === top && reach.cells.has(leaf.name)) {
+      begin.set(leaf.name, reach.at);
+      if (before.has(leaf.name)) dip.add(leaf.name);
+    } else if (begin.has(top)) {
+      begin.set(leaf.name, begin.get(top)!);
+    }
+  }
+  return { now, before, begin, dip };
 }

@@ -22,6 +22,10 @@ export function paneLevels(name: string, spelled: string): string[] | null {
   return levels.length > 1 && levels.every(level => spelled.startsWith(level)) ? levels : null;
 }
 
+/** Memory's windows along a chained read or write whose value arrives at `at`. */
+export const memoryWalk = (name: string, at: number): Array<[number, number]> =>
+  walkWindows(chainOf(name).length, at + 0.15, CHAIN_LEAD);
+
 /**
  * Each level's window: shown from `begin`, gone at `leave` (the last stays until `end`).
  * The pane's windows start at 0; memory's are offset by CHAIN_LEAD, so they alternate.

@@ -1043,6 +1043,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const levels = chainOf(name).map(codeName);
     return levels.length > 1 && levels.every((level) => spelled.startsWith(level)) ? levels : null;
   }
+  const memoryWalk = (name, at) => walkWindows(chainOf(name).length, at + 0.15, CHAIN_LEAD);
   function walkWindows(count, end, offset = 0) {
     const start = count > 1 ? offset : 0;
     return Array.from({ length: count }, (_, k) => [
@@ -1192,6 +1193,57 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return active;
   }
+  function touched(op) {
+    if (!op) return null;
+    if (op.kind === "read" || op.kind === "write" || op.kind === "addr") return op.name;
+    if (op.kind === "deref" || op.kind === "alias" || op.kind === "bind") return op.target;
+    return null;
+  }
+  const topOf = (leaf) => leaf.group ?? leaf.name;
+  function reachTime(op) {
+    const at = arrival(op);
+    if (op.kind !== "read" && op.kind !== "write") return at - 0.15;
+    const walked = memoryWalk(op.name, at).at(-1)[0];
+    return op.kind === "write" ? Math.max(walked, at - 0.35) : walked;
+  }
+  function reachOf(m, op) {
+    const name = touched(op);
+    if (!(name == null ? void 0 : name.includes("."))) return null;
+    const top = name.split(".")[0];
+    const all = m.leaves.filter((leaf) => topOf(leaf) === top);
+    const cells = new Set(
+      all.filter((leaf) => leaf.name === name || leaf.name.startsWith(name + ".")).map((leaf) => leaf.name)
+    );
+    return cells.size < all.length ? { top, cells, at: reachTime(op) } : null;
+  }
+  function lit(m, tops, reach) {
+    const shown = new Set(tops);
+    for (const leaf of m.leaves) {
+      const top = topOf(leaf);
+      if (tops.has(top) && ((reach == null ? void 0 : reach.top) !== top || reach.cells.has(leaf.name))) shown.add(leaf.name);
+    }
+    return shown;
+  }
+  function stepFocus(m, i, animate) {
+    const op = m.steps[i].op;
+    const reach = reachOf(m, op);
+    const now = lit(m, activeVariables(m, i), reach);
+    const begin = /* @__PURE__ */ new Map();
+    const dip = /* @__PURE__ */ new Set();
+    if (!animate || i === 0) return { now, before: now, begin, dip };
+    const before = lit(m, activeVariables(m, i - 1), reachOf(m, m.steps[i - 1].op));
+    if ((op == null ? void 0 : op.kind) === "deref") begin.set(op.target.split(".")[0], arrival(op) - 0.15);
+    for (const leaf of m.leaves) {
+      const top = topOf(leaf);
+      if ((reach == null ? void 0 : reach.top) === top && reach.cells.has(leaf.name)) {
+        begin.set(leaf.name, reach.at);
+        if (before.has(leaf.name)) dip.add(leaf.name);
+      } else if (begin.has(top)) {
+        begin.set(leaf.name, begin.get(top));
+      }
+    }
+    return { now, before, begin, dip };
+  }
   const SHOWN_DIGITS = 8;
   function shortestDecimal(value, size) {
     if (size === 8) return String(value);
@@ -1263,9 +1315,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const { focus } = c;
     const on = focus.now.has(name);
     const was = focus.before.has(name);
-    const to = on ? 1 : DIM;
-    if (on === was) return to === 1 ? markup : `<g opacity="${DIM}">${markup}</g>`;
-    return `<g opacity="${was ? 1 : DIM}"><animate attributeName="opacity" from="${was ? 1 : DIM}" to="${to}" dur="0.35s" begin="${round(focus.begin.get(name) ?? 0)}s" ${EASE} fill="freeze"/>${markup}</g>`;
+    const fade2 = (from2, to, begin2) => `<animate attributeName="opacity" from="${from2}" to="${to}" dur="0.35s" begin="${round(begin2)}s" ${EASE} fill="freeze"/>`;
+    const begin = focus.begin.get(name) ?? 0;
+    if (focus.dip.has(name)) return `<g>${fade2(1, DIM, 0)}${fade2(DIM, 1, begin)}${markup}</g>`;
+    if (on === was) return on ? markup : `<g opacity="${DIM}">${markup}</g>`;
+    const from = was ? 1 : DIM;
+    return `<g opacity="${from}">${fade2(from, on ? 1 : DIM, begin)}${markup}</g>`;
   }
   const typeColour = (c, type) => c.P.types[c.m.typeColours.get(type) ?? 0];
   function typeLabel(c, cx, top, type, size, color) {
@@ -1568,7 +1623,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         }
         markup += "</g></g>";
       }
-      out += dim(c, cell.group || cell.name, markup);
+      out += dim(c, cell.name, markup);
     }
     if (op && (op.kind === "read" || op.kind === "write")) {
       out += chainHighlight(c, op, at);
@@ -1593,7 +1648,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const { g, P } = c;
     const color = op.kind === "write" ? P.write : P.read;
     const levels = chainOf(op.name);
-    const windows = walkWindows(levels.length, at + 0.15, CHAIN_LEAD);
+    const windows = memoryWalk(op.name, at);
     return levels.map((level, k) => {
       const box = g.box(level);
       if (!box) return "";
@@ -2290,9 +2345,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           out += drawByte(bx, yBits, yHex, b, { bits: P.fg, hex: toCol });
           return;
         }
-        const lit = signFrame(bx, yBits, ext.stroke, ext.fill) + drawByte(bx, yBits, yHex, b, { bits: P.fg, hex: toCol, msb: ext.stroke });
+        const lit2 = signFrame(bx, yBits, ext.stroke, ext.fill) + drawByte(bx, yBits, yHex, b, { bits: P.fg, hex: toCol, msb: ext.stroke });
         const plain = drawByte(bx, yBits, yHex, b, { bits: P.fg, hex: toCol });
-        out += animate ? swap(litAt, plain, scaled(msbX, yBits - 8, lit, litAt)) : lit;
+        out += animate ? swap(litAt, plain, scaled(msbX, yBits - 8, lit2, litAt)) : lit2;
       });
       const extCount = toBytes.length - fromBytes.length;
       const doneAt = at + (extCount - 1) * STAGGER + TRAVEL;
@@ -2598,12 +2653,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const step = steps[this.index];
       const prev = this.index ? steps[this.index - 1] : null;
       const g = this.g;
-      const now = activeVariables(this.m, this.index);
-      const before = animate && this.index ? activeVariables(this.m, this.index - 1) : now;
-      const begin = /* @__PURE__ */ new Map();
-      if (animate && step.op && step.op.kind === "deref") {
-        begin.set(step.op.target.split(".")[0], arrival(step.op) - 0.15);
-      }
       const c = {
         m: this.m,
         g,
@@ -2614,7 +2663,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         prev,
         animate,
         op: animate ? step.op : null,
-        focus: { now, before, begin },
+        focus: stepFocus(this.m, this.index, animate),
         littleEndian: this.littleEndian
       };
       this.animated = animate;
