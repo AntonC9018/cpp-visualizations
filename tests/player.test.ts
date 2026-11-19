@@ -118,6 +118,43 @@ test('the instant speed jumps to each settled state, and playing holds each a mo
   assert.equal((await player()).index, steps - 1);
 });
 
+test('instant holds in wall-clock time and settles a paused step without playing it', async () => {
+  const player = (): Promise<{ index: number; animated: boolean; running: boolean }> =>
+    page.evaluate(() => {
+      const p = (document.querySelector('.course-visualization') as PlayerElement).cvPlayer as unknown as {
+        index: number;
+        animated: boolean;
+        running: boolean;
+      };
+      return { index: p.index, animated: p.animated, running: p.running };
+    });
+  // A word to find while the menu has focus, a glyph once chosen or left.
+  await page.focus('.cv-speed');
+  assert.equal(await page.textContent('.cv-speed option[value=instant]'), 'Instant ⚡');
+  await page.focus('[data-action=next]');
+  assert.equal(await page.textContent('.cv-speed option[value=instant]'), '⚡');
+
+  await page.selectOption('.cv-speed', '2');
+  await page.selectOption('.cv-speed', 'instant');
+  await page.click('[data-action=play]');
+  await page.clock.runFor(600);
+  assert.equal((await player()).index, 0, 'a hold does not follow the 2× rate');
+  await page.clock.runFor(400);
+  assert.equal((await player()).index, 1);
+  await page.click('[data-action=play]');
+
+  await page.selectOption('.cv-speed', '1');
+  await page.click('[data-action=next]');
+  await page.clock.runFor(300);
+  await page.click('[data-action=play]'); // pauses the step under way
+  assert.deepEqual(await player(), { index: 2, animated: true, running: false });
+  await page.selectOption('.cv-speed', 'instant');
+  assert.deepEqual(await player(), { index: 2, animated: false, running: false }, 'settled, still paused');
+  await page.click('[data-action=play]');
+  await page.clock.runFor(100);
+  assert.equal((await player()).index, 3, 'play goes on from the settled state');
+});
+
 test('a theme change keeps focus', async () => {
   await page.focus('.cv-line[data-line="2"]');
   await page.keyboard.press(' ');

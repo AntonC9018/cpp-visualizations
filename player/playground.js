@@ -2566,8 +2566,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const button = (action, label, iconName, extra = "") => `<button type="button" class="cv-button${extra}" data-action="${action}" aria-label="${esc(label)}" title="${esc(label)}">${icon(iconName)}<span class="cv-label">${esc(label)}</span></button>`;
       const order = (side, label, title) => `<button type="button" class="cv-endian-seg" data-endian-side="${side}" aria-pressed="${side === "le" === this.littleEndian}" title="${esc(title)}">${esc(label)}</button>`;
       const endianToggle = this.view.byteOrder ? `<div class="cv-endian" role="group" aria-label="${esc(S.byteOrder)}">` + order("le", S.littleEndianShort, S.littleEndian) + order("be", S.bigEndianShort, S.bigEndian) + "</div>" : "";
-      root.innerHTML = `<div class="cv-view"><svg class="cv-stage" role="group" aria-label="${esc(S.stage)}" xmlns="http://www.w3.org/2000/svg"><g class="cv-scene" aria-hidden="true"></g><g class="cv-lines">${lineTargets(this.m, S)}</g></svg><div class="cv-type" aria-hidden="true" hidden></div></div><div class="cv-controls"><div class="cv-transport">` + button("play", S.play, "play", " cv-primary") + button("back", S.back, "back") + button("next", S.next, "next") + button("replay", S.replay, "replay", " cv-icon-only") + `<select class="cv-speed" aria-label="${esc(S.speed)}" title="${esc(S.speed)}">` + [0.5, 1, 1.5, 2].map((v) => `<option value="${v}"${v === 1 ? " selected" : ""}>${v}×</option>`).join("") + // A glyph keeps the menu as narrow as `1.5×`: a word would push the controls onto two rows.
-      `<option value="instant" title="${esc(S.instant)}" aria-label="${esc(S.instant)}">⚡</option></select>` + endianToggle + button("reset", S.reset, "reset", " cv-reset") + `</div><div class="cv-progress"><input class="cv-scrub" type="range" min="0" max="${this.m.steps.length - 1}" value="0" step="1" aria-label="${esc(S.scrub)}"><span class="cv-count"></span></div></div><div class="cv-status" aria-live="polite"></div>`;
+      root.innerHTML = `<div class="cv-view"><svg class="cv-stage" role="group" aria-label="${esc(S.stage)}" xmlns="http://www.w3.org/2000/svg"><g class="cv-scene" aria-hidden="true"></g><g class="cv-lines">${lineTargets(this.m, S)}</g></svg><div class="cv-type" aria-hidden="true" hidden></div></div><div class="cv-controls"><div class="cv-transport">` + button("play", S.play, "play", " cv-primary") + button("back", S.back, "back") + button("next", S.next, "next") + button("replay", S.replay, "replay", " cv-icon-only") + `<select class="cv-speed" aria-label="${esc(S.speed)}" title="${esc(S.speed)}">` + [0.5, 1, 1.5, 2].map((v) => `<option value="${v}"${v === 1 ? " selected" : ""}>${v}×</option>`).join("") + `<option value="instant" title="${esc(S.instant)}" aria-label="${esc(S.instant)}">⚡</option></select>` + endianToggle + button("reset", S.reset, "reset", " cv-reset") + `</div><div class="cv-progress"><input class="cv-scrub" type="range" min="0" max="${this.m.steps.length - 1}" value="0" step="1" aria-label="${esc(S.scrub)}"><span class="cv-count"></span></div></div><div class="cv-status" aria-live="polite"></div>`;
       this.host.append(root);
       this.root = root;
       this.svg = root.querySelector(".cv-stage");
@@ -2586,12 +2585,20 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         const side = (_b = event.target) == null ? void 0 : _b.closest("[data-endian-side]");
         if (side) this.byteOrder(side.dataset.endianSide === "le");
       });
-      root.querySelector(".cv-speed").addEventListener("change", (event) => {
-        const menu = event.target;
+      const menu = root.querySelector(".cv-speed");
+      const instant = menu.querySelector("option[value=instant]");
+      const spell = () => {
+        const focused = document.activeElement === menu;
+        instant.textContent = focused && menu.value !== "instant" ? `${S.instant} ⚡` : "⚡";
+      };
+      menu.addEventListener("focus", spell);
+      menu.addEventListener("blur", spell);
+      menu.addEventListener("change", () => {
         this.speed(menu.value);
         const label = menu.value === "instant" ? `${S.speed}: ${S.instant}` : S.speed;
         menu.title = label;
         menu.setAttribute("aria-label", label);
+        spell();
       });
       this.scrub.addEventListener("input", () => {
         this.pristine = false;
@@ -2847,11 +2854,20 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.render(!this.instant);
       if (this.duration > 0 || autoplay) this.resume();
     }
-    /** A speed menu choice: a playback rate, or `instant`. A running step restarts at it. */
+    /**
+     * A speed menu choice: a playback rate, or `instant`. A step under way at Instant settles: a
+     * running one holds there before the next, a paused one stays paused.
+     */
     speed(choice) {
       this.instant = choice === "instant";
       if (!this.instant) this.rate = Number(choice);
-      if (this.running && this.instant) this.start(this.index, this.continuous);
+      if (!this.instant || !this.animated) return;
+      if (this.running) {
+        this.start(this.index, this.continuous);
+      } else if (!this.finished) {
+        this.render(false);
+        this.elapsed = this.duration = 0;
+      }
     }
     resume() {
       this.running = true;
@@ -2877,10 +2893,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     tick(now) {
       this.frame = 0;
       if (!this.running) return;
-      this.elapsed = Math.min(
-        this.duration,
-        this.elapsed + (now - this.last) / 1e3 * this.rate
-      );
+      const rate = this.animated ? this.rate : 1;
+      this.elapsed = Math.min(this.duration, this.elapsed + (now - this.last) / 1e3 * rate);
       this.last = now;
       if (this.animated) this.seek(this.elapsed);
       if (this.elapsed < this.duration) {

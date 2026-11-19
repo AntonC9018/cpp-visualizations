@@ -192,7 +192,7 @@
   line-height: 1.2;
   cursor: pointer;
 }
-.course-visualization .cv-speed { padding: 0.3rem 0.4rem; font-size: 0.8rem; }
+.course-visualization .cv-speed { padding: 0.3rem 0.4rem; font-size: 0.8rem; width: 3.7rem; }
 .course-visualization .cv-button:hover:not(:disabled),
 .course-visualization .cv-speed:hover { background: var(--cv-button-hover); }
 .course-visualization .cv-button:disabled { opacity: 0.4; cursor: default; }

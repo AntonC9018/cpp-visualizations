@@ -115,7 +115,6 @@ export class Player {
       [0.5, 1, 1.5, 2]
         .map(v => `<option value="${v}"${v === 1 ? ' selected' : ''}>${v}×</option>`)
         .join('') +
-      // A glyph keeps the menu as narrow as `1.5×`: a word would push the controls onto two rows.
       `<option value="instant" title="${esc(S.instant)}" aria-label="${esc(S.instant)}">⚡</option>` +
       '</select>' +
       endianToggle +
@@ -141,12 +140,22 @@ export class Player {
       const side = (event.target as Element | null)?.closest('[data-endian-side]') as HTMLElement | null;
       if (side) this.byteOrder(side.dataset.endianSide === 'le');
     });
-    root.querySelector('.cv-speed')!.addEventListener('change', event => {
-      const menu = event.target as HTMLSelectElement;
+    const menu = root.querySelector('.cv-speed') as HTMLSelectElement;
+    const instant = menu.querySelector('option[value=instant]') as HTMLOptionElement;
+    // The menu keeps the width of `1.5×`: a word would push the controls onto two rows. So
+    // Instant is a glyph once chosen, and a word to find (and type) while the menu has focus.
+    const spell = (): void => {
+      const focused = document.activeElement === menu;
+      instant.textContent = focused && menu.value !== 'instant' ? `${S.instant} ⚡` : '⚡';
+    };
+    menu.addEventListener('focus', spell);
+    menu.addEventListener('blur', spell);
+    menu.addEventListener('change', () => {
       this.speed(menu.value);
       const label = menu.value === 'instant' ? `${S.speed}: ${S.instant}` : S.speed;
       menu.title = label;
       menu.setAttribute('aria-label', label);
+      spell();
     });
     this.scrub.addEventListener('input', () => {
       this.pristine = false;
@@ -429,11 +438,20 @@ export class Player {
     if (this.duration > 0 || autoplay) this.resume();
   }
 
-  /** A speed menu choice: a playback rate, or `instant`. A running step restarts at it. */
+  /**
+   * A speed menu choice: a playback rate, or `instant`. A step under way at Instant settles: a
+   * running one holds there before the next, a paused one stays paused.
+   */
   speed(choice: string): void {
     this.instant = choice === 'instant';
     if (!this.instant) this.rate = Number(choice);
-    if (this.running && this.instant) this.start(this.index, this.continuous);
+    if (!this.instant || !this.animated) return;
+    if (this.running) {
+      this.start(this.index, this.continuous);
+    } else if (!this.finished) {
+      this.render(false);
+      this.elapsed = this.duration = 0;
+    }
   }
 
   resume(): void {
@@ -463,10 +481,9 @@ export class Player {
   tick(now: number): void {
     this.frame = 0;
     if (!this.running) return;
-    this.elapsed = Math.min(
-      this.duration,
-      this.elapsed + ((now - this.last) / 1000) * this.rate
-    );
+    // The rate speeds animations; a settled step's hold is wall-clock time.
+    const rate = this.animated ? this.rate : 1;
+    this.elapsed = Math.min(this.duration, this.elapsed + ((now - this.last) / 1000) * rate);
     this.last = now;
     if (this.animated) this.seek(this.elapsed);
     if (this.elapsed < this.duration) {
