@@ -141,7 +141,10 @@ export function main(
   try {
     settings = parseSettings(template, flags);
     const snippet = readFileSync(sourcePath, 'utf8');
-    result = traceNatively(snippet, settings, { runtime: operation !== 'probe' });
+    result = traceNatively(snippet, settings, {
+      runtime: operation !== 'probe',
+      accept: traced => applicable(traced, snippet),
+    });
     if (result.kind !== 'layout') {
       applicable(result, snippet);
     }

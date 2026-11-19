@@ -51,6 +51,8 @@ interface UiCopy {
   emptyPlaceholder: string;
   /** The error's button that turns on the flag the snippet needs, by the flag's label. */
   turnOn: (flag: string) => string;
+  /** What follows such an error's diagnostic. */
+  needsFlag: (flag: string) => string;
 }
 
 const UI_COPY: Record<'en' | 'ru', UiCopy> = {
@@ -85,6 +87,7 @@ const UI_COPY: Record<'en' | 'ru', UiCopy> = {
     traceTime: ms => `Traced in ${ms} ms`,
     emptyPlaceholder: 'Write a C++ snippet on the left and press Visualize.',
     turnOn: flag => `Turn on ${flag}`,
+    needsFlag: flag => `; with ${flag} on, the trace shows why`,
   },
   ru: {
     title: 'Песочница памяти и раскладки C++',
@@ -117,6 +120,7 @@ const UI_COPY: Record<'en' | 'ru', UiCopy> = {
     traceTime: ms => `Готово за ${ms} мс`,
     emptyPlaceholder: 'Введите фрагмент C++ слева и нажмите «Визуализировать».',
     turnOn: flag => `Включить «${flag}»`,
+    needsFlag: flag => `; если включить «${flag}», трасса покажет причину`,
   },
 };
 
@@ -277,6 +281,8 @@ export function initPlayground(root: HTMLElement): PlaygroundController {
   let currentView: Player | Layout | null = null;
   let lastTrace: AnyTrace | null = null;
   let lastError: unknown = null;
+  // The source the last error is about: its action applies only while the editor still holds it.
+  let errorSource: string | null = null;
   let lastDurationMs: number | null = null;
   let lastLoadMeta: ClientTraceResult['load'] | null = null;
   let isRunning = false;
@@ -399,19 +405,28 @@ export function initPlayground(root: HTMLElement): PlaygroundController {
   /** The last run's error, and a button that turns on the flag it needs, if any. */
   function renderError(): void {
     const err = lastError;
-    const prefix = err instanceof NeedsFlag ? 'IllFormed: ' : err instanceof Unsupported ? `${err.name}: ` : '';
-    const message = err instanceof Error ? err.message : String(err);
-    errorBox.replaceChildren(`${prefix}${message}`);
+    const lang = getLang();
     if (err instanceof NeedsFlag && isFlag(err.flag) && takesFlag(state.template, err.flag)) {
       const flag = err.flag;
-      const lang = getLang();
+      const label = FLAGS[flag].label[lang];
+      errorBox.replaceChildren(`IllFormed: ${err.diagnostic}`);
+      if (errorSource !== editor.value) return;
+      errorBox.append(UI_COPY[lang].needsFlag(label));
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'pg-btn pg-error-action';
-      button.textContent = UI_COPY[lang].turnOn(FLAGS[flag].label[lang]);
-      button.addEventListener('click', () => setFlag(flag, true));
+      button.textContent = UI_COPY[lang].turnOn(label);
+      button.addEventListener('click', () => {
+        // The button goes with the error: focus moves to the flag's own toggle.
+        flagBtns.get(flag)?.focus();
+        setFlag(flag, true);
+      });
       errorBox.append(button);
+      return;
     }
+    const prefix = err instanceof Unsupported ? `${err.name}: ` : '';
+    const message = err instanceof Error ? err.message : String(err);
+    errorBox.replaceChildren(`${prefix}${message}`);
   }
 
   function clearVisualization(): void {
@@ -455,6 +470,7 @@ export function initPlayground(root: HTMLElement): PlaygroundController {
       emptyBox.hidden = true;
       errorBox.hidden = false;
       lastError = err;
+      errorSource = source;
       renderError();
       lastTrace = null;
     } finally {
@@ -536,6 +552,7 @@ export function initPlayground(root: HTMLElement): PlaygroundController {
   editor.addEventListener('input', () => {
     populatePresets();
     syncUrl();
+    if (!errorBox.hidden) renderError();
   });
 
   editor.addEventListener('keydown', event => {
@@ -552,6 +569,7 @@ export function initPlayground(root: HTMLElement): PlaygroundController {
       editor.setRangeText('  ', start, end, 'end');
       populatePresets();
       syncUrl();
+      if (!errorBox.hidden) renderError();
     }
   });
 

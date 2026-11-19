@@ -1,6 +1,8 @@
 // Types in the pane: every name, literal and value carries its type, a declaration its slot.
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, test } from 'node:test';
 
 import {
@@ -10,7 +12,7 @@ import {
   type TraceStep,
   validate,
 } from '../src/core/trace_format.ts';
-import { scanDocument } from '../src/node/discover.ts';
+import { discover, scanDocument } from '../src/node/discover.ts';
 import * as tracing from '../src/node/tracing.ts';
 import { Unsupported } from '../src/node/tracing.ts';
 
@@ -247,6 +249,23 @@ describe('TypesTagTests', () => {
     for (const opening of ['<visualization types template="a">', '<visualization types="yes">']) {
       const result = scanDocument(document(`<!-- ${opening} -->\n<!-- </visualization> -->`));
       assert.ok(result.errors.length > 0, opening);
+    }
+  });
+});
+
+describe('DiscoverTypesHintTests', () => {
+  test('a_refused_tag_says_why_and_names_the_flag', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'discover-'));
+    try {
+      writeFileSync(join(repo, 'course-publishing.json'), JSON.stringify({ visualizations: { roots: ['labs'] } }));
+      mkdirSync(join(repo, 'labs'));
+      writeFileSync(join(repo, 'labs', 'a.md'), '# A\n\n```cpp\nint a = 5;\nint* p = a;\n```\n');
+      assert.throws(
+        () => discover(repo, { tag: ['labs/a.md:3'] }),
+        (err: unknown) => err instanceof Error && /labs\/a\.md:3 \(.*\(--types\)/.test(err.message)
+      );
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
     }
   });
 });

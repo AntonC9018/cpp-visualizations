@@ -191,12 +191,22 @@ test(
       // Without types, the same mismatch is a compile error that offers to turn types on.
       await page.click('[data-flag="types"]');
       await page.waitForSelector('.pg-error-box:not([hidden])');
-      assert.match((await page.locator('.pg-error-box').textContent()) ?? '', /IllFormed: .*with types on/);
+      assert.match((await page.locator('.pg-error-box').textContent()) ?? '', /IllFormed: .*with Types on/);
       assert.doesNotMatch(page.url(), /[?&]types=/);
-      await page.click('.pg-error-box .pg-error-action:has-text("Turn on Types")');
+      // The action belongs to the code it is about: an edit takes it away, undoing it brings it back.
+      await page.locator('#pg-source').press('End');
+      await page.locator('#pg-source').press('Space');
+      assert.equal(await page.locator('.pg-error-box .pg-error-action').count(), 0);
+      await page.locator('#pg-source').press('Backspace');
+      assert.equal(await page.locator('.pg-error-box .pg-error-action').count(), 1);
+      await page.click('.pg-lang-btn');
+      assert.match((await page.locator('.pg-error-box').textContent()) ?? '', /если включить «Типы»/);
+      await page.click('.pg-lang-btn');
+      await page.locator('.pg-error-box .pg-error-action:has-text("Turn on Types")').press('Enter');
       await page.waitForFunction(
         () => (document.querySelector('.pg-vis-host .cv-stage')?.textContent || '').includes('uint8_t')
       );
+      assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('data-flag')), 'types');
       assert.equal(await page.locator('.pg-error-box').isHidden(), true);
       assert.match(page.url(), /[?&]types=1/);
 

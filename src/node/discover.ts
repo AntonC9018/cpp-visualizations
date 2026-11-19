@@ -20,6 +20,7 @@ import { delimiter, dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { type Flag, type Flags, enabledFlags, isFlag, parseSettings } from '../core/settings.ts';
+import type { ExecutionTrace } from '../core/trace_format.ts';
 import { applicable } from './generate.ts';
 import { Unsupported, trace } from './tracing.ts';
 
@@ -371,6 +372,8 @@ export function discover(
   const skipped: SkippedCandidate[] = [];
   const pending = new Set(tag);
   const edited = new Map<string, string>();
+  // Why a fence asked for with --tag cannot be one.
+  const refused = new Map<string, string>();
 
   for (const path of files) {
     let original = readFileSync(path, 'utf8');
@@ -386,7 +389,8 @@ export function discover(
       }
       if (!cache.has(fence.source)) {
         try {
-          applicable(trace(fence.source, { runtime: false, ...flags }), fence.source);
+          const accept = (traced: ExecutionTrace): void => applicable(traced, fence.source);
+          accept(trace(fence.source, { runtime: false, accept, ...flags }));
           cache.set(fence.source, null);
         } catch (exc) {
           if (exc instanceof Unsupported) {
@@ -399,12 +403,13 @@ export function discover(
       const reason = cache.get(fence.source) ?? null;
       const relPosix = relative(repo, path).split(sep).join('/');
       const entry = { path: relPosix, line: fence.line, source: fence.source };
+      const chosen = `${entry.path}:${fence.line}`;
       if (reason) {
         skipped.push({ ...entry, reason });
+        if (pending.has(chosen)) refused.set(chosen, reason);
         continue;
       }
       selected.push({ ...entry, already_tagged: tagged.has(fence.start) });
-      const chosen = `${entry.path}:${fence.line}`;
       if (tagged.has(fence.start) || !pending.has(chosen)) {
         continue;
       }
@@ -434,7 +439,8 @@ export function discover(
     }
   }
   if (pending.size > 0) {
-    throw new Error('not an untagged candidate: ' + [...pending].sort().join(', '));
+    const reasons = [...pending].sort().map(chosen => (refused.has(chosen) ? `${chosen} (${refused.get(chosen)})` : chosen));
+    throw new Error('not an untagged candidate: ' + reasons.join(', '));
   }
   for (const [path, text] of edited.entries()) {
     writeFileSync(path, text);

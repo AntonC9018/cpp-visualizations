@@ -63,10 +63,10 @@ export class ClangWasmClient {
 
       this.pending.delete(response.id);
       if (response.type === 'error') {
-        const { name, message, flag } = response.error;
+        const { name, message, flag, diagnostic } = response.error;
         const err =
           name === 'NeedsFlag' && flag
-            ? new NeedsFlag(message, flag)
+            ? new NeedsFlag(diagnostic ?? message, flag)
             : name === 'IllFormed'
               ? new IllFormed(message)
               : name === 'Unsupported'

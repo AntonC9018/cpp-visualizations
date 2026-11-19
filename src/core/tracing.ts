@@ -2473,12 +2473,19 @@ export interface TraceOptions extends Flags {
   frontend: CompilerFrontend;
   executor?: RuntimeExecutor | null;
   directory?: string;
+  /** The caller's own checks, which throw: a flag is suggested only for a trace they accept. */
+  accept?: (trace: ExecutionTrace) => void;
 }
 
-/** Whether a snippet that does not compile traces once types show its last statement's mismatch. */
-function tracesWithTypes(source: string, options: TraceOptions): boolean {
+/**
+ * Whether a snippet that does not compile, with `error`, traces once types show its last
+ * statement's mismatch. Nothing runs: the probe only predicts.
+ */
+function tracesWithTypes(source: string, options: TraceOptions, error: IllFormed): boolean {
+  if (!MISMATCHES.some(pattern => pattern.test(error.message))) return false;
   try {
-    traceWithFrontend(source, { ...options, types: true });
+    const traced = traceWithFrontend(source, { ...options, types: true, runtime: false });
+    options.accept?.(traced);
     return true;
   } catch {
     return false;
@@ -2504,9 +2511,7 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
   } catch (error) {
     if (!(error instanceof IllFormed)) throw error;
     if (!types) {
-      throw tracesWithTypes(source, options)
-        ? new NeedsFlag(`${error.message}; with types on, the trace shows why`, 'types', error.offset)
-        : error;
+      throw tracesWithTypes(source, options, error) ? new NeedsFlag(error.message, 'types', error.offset) : error;
     }
     // A last statement whose types do not fit is shown, not run: the rest is traced.
     [body, mismatch] = cutMismatch(body, error, preamble(body, frontend).length);

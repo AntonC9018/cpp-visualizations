@@ -23,11 +23,14 @@ export class IllFormed extends Unsupported {
  * whose types do not fit is shown instead of run.
  */
 export class NeedsFlag extends IllFormed {
+  /** Clang's error, without the hint. */
+  readonly diagnostic: string;
   readonly flag: string;
 
-  constructor(message: string, flag: string, offset: number | null = null) {
-    super(message, offset);
+  constructor(diagnostic: string, flag: string, offset: number | null = null) {
+    super(`${diagnostic}; with ${flag} on (--${flag}), the trace shows why`, offset);
     this.name = 'NeedsFlag';
+    this.diagnostic = diagnostic;
     this.flag = flag;
   }
 }

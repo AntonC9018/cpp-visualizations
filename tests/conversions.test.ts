@@ -235,6 +235,28 @@ describe('UntypedConversionTests', () => {
       (err: unknown) => err instanceof IllFormed && !(err instanceof NeedsFlag)
     );
   });
+
+  test('the_types_probe_only_predicts_and_honours_the_callers_checks', () => {
+    const original = tracing.hooks.execute;
+    tracing.hooks.execute = () => {
+      throw new Error('the probe ran the snippet');
+    };
+    try {
+      assert.throws(
+        () => tracing.trace('int a = 5; int* p = a;'),
+        (err: unknown) => err instanceof NeedsFlag && /\(--types\)/.test(err.message)
+      );
+    } finally {
+      tracing.hooks.execute = original;
+    }
+    const refuse = (): void => {
+      throw new Unsupported('too many variables');
+    };
+    assert.throws(
+      () => tracing.trace('int a = 5; int* p = a;', { runtime: false, accept: refuse }),
+      (err: unknown) => err instanceof IllFormed && !(err instanceof NeedsFlag)
+    );
+  });
 });
 
 describe('FloatFormatTests', () => {

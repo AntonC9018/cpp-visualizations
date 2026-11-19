@@ -18,10 +18,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
   }
   class NeedsFlag extends IllFormed {
-    constructor(message, flag, offset = null) {
-      super(message, offset);
+    constructor(diagnostic, flag, offset = null) {
+      super(`${diagnostic}; with ${flag} on (--${flag}), the trace shows why`, offset);
+      /** Clang's error, without the hint. */
+      __publicField(this, "diagnostic");
       __publicField(this, "flag");
       this.name = "NeedsFlag";
+      this.diagnostic = diagnostic;
       this.flag = flag;
     }
   }
@@ -3374,9 +3377,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.add(line, pane, mismatch.value, state, op);
     }
   }
-  function tracesWithTypes(source, options) {
+  function tracesWithTypes(source, options, error) {
+    var _a;
+    if (!MISMATCHES.some((pattern) => pattern.test(error.message))) return false;
     try {
-      traceWithFrontend(source, { ...options, types: true });
+      const traced = traceWithFrontend(source, { ...options, types: true, runtime: false });
+      (_a = options.accept) == null ? void 0 : _a.call(options, traced);
       return true;
     } catch {
       return false;
@@ -3395,7 +3401,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     } catch (error) {
       if (!(error instanceof IllFormed)) throw error;
       if (!types) {
-        throw tracesWithTypes(source, options) ? new NeedsFlag(`${error.message}; with types on, the trace shows why`, "types", error.offset) : error;
+        throw tracesWithTypes(source, options, error) ? new NeedsFlag(error.message, "types", error.offset) : error;
       }
       [body, mismatch] = cutMismatch(body, error, preamble(body, frontend).length);
       [statements, records, aliases] = analyzeWithFrontend(body, frontend);
@@ -4023,7 +4029,11 @@ array(T, U...) -> array<T, 1 + sizeof...(U)>;
         return;
       }
     } catch (err) {
-      const error = err instanceof Error ? { name: err.name || "Error", message: err.message, ...err instanceof NeedsFlag ? { flag: err.flag } : {} } : { name: "Error", message: String(err) };
+      const error = err instanceof Error ? {
+        name: err.name || "Error",
+        message: err.message,
+        ...err instanceof NeedsFlag ? { flag: err.flag, diagnostic: err.diagnostic } : {}
+      } : { name: "Error", message: String(err) };
       workerSelf.postMessage({ id: request.id, type: "error", error });
     }
   }

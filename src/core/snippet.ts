@@ -12,6 +12,8 @@ export interface TraceContext {
   runtime?: boolean;
   executor?: RuntimeExecutor | null;
   directory?: string;
+  /** The caller's own checks, which throw: a flag is suggested only for a trace they accept. */
+  accept?: (trace: ExecutionTrace) => void;
 }
 
 /** The trace each template makes. */

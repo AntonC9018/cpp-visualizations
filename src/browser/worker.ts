@@ -32,7 +32,7 @@ export type WorkerResponse =
   | { id: number; type: 'init-ok'; load: WasmLoadMetadata }
   | { id: number; type: 'trace-ok'; trace: AnyTrace; durationMs: number; load: WasmLoadMetadata }
   | { id: number; type: 'clear-ok'; cleared: boolean }
-  | { id: number; type: 'error'; error: { name: string; message: string; flag?: string } };
+  | { id: number; type: 'error'; error: { name: string; message: string; flag?: string; diagnostic?: string } };
 
 interface WorkerGlobalScopeLike {
   postMessage(message: WorkerResponse): void;
@@ -119,7 +119,11 @@ async function handleRequest(request: WorkerRequest): Promise<void> {
   } catch (err) {
     const error =
       err instanceof Error
-        ? { name: err.name || 'Error', message: err.message, ...(err instanceof NeedsFlag ? { flag: err.flag } : {}) }
+        ? {
+            name: err.name || 'Error',
+            message: err.message,
+            ...(err instanceof NeedsFlag ? { flag: err.flag, diagnostic: err.diagnostic } : {}),
+          }
         : { name: 'Error', message: String(err) };
     workerSelf.postMessage({ id: request.id, type: 'error', error });
   }

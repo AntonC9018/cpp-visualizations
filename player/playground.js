@@ -19,10 +19,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
   }
   class NeedsFlag extends IllFormed {
-    constructor(message, flag, offset = null) {
-      super(message, offset);
+    constructor(diagnostic, flag, offset = null) {
+      super(`${diagnostic}; with ${flag} on (--${flag}), the trace shows why`, offset);
+      /** Clang's error, without the hint. */
+      __publicField(this, "diagnostic");
       __publicField(this, "flag");
       this.name = "NeedsFlag";
+      this.diagnostic = diagnostic;
       this.flag = flag;
     }
   }
@@ -2977,8 +2980,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         }
         this.pending.delete(response.id);
         if (response.type === "error") {
-          const { name, message, flag } = response.error;
-          const err = name === "NeedsFlag" && flag ? new NeedsFlag(message, flag) : name === "IllFormed" ? new IllFormed(message) : name === "Unsupported" ? new Unsupported(message) : new Error(message);
+          const { name, message, flag, diagnostic } = response.error;
+          const err = name === "NeedsFlag" && flag ? new NeedsFlag(diagnostic ?? message, flag) : name === "IllFormed" ? new IllFormed(message) : name === "Unsupported" ? new Unsupported(message) : new Error(message);
           err.name = name;
           call.reject(err);
           return;
@@ -3225,7 +3228,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       readyDownloaded: (sizeMb, ms) => ms !== null ? `Clang WASM ready · downloaded & cached (${sizeMb} MB, ${ms} ms)` : `Clang WASM ready · downloaded & cached (${sizeMb} MB)`,
       traceTime: (ms) => `Traced in ${ms} ms`,
       emptyPlaceholder: "Write a C++ snippet on the left and press Visualize.",
-      turnOn: (flag) => `Turn on ${flag}`
+      turnOn: (flag) => `Turn on ${flag}`,
+      needsFlag: (flag) => `; with ${flag} on, the trace shows why`
     },
     ru: {
       title: "Песочница памяти и раскладки C++",
@@ -3248,7 +3252,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       readyDownloaded: (sizeMb, ms) => ms !== null ? `Clang WASM готов · загружен и кэширован (${sizeMb} МБ, ${ms} мс)` : `Clang WASM готов · загружен и кэширован (${sizeMb} МБ)`,
       traceTime: (ms) => `Готово за ${ms} мс`,
       emptyPlaceholder: "Введите фрагмент C++ слева и нажмите «Визуализировать».",
-      turnOn: (flag) => `Включить «${flag}»`
+      turnOn: (flag) => `Включить «${flag}»`,
+      needsFlag: (flag) => `; если включить «${flag}», трасса покажет причину`
     }
   };
   function getLang() {
@@ -3363,6 +3368,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     let currentView = null;
     let lastTrace = null;
     let lastError = null;
+    let errorSource = null;
     let lastDurationMs = null;
     let lastLoadMeta = null;
     let isRunning = false;
@@ -3466,19 +3472,28 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     function renderError() {
       const err = lastError;
-      const prefix = err instanceof NeedsFlag ? "IllFormed: " : err instanceof Unsupported ? `${err.name}: ` : "";
-      const message = err instanceof Error ? err.message : String(err);
-      errorBox.replaceChildren(`${prefix}${message}`);
+      const lang = getLang();
       if (err instanceof NeedsFlag && isFlag(err.flag) && takesFlag(state.template, err.flag)) {
         const flag = err.flag;
-        const lang = getLang();
+        const label = FLAGS[flag].label[lang];
+        errorBox.replaceChildren(`IllFormed: ${err.diagnostic}`);
+        if (errorSource !== editor.value) return;
+        errorBox.append(UI_COPY[lang].needsFlag(label));
         const button = document.createElement("button");
         button.type = "button";
         button.className = "pg-btn pg-error-action";
-        button.textContent = UI_COPY[lang].turnOn(FLAGS[flag].label[lang]);
-        button.addEventListener("click", () => setFlag(flag, true));
+        button.textContent = UI_COPY[lang].turnOn(label);
+        button.addEventListener("click", () => {
+          var _a;
+          (_a = flagBtns.get(flag)) == null ? void 0 : _a.focus();
+          setFlag(flag, true);
+        });
         errorBox.append(button);
+        return;
       }
+      const prefix = err instanceof Unsupported ? `${err.name}: ` : "";
+      const message = err instanceof Error ? err.message : String(err);
+      errorBox.replaceChildren(`${prefix}${message}`);
     }
     function clearVisualization() {
       if (currentView) {
@@ -3518,6 +3533,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         emptyBox.hidden = true;
         errorBox.hidden = false;
         lastError = err;
+        errorSource = source;
         renderError();
         lastTrace = null;
       } finally {
@@ -3590,6 +3606,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     editor.addEventListener("input", () => {
       populatePresets();
       syncUrl();
+      if (!errorBox.hidden) renderError();
     });
     editor.addEventListener("keydown", (event) => {
       if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
@@ -3605,6 +3622,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         editor.setRangeText("  ", start, end, "end");
         populatePresets();
         syncUrl();
+        if (!errorBox.hidden) renderError();
       }
     });
     async function clearCache() {
