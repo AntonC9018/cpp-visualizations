@@ -6,7 +6,7 @@
 
 import { arrayType, codeName, elementLabel, operatorName, resolveArrayAliases } from './arrays.ts';
 import { type AstNode, type CompilerFrontend, IllFormed, NeedsFlag, Unsupported } from './errors.ts';
-import { COMPOUND_OPERATORS, openCompound } from './compound.ts';
+import { COMPOUND_OPERATORS, groups, openCompound } from './compound.ts';
 import { INTEGERS, Integer, bareSpelling, integerName, integerSpelled } from './integers.ts';
 import type { Flags } from './settings.ts';
 import {
@@ -40,6 +40,7 @@ import {
   leaves,
   reference as traceReference,
   scalar,
+  separated,
   struct,
   structField,
   validate,
@@ -1392,7 +1393,7 @@ function analyzeStatement(
   }
   const [start, end] = bounds(cur);
   // The statement as GDB runs it ends with its `;`, wherever spaces or comments put it.
-  const terminated = /^(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*\n)*;/.test(program.slice(end));
+  const terminated = /^(?:\s|\\\r?\n|\/\*[\s\S]*?\*\/|\/\/[^\n]*\n)*;/.test(program.slice(end));
   const [compacted, mapping] = compact(program.slice(start, end));
   const source = terminated ? `${compacted};` : compacted;
   let left: AstNode | null = null;
@@ -1733,7 +1734,7 @@ function analyzeCompound(
   }
   const t1 = t0 + spelling.length;
   const copied = written.slice(l0, l1);
-  const grouped = needsGroup(operator, right);
+  const grouped = groups(operator, written.slice(t1));
   const opened = openCompound(written, [t0, t1], copied, operator, grouped);
   const pane = opened.text;
   const toPane = (offset: number): number => {
@@ -1782,19 +1783,6 @@ function analyzeCompound(
     typed,
     shape: shapeOf(left, records),
   });
-}
-
-/**
- * Whether the right side of `a op= b` keeps its parentheses once opened: unless its operator
- * binds tighter than `op`, `a = 5 * b + c` would compute something else.
- */
-function needsGroup(operator: string, right: AstNode): boolean {
-  let bare = right;
-  while (bare?.kind === 'ImplicitCastExpr' && (bare.inner ?? []).length === 1) bare = bare.inner![0];
-  if (bare?.kind === 'ConditionalOperator') return true;
-  if (bare?.kind !== 'BinaryOperator') return false;
-  const tighter = ['*', '/', '%'].includes(bare.opcode ?? '') && (operator === '+' || operator === '-');
-  return !tighter;
 }
 
 function storedAt(value: Value, path: string[], newValue: Value): Value {
@@ -2396,6 +2384,7 @@ class Renderer {
       // A typed conversion is a step even when the digits stay: the type is what changes.
       // Untyped, it is an evaluation like any other, seen only when the text changes.
       if (pane.read(reduction.span[0], reduction.span[1]) !== text || op.kind === 'convert') {
+        text = separated(pane.text.slice(0, pane.locate(reduction.span[0], reduction.span[1])[0]), text);
         const span = pane.replace(reduction.span[0], reduction.span[1], text, reduction.type);
         this.add(line, pane, expr, before, { ...op, span });
       } else {

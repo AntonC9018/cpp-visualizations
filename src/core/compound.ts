@@ -33,3 +33,41 @@ export function openCompound(pane: string, span: Span, left: string, operator: s
     from,
   };
 }
+
+/** C++ tokens, longest first: pp-numbers, names, literals, then operators. */
+const TOKEN =
+  /\s+|\.?\d(?:[eEpP][+-]|[\w.'])*|[A-Za-z_]\w*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|->\*?|\.\*|::|\+\+|--|<=>|<<=?|>>=?|[<>=!]=|&&|\|\||[-+*/%^&|]=|[\s\S]/g;
+
+/** The operators that bind tighter than each compound operator's binary form. */
+const TIGHTER: Record<string, readonly string[]> = { '+': ['*', '/', '%'], '-': ['*', '/', '%'] };
+
+/**
+ * Whether `right`, the right side of `a operator= right`, keeps parentheses once opened: unless
+ * every operator at its top level binds tighter than `operator`, `a = 5 * b + c` would compute
+ * something else.
+ */
+export function groups(operator: string, right: string): boolean {
+  const tighter = TIGHTER[operator] ?? [];
+  let depth = 0;
+  let operand = false; // whether the tokens so far end in an operand, so an operator is binary
+  let cast = false; // whether a `<` opens the type of a named cast
+  for (const [token] of right.matchAll(TOKEN)) {
+    if (/^\s/.test(token) || token === '++' || token === '--') continue;
+    if ('([{'.includes(token) || (cast && token === '<')) {
+      depth++;
+      operand = cast = false;
+    } else if (')]}'.includes(token) || (depth > 0 && token === '>')) {
+      depth--;
+      operand = true;
+    } else if (['.', '->', '.*', '->*', '::'].includes(token)) {
+      operand = false;
+    } else if (/^[\w."']/.test(token)) {
+      operand = true;
+      cast = /_cast$/.test(token);
+    } else {
+      if (depth === 0 && operand && !tighter.includes(token)) return true;
+      operand = false;
+    }
+  }
+  return false;
+}

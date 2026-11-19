@@ -6,7 +6,7 @@
 // `player/README.md` documents every field.
 
 import { arrayType, codeName, elementLabel } from './arrays.ts';
-import { COMPOUND_OPERATORS, openCompound } from './compound.ts';
+import { COMPOUND_OPERATORS, groups, openCompound } from './compound.ts';
 import { displayFloat } from './floats.ts';
 import { INTEGERS, integerLiteral, integerSpelled } from './integers.ts';
 
@@ -642,6 +642,15 @@ function replacement(before: string, after: string, span: Span, where: string): 
 }
 
 /**
+ * `text` as it stands after `before`: in parentheses where its sign would join the operator
+ * before it into another token, as `8-(-2)` rather than `8--2`.
+ */
+export function separated(before: string, text: string): string {
+  const sign = before.at(-1);
+  return (sign === '-' || sign === '+') && text.startsWith(sign) ? `(${text})` : text;
+}
+
+/**
  * The read that opens `a += b` into `a = 5 + b`: `a` names the one scalar cell read, and the
  * pane opens as `openCompound` spells it, with the right side in parentheses or not.
  */
@@ -668,8 +677,10 @@ function checkCompoundRead(
     'is not one arithmetic cell'
   );
   check(op.value !== UNKNOWN, `${where}.value`, 'reads an uninitialized value');
-  const opened = [false, true].map(grouped => openCompound(previous.pane, span, op.value, op.compound, grouped).text);
-  check(opened.includes(step.pane), where, `${pyRepr(step.pane)} is not ${pyRepr(opened[0])} or ${pyRepr(opened[1])}`);
+  check(LITERAL.test(op.value), `${where}.value`, `${pyRepr(op.value)} is not one number`);
+  const grouped = groups(op.compound, previous.pane.slice(span[1]));
+  const opened = openCompound(previous.pane, span, op.value, op.compound, grouped).text;
+  check(step.pane === opened, where, `${pyRepr(step.pane)} is not ${pyRepr(opened)}`);
 }
 
 const LITERAL = /^≈?-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i;
@@ -909,7 +920,7 @@ function checkOperation(
   } else if (['read', 'addr', 'deref', 'eval', 'convert'].includes(kind)) {
     const span = checkSpan(op.span, previous.pane, `${where}.span`);
     const replaced = replacement(previous.pane, step.pane, span, where);
-    const expected = kind === 'deref' ? codeName(op.target) : op.value;
+    const expected = kind === 'deref' ? codeName(op.target) : separated(previous.pane.slice(0, span[0]), op.value);
     check(replaced === expected, where, `the replacement ${pyRepr(replaced)} is not ${pyRepr(expected)}`);
     if (kind === 'convert') {
       check(convertedFrom(previous, span) === op.from, `${where}.from`, 'is not the type of the converted value');

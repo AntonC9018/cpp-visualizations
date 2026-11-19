@@ -737,15 +737,18 @@ function paneBody(c: SceneContext, copying: boolean): string {
   }
   if (op?.kind === 'read' && op.compound && prev) {
     // `a += b` opens into `a = 5 + b`: the read value lands on the operator, and the pane, which
-    // changes all over, crossfades into its opened form.
+    // changes all over, turns into its opened form at once, the value marked where it now stands.
     const [s, e] = op.span;
     const at = arrival(op);
-    out += exprBackground(c, tx, ty, step.expr, prev.expr, at + 0.1);
+    const left = prev.pane.slice(0, s).trimEnd().length + ' = '.length;
+    out += exprBackground(c, tx, ty, step.expr, prev.expr, at);
     out +=
-      `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.2, at - 0.1)}` +
-      `${markBox(tx + s * c.g.paneChar, ty, (e - s) * c.g.paneChar, P.read, P.readFill)}</g>`;
-    out += `<g>${fade(1, 0, 0.2, at - 0.1)}${paneText(c, tx, ty, prev.pane, 0, prev.pane.length, prev.expr)}</g>`;
-    out += `<g opacity="0">${fade(0, 1, 0.25, at)}${paneText(c, tx, ty, step.pane, 0, step.pane.length, step.expr)}</g>`;
+      `<g opacity="0">${fade(0, 1, 0.15)}${hide(at)}` +
+      `${markBox(tx + s * c.g.paneChar, ty, (e - s) * c.g.paneChar, P.read, P.readFill)}</g>` +
+      `<g opacity="0">${show(at)}${fade(1, 0, 0.3, at + 0.3)}` +
+      `${markBox(tx + left * c.g.paneChar, ty, op.value.length * c.g.paneChar, P.read, P.readFill)}</g>`;
+    out += `<g>${hide(at)}${paneText(c, tx, ty, prev.pane, 0, prev.pane.length, prev.expr)}</g>`;
+    out += `<g opacity="0">${show(at)}${paneText(c, tx, ty, step.pane, 0, step.pane.length, step.expr)}</g>`;
     return out;
   }
   if (

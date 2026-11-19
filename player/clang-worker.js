@@ -691,6 +691,33 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       from
     };
   }
+  const TOKEN = /\s+|\.?\d(?:[eEpP][+-]|[\w.'])*|[A-Za-z_]\w*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|->\*?|\.\*|::|\+\+|--|<=>|<<=?|>>=?|[<>=!]=|&&|\|\||[-+*/%^&|]=|[\s\S]/g;
+  const TIGHTER = { "+": ["*", "/", "%"], "-": ["*", "/", "%"] };
+  function groups(operator, right) {
+    const tighter = TIGHTER[operator] ?? [];
+    let depth = 0;
+    let operand = false;
+    let cast = false;
+    for (const [token] of right.matchAll(TOKEN)) {
+      if (/^\s/.test(token) || token === "++" || token === "--") continue;
+      if ("([{".includes(token) || cast && token === "<") {
+        depth++;
+        operand = cast = false;
+      } else if (")]}".includes(token) || depth > 0 && token === ">") {
+        depth--;
+        operand = true;
+      } else if ([".", "->", ".*", "->*", "::"].includes(token)) {
+        operand = false;
+      } else if (/^[\w."']/.test(token)) {
+        operand = true;
+        cast = /_cast$/.test(token);
+      } else {
+        if (depth === 0 && operand && !tighter.includes(token)) return true;
+        operand = false;
+      }
+    }
+    return false;
+  }
   const PRINTED_DIGITS = 6;
   function binaryParts(value) {
     const view = new DataView(new ArrayBuffer(8));
@@ -1078,6 +1105,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     check(replaced.length > 0, where, "the replacement is empty");
     return replaced;
   }
+  function separated(before, text) {
+    const sign = before.at(-1);
+    return (sign === "-" || sign === "+") && text.startsWith(sign) ? `(${text})` : text;
+  }
   function checkCompoundRead(op, step, previous, storage, where) {
     check(COMPOUND_OPERATORS.includes(op.compound), `${where}.compound`, "is not an arithmetic operator");
     const span = checkSpan(op.span, previous.pane, `${where}.span`);
@@ -1095,8 +1126,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       "is not one arithmetic cell"
     );
     check(op.value !== UNKNOWN, `${where}.value`, "reads an uninitialized value");
-    const opened = [false, true].map((grouped) => openCompound(previous.pane, span, op.value, op.compound, grouped).text);
-    check(opened.includes(step.pane), where, `${pyRepr(step.pane)} is not ${pyRepr(opened[0])} or ${pyRepr(opened[1])}`);
+    check(LITERAL.test(op.value), `${where}.value`, `${pyRepr(op.value)} is not one number`);
+    const grouped = groups(op.compound, previous.pane.slice(span[1]));
+    const opened = openCompound(previous.pane, span, op.value, op.compound, grouped).text;
+    check(step.pane === opened, where, `${pyRepr(step.pane)} is not ${pyRepr(opened)}`);
   }
   const LITERAL = /^≈?-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i;
   function storedItems(text, where) {
@@ -1290,7 +1323,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     } else if (["read", "addr", "deref", "eval", "convert"].includes(kind)) {
       const span = checkSpan(op.span, previous.pane, `${where}.span`);
       const replaced = replacement(previous.pane, step.pane, span, where);
-      const expected = kind === "deref" ? codeName(op.target) : op.value;
+      const expected = kind === "deref" ? codeName(op.target) : separated(previous.pane.slice(0, span[0]), op.value);
       check(replaced === expected, where, `the replacement ${pyRepr(replaced)} is not ${pyRepr(expected)}`);
       if (kind === "convert") {
         check(convertedFrom(previous, span) === op.from, `${where}.from`, "is not the type of the converted value");
@@ -2552,7 +2585,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       cur = cur.inner[0];
     }
     const [start, end] = bounds(cur);
-    const terminated = /^(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*\n)*;/.test(program.slice(end));
+    const terminated = /^(?:\s|\\\r?\n|\/\*[\s\S]*?\*\/|\/\/[^\n]*\n)*;/.test(program.slice(end));
     const [compacted, mapping] = compact(program.slice(start, end));
     const source = terminated ? `${compacted};` : compacted;
     let left = null;
@@ -2831,7 +2864,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     const t1 = t0 + spelling.length;
     const copied = written.slice(l0, l1);
-    const grouped = needsGroup(operator, right);
+    const grouped = groups(operator, written.slice(t1));
     const opened = openCompound(written, [t0, t1], copied, operator, grouped);
     const pane = opened.text;
     const toPane = (offset) => {
@@ -2876,14 +2909,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       typed,
       shape: shapeOf(left, records)
     });
-  }
-  function needsGroup(operator, right) {
-    let bare = right;
-    while ((bare == null ? void 0 : bare.kind) === "ImplicitCastExpr" && (bare.inner ?? []).length === 1) bare = bare.inner[0];
-    if ((bare == null ? void 0 : bare.kind) === "ConditionalOperator") return true;
-    if ((bare == null ? void 0 : bare.kind) !== "BinaryOperator") return false;
-    const tighter = ["*", "/", "%"].includes(bare.opcode ?? "") && (operator === "+" || operator === "-");
-    return !tighter;
   }
   function storedAt(value, path, newValue) {
     if (path.length === 0) {
@@ -3337,6 +3362,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           }
         }
         if (pane.read(reduction.span[0], reduction.span[1]) !== text2 || op2.kind === "convert") {
+          text2 = separated(pane.text.slice(0, pane.locate(reduction.span[0], reduction.span[1])[0]), text2);
           const span2 = pane.replace(reduction.span[0], reduction.span[1], text2, reduction.type);
           this.add(line, pane, expr, before, { ...op2, span: span2 });
         } else {

@@ -6,6 +6,7 @@ import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { dumpsSorted } from '../src/core/json_format.ts';
+import { groups } from '../src/core/compound.ts';
 import {
   type ExecutionTrace,
   FormatError,
@@ -554,6 +555,54 @@ describe('CompoundAssignmentTests', () => {
     merged.steps[index].pane = 'a = 5 -2';
     merged.steps[index].expr = [4, 8];
     assert.throws(() => validate(merged), (err: unknown) => err instanceof FormatError && /is not 'a = 5 - 2'/.test(err.message));
+    rejects(/'\{5\}' is not one number/, op => (op.value = '{5}'));
+  });
+
+  test('the_validator_requires_the_parentheses_that_keep_the_meaning', () => {
+    const trace = tracing.trace('int a = 5; int b = 2; int c = 3; a *= b + c;', { runtime: false });
+    const index = trace.steps.findIndex(step => step.op?.kind === 'read');
+    const broken = structuredClone(trace);
+    broken.steps[index].pane = 'a = 5 * b + c';
+    broken.steps[index].expr = [4, 13];
+    assert.throws(
+      () => validate(broken),
+      (err: unknown) => err instanceof FormatError && /is not 'a = 5 \* \(b \+ c\)'/.test(err.message)
+    );
+  });
+
+  test('grouping_follows_the_operators_at_the_top_level', () => {
+    const cases: [string, string, boolean][] = [
+      ['+', 'b * c', false],
+      ['+', 'b + c', true],
+      ['-', 'b - c', true],
+      ['*', 'b * c', true],
+      ['/', 'b / c', true],
+      ['%', 'b % c', true],
+      ['*', '(b + c)', false],
+      ['*', '-b', false],
+      ['*', 'b - -c', true],
+      ['*', 'f(b + c, d)', false],
+      ['*', 's.x', false],
+      ['*', 'p->x', false],
+      ['*', 'b++', false],
+      ['+', 'b++ * c', false],
+      ['*', '1e-5', false],
+      ['*', '0x1p-3f', false],
+      ['*', 'static_cast<int>(b + c)', false],
+      ['+', 'static_cast<int>(b) * c', false],
+      ['*', 'b < c', true],
+      ['*', 'b ? c : d', true],
+    ];
+    for (const [operator, right, grouped] of cases) {
+      assert.equal(groups(operator, right), grouped, `${operator}= ${right}`);
+    }
+  });
+
+  test('a_negative_value_does_not_join_the_sign_before_it', () => {
+    const trace = tracing.trace('int a = 5; int b = 8; int c = -2; a *= b-c; int y = -c;', { runtime: false });
+    assert.equal(panes(trace, 3)[3], 'a = 5 * (8-(-2))');
+    assert.deepEqual(panes(trace, 4).slice(0, 2), ['int y = -c', 'int y = -(-2)']);
+    assert.deepEqual(final(trace), { a: 50, b: 8, c: -2, y: 2 });
   });
 
   test('the_validator_reads_only_one_arithmetic_cell', () => {
@@ -598,9 +647,9 @@ describe('CompoundAssignmentTests', () => {
   });
 
   test('spaces_and_comments_before_the_semicolon_still_run', () => {
-    const trace = tracing.trace('int a = 5; a += 2 ; a *= 3 /* thrice */ ;');
+    const trace = tracing.trace('int a = 5; a += 2 ; a *= 3 /* thrice */ ;\na -= 1 \\\n;');
     assert.deepEqual(panes(trace, 1), ['a += 2', 'a = 5 + 2', 'a = 7', 'a = 7']);
-    assert.deepEqual(final(trace), { a: 21 });
+    assert.deepEqual(final(trace), { a: 20 });
   });
 
   test('runtime_values_agree', () => {
