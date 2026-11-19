@@ -67,8 +67,13 @@ int main(int argc, char **argv) {
   VFS->addFile("/virtual/include/cstddef", 0,
                llvm::MemoryBuffer::getMemBuffer(kVirtualStdHeader));
 
+  // The array declarations are supplied in the trace preamble.
+  VFS->addFile("/virtual/include/array", 0,
+               llvm::MemoryBuffer::getMemBuffer(""));
+
   bool astDump = false;
-  bool astDumpFilterMain = false;
+  std::string astDumpFilter;
+  bool dumpTokens = false;
   bool dumpRecordLayoutsComplete = false;
   std::string inputPath;
 
@@ -78,8 +83,10 @@ int main(int argc, char **argv) {
       llvm::StringRef xarg(argv[++i]);
       if (xarg == "-ast-dump=json") {
         astDump = true;
-      } else if (xarg == "-ast-dump-filter=main") {
-        astDumpFilterMain = true;
+      } else if (xarg.starts_with("-ast-dump-filter=")) {
+        astDumpFilter = xarg.str();
+      } else if (xarg == "-dump-tokens") {
+        dumpTokens = true;
       } else if (xarg == "-fdump-record-layouts-complete") {
         dumpRecordLayoutsComplete = true;
       }
@@ -109,6 +116,7 @@ int main(int argc, char **argv) {
       "x86_64-unknown-linux-gnu",
       "-std=c++20",
       "-fsyntax-only",
+      "-Werror=extra-tokens",
       "-nostdsysteminc",
       "-nobuiltininc",
       "-isystem",
@@ -117,8 +125,8 @@ int main(int argc, char **argv) {
   if (astDump) {
     cc1Args.push_back("-ast-dump=json");
   }
-  if (astDumpFilterMain) {
-    cc1Args.push_back("-ast-dump-filter=main");
+  if (!astDumpFilter.empty()) {
+    cc1Args.push_back(astDumpFilter.c_str());
   }
   if (dumpRecordLayoutsComplete) {
     cc1Args.push_back("-fdump-record-layouts-complete");
@@ -144,7 +152,9 @@ int main(int argc, char **argv) {
   Clang.createSourceManager(Clang.getFileManager());
 
   std::unique_ptr<clang::FrontendAction> Act;
-  if (astDump) {
+  if (dumpTokens) {
+    Act = std::make_unique<clang::DumpTokensAction>();
+  } else if (astDump) {
     Act = std::make_unique<clang::ASTDumpAction>();
   } else {
     Act = std::make_unique<clang::SyntaxOnlyAction>();

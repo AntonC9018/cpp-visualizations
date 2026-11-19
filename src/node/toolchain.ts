@@ -6,7 +6,7 @@ import { delimiter, join } from 'node:path';
 
 import { Unsupported, illFormed, type AstNode, type CompilerFrontend } from '../core/errors.ts';
 import { extractEnumConstantSizes } from '../core/records.ts';
-import { extractMainAstFromStdout } from '../core/tracing.ts';
+import { parseAstDump, readTokens, requireMain } from '../core/source.ts';
 
 export { Unsupported };
 
@@ -72,26 +72,38 @@ function withDirectory<T>(directory: string | undefined, fn: (dir: string) => T)
 
 export function createClangFrontend(directory?: string): CompilerFrontend {
   return {
-    mainAst(program: string): AstNode {
+    tokens(program) {
       return withDirectory(directory, dir => {
         const path = join(dir, 'source.cpp');
         writeFileSync(path, program);
         const result = run([
-          tool('CLANGXX', 'clang++'),
-          '-std=c++20',
-          '-fsyntax-only',
-          '-fno-color-diagnostics',
-          '-Xclang',
-          '-ast-dump=json',
-          '-Xclang',
-          '-ast-dump-filter=main',
-          path,
+          tool('CLANGXX', 'clang++'), '-std=c++20', '-fsyntax-only', '-fno-color-diagnostics',
+          '-Werror=extra-tokens', '-Xclang', '-dump-tokens', path,
         ]);
-        if (result.returncode !== 0) {
+        if (result.returncode !== 0 || /^.*: error:/m.test(result.stderr)) {
           throw illFormed(result.stderr, program);
         }
-        return extractMainAstFromStdout(result.stdout, program);
+        return readTokens(result.stderr, path, program);
       });
+    },
+
+    astDump(program, filter) {
+      return withDirectory(directory, dir => {
+        const path = join(dir, 'source.cpp');
+        writeFileSync(path, program);
+        const result = run([
+          tool('CLANGXX', 'clang++'), '-std=c++20', '-fsyntax-only', '-fno-color-diagnostics',
+          '-Xclang', '-ast-dump=json',
+          '-Xclang', '-ast-dump-filter=' + filter,
+          path,
+        ]);
+        if (result.returncode !== 0) throw illFormed(result.stderr, program);
+        return parseAstDump(result.stdout);
+      });
+    },
+
+    mainAst(program) {
+      return requireMain(this.astDump(program, 'main'));
     },
 
     recordLayoutsDump(program: string): string {

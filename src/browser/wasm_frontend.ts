@@ -3,7 +3,7 @@ import { type AstNode, type CompilerFrontend, Unsupported, illFormed } from '../
 import { extractEnumConstantSizes } from '../core/records.ts';
 import type { Template, TraceSettings } from '../core/settings.ts';
 import { type TraceOf, traceSnippet } from '../core/snippet.ts';
-import { extractMainAstFromStdout } from '../core/tracing.ts';
+import { parseAstDump, readTokens, requireMain } from '../core/source.ts';
 import { ARRAY_PREAMBLE } from './array_header.ts';
 import { runWasiModule } from './wasi.ts';
 
@@ -11,22 +11,26 @@ import { runWasiModule } from './wasi.ts';
 export function createWasmClangFrontend(module: WebAssembly.Module): CompilerFrontend {
   return {
     arrayPreamble: ARRAY_PREAMBLE,
-    mainAst(program: string): AstNode {
+    tokens(program) {
       const result = runWasiModule(module, {
-        args: [
-          'clang-trace-frontend',
-          '-Xclang',
-          '-ast-dump=json',
-          '-Xclang',
-          '-ast-dump-filter=main',
-          '-',
-        ],
+        args: ['clang-trace-frontend', '-Xclang', '-dump-tokens', '-'],
         stdin: program,
       });
-      if (result.returncode !== 0) {
-        throw illFormed(result.stderr, program);
-      }
-      return extractMainAstFromStdout(result.stdout, program);
+      if (result.returncode !== 0) throw illFormed(result.stderr, program);
+      return readTokens(result.stderr, '/virtual/source.cpp', program);
+    },
+
+    astDump(program, filter) {
+      const result = runWasiModule(module, {
+        args: ['clang-trace-frontend', '-Xclang', '-ast-dump=json', '-Xclang', '-ast-dump-filter=' + filter, '-'],
+        stdin: program,
+      });
+      if (result.returncode !== 0) throw illFormed(result.stderr, program);
+      return parseAstDump(result.stdout);
+    },
+
+    mainAst(program) {
+      return requireMain(this.astDump(program, 'main'));
     },
 
     recordLayoutsDump(program: string): string {

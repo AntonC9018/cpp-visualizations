@@ -7,7 +7,6 @@ import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { dumpsSorted } from '../src/core/json_format.ts';
-import { groups } from '../src/core/compound.ts';
 import {
   Builder,
   type ExecutionTrace,
@@ -561,7 +560,7 @@ describe('CompoundAssignmentTests', () => {
     rejects(/'\{5\}' is not one number/, op => (op.value = '{5}'));
   });
 
-  test('the_validator_requires_the_parentheses_that_keep_the_meaning', () => {
+  test('the_validator_requires_the_following_reductions_to_match_the_opened_pane', () => {
     const trace = tracing.trace('int a = 5; int b = 2; int c = 3; a *= b + c;', { runtime: false });
     const index = trace.steps.findIndex(step => step.op?.kind === 'read');
     const broken = structuredClone(trace);
@@ -569,50 +568,22 @@ describe('CompoundAssignmentTests', () => {
     broken.steps[index].expr = [4, 13];
     assert.throws(
       () => validate(broken),
-      (err: unknown) => err instanceof FormatError && /is not 'a = 5 \* \(b \+ c\)'/.test(err.message)
+      (err: unknown) => err instanceof FormatError && /replaced/.test(err.message)
     );
   });
 
-  test('grouping_follows_the_operators_at_the_top_level', () => {
-    const cases: [string, string, boolean][] = [
-      ['+', 'b * c', false],
-      ['+', 'b + c', true],
-      ['-', 'b - c', true],
-      ['*', 'b * c', true],
-      ['/', 'b / c', true],
-      ['%', 'b % c', true],
-      ['*', '(b + c)', false],
-      ['*', '-b', false],
-      ['*', 'b - -c', true],
-      ['*', 'f(b + c, d)', false],
-      ['*', 's.x', false],
-      ['*', 'p->x', false],
-      ['*', 'b++', false],
-      ['+', 'b++ * c', false],
-      ['*', '1e-5', false],
-      ['*', '0x1p-3f', false],
-      ['*', 'static_cast<int>(b + c)', false],
-      ['+', 'static_cast<int>(b) * c', false],
-      ['*', 'b < c', true],
-      ['*', 'b ? c : d', true],
-      ['*', 'sizeof(+(2 > 1)) + 3', true],
-      ['*', 'sizeof(std::array<int, 2>) + 3', true],
-      ['*', 'sizeof(static_cast<std::array<int, 2>>(x)) + 3', true],
-      ['*', 'std::array<int, 2>{}.size()', true],
-      ['*', 'sizeof(+(std::ios_base::beg < 2)) + 3', true],
-      ['*', 'static_cast<std::array<int, 2> >(x)', true],
-      ['*', 'sizeof -b', false],
-      ['*', 'b and c', true],
-      ['+', 'b * -c', false],
-      ['*', 'static_cast<decltype(+"x"[0:>)>(2) + 3', true],
-      ['*', 'b<:0:> + c', true],
-      ['+', 'b<:0:> * c', false],
-      ['*', 'sizeof(+R"("<:")"[0]) + 3', true],
-      ['*', 'sizeof(+R"x(")<:")x"[0])', false],
-    ];
-    for (const [operator, right, grouped] of cases) {
-      assert.equal(groups(operator, right), grouped, `${operator}= ${right}`);
-    }
+  test('groups the AST right operand, including template calls and raw string tokens', () => {
+    const trace = tracing.trace([
+      'std::array b{2, 3}; int a = 1;',
+      'a *= b.size();',
+      'a += b<:0:> * b[1];',
+      'a *= sizeof(R"(say "two  words")") + 3;',
+      'a *= (2 + 3);',
+    ].join('\n'), { runtime: false });
+    assert.equal(panes(trace, 2)[1], 'a = 1 * b.size()');
+    assert.equal(panes(trace, 3)[1], 'a = 2 + b<:0:> * b[1]');
+    assert.equal(panes(trace, 4)[1], 'a = 8 * (sizeof(R"(say "two  words")") + 3)');
+    assert.equal(panes(trace, 5)[1], 'a = 160 * (2 + 3)');
   });
 
   test('a_negative_value_does_not_join_the_sign_before_it', () => {
@@ -692,9 +663,9 @@ describe('CompoundAssignmentTests', () => {
     unsupported('int a = 1;\n// R"(example \\\na += 3; // )"', /line splice/);
   });
 
-  test('raw_strings_are_refused_and_other_quotes_read_whole', () => {
-    unsupported('int n = sizeof(R"(say "two  words")");', /raw string/);
-    unsupported('int n = sizeof(u8R"x(\n#include <iostream>\n)x");', /raw string/);
+  test('raw_strings_and_other_quotes_are_read_whole', () => {
+    const raw = 'int n = sizeof(u8R"x(\n#include <iostream>\n)x");';
+    assert.deepEqual(final(tracing.trace(raw, { runtime: false })), { n: 22 });
     // A digit separator is no quote, and quotes in a comment or string open nothing.
     const trace = tracing.trace("int a = 1'000; // it's\nint b = 2'0; /* R\"( */ // R\"(\na += b;", { runtime: false });
     assert.deepEqual(final(trace), { a: 1020, b: 20 });
@@ -705,7 +676,7 @@ describe('CompoundAssignmentTests', () => {
   test('a_comment_in_a_directive_keeps_it_one_line', () => {
     const include = '#include /* Gives us\nfixed-width integers. */ <cstdint>\nint n = 1;';
     assert.deepEqual(final(tracing.trace(include, { runtime: false })), { n: 1 });
-    unsupported('int n = 1;\n#include <cstdint> /* already\nincluded */ n += 3;', /ordinary include/);
+    unsupported('int n = 1;\n#include <cstdint> /* already\nincluded */ n += 3;', /extra tokens at end of #include|one variable/);
     // A lone carriage return ends a directive as it ends any line.
     assert.deepEqual(final(tracing.trace('int n = 1;\r#include <cstdint>\rn += 3;', { runtime: false })), { n: 4 });
   });

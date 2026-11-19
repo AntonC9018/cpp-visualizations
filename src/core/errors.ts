@@ -1,3 +1,5 @@
+import type { SourceToken } from './source.ts';
+
 // Isomorphic domain error raised for any C++ snippet or construct outside the supported subset.
 
 export class Unsupported extends Error {
@@ -35,6 +37,21 @@ export class NeedsFlag extends IllFormed {
   }
 }
 
+/** Clang reports physical byte columns, while TypeScript slices by UTF-16 code units. */
+export function sourceCoordinates(source: string): { lines: number[]; offsets: number[] } {
+  const lines = [0, ...Array.from(source.matchAll(/\r\n|\r|\n/g), match => match.index + match[0].length)];
+  const offsets = [0];
+  let character = 0;
+  for (const point of source) {
+    const code = point.codePointAt(0)!;
+    const bytes = code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4;
+    for (let i = 1; i < bytes; i++) offsets.push(character);
+    character += point.length;
+    offsets.push(character);
+  }
+  return { lines: lines.map(character => offsets.indexOf(character)), offsets };
+}
+
 /**
  * The first error in Clang's diagnostics for `program`, without the temporary path, which
  * differs between runs. Assigning to a struct fails overload resolution, and only the note
@@ -48,11 +65,9 @@ export function illFormed(stderr: string, program: string): IllFormed {
   const place = /^.*?:(\d+):(\d+): error:/.exec(diagnostic);
   let offset: number | null = null;
   if (place) {
-    const lines = program.split(/(?<=\n)/);
-    offset =
-      lines.slice(0, Number(place[1]) - 1).reduce((total, line) => total + line.length, 0) +
-      Number(place[2]) -
-      1;
+    const { lines, offsets } = sourceCoordinates(program);
+    const line = lines[Number(place[1]) - 1];
+    if (line !== undefined) offset = offsets[line + Number(place[2]) - 1] ?? null;
   }
   let message = diagnostic.slice(diagnostic.indexOf('error:'));
   if (message === "error: no viable overloaded '='") {
@@ -108,6 +123,7 @@ export interface AstNode {
   range?: AstRange;
   loc?: AstRangeEndpoint;
   referencedDecl?: AstReferencedDecl;
+  nominatedNamespace?: AstReferencedDecl;
   inner?: AstNode[];
   array_filler?: AstNode[];
 }
@@ -115,6 +131,8 @@ export interface AstNode {
 export interface CompilerFrontend {
   /** Declaration text for frontends that cannot include the native <array> header. */
   arrayPreamble?: string;
+  tokens(program: string): SourceToken[];
+  astDump(program: string, filter: string): AstNode[];
   mainAst(program: string): AstNode;
   recordLayoutsDump(program: string): string;
   typeSizes(types: string[]): Record<string, number>;

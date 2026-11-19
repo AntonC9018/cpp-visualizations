@@ -6,8 +6,8 @@
 
 import { arrayType, codeName, elementLabel, operatorName, resolveArrayAliases } from './arrays.ts';
 import { type AstNode, type CompilerFrontend, IllFormed, NeedsFlag, Unsupported } from './errors.ts';
-import { COMPOUND_OPERATORS, groups, openCompound } from './compound.ts';
-import { LINE_SPLICE, RAW_STRING } from './lexical.ts';
+import { COMPOUND_OPERATORS, openCompound } from './compound.ts';
+import { SourceFile, arrayHeader, bounds } from './source.ts';
 import { INTEGERS, Integer, bareSpelling, integerName, integerSpelled } from './integers.ts';
 import type { Flags } from './settings.ts';
 import {
@@ -41,7 +41,6 @@ import {
   leaves,
   reference as traceReference,
   scalar,
-  separated,
   struct,
   structField,
   validate,
@@ -126,14 +125,6 @@ const POINTER_SIZE = 8;
 const MAX_EXACT = 2n ** 53n;
 const MAX_STATEMENTS = 20;
 const MAX_VARIABLES = 8;
-// The source's tokens that can hold quotes or comment markers, each read whole: raw strings
-// (the only capture group), names and numbers (`u8'a'`, `1'000`), literals and comments.
-const QUOTED_OR_COMMENT = new RegExp(
-  String.raw`${RAW_STRING}|[A-Za-z_]\w*|\.?\d(?:[eEpP][+-]|[\w.'])*|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|\/\/[^\r\n]*|\/\*[\s\S]*?\*\/`,
-  'g'
-);
-const IS_RAW_STRING = new RegExp(`^${RAW_STRING}$`);
-
 // Values -----------------------------------------------------------------------------------
 
 export const FLOATINGS: Readonly<Record<string, { size: number; round: (value: number) => number }>> =
@@ -288,86 +279,9 @@ export function pointerDepth(node: AstNode | null | undefined, records: unknown 
   throw new Unsupported(`only integer and pointer values are supported, not ${qualified || 'this type'}`);
 }
 
-// Source text ------------------------------------------------------------------------------
+// Source display ---------------------------------------------------------------------------
 
-function isAscii(str: string): boolean {
-  for (let i = 0; i < str.length; i++) {
-    if (str.charCodeAt(i) > 0x7f) return false;
-  }
-  return true;
-}
-
-// Each comment reads as one space. A block comment that spans lines therefore leaves its line
-// going on, as a directive does past it, so the line breaks it held move to where that line ends.
-function blankComments(source: string): string {
-  let out = '';
-  let breaks = '';
-  let last = 0;
-  const copy = (text: string): void => {
-    const end = text.search(/[\r\n]/);
-    if (breaks && end >= 0) {
-      out += text.slice(0, end) + breaks + text.slice(end);
-      breaks = '';
-    } else {
-      out += text;
-    }
-  };
-  for (const match of source.matchAll(QUOTED_OR_COMMENT)) {
-    const value = match[0];
-    copy(source.slice(last, match.index));
-    last = match.index + value.length;
-    if (IS_RAW_STRING.test(value)) throw new Unsupported('raw string literals are not supported');
-    if (value.startsWith('//') || value.startsWith('/*')) {
-      out += ' ';
-      breaks += (value.match(/\r\n|\r|\n/g) ?? []).join('');
-    } else {
-      out += value;
-    }
-  }
-  copy(source.slice(last));
-  return out + breaks;
-}
-
-export function snippetBody(source: string): string {
-  // A backslash before a line break joins the lines before anything else is read, inside
-  // comments and literals too; a raw string keeps what other text loses. Lessons need neither,
-  // so neither is traced.
-  if (LINE_SPLICE.test(source)) {
-    throw new Unsupported('a backslash at the end of a line (a line splice) is not supported');
-  }
-  let cleaned = blankComments(source);
-  const lines = cleaned.split(/\r\n|\r|\n/);
-  for (const line of lines) {
-    if (
-      line.trimStart().startsWith('#') &&
-      !/^\s*#\s*include\s*[<"][\w./]+[>"]\s*$/.test(line)
-    ) {
-      throw new Unsupported('only ordinary include directives are supported');
-    }
-  }
-  cleaned = lines.map(line => (line.trimStart().startsWith('#') ? '' : line)).join('\n').trim();
-  cleaned = cleaned.replace(/^using\s+namespace\s+std\s*;\s*/, '');
-  if (/\bmain\s*\(/.test(cleaned)) {
-    const match = /^([\s\S]*?)int\s+main\s*\(\s*(?:void\s*)?\)\s*\{([\s\S]*)\}\s*$/.exec(cleaned);
-    if (!match) {
-      throw new Unsupported('only a standalone parameterless main or statement fragment is supported');
-    }
-    if (match[1].replace(/\bstruct\s+\w+\s*\{[^{}]*\}\s*;/g, '').trim()) {
-      throw new Unsupported('only struct definitions may precede main');
-    }
-    cleaned = (match[1] + match[2]).trim();
-  }
-  if (!cleaned || cleaned.length > 10_000) {
-    throw new Unsupported('empty or oversized snippet');
-  }
-  if (!isAscii(cleaned)) {
-    throw new Unsupported('non-ASCII source text is not supported');
-  }
-  return cleaned;
-}
-
-const DEFINITION = /^struct\s+\w+\s*[{;]/;
-const DEFINITION_TEXT = /(?:^([ \t]*)|\s*)(struct\s+(\w+)\s*\{[^{}]*\}\s*;)/gm;
+export { arrayHeader, bounds };
 
 function dedent(text: string): string {
   const lines = text.split('\n');
@@ -392,127 +306,6 @@ function dedent(text: string): string {
   return lines
     .map(line => (line.startsWith(margin!) ? line.slice(margin!.length) : line.replace(/^[ \t]+$/, '')))
     .join('\n');
-}
-
-function definitions(body: string): Record<string, string> {
-  const result: Record<string, string> = {};
-  for (const match of body.matchAll(DEFINITION_TEXT)) {
-    result[match[3]] = dedent((match[1] ?? '') + match[2]);
-  }
-  return result;
-}
-
-export function bounds(node: AstNode | null | undefined): Span {
-  const first = node?.range?.begin;
-  const last = node?.range?.end;
-  if (
-    !first ||
-    !last ||
-    typeof first.offset !== 'number' ||
-    typeof last.offset !== 'number' ||
-    typeof last.tokLen !== 'number'
-  ) {
-    throw new Unsupported('macro-expanded or implicit source ranges are not supported');
-  }
-  return [first.offset, last.offset + last.tokLen];
-}
-
-function compact(source: string): [string, number[]] {
-  const out: string[] = [];
-  const mapping = new Array<number>(source.length + 1).fill(0);
-  let index = 0;
-  const pattern = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\s+|[\s\S]/g;
-  for (const match of source.matchAll(pattern)) {
-    const token = match[0];
-    const start = match.index!;
-    const end = start + token.length;
-    const isSpace = /^\s+$/.test(token);
-    let replacement: string;
-    if (isSpace) {
-      replacement = out.length > 0 && out[out.length - 1] !== ' ' ? ' ' : '';
-    } else {
-      replacement = token;
-    }
-    for (let offset = start; offset < end; offset++) {
-      mapping[offset] =
-        index + (!isSpace ? Math.min(offset - start, replacement.length) : 0);
-    }
-    out.push(replacement);
-    index += replacement.length;
-    mapping[end] = index;
-  }
-  return [out.join('').replace(/\s+$/, ''), mapping];
-}
-
-function parseLeadingJson(text: string, startOffset: number): [AstNode, number] | null {
-  let i = startOffset;
-  const n = text.length;
-  while (i < n && /\s/.test(text[i])) i++;
-  if (i >= n) return null;
-  const start = i;
-  if (text[i] !== '{' && text[i] !== '[') {
-    throw new Error('Expected JSON object or array');
-  }
-  let depth = 0;
-  let inString = false;
-  let escape = false;
-  for (; i < n; i++) {
-    const ch = text[i];
-    if (inString) {
-      if (escape) {
-        escape = false;
-      } else if (ch === '\\') {
-        escape = true;
-      } else if (ch === '"') {
-        inString = false;
-      }
-    } else {
-      if (ch === '"') {
-        inString = true;
-      } else if (ch === '{' || ch === '[') {
-        depth++;
-      } else if (ch === '}' || ch === ']') {
-        depth--;
-        if (depth === 0) {
-          i++;
-          break;
-        }
-      }
-    }
-  }
-  if (depth !== 0 || inString) {
-    throw new Error('Unterminated JSON value');
-  }
-  return [JSON.parse(text.slice(start, i)) as AstNode, i];
-}
-
-export function extractMainAstFromStdout(stdout: string, program: string): AstNode {
-  const selected: AstNode[] = [];
-  let offset = 0;
-  try {
-    while (offset < stdout.length) {
-      const parsed = parseLeadingJson(stdout, offset);
-      if (!parsed) break;
-      const [node, nextOffset] = parsed;
-      offset = nextOffset;
-      if (node.kind === 'FunctionDecl' && node.name === 'main') {
-        selected.push(node);
-      }
-    }
-  } catch {
-    throw new Unsupported('Clang returned invalid AST JSON');
-  }
-  if (selected.length !== 1) {
-    throw new Unsupported('expected one main function');
-  }
-  const compound = (selected[0].inner ?? []).filter(node => node.kind === 'CompoundStmt');
-  if (compound.length !== 1) {
-    throw new Unsupported('main has no supported body');
-  }
-  if (bounds(compound[0])[1] !== program.lastIndexOf('}') + 1) {
-    throw new Unsupported('declarations outside main are unsupported');
-  }
-  return compound[0];
 }
 
 // Evaluation -------------------------------------------------------------------------------
@@ -895,7 +688,10 @@ class Evaluator {
     if (kind === 'UnaryExprOrTypeTraitExpr' && node.name === 'sizeof') {
       const target = node.argType ? { type: node.argType } : children[0];
       if (!target) throw new Unsupported('malformed sizeof expression');
-      const size = this.byteSizeOf(target);
+      const argument = stripParentheses(target);
+      const stringExtent = argument.kind === 'StringLiteral' &&
+        /^const (?:char|char8_t)\[(\d+)\]$/.exec(canonicalType(argument));
+      const size = stringExtent ? Number(stringExtent[1]) : this.byteSizeOf(target);
       this.reduce(node, { kind: 'eval', value: size, record: null });
       return [size, null];
     }
@@ -1216,6 +1012,8 @@ export class Statement {
   size: number | null;
   shape: Shape;
   fold: Fold | null;
+  signs: Map<number, string>;
+  definition: [string, string] | null;
 
   constructor({
     source,
@@ -1240,6 +1038,8 @@ export class Statement {
     size = null,
     shape = null,
     fold = null,
+    signs = new Map(),
+    definition = null,
   }: {
     source: string;
     span: Span | null;
@@ -1263,6 +1063,8 @@ export class Statement {
     size?: number | null;
     shape?: Shape;
     fold?: Fold | null;
+    signs?: Map<number, string>;
+    definition?: [string, string] | null;
   }) {
     this.source = source;
     this.span = span;
@@ -1286,6 +1088,8 @@ export class Statement {
     this.size = size;
     this.shape = shape;
     this.fold = fold;
+    this.signs = signs;
+    this.definition = definition;
   }
 }
 
@@ -1420,7 +1224,7 @@ function recordPaths(
 
 function analyzeStatement(
   node: AstNode,
-  program: string,
+  file: SourceFile,
   state: State,
   records: Record<string, RecordInfo>,
   references: Record<string, string>,
@@ -1431,10 +1235,9 @@ function analyzeStatement(
     cur = cur.inner![0];
   }
   const [start, end] = bounds(cur);
-  // The statement as GDB runs it ends with its `;`, wherever spaces or comments put it.
-  const terminated = /^(?:\s|\/\*(?:[^*]|\*(?!\/))*\*\/|\/\/[^\r\n]*[\r\n])*;/.test(program.slice(end));
-  const [compacted, mapping] = compact(program.slice(start, end));
-  const source = terminated ? `${compacted};` : compacted;
+  const finish = file.statementEnd(end);
+  const [display, mapping] = file.display(start, end);
+  const source = finish > end ? display + ';' : display;
   let left: AstNode | null = null;
   let declared: string | null = null;
   let outSuffix: string | null = null;
@@ -1456,6 +1259,7 @@ function analyzeStatement(
         source,
         span: null,
         pane: source.replace(/;$/, ''),
+        definition: [children[0].name!, recordSource(file, start, finish)],
       });
     }
     if (children.length !== 1 || children[0]?.kind !== 'VarDecl') {
@@ -1561,7 +1365,7 @@ function analyzeStatement(
       left.kind !== 'DeclRefExpr' ||
       Object.hasOwn(references, left.referencedDecl?.name ?? '');
   } else if (cur.kind === 'CompoundAssignOperator') {
-    return analyzeCompound(cur, source, (offset: number) => mapping[offset - start], {
+    return analyzeCompound(cur, source, (offset: number) => mapping[offset - start], file, {
       state,
       records,
       references,
@@ -1734,6 +1538,7 @@ function analyzeStatement(
     type: declared ? displayedType(variable) : null,
     size,
     shape: shapeOf(declared ? variable : root, records),
+    signs: file.signs(start, end, toPane),
   });
 }
 
@@ -1745,6 +1550,7 @@ function analyzeCompound(
   node: AstNode,
   source: string,
   toSource: (offset: number) => number,
+  file: SourceFile,
   context: {
     state: State;
     records: Record<string, RecordInfo>;
@@ -1768,13 +1574,17 @@ function analyzeCompound(
   const written = source.replace(/;$/, '').replace(/\s+$/, '');
   const [l0, l1] = bounds(left).map(toSource);
   const [r0] = bounds(right).map(toSource);
-  const t0 = written.indexOf(spelling, l1);
-  if (t0 < 0 || t0 + spelling.length > r0) {
+  const token = file.tokens.find(token => toSource(token.start) >= l1);
+  const t0 = token ? toSource(token.start) : -1;
+  if (t0 < 0 || t0 + spelling.length > r0 || written.slice(t0, t0 + spelling.length) !== spelling) {
     throw new Unsupported('macro-expanded statements are not supported');
   }
   const t1 = t0 + spelling.length;
   const copied = written.slice(l0, l1);
-  const grouped = groups(operator, written.slice(t1));
+  let top = right;
+  while (top.kind === 'ImplicitCastExpr' && top.inner?.length === 1) top = top.inner[0];
+  const grouped = top.kind === 'BinaryOperator' &&
+    !((operator === '+' || operator === '-') && ['*', '/', '%'].includes(top.opcode!));
   const opened = openCompound(written, [t0, t1], copied, operator, grouped);
   const pane = opened.text;
   const toPane = (offset: number): number => {
@@ -1822,6 +1632,7 @@ function analyzeCompound(
     destination: locate(left),
     typed,
     shape: shapeOf(left, records),
+    signs: file.signs(bounds(right)[0], bounds(right)[1], toPane),
   });
 }
 
@@ -1840,17 +1651,6 @@ export function storeResult(statement: Statement, state: State): State {
     after[owner] = storedAt(after[owner], path, statement.value);
   }
   return after;
-}
-
-const HEADERS = '#include <iostream>\n#include <cstdint>\n';
-const MAIN = 'using namespace std;\nint main() {\n';
-
-export function arrayHeader(source: string, frontend?: CompilerFrontend): string {
-  return /\barray\b/.test(source) ? (frontend?.arrayPreamble ?? '#include <array>\n') : '';
-}
-
-function preamble(source: string, frontend: CompilerFrontend): string {
-  return HEADERS + arrayHeader(source, frontend) + MAIN;
 }
 
 // Clang's ways of saying that a value of one type cannot be stored where another is needed.
@@ -1881,48 +1681,41 @@ export interface Mismatch {
   given: string;
 }
 
-/** The last index of `character` before `end`, or -1. */
-function lastBefore(text: string, character: string, end: number): number {
-  return end > 0 ? text.lastIndexOf(character, end - 1) : -1;
-}
-
-const leading = (text: string): number => text.length - text.trimStart().length;
-
-/**
- * Split a body whose last statement is a type mismatch into what runs and the mismatch.
- *
- * Clang reports the value, the declared name when the value follows `=`, or the `=` itself
- * when the slot is a struct; everything before the value, up to the previous statement, is
- * the slot. Any other error, or one that is not in the last statement, stays unsupported.
- */
-function cutMismatch(body: string, error: IllFormed, prefixLength: number): [string, Mismatch] {
+/** Split off a final ill-typed statement using Clang's token locations. */
+function cutMismatch(file: SourceFile, error: IllFormed, frontend: CompilerFrontend): [SourceFile, Mismatch] {
   const found = MISMATCHES.map(pattern => pattern.exec(error.message)).find(Boolean)?.groups;
-  let at = error.offset === null ? -1 : error.offset - prefixLength;
-  if (!found || at < 0 || at >= body.length) throw error;
-  const end = body.indexOf(';', at);
-  let start = Math.max(lastBefore(body, ';', at), lastBefore(body, '}', at)) + 1;
-  if (end < 0 || !/^\s*(?:return\s+0\s*;\s*)?$/.test(body.slice(end + 1)) || !body.slice(0, start).trim()) {
+  const at = error.offset;
+  if (!found || at === null) throw error;
+  const { tokens, program } = file;
+  let point = tokens.findIndex(token => token.start === at);
+  if (point < 0) throw error;
+  const finish = tokens.findIndex((token, i) => i > point && token.kind === 'semi');
+  if (finish < 0) throw error;
+  const tail = tokens.slice(finish + 1).map(token => program.slice(token.start, token.end)).join(' ');
+  if (tail !== (file.fragment ? '' : '}') && tail !== (file.fragment ? 'return 0 ;' : 'return 0 ; }')) {
     throw error;
   }
-  start += leading(body.slice(start, at));
-  if (/^=(?!=)/.test(body.slice(at, end))) {
-    at += 1 + leading(body.slice(at + 1, end));
-  } else if (!/[={]$/.test(body.slice(start, at).trimEnd())) {
-    const assigned = /^\w+\s*=\s*/.exec(body.slice(at, end));
-    if (!assigned) throw error;
-    at += assigned[0].length;
+
+  let begin = point - 1;
+  while (begin >= 0 && tokens[begin].kind !== 'semi') begin--;
+  if (begin < 0) throw error;
+  const start = tokens[begin + 1].start;
+  if (tokens[point].kind === 'equal') {
+    point++;
+  } else if (tokens[point - 1]?.kind !== 'equal' && tokens[point - 1]?.kind !== 'l_brace') {
+    if (tokens[point].kind !== 'identifier' || tokens[point + 1]?.kind !== 'equal') throw error;
+    point += 2;
   }
-  const [source, mapping] = compact(body.slice(start, end + 1));
-  const braced = body.slice(start, at).trimEnd().endsWith('{');
-  const written = body.slice(at, end).trimEnd();
-  const valueEnd = braced ? written.replace(/\}$/, '').trimEnd() : written;
-  const span: Span = [mapping[at - start], mapping[at - start + valueEnd.length]];
+  const braced = tokens[point - 1].kind === 'l_brace' && tokens[finish - 1].kind === 'r_brace';
+  const end = tokens[finish].end;
+  const [source, mapping] = file.display(start, end);
+  const span: Span = [mapping[tokens[point].start - start], mapping[tokens[finish - (braced ? 2 : 1)].end - start]];
   const [prefix, suffix] = paneParts(source, span, false);
   const slot = prefix.trimEnd().replace(/=$/, '').trimEnd();
   if (suffix.trim() || !slot || source.includes('"') || source.includes("'")) throw error;
-  const text = source.slice(span[0], span[1]);
+  const text = source.slice(...span);
   return [
-    body.slice(0, start),
+    file.without(start, end, frontend),
     {
       source,
       span,
@@ -1933,6 +1726,12 @@ function cutMismatch(body: string, error: IllFormed, prefixLength: number): [str
       given: displayed(found.from),
     },
   ];
+}
+
+function recordSource({ program }: SourceFile, start: number, finish: number): string {
+  const line = Math.max(program.lastIndexOf('\n', start - 1), program.lastIndexOf('\r', start - 1)) + 1;
+  const indent = program.slice(line, start);
+  return dedent((/^[ \t]*$/.test(indent) ? indent : '') + program.slice(start, finish).replace(/\r\n?/g, '\n'));
 }
 
 /**
@@ -1956,10 +1755,16 @@ export function analyzeWithFrontend(
   source: string,
   frontend: CompilerFrontend
 ): [Statement[], Record<string, RecordInfo>, Record<string, string>] {
-  const program = preamble(source, frontend) + source + '\n}\n';
-  const ast = frontend.mainAst(program);
+  return analyzeSource(new SourceFile(source, frontend), frontend);
+}
+
+function analyzeSource(
+  file: SourceFile,
+  frontend: CompilerFrontend
+): [Statement[], Record<string, RecordInfo>, Record<string, string>] {
+  const ast = file.ast(frontend);
   resolveArrayAliases(ast);
-  const records = layoutsFromFrontend(ast, program, frontend);
+  const records = layoutsFromFrontend(ast, file.program, frontend);
   const statements: Statement[] = [];
   let state: State = {};
   const references: Record<string, string> = {};
@@ -1979,7 +1784,9 @@ export function analyzeWithFrontend(
       }
       throw new Unsupported('only a final return 0 is supported');
     }
-    const statement = analyzeStatement(node, program, state, records, references, storageTypes);
+    if (node.kind === 'DeclStmt' && node.inner?.length === 1 &&
+        node.inner[0].kind === 'UsingDirectiveDecl' && node.inner[0].nominatedNamespace?.name === 'std') continue;
+    const statement = analyzeStatement(node, file, state, records, references, storageTypes);
     if (statement.declared && statements.some(earlier => earlier.temporary)) {
       throw new Unsupported(
         'a declaration after a materialized temporary needs a separate memory-layout visualization'
@@ -2423,7 +2230,8 @@ class Renderer {
       }
       // A typed conversion is a step even when the digits stay: the type is what changes.
       // Untyped, it is an evaluation like any other, seen only when the text changes.
-      text = separated(pane.text.slice(0, pane.locate(reduction.span[0], reduction.span[1])[0]), text);
+      const sign = statement.signs.get(reduction.span[0]);
+      if (sign && text.startsWith(sign)) text = '(' + text + ')';
       if (pane.read(reduction.span[0], reduction.span[1]) !== text || op.kind === 'convert') {
         const span = pane.replace(reduction.span[0], reduction.span[1], text, reduction.type);
         this.add(line, pane, expr, before, { ...op, span });
@@ -2558,21 +2366,21 @@ function tracesWithTypes(source: string, options: TraceOptions, error: IllFormed
 export function traceWithFrontend(source: string, options: TraceOptions): ExecutionTrace {
   const { runtime = true, bits = false, frontend, executor = hooks.execute, directory } = options;
   const types = bits || (options.types ?? false);
-  let body = snippetBody(source);
+  let file = new SourceFile(source, frontend);
   let mismatch: Mismatch | null = null;
   let statements: Statement[];
   let records: Record<string, RecordInfo>;
   let aliases: Record<string, string>;
   try {
-    [statements, records, aliases] = analyzeWithFrontend(body, frontend);
+    [statements, records, aliases] = analyzeSource(file, frontend);
   } catch (error) {
     if (!(error instanceof IllFormed)) throw error;
     if (!types) {
       throw tracesWithTypes(source, options, error) ? new NeedsFlag(error.message, 'types', error.offset) : error;
     }
     // A last statement whose types do not fit is shown, not run: the rest is traced.
-    [body, mismatch] = cutMismatch(body, error, preamble(body, frontend).length);
-    [statements, records, aliases] = analyzeWithFrontend(body, frontend);
+    [file, mismatch] = cutMismatch(file, error, frontend);
+    [statements, records, aliases] = analyzeSource(file, frontend);
   }
   const predicted: State[] = [];
   let state: State = {};
@@ -2699,7 +2507,7 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
 
   const shown: [Statement, State][] = [];
   for (let i = 0; i < statements.length; i++) {
-    if (!DEFINITION.test(statements[i].source)) {
+    if (!statements[i].definition) {
       shown.push([statements[i], states[i]]);
     }
   }
@@ -2730,7 +2538,7 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
     variables,
     steps: renderer.steps,
   };
-  const structs = definitions(body);
+  const structs = Object.fromEntries(statements.flatMap(s => s.definition ? [s.definition] : []));
   if (Object.keys(structs).length > 0) {
     result.types = structs;
   }

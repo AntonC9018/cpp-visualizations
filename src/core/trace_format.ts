@@ -6,7 +6,7 @@
 // `player/README.md` documents every field.
 
 import { arrayType, codeName, elementLabel } from './arrays.ts';
-import { COMPOUND_OPERATORS, groups, openCompound } from './compound.ts';
+import { COMPOUND_OPERATORS, openCompound } from './compound.ts';
 import { displayFloat } from './floats.ts';
 import { INTEGERS, integerLiteral, integerSpelled } from './integers.ts';
 
@@ -691,9 +691,9 @@ function checkCompoundRead(
   );
   check(op.value !== UNKNOWN, `${where}.value`, 'reads an uninitialized value');
   check(LITERAL.test(op.value), `${where}.value`, `${pyRepr(op.value)} is not one number`);
-  const grouped = groups(op.compound, previous.pane.slice(span[1]));
-  const opened = openCompound(previous.pane, span, op.value, op.compound, grouped).text;
-  check(step.pane === opened, where, `${pyRepr(step.pane)} is not ${pyRepr(opened)}`);
+  const candidates = [false, true].map(grouped =>
+    openCompound(previous.pane, span, op.value, op.compound, grouped).text);
+  check(candidates.includes(step.pane), where, `${pyRepr(step.pane)} is not ${pyRepr(candidates[0])} or ${pyRepr(candidates[1])}`);
 }
 
 const LITERAL = /^≈?-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i;
