@@ -2,7 +2,7 @@
 // Caches the ~17 MB WASM binary across reloads with streaming download progress
 // and concurrent load deduplication.
 
-export const DEFAULT_CACHE_NAME = 'clang-trace-frontend-v1';
+export const DEFAULT_CACHE_NAME = 'clang-trace-frontend-v2';
 export const DEFAULT_WASM_URL = './clang-trace-frontend.wasm';
 
 export type WasmLoadPhase = 'checking-cache' | 'downloading' | 'compiling' | 'ready';
