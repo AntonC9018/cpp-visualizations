@@ -160,7 +160,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   const glyphs = (value) => String(value).replace(/\n/g, "↵").replace(/\t/g, "⇥").replace(/ /g, "␣");
   const format = (template, values) => template.replace(/\{(\w+)\}/g, (_, key) => String(values[key] ?? ""));
   function text(x, y, value, size, color, anchor = "start") {
-    const str = String(value);
+    const str = Object.is(value, -0) ? "-0" : String(value);
     if (!str.trim()) return "";
     const length = str.length > 1 ? ` textLength="${round(str.length * size * CHAR)}" lengthAdjust="spacing"` : "";
     return `<text x="${round(x)}" y="${round(y)}" font-size="${size}" fill="${color}" text-anchor="${anchor}" xml:space="preserve"${length}>${esc(str)}</text>`;
@@ -1109,7 +1109,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
             size: field.size,
             kind: field.kind,
             color: variable.color,
-            fieldColor: field.color
+            fieldColor: field.color,
+            ...field.floating ? { floating: true } : {}
           };
           leaves.push(leaf);
           group.children.push(leaf);
@@ -1190,6 +1191,26 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
     }
     return active;
+  }
+  const SHOWN_DIGITS = 8;
+  function shortestDecimal(value, size) {
+    if (size === 8) return String(value);
+    for (let digits = 1; ; digits++) {
+      const text2 = value.toPrecision(digits);
+      if (Math.fround(Number(text2)) === value) return String(Number(text2));
+    }
+  }
+  const significantDigits = (text2) => Number(text2).toExponential().split("e")[0].replace(/[-.]/g, "").length;
+  function displayFloat(value, size) {
+    if (Object.is(value, -0)) return "-0";
+    if (Number.isSafeInteger(value)) return String(value);
+    const shortest = shortestDecimal(value, size);
+    if (significantDigits(shortest) <= SHOWN_DIGITS) return shortest;
+    return "≈" + String(Number(value.toPrecision(SHOWN_DIGITS)));
+  }
+  function displayNumber(value, floatSize = null) {
+    if (floatSize) return displayFloat(value, floatSize);
+    return Object.is(value, -0) ? "-0" : String(value);
   }
   function colored(c, x, y, value, size = c.g.paneSize, mute = true, member = false) {
     let out = "";
@@ -1531,14 +1552,15 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       );
       if (on) {
         const shown = (value) => {
-          const length = String(value).length;
+          const display = typeof value === "number" ? displayNumber(value, cell.floating ? cell.size : null) : String(value);
+          const length = display.length;
           const size = Math.min(30, (cell.w - Math.min(12, cell.w / 5)) / (length * CHAR));
-          return text(0, size / 3 + 1, value, round(size), value === "?" ? P.grey : P.fg, "middle");
+          return text(0, size / 3 + 1, display, round(size), value === "?" ? P.grey : P.fg, "middle");
         };
         markup += `<g transform="translate(${round(cell.x + cell.w / 2)} ${cell.y + cell.h / 2})"><g>` + (changing ? pulse(at - 0.2) : "");
         const before = prev ? prev.values[cell.name] : null;
         const after = step.values[cell.name];
-        if (changing && before !== after) {
+        if (changing && !Object.is(before, after)) {
           if (before !== null) markup += `<g>${hide(at)}${shown(before)}</g>`;
           markup += `<g opacity="0">${show(at)}${shown(after)}</g>`;
         } else {
@@ -1894,10 +1916,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   });
   const bareSpelling = (spelling) => spelling.replace(/^const /, "").replace(/^std::/, "");
   function integerSpelled(spelling, aliases = {}) {
+    const name = integerName(spelling, aliases);
+    return name === null ? null : INTEGERS[name];
+  }
+  function integerName(spelling, aliases = {}) {
     const name = bareSpelling(spelling);
     const known = Object.hasOwn(ALIASES, name) ? ALIASES[name] : name;
     const canonical = Object.hasOwn(INTEGERS, known) || !Object.hasOwn(aliases, name) ? known : aliases[name];
-    return Object.hasOwn(INTEGERS, canonical) ? INTEGERS[canonical] : null;
+    return Object.hasOwn(INTEGERS, canonical) ? canonical : null;
   }
   function integerLiteral(spelling) {
     const match = spelling.trim().match(/^([-+]?)\s*(0[xX][0-9a-fA-F']+|0[bB][01']+|0[0-7']*|[1-9][0-9']*)(?:[uU](?:ll|LL|[lLzZ])?|(?:ll|LL|[lLzZ])[uU]?)?$/);
