@@ -627,16 +627,9 @@ function stored(text: string, where: string): (number | string)[] {
   return result;
 }
 
-function valuesMatch(a: unknown, b: unknown): boolean {
-  if (typeof a === 'number' && typeof b === 'number') {
-    if (a === 0 && b === 0) return Object.is(a, b);
-    return a === b || Math.fround(a) === Math.fround(b);
-  }
-  return a === b;
-}
-
+/** Element-wise `Object.is`, so a -0 cell never passes for 0. */
 function arraysEqual(a: unknown[], b: unknown[]): boolean {
-  return a.length === b.length && a.every((v, i) => valuesMatch(v, b[i]));
+  return a.length === b.length && a.every((v, i) => Object.is(v, b[i]));
 }
 
 interface StorageContext {

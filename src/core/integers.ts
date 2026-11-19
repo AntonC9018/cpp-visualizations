@@ -100,10 +100,16 @@ export const bareSpelling = (spelling: string): string => spelling.replace(/^con
  * maps further bare spellings to the builtin names Clang resolved them to (`streamsize`: `long`).
  */
 export function integerSpelled(spelling: string, aliases: Readonly<Record<string, string>> = {}): Integer | null {
+  const name = integerName(spelling, aliases);
+  return name === null ? null : INTEGERS[name];
+}
+
+/** The builtin name of the integer type a spelling names (`uint8_t`: `unsigned char`), if any. */
+export function integerName(spelling: string, aliases: Readonly<Record<string, string>> = {}): string | null {
   const name = bareSpelling(spelling);
   const known = Object.hasOwn(ALIASES, name) ? ALIASES[name] : name;
   const canonical = Object.hasOwn(INTEGERS, known) || !Object.hasOwn(aliases, name) ? known : aliases[name];
-  return Object.hasOwn(INTEGERS, canonical) ? INTEGERS[canonical] : null;
+  return Object.hasOwn(INTEGERS, canonical) ? canonical : null;
 }
 
 /**

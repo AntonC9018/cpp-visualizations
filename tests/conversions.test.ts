@@ -10,6 +10,7 @@ import {
   type TraceStep,
   validate,
 } from '../src/core/trace_format.ts';
+import { formatFloat } from '../src/core/tracing.ts';
 import { text as svgText } from '../src/player/svg.ts';
 import * as tracing from '../src/node/tracing.ts';
 import { INTEGERS, Unsupported } from '../src/node/tracing.ts';
@@ -227,6 +228,41 @@ describe('UntypedConversionTests', () => {
   });
 });
 
+describe('FloatFormatTests', () => {
+  test('cout_rounds_exact_ties_to_even', () => {
+    const cases: Record<string, number> = {
+      '123456': 123456.5,
+      '123458': 123457.5,
+      '100000': 100000.5,
+      '1e+06': 999999.5,
+      '1.23456e+06': 1234565,
+      '1.23458e+06': 1234575,
+      '123457': 123456.50000001,
+      '0.123456': 0.1234565,
+      '-123456': -123456.5,
+      '4.94066e-324': 5e-324,
+      '1e-05': 0.00001,
+      '-0': -0,
+    };
+    for (const [printed, value] of Object.entries(cases)) {
+      assert.equal(formatFloat(value), printed, String(value));
+    }
+  });
+
+  test('validation_compares_floating_values_exactly', () => {
+    const t = tracing.trace('double d = 1.0000001; double e = d;', { runtime: false });
+    validate(t);
+    const read = (value: string): ExecutionTrace => {
+      const copy = structuredClone(t);
+      const step = copy.steps.find(s => s.op?.kind === 'read' && s.op.name === 'd')!;
+      (step.op as { value: string }).value = value;
+      return copy;
+    };
+    // 1.00000012 is another double that rounds to the same float.
+    assert.throws(() => validate(read('1.00000012')), FormatError);
+  });
+});
+
 describe('RuntimeConversionTests', () => {
   test('gdb_agrees_on_every_width_and_sign', () => {
     const t = tracing.trace(
@@ -281,8 +317,25 @@ describe('RuntimeConversionTests', () => {
     assert.equal(last.values.f, Math.fround(0.1));
     assert.equal(last.values.sub, 5e-324);
     assert.equal(last.values.under, 0);
+    assert.equal(last.stdout, '123456\n');
     const readStep = t.steps.find(s => s.op?.kind === 'read' && s.op.name === 'd')!;
     assert.equal(readStep.op?.kind === 'read' && readStep.op.value, '1.0000001');
+  });
+
+  test('gdb_agrees_on_rounded_ties', () => {
+    const t = tracing.trace(
+      'double a = 100000.5; double b = 1234565.0; double c = 1234575.0; double d = 999999.5; ' +
+        'std::cout << a << std::endl; std::cout << b << std::endl; ' +
+        'std::cout << c << std::endl; std::cout << d << std::endl;'
+    );
+    assert.equal(t.steps.at(-1)!.stdout, '100000\n1.23456e+06\n1.23458e+06\n1e+06\n');
+  });
+
+  test('type_punning_is_rejected_before_execution', () => {
+    throwsUnsupported(
+      () => tracing.trace('int a = 42; void* p = &a; float* q = static_cast<float*>(p); float y = *q;'),
+      /dereferencing a pointer to float when a holds int/
+    );
   });
 });
 

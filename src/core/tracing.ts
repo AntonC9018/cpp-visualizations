@@ -6,7 +6,7 @@
 
 import { arrayType, codeName, elementLabel, operatorName, resolveArrayAliases } from './arrays.ts';
 import { type AstNode, type CompilerFrontend, IllFormed, Unsupported } from './errors.ts';
-import { INTEGERS, Integer, bareSpelling, integerSpelled } from './integers.ts';
+import { INTEGERS, Integer, bareSpelling, integerName, integerSpelled } from './integers.ts';
 import type { Flags } from './settings.ts';
 import {
   type Record as RecordInfo,
@@ -142,13 +142,52 @@ function floatType(node: AstNode | null | undefined, records: unknown = {}): { s
   return floatNamed(canonicalType(node), records);
 }
 
-function formatExponentialParts(sign: string, m: string, exp: number): string {
-  if (exp < -4 || exp >= 6) {
-    const trimmed = m.replace(/\.?0+$/, '');
+// std::cout's defaultfloat precision: significant digits of a printed floating-point value.
+const PRINTED_DIGITS = 6;
+
+/** A finite, non-negative double exactly as `mantissa * 2 ** exponent`. */
+function binaryParts(value: number): { mantissa: bigint; exponent: number } {
+  const view = new DataView(new ArrayBuffer(8));
+  view.setFloat64(0, value);
+  const bits = view.getBigUint64(0);
+  const biased = Number(bits >> 52n);
+  const fraction = bits & ((1n << 52n) - 1n);
+  return biased === 0
+    ? { mantissa: fraction, exponent: -1074 }
+    : { mantissa: fraction | (1n << 52n), exponent: biased - 1075 };
+}
+
+/** Whether a non-negative `value` is exactly `(digits - 0.5) * 10 ** scale`. */
+function isTie(value: number, digits: number, scale: number): boolean {
+  const { mantissa, exponent } = binaryParts(value);
+  // Compare 2 * mantissa * 2^exponent with (2 * digits - 1) * 10^scale in integers.
+  let left = 2n * mantissa;
+  let right = 2n * BigInt(digits) - 1n;
+  if (exponent >= 0) left <<= BigInt(exponent);
+  else right <<= BigInt(-exponent);
+  if (scale >= 0) right *= 10n ** BigInt(scale);
+  else left *= 10n ** BigInt(-scale);
+  return left === right;
+}
+
+/** Format a floating-point number the way `std::cout` defaultfloat (precision 6) prints it. */
+export function formatFloat(value: number): string {
+  if (Object.is(value, -0)) return '-0';
+  if (value === 0) return '0';
+  const sign = value < 0 ? '-' : '';
+  const magnitude = Math.abs(value);
+  const [mantissa, e] = magnitude.toExponential(PRINTED_DIGITS - 1).split('e');
+  const exp = Number(e);
+  let rounded = Number(mantissa.replace('.', ''));
+  // toExponential rounds an exact tie up, printf rounds it to the even neighbour. The larger
+  // neighbour of a tie that carries into the next power of ten is 100000, already even.
+  if (rounded % 2 === 1 && isTie(magnitude, rounded, exp - (PRINTED_DIGITS - 1))) rounded -= 1;
+  const digits = String(rounded);
+  if (exp < -4 || exp >= PRINTED_DIGITS) {
+    const trimmed = (digits[0] + '.' + digits.slice(1)).replace(/\.?0+$/, '');
     const expSign = exp < 0 ? '-' : '+';
     return `${sign}${trimmed}e${expSign}${String(Math.abs(exp)).padStart(2, '0')}`;
   }
-  const digits = m.replace('.', '');
   const point = exp + 1;
   const fixed =
     point <= 0
@@ -157,56 +196,6 @@ function formatExponentialParts(sign: string, m: string, exp: number): string {
         ? digits + '0'.repeat(point - digits.length)
         : digits.slice(0, point) + '.' + digits.slice(point);
   return sign + (fixed.includes('.') ? fixed.replace(/\.?0+$/, '') : fixed);
-}
-
-/** Format a floating-point number the way `std::cout` defaultfloat (precision 6) prints it. */
-export function formatFloat(value: number): string {
-  if (Object.is(value, -0)) return '-0';
-  if (value === 0) return '0';
-  const sign = value < 0 ? '-' : '';
-  const [m, e] = Math.abs(value).toExponential(5).split('e');
-  return formatExponentialParts(sign, m, Number(e));
-}
-
-function stdoutMatches(parts: Set<string>[], actual: string): boolean {
-  let offsets = new Set<number>([0]);
-  for (const candidates of parts) {
-    const next = new Set<number>();
-    for (const pos of offsets) {
-      for (const candidate of candidates) {
-        if (actual.startsWith(candidate, pos)) {
-          next.add(pos + candidate.length);
-        }
-      }
-    }
-    if (next.size === 0) return false;
-    offsets = next;
-  }
-  return offsets.has(actual.length);
-}
-
-function formatFloatCandidates(value: number): Set<string> {
-  const candidates = new Set<string>([formatFloat(value)]);
-  if (value === 0 || !Number.isFinite(value)) return candidates;
-  const sign = value < 0 ? '-' : '';
-  const [m, e] = Math.abs(value).toExponential(5).split('e');
-  const exp = Number(e);
-  const scaled = Math.round(Number(m) * 1e5);
-  for (const delta of [-1, 1]) {
-    let adj = scaled + delta;
-    let adjExp = exp;
-    if (adj >= 1000000) {
-      adj = 100000;
-      adjExp += 1;
-    } else if (adj < 100000) {
-      adj = 999999;
-      adjExp -= 1;
-    }
-    const adjStr = String(adj);
-    const adjM = adjStr[0] + '.' + adjStr.slice(1);
-    candidates.add(formatExponentialParts(sign, adjM, adjExp));
-  }
-  return candidates;
 }
 
 export class Pointer {
@@ -628,23 +617,28 @@ class Evaluator {
     this.temporary = false;
   }
 
-  private normalizeStorageType(spelling: string): string {
-    const m = /^([\w: ]+?)(?: (\*+))?$/.exec(spelling.replace(/^struct /, ""));
-    if (!m) return spelling;
-    const base = integerSpelled(m[1]) && !hasRecord(this.records, bareSpelling(m[1]))
-      ? Object.entries(INTEGERS).find(([, int]) => int === integerSpelled(m[1]))?.[0] ?? m[1]
-      : m[1];
-    return m[2] ? `${base} ${m[2]}` : base;
+  /** A type spelling with its pointee and integer typedefs resolved: `uint8_t *` is `unsigned char *`. */
+  private storageType(spelling: string): { base: string; stars: number } {
+    const [, base, stars] = /^(.*?)((?:\s*\*)*)$/.exec(spelling.replace(/^struct /, '').trim())!;
+    const name = base.trim();
+    const integer = hasRecord(this.records, bareSpelling(name)) ? null : integerName(name);
+    return { base: integer ?? name, stars: stars.replace(/\s/g, '').length };
   }
 
-  private checkPointeeType(ptrNode: AstNode, target: string): void {
-    const actual = this.storageTypes[target];
-    if (!actual) return;
-    const rawExpected = canonicalType(ptrNode).replace(/^struct /, "").replace(/\s?\*$/, "");
-    const expected = this.normalizeStorageType(rawExpected);
-    const normActual = this.normalizeStorageType(actual);
-    if (normActual !== expected) {
-      throw new Unsupported(`dereferencing pointer to ${expected} when target ${target} has type ${normActual}`);
+  /** Rejects reading `target` through a pointer to another type, such as a cast `void*`. */
+  private checkPointeeType(pointer: AstNode, target: string): void {
+    if (!Object.hasOwn(this.storageTypes, target)) {
+      throw new Unsupported(`the storage type of ${target} is unknown`);
+    }
+    const through = this.storageType(canonicalType(pointer));
+    const held = this.storageType(this.storageTypes[target]);
+    if (through.base !== held.base || through.stars !== held.stars + 1) {
+      const spell = ({ base, stars }: { base: string; stars: number }) =>
+        stars ? `${base} ${'*'.repeat(stars)}` : base;
+      throw new Unsupported(
+        `dereferencing a pointer to ${spell({ ...through, stars: through.stars - 1 })} ` +
+          `when ${target} holds ${spell(held)}`
+      );
     }
   }
 
@@ -2085,16 +2079,13 @@ class Renderer {
   stdout: string;
   real: Record<string, number>;
   realStdout: string;
-  realStdoutParts: Set<string>[];
-  floatingCells: Set<string>;
 
   constructor(
     addresses: Record<string, number>,
     cells: Record<string, unknown> | null = null,
     real: Record<string, number> | null = null,
     hasReferences = false,
-    types = false,
-    floatingCells: Set<string> = new Set()
+    types = false
   ) {
     this.addresses = addresses;
     this.types = types;
@@ -2105,8 +2096,6 @@ class Renderer {
     this.stdout = '';
     this.real = real ?? addresses;
     this.realStdout = '';
-    this.realStdoutParts = [];
-    this.floatingCells = floatingCells;
   }
 
   printed(pointer: Pointer, addresses: Record<string, number>): string {
@@ -2120,18 +2109,14 @@ class Renderer {
     return `0x${address.toString(16).padStart(16, '0')}`;
   }
 
-  show(value: Value, floating = false, prefix = ''): string {
+  show(value: Value): string {
     if (isPlainObject(value)) {
-      return `{${Object.entries(value)
-        .map(([k, item]) => {
-          const path = prefix ? `${prefix}.${k}` : k;
-          return this.show(item, this.floatingCells.has(path), path);
-        })
+      return `{${Object.values(value)
+        .map(item => this.show(item))
         .join(', ')}}`;
     }
     const val = this.stored(value);
-    if (Object.is(val, -0)) return '-0';
-    return floating || !Number.isInteger(val) ? String(val) : String(val);
+    return Object.is(val, -0) ? '-0' : String(val);
   }
 
   stored(value: Value): number {
@@ -2208,7 +2193,7 @@ class Renderer {
       if (reduction.kind === 'read') {
         text =
           (reduction.record ?? '') +
-          this.show(load(before, reduction.name), Boolean(reduction.floating), reduction.name);
+          this.show(load(before, reduction.name));
         op = { kind: 'read', name: reduction.name, value: text };
       } else if (reduction.kind === 'addr') {
         text = String(this.addresses[reduction.name]);
@@ -2229,12 +2214,12 @@ class Renderer {
         this.types &&
         !pane.insideTyped(reduction.span[0], reduction.span[1])
       ) {
-        text = this.show(reduction.value, Boolean(reduction.floating));
+        text = this.show(reduction.value);
         op = { kind: 'convert', value: text, from: reduction.source, to: reduction.type };
       } else {
         text =
           (reduction.kind === 'eval' ? (reduction.record ?? '') : '') +
-          this.show(reduction.value, Boolean(reduction.floating), statement.target ?? '');
+          this.show(reduction.value);
         op = { kind: 'eval', value: text };
         // A brace list of plain values is already its value, however it is spaced.
         if (
@@ -2274,7 +2259,7 @@ class Renderer {
       const shown =
         statement.outputSuffix !== null && statement.floating
           ? formatFloat(statement.value)
-          : this.show(statement.value, statement.floating);
+          : this.show(statement.value);
       if (pane.read(statement.result[0], statement.result[1]) !== shown) {
         const op = {
           kind: 'eval' as const,
@@ -2304,11 +2289,6 @@ class Renderer {
     }
     if (statement.outputSuffix !== null) {
       this.realStdout += real + statement.outputSuffix;
-      const candidates =
-        statement.floating && typeof statement.value === 'number'
-          ? new Set([...formatFloatCandidates(statement.value)].map(c => c + statement.outputSuffix!))
-          : new Set([real + statement.outputSuffix]);
-      this.realStdoutParts.push(candidates);
       this.stdout += text + statement.outputSuffix;
       this.add(line, pane, expr, after, { kind: 'print', value: text, span }, 1.2);
       return;
@@ -2390,7 +2370,6 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
   const declarations = statements.filter(s => s.declared);
   const variables: TraceVariable[] = [];
   const references: Record<string, TraceReference> = {};
-  const floatingCells = new Set<string>();
   let top = -8;
   const fieldColors: Record<string, number> = {};
   for (let color = 0; color < declarations.length; color++) {
@@ -2409,7 +2388,6 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
         const flds: TraceField[] = [];
         for (const item of rec.fields) {
           const path = `${prefix}.${item.name}`;
-          if (item.floating) floatingCells.add(path);
           if (!Object.hasOwn(fieldColors, item.name)) {
             fieldColors[item.name] = Object.keys(fieldColors).length;
           }
@@ -2433,7 +2411,6 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
       };
       variables.push(struct(name, record.name, top, size, fieldsOf(record, name), color));
     } else {
-      if (declaration.floating) floatingCells.add(name);
       variables.push(
         scalar(name, top, size, declaration.pointer ? 'ptr' : 'int', color, types ? declaration.type : null)
       );
@@ -2509,14 +2486,14 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
     throw new Unsupported('a snippet of only struct definitions has nothing to step through');
   }
   const hasRefs = Object.keys(references).length > 0;
-  const renderer = new Renderer(addresses, leaves(variables), real, hasRefs, types, floatingCells);
+  const renderer = new Renderer(addresses, leaves(variables), real, hasRefs, types);
   let previous: State = {};
   for (let line = 0; line < shown.length; line++) {
     const [statement, after] = shown[line];
     renderer.statement(line, statement, previous, after);
     previous = after;
   }
-  if (runtime && execution && !stdoutMatches(renderer.realStdoutParts, execution.stdout)) {
+  if (runtime && execution && renderer.realStdout !== execution.stdout) {
     throw new Unsupported('runtime output disagrees with the expression trace');
   }
   const shownStatements: { source: string; span: Span | null }[] = shown.map(([s]) => s);
