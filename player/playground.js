@@ -1312,20 +1312,29 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return { now, before, begin, dip };
   }
   const SHOWN_DIGITS = 8;
+  const FLOAT_DIGITS = 9;
   function shortestDecimal(value, size) {
-    if (size === 8) return String(value);
-    for (let digits = 1; ; digits++) {
-      const text2 = value.toPrecision(digits);
-      if (Math.fround(Number(text2)) === value) return String(Number(text2));
+    if (size === 8 || Math.fround(value) !== value) return String(value);
+    for (let digits = 1; digits <= FLOAT_DIGITS; digits++) {
+      const [mantissa, exponent] = value.toExponential(digits - 1).split("e");
+      const scaled2 = Number(mantissa.replace(".", ""));
+      const scale = Number(exponent) - (digits - 1);
+      const fits = [scaled2, scaled2 - 1, scaled2 + 1].map((candidate) => Number(`${candidate}e${scale}`)).filter((candidate) => Math.fround(candidate) === value).sort((a, b) => Math.abs(a - value) - Math.abs(b - value));
+      if (fits.length) return String(fits[0]);
     }
+    return String(value);
+  }
+  function compact(text2) {
+    const scientific = Number(text2).toExponential();
+    return scientific.length < text2.length ? scientific : text2;
   }
   const significantDigits = (text2) => Number(text2).toExponential().split("e")[0].replace(/[-.]/g, "").length;
   function displayFloat(value, size) {
     if (Object.is(value, -0)) return "-0";
     if (Number.isSafeInteger(value)) return String(value);
     const shortest = shortestDecimal(value, size);
-    if (significantDigits(shortest) <= SHOWN_DIGITS) return shortest;
-    return "≈" + String(Number(value.toPrecision(SHOWN_DIGITS)));
+    if (significantDigits(shortest) <= SHOWN_DIGITS) return compact(shortest);
+    return "≈" + compact(String(Number(value.toPrecision(SHOWN_DIGITS))));
   }
   function displayNumber(value, floatSize = null) {
     if (floatSize) return displayFloat(value, floatSize);

@@ -60,13 +60,34 @@ export function formatFloat(value: number): string {
 // to a student, and a cell would shrink its text to fit them.
 const SHOWN_DIGITS = 8;
 
-/** The shortest decimal that reads back as `value` at its storage size (4: float, 8: double). */
+// Significant digits that always read back as the float they were printed from.
+const FLOAT_DIGITS = 9;
+
+/**
+ * The shortest decimal that reads back as `value` at its storage size (4: float, 8: double),
+ * the closest such one when several have as few digits.
+ */
 function shortestDecimal(value: number, size: number): string {
-  if (size === 8) return String(value);
-  for (let digits = 1; ; digits++) {
-    const text = value.toPrecision(digits);
-    if (Math.fround(Number(text)) === value) return String(Number(text));
+  if (size === 8 || Math.fround(value) !== value) return String(value);
+  for (let digits = 1; digits <= FLOAT_DIGITS; digits++) {
+    // A float's rounding interval is lopsided at a power of two: the decimal nearest the
+    // value may miss it while a neighbour reads back.
+    const [mantissa, exponent] = value.toExponential(digits - 1).split('e');
+    const scaled = Number(mantissa.replace('.', ''));
+    const scale = Number(exponent) - (digits - 1);
+    const fits = [scaled, scaled - 1, scaled + 1]
+      .map(candidate => Number(`${candidate}e${scale}`))
+      .filter(candidate => Math.fround(candidate) === value)
+      .sort((a, b) => Math.abs(a - value) - Math.abs(b - value));
+    if (fits.length) return String(fits[0]);
   }
+  return String(value);
+}
+
+/** `text` in scientific notation when that is shorter: `1e+20`, not twenty-one digits. */
+function compact(text: string): string {
+  const scientific = Number(text).toExponential();
+  return scientific.length < text.length ? scientific : text;
 }
 
 const significantDigits = (text: string): number =>
@@ -81,8 +102,8 @@ export function displayFloat(value: number, size: number): string {
   if (Object.is(value, -0)) return '-0';
   if (Number.isSafeInteger(value)) return String(value);
   const shortest = shortestDecimal(value, size);
-  if (significantDigits(shortest) <= SHOWN_DIGITS) return shortest;
-  return '≈' + String(Number(value.toPrecision(SHOWN_DIGITS)));
+  if (significantDigits(shortest) <= SHOWN_DIGITS) return compact(shortest);
+  return '≈' + compact(String(Number(value.toPrecision(SHOWN_DIGITS))));
 }
 
 /** A cell's number as it is shown: a float of `floatSize` bytes, or an integer or address. */

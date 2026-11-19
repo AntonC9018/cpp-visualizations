@@ -544,9 +544,18 @@ function checkReferences(
   return names;
 }
 
-function checkValue(value: unknown, where: string): void {
+function checkValue(value: unknown, cell: ScalarVariable | ScalarField | undefined, where: string): void {
+  if (value === null || value === UNKNOWN) return;
+  if (cell?.floating) {
+    check(
+      typeof value === 'number' && Number.isFinite(value) && (cell.size === 8 || Math.fround(value) === value),
+      where,
+      `a ${cell.size}-byte floating value is a finite number it can hold, "?" or null`
+    );
+    return;
+  }
   check(
-    value === null || value === UNKNOWN || (typeof value === 'number' && Number.isFinite(value)),
+    typeof value === 'number' && Number.isInteger(value),
     where,
     'a value is an integer, "?" (declared, unknown) or null (no storage yet)'
   );
@@ -653,7 +662,7 @@ function storedItems(text: string, where: string): string[] {
 /** Whether `item` is how a cell shows `value`: a float as `displayFloat` does, the rest exactly. */
 function showsCell(item: string, value: unknown, cell: ScalarVariable | ScalarField | undefined): boolean {
   if (item === UNKNOWN || value === UNKNOWN) return item === value;
-  if (item === 'nullptr') return value === 0;
+  if (item === 'nullptr') return cell?.kind === 'ptr' && value === 0;
   if (cell?.floating && typeof value === 'number') return item === displayFloat(value, cell.size);
   return !item.startsWith('≈') && Object.is(Number(item), value);
 }
@@ -1104,7 +1113,7 @@ export function validate(trace: unknown): asserts trace is AnyTrace {
       `expected exactly ${pyListRepr(sortedCellNames)}`
     );
     for (const [name, value] of Object.entries(step.values)) {
-      checkValue(value, `${where}.values.${name}`);
+      checkValue(value, storage.cells[name], `${where}.values.${name}`);
     }
     check(isPlainObject(step.targets), `${where}.targets`, 'expected an object');
     checkPointers(step, storage, where);

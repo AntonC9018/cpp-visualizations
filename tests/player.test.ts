@@ -766,3 +766,18 @@ test('a compound assignment reads into its operator in both languages', async ()
   }
   assert.deepEqual(errors, []);
 });
+
+// The bundled player shows floats as the tracer does: the shortest decimal that reads back.
+test('memory cells show the short float display', async () => {
+  const generated = traceSource('float f = 0.1f; double d = 1e20;', { runtime: false });
+  await page.setContent(PAGE.replace(trace, JSON.stringify(generated).replace(/</g, '\\u003c')));
+  await page.evaluate(() => window.CourseVisualization!.scan());
+  await page.waitForSelector('.cv-player');
+  const texts = await page.evaluate(() => {
+    const playerEl = (document.querySelector('.course-visualization') as PlayerElement).cvPlayer;
+    playerEl.end();
+    return [...playerEl.svg.querySelectorAll('text')].map(element => element.textContent ?? '');
+  });
+  assert.ok(texts.includes('0.1') && texts.includes('1e+20'), texts.join(' | '));
+  assert.ok(!texts.some(text => text.includes('0.100000001')), 'no float noise digits');
+});

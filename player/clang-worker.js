@@ -713,20 +713,29 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return sign + (fixed.includes(".") ? fixed.replace(/\.?0+$/, "") : fixed);
   }
   const SHOWN_DIGITS = 8;
+  const FLOAT_DIGITS = 9;
   function shortestDecimal(value, size) {
-    if (size === 8) return String(value);
-    for (let digits = 1; ; digits++) {
-      const text = value.toPrecision(digits);
-      if (Math.fround(Number(text)) === value) return String(Number(text));
+    if (size === 8 || Math.fround(value) !== value) return String(value);
+    for (let digits = 1; digits <= FLOAT_DIGITS; digits++) {
+      const [mantissa, exponent] = value.toExponential(digits - 1).split("e");
+      const scaled = Number(mantissa.replace(".", ""));
+      const scale = Number(exponent) - (digits - 1);
+      const fits = [scaled, scaled - 1, scaled + 1].map((candidate) => Number(`${candidate}e${scale}`)).filter((candidate) => Math.fround(candidate) === value).sort((a, b) => Math.abs(a - value) - Math.abs(b - value));
+      if (fits.length) return String(fits[0]);
     }
+    return String(value);
+  }
+  function compact$1(text) {
+    const scientific = Number(text).toExponential();
+    return scientific.length < text.length ? scientific : text;
   }
   const significantDigits = (text) => Number(text).toExponential().split("e")[0].replace(/[-.]/g, "").length;
   function displayFloat(value, size) {
     if (Object.is(value, -0)) return "-0";
     if (Number.isSafeInteger(value)) return String(value);
     const shortest = shortestDecimal(value, size);
-    if (significantDigits(shortest) <= SHOWN_DIGITS) return shortest;
-    return "≈" + String(Number(value.toPrecision(SHOWN_DIGITS)));
+    if (significantDigits(shortest) <= SHOWN_DIGITS) return compact$1(shortest);
+    return "≈" + compact$1(String(Number(value.toPrecision(SHOWN_DIGITS))));
   }
   function displayNumber(value, floatSize = null) {
     if (floatSize) return displayFloat(value, floatSize);
@@ -978,9 +987,18 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return names;
   }
-  function checkValue(value, where) {
+  function checkValue(value, cell, where) {
+    if (value === null || value === UNKNOWN) return;
+    if (cell == null ? void 0 : cell.floating) {
+      check(
+        typeof value === "number" && Number.isFinite(value) && (cell.size === 8 || Math.fround(value) === value),
+        where,
+        `a ${cell.size}-byte floating value is a finite number it can hold, "?" or null`
+      );
+      return;
+    }
     check(
-      value === null || value === UNKNOWN || typeof value === "number" && Number.isFinite(value),
+      typeof value === "number" && Number.isInteger(value),
       where,
       'a value is an integer, "?" (declared, unknown) or null (no storage yet)'
     );
@@ -1060,7 +1078,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }
   function showsCell(item, value, cell) {
     if (item === UNKNOWN || value === UNKNOWN) return item === value;
-    if (item === "nullptr") return value === 0;
+    if (item === "nullptr") return (cell == null ? void 0 : cell.kind) === "ptr" && value === 0;
     if ((cell == null ? void 0 : cell.floating) && typeof value === "number") return item === displayFloat(value, cell.size);
     return !item.startsWith("≈") && Object.is(Number(item), value);
   }
@@ -1455,7 +1473,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         `expected exactly ${pyListRepr(sortedCellNames)}`
       );
       for (const [name, value] of Object.entries(step.values)) {
-        checkValue(value, `${where}.values.${name}`);
+        checkValue(value, storage.cells[name], `${where}.values.${name}`);
       }
       check(isPlainObject$1(step.targets), `${where}.targets`, "expected an object");
       checkPointers(step, storage, where);

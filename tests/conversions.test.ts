@@ -268,6 +268,10 @@ describe('FloatFormatTests', () => {
       [123456789012, 8, '123456789012'],
       [5e-324, 8, '5e-324'],
       [-0, 4, '-0'],
+      // At a power of two the decimal nearest the float misses it; its neighbour reads back.
+      [2 ** -96, 4, '1.2621775e-29'],
+      [1e20, 8, '1e+20'],
+      [123456789012345680000, 8, '≈1.2345679e+20'],
     ];
     for (const [value, size, shown] of cases) assert.equal(displayFloat(value, size), shown, String(value));
     const t = tracing.trace('float f = 0.1f; double c = 0.1 + 0.2; float g = f;', { runtime: false });
@@ -295,6 +299,33 @@ describe('FloatFormatTests', () => {
     };
     // 1.00000012 is another double that rounds to the same float.
     assert.throws(() => validate(read('1.00000012')), FormatError);
+  });
+
+  test('validation_rejects_values_a_cell_cannot_hold', () => {
+    const t = tracing.trace('float f = 0; int i = 1; float g = f;', { runtime: false });
+    validate(t);
+    const broken = (change: (copy: ExecutionTrace) => void): ExecutionTrace => {
+      const copy = structuredClone(t);
+      change(copy);
+      return copy;
+    };
+    const last = (copy: ExecutionTrace): ExecutionTrace['steps'][number] => copy.steps.at(-1)!;
+    const rejects = (copy: ExecutionTrace, message: RegExp): void => {
+      assert.throws(() => validate(copy), (err: unknown) => err instanceof FormatError && message.test(err.message));
+    };
+    rejects(broken(copy => (last(copy).values.f = 16777217)), /4-byte floating value/);
+    rejects(broken(copy => (last(copy).values.i = 0.5)), /a value is an integer/);
+    // A floating zero is no null pointer: the read of f may not say nullptr.
+    rejects(
+      broken(copy => {
+        const index = copy.steps.findIndex(s => s.op?.kind === 'read');
+        copy.steps = copy.steps.slice(0, index + 1);
+        const step = copy.steps[index];
+        (step.op as { value: string }).value = 'nullptr';
+        step.pane = step.pane.replace(/0$/, 'nullptr');
+      }),
+      /f holds 0 before the read/
+    );
   });
 });
 
