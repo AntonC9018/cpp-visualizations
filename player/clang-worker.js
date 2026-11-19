@@ -1751,24 +1751,46 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return true;
   }
+  function blankComments(source) {
+    let out = "";
+    let breaks = "";
+    let last = 0;
+    const copy = (text) => {
+      const end = text.search(/[\r\n]/);
+      if (breaks && end >= 0) {
+        out += text.slice(0, end) + breaks + text.slice(end);
+        breaks = "";
+      } else {
+        out += text;
+      }
+    };
+    for (const match of source.matchAll(QUOTED_OR_COMMENT)) {
+      const value = match[0];
+      copy(source.slice(last, match.index));
+      last = match.index + value.length;
+      if (IS_RAW_STRING.test(value)) throw new Unsupported("raw string literals are not supported");
+      if (value.startsWith("//") || value.startsWith("/*")) {
+        out += " ";
+        breaks += (value.match(/\r\n|\r|\n/g) ?? []).join("");
+      } else {
+        out += value;
+      }
+    }
+    copy(source.slice(last));
+    return out + breaks;
+  }
   function snippetBody(source) {
     if (LINE_SPLICE.test(source)) {
       throw new Unsupported("a backslash at the end of a line (a line splice) is not supported");
     }
-    let cleaned = source.replace(QUOTED_OR_COMMENT, (value) => {
-      if (IS_RAW_STRING.test(value)) throw new Unsupported("raw string literals are not supported");
-      if (value.startsWith("//") || value.startsWith("/*")) {
-        const newlines = (value.match(/\n/g) || []).length;
-        return "\n".repeat(newlines) + " ";
-      }
-      return value;
-    });
-    for (const line of cleaned.split(/\r?\n/)) {
+    let cleaned = blankComments(source);
+    const lines = cleaned.split(/\r\n|\r|\n/);
+    for (const line of lines) {
       if (line.trimStart().startsWith("#") && !/^\s*#\s*include\s*[<"][\w./]+[>"]\s*$/.test(line)) {
         throw new Unsupported("only ordinary include directives are supported");
       }
     }
-    cleaned = cleaned.replace(/^\s*#\s*include[^\n]*/gm, "").trim();
+    cleaned = lines.map((line) => line.trimStart().startsWith("#") ? "" : line).join("\n").trim();
     cleaned = cleaned.replace(/^using\s+namespace\s+std\s*;\s*/, "");
     if (/\bmain\s*\(/.test(cleaned)) {
       const match = /^([\s\S]*?)int\s+main\s*\(\s*(?:void\s*)?\)\s*\{([\s\S]*)\}\s*$/.exec(cleaned);

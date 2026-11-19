@@ -702,6 +702,14 @@ describe('CompoundAssignmentTests', () => {
     assert.deepEqual(final(tracing.trace('int a = 1; // note\ra += 3;', { runtime: false })), { a: 4 });
   });
 
+  test('a_comment_in_a_directive_keeps_it_one_line', () => {
+    const include = '#include /* Gives us\nfixed-width integers. */ <cstdint>\nint n = 1;';
+    assert.deepEqual(final(tracing.trace(include, { runtime: false })), { n: 1 });
+    unsupported('int n = 1;\n#include <cstdint> /* already\nincluded */ n += 3;', /ordinary include/);
+    // A lone carriage return ends a directive as it ends any line.
+    assert.deepEqual(final(tracing.trace('int n = 1;\r#include <cstdint>\rn += 3;', { runtime: false })), { n: 4 });
+  });
+
   test('the_statement_ends_at_its_own_semicolon_past_comments', () => {
     const directory = mkdtempSync(join(tmpdir(), 'analyze-'));
     try {
