@@ -19,6 +19,20 @@ export class IllFormed extends Unsupported {
 }
 
 /**
+ * The snippet does not compile as it is, but traces with `flag` on: with `types`, a last statement
+ * whose types do not fit is shown instead of run.
+ */
+export class NeedsFlag extends IllFormed {
+  readonly flag: string;
+
+  constructor(message: string, flag: string, offset: number | null = null) {
+    super(message, offset);
+    this.name = 'NeedsFlag';
+    this.flag = flag;
+  }
+}
+
+/**
  * The first error in Clang's diagnostics for `program`, without the temporary path, which
  * differs between runs. Assigning to a struct fails overload resolution, and only the note
  * that follows says which types did not fit, so it joins the message.

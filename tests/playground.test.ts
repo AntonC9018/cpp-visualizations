@@ -188,11 +188,17 @@ test(
       assert.equal(await page.locator('.pg-error-box').isHidden(), true);
       assert.match(page.url(), /[?&]types=1/);
 
-      // Without types, the same mismatch is a compile error.
+      // Without types, the same mismatch is a compile error that offers to turn types on.
       await page.click('[data-flag="types"]');
       await page.waitForSelector('.pg-error-box:not([hidden])');
-      assert.match((await page.locator('.pg-error-box').textContent()) ?? '', /IllFormed/);
+      assert.match((await page.locator('.pg-error-box').textContent()) ?? '', /IllFormed: .*with types on/);
       assert.doesNotMatch(page.url(), /[?&]types=/);
+      await page.click('.pg-error-box .pg-error-action:has-text("Turn on Types")');
+      await page.waitForFunction(
+        () => (document.querySelector('.pg-vis-host .cv-stage')?.textContent || '').includes('uint8_t')
+      );
+      assert.equal(await page.locator('.pg-error-box').isHidden(), true);
+      assert.match(page.url(), /[?&]types=1/);
 
       // Switch to Struct layout preset -> renders Layout grid cleanly.
       await page.selectOption('.pg-preset-select', 'layout-padding');

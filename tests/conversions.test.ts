@@ -13,7 +13,7 @@ import {
 import { displayFloat, formatFloat } from '../src/core/floats.ts';
 import { text as svgText } from '../src/player/svg.ts';
 import * as tracing from '../src/node/tracing.ts';
-import { INTEGERS, Unsupported } from '../src/node/tracing.ts';
+import { INTEGERS, IllFormed, NeedsFlag, Unsupported } from '../src/node/tracing.ts';
 import { integerLiteral } from '../src/core/integers.ts';
 
 type Conversion = [before: string, after: string, from: string, to: string];
@@ -223,8 +223,17 @@ describe('UntypedConversionTests', () => {
     assert.ok(!t.variables.some(variable => 'type' in variable));
   });
 
-  test('a_mismatch_is_not_shown', () => {
-    throwsUnsupported(() => tracing.trace('int a = 5; int* p = a;', { runtime: false }), /cannot initialize/);
+  test('a_mismatch_is_not_shown_but_suggests_types', () => {
+    assert.throws(
+      () => tracing.trace('int a = 5; int* p = a;', { runtime: false }),
+      (err: unknown) =>
+        err instanceof NeedsFlag && err.flag === 'types' && /cannot initialize.*with types on/.test(err.message)
+    );
+    // An error types cannot show stays a plain compile error.
+    assert.throws(
+      () => tracing.trace('int a = b;', { runtime: false }),
+      (err: unknown) => err instanceof IllFormed && !(err instanceof NeedsFlag)
+    );
   });
 });
 

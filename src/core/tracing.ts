@@ -5,7 +5,7 @@
 // (such as GDB in Node) verifies every live scalar and struct field after every statement.
 
 import { arrayType, codeName, elementLabel, operatorName, resolveArrayAliases } from './arrays.ts';
-import { type AstNode, type CompilerFrontend, IllFormed, Unsupported } from './errors.ts';
+import { type AstNode, type CompilerFrontend, IllFormed, NeedsFlag, Unsupported } from './errors.ts';
 import { INTEGERS, Integer, bareSpelling, integerName, integerSpelled } from './integers.ts';
 import type { Flags } from './settings.ts';
 import {
@@ -47,7 +47,7 @@ import {
 
 export { INTEGERS, Integer } from './integers.ts';
 
-export { IllFormed, Unsupported };
+export { IllFormed, NeedsFlag, Unsupported };
 
 export interface CellInput {
   address: number;
@@ -2305,6 +2305,16 @@ export interface TraceOptions extends Flags {
   directory?: string;
 }
 
+/** Whether a snippet that does not compile traces once types show its last statement's mismatch. */
+function tracesWithTypes(source: string, options: TraceOptions): boolean {
+  try {
+    traceWithFrontend(source, { ...options, types: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Trace a snippet into a validated unified-format trace, rejecting unsupported constructs.
  *
@@ -2322,7 +2332,12 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
   try {
     [statements, records, aliases] = analyzeWithFrontend(body, frontend);
   } catch (error) {
-    if (!types || !(error instanceof IllFormed)) throw error;
+    if (!(error instanceof IllFormed)) throw error;
+    if (!types) {
+      throw tracesWithTypes(source, options)
+        ? new NeedsFlag(`${error.message}; with types on, the trace shows why`, 'types', error.offset)
+        : error;
+    }
     // A last statement whose types do not fit is shown, not run: the rest is traced.
     [body, mismatch] = cutMismatch(body, error, preamble(body, frontend).length);
     [statements, records, aliases] = analyzeWithFrontend(body, frontend);

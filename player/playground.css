@@ -308,6 +308,12 @@ body {
   white-space: pre-wrap;
 }
 
+.pg-error-action {
+  display: block;
+  margin-top: 0.6rem;
+  font-family: inherit;
+}
+
 .pg-error-box[hidden],
 .pg-empty-box[hidden] {
   display: none;

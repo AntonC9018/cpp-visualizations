@@ -1,5 +1,5 @@
 // Main-thread RPC client wrapping the Clang WASM Web Worker.
-import { IllFormed, Unsupported } from '../core/errors.ts';
+import { IllFormed, NeedsFlag, Unsupported } from '../core/errors.ts';
 import type { TraceSettings } from '../core/settings.ts';
 import type { AnyTrace } from '../core/trace_format.ts';
 import { DEFAULT_CACHE_NAME, DEFAULT_WASM_URL, type WasmLoadProgress } from './cache.ts';
@@ -63,13 +63,15 @@ export class ClangWasmClient {
 
       this.pending.delete(response.id);
       if (response.type === 'error') {
-        const { name, message } = response.error;
+        const { name, message, flag } = response.error;
         const err =
-          name === 'IllFormed'
-            ? new IllFormed(message)
-            : name === 'Unsupported'
-              ? new Unsupported(message)
-              : new Error(message);
+          name === 'NeedsFlag' && flag
+            ? new NeedsFlag(message, flag)
+            : name === 'IllFormed'
+              ? new IllFormed(message)
+              : name === 'Unsupported'
+                ? new Unsupported(message)
+                : new Error(message);
         err.name = name;
         call.reject(err);
         return;
