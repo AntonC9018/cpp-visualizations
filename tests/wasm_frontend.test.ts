@@ -223,7 +223,7 @@ describe('ClangWasmParityTests', { skip: !existsSync(WASM_PATH) }, () => {
       'int a = ;',
       'struct Empty {};',
       'int x = 1; while (x > 0) { x = 0; }',
-      'double d = 1.5;',
+      'int* p = new int{ 1 };',
     ];
     for (const bad of badSnippets) {
       assert.throws(() => traceWithWasmModule(bad, wasmModule, EXECUTION), Unsupported);
