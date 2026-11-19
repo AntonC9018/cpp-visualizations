@@ -1,5 +1,6 @@
 // SVG scene rendering for code, tether, pointer arcs, memory cells, evaluation pane, and stdout.
 import { arrayType } from '../core/arrays.ts';
+import { displayNumber } from '../core/floats.ts';
 import type { Span, TraceStep } from '../core/trace_format.ts';
 import {
   CELL,
@@ -528,7 +529,8 @@ function memory(c: SceneContext): string {
     );
     if (on) {
       const shown = (value: unknown): string => {
-        const display = Object.is(value, -0) ? '-0' : String(value);
+        const display =
+          typeof value === 'number' ? displayNumber(value, cell.floating ? cell.size : null) : String(value);
         const length = display.length;
         const size = Math.min(30, (cell.w - Math.min(12, cell.w / 5)) / (length * CHAR));
         return text(0, size / 3 + 1, display, round(size), value === '?' ? P.grey : P.fg, 'middle');

@@ -6,6 +6,7 @@
 // `player/README.md` documents every field.
 
 import { arrayType, codeName, elementLabel } from './arrays.ts';
+import { displayFloat } from './floats.ts';
 import { INTEGERS, integerLiteral, integerSpelled } from './integers.ts';
 
 export const FORMAT = 1;
@@ -46,6 +47,8 @@ export interface ScalarField {
   kind: ScalarKind;
   color: number;
   type?: string;
+  /** A float (size 4) or double (size 8) cell: its value shows as `displayFloat` reads it. */
+  floating?: true;
 }
 
 export interface StructField {
@@ -68,6 +71,8 @@ export interface ScalarVariable {
   color: number;
   /** The declared type as the lessons write it (`int*`); the player labels with it. */
   type?: string;
+  /** A float (size 4) or double (size 8) cell: its value shows as `displayFloat` reads it. */
+  floating?: true;
 }
 
 export interface StructVariable {
@@ -259,10 +264,12 @@ export function scalar(
   size = 4,
   kind: ScalarKind = 'int',
   color = 0,
-  type: string | null = null
+  type: string | null = null,
+  floating = false
 ): ScalarVariable {
   const variable: ScalarVariable = { name, address, size, kind, color };
   if (type) variable.type = type;
+  if (floating) variable.floating = true;
   return variable;
 }
 
@@ -286,9 +293,10 @@ export function field(
   offset: number,
   size = 4,
   kind: ScalarKind = 'int',
-  color = 0
+  color = 0,
+  floating = false
 ): ScalarField {
-  return { name, offset, size, kind, color };
+  return { name, offset, size, kind, color, ...(floating ? { floating: true as const } : {}) };
 }
 
 export function structField(
@@ -432,7 +440,8 @@ function checkFields(owner: Record<string, any>, here: string): void {
     const spot = `${here}.fields[${position}]`;
     const nested = isPlainObject(item) && item.kind === STRUCT;
     const req = ['name', 'offset', 'size', 'kind', 'color', ...(nested ? ['type', 'fields'] : [])];
-    checkKeys(item, spot, req);
+    checkKeys(item, spot, req, nested ? [] : ['floating']);
+    checkFloating(item, spot);
     if (array) {
       check(item.name === elementLabel(position), spot, 'invalid array element name');
       check(
@@ -462,6 +471,16 @@ function checkFields(owner: Record<string, any>, here: string): void {
   check(end <= owner.size, here, 'fields exceed the struct size');
 }
 
+/** A floating cell is a 4-byte float or an 8-byte double, never a pointer. */
+function checkFloating(cell: Record<string, any>, where: string): void {
+  if (!Object.hasOwn(cell, 'floating')) return;
+  check(
+    cell.floating === true && cell.kind === 'int' && (cell.size === 4 || cell.size === 8),
+    `${where}.floating`,
+    'only a 4- or 8-byte value cell is floating, and it says true'
+  );
+}
+
 function checkVariables(
   variables: unknown,
   where: string
@@ -474,7 +493,8 @@ function checkVariables(
     const here = `${where}[${index}]`;
     const struct_ = isPlainObject(variable) && variable.kind === 'struct';
     const req = ['name', 'address', 'size', 'kind', 'color', ...(struct_ ? ['type', 'fields'] : [])];
-    checkKeys(variable, here, req, ['type']);
+    checkKeys(variable, here, req, struct_ ? ['type'] : ['type', 'floating']);
+    checkFloating(variable, here);
     check(typeof (variable.type ?? '') === 'string', `${here}.type`, 'expected text');
     check(IDENTIFIER.test(String(variable.name)), here, 'name is not an identifier');
     check(!names.has(variable.name), here, `duplicate variable ${pyRepr(variable.name)}`);
@@ -609,22 +629,33 @@ function replacement(before: string, after: string, span: Span, where: string): 
   return replaced;
 }
 
-const LITERAL = /^-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i;
+const LITERAL = /^≈?-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i;
 
-function stored(text: string, where: string): (number | string)[] {
+/** The items a value text spells: one, or each of a brace list. */
+function storedItems(text: string, where: string): string[] {
   const braced = /^(?:[A-Za-z_]\w*)?\{[\s\S]*\}$/.test(text);
   const inner = braced ? text.slice(text.indexOf('{')) : text;
   const items = braced ? inner.replace(/[{}]/g, '').split(',').map(s => s.trim()) : [inner];
-  const result: (number | string)[] = [];
   for (const item of items) {
     check(
       item === 'nullptr' || item === UNKNOWN || LITERAL.test(item),
       where,
       `${pyRepr(inner)} is not a value: expected an integer, nullptr, "?" or {…} of them`
     );
-    result.push(item === 'nullptr' ? 0 : item === UNKNOWN ? item : Number(item));
   }
-  return result;
+  return items;
+}
+
+/** Whether `item` is how a cell shows `value`: a float as `displayFloat` does, the rest exactly. */
+function showsCell(item: string, value: unknown, cell: ScalarVariable | ScalarField | undefined): boolean {
+  if (item === UNKNOWN || value === UNKNOWN) return item === value;
+  if (item === 'nullptr') return value === 0;
+  if (cell?.floating && typeof value === 'number') return item === displayFloat(value, cell.size);
+  return !item.startsWith('≈') && Object.is(Number(item), value);
+}
+
+function stored(text: string, where: string): (number | string)[] {
+  return storedItems(text, where).map(item => (item === 'nullptr' ? 0 : item === UNKNOWN ? item : Number(item)));
 }
 
 /** Element-wise `Object.is`, so a -0 cell never passes for 0. */
@@ -663,8 +694,9 @@ function checkMemory(
   const shown =
     cells.length === 1 && cells[0] === name ? String(expected[0]) : `{${expected.map(String).join(', ')}}`;
   const when = kind === 'write' ? 'after the write' : 'before the read';
+  const items = storedItems(op.value, where);
   check(
-    arraysEqual(stored(op.value, where), expected),
+    items.length === cells.length && items.every((item, i) => showsCell(item, expected[i], storage.cells[cells[i]])),
     `${where}.value`,
     `${name} holds ${shown} ${when}, not ${pyRepr(op.value)}`
   );

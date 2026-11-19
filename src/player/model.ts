@@ -54,6 +54,7 @@ export interface ModelLeaf {
   color: number;
   fieldColor?: number;
   type?: string;
+  floating?: true;
   children?: undefined;
   fields?: undefined;
 }
@@ -141,6 +142,7 @@ export function prepare(trace: ExecutionTrace): PreparedModel {
           kind: field.kind,
           color: variable.color,
           fieldColor: field.color,
+          ...(field.floating ? { floating: true as const } : {}),
         };
         leaves.push(leaf);
         group.children.push(leaf);

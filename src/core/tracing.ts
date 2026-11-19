@@ -18,6 +18,7 @@ import {
   recordName,
   typeSpelling,
 } from './records.ts';
+import { displayNumber, formatFloat } from './floats.ts';
 import {
   type ExecutionTrace,
   FORMAT,
@@ -142,62 +143,6 @@ function floatType(node: AstNode | null | undefined, records: unknown = {}): { s
   return floatNamed(canonicalType(node), records);
 }
 
-// std::cout's defaultfloat precision: significant digits of a printed floating-point value.
-const PRINTED_DIGITS = 6;
-
-/** A finite, non-negative double exactly as `mantissa * 2 ** exponent`. */
-function binaryParts(value: number): { mantissa: bigint; exponent: number } {
-  const view = new DataView(new ArrayBuffer(8));
-  view.setFloat64(0, value);
-  const bits = view.getBigUint64(0);
-  const biased = Number(bits >> 52n);
-  const fraction = bits & ((1n << 52n) - 1n);
-  return biased === 0
-    ? { mantissa: fraction, exponent: -1074 }
-    : { mantissa: fraction | (1n << 52n), exponent: biased - 1075 };
-}
-
-/** Whether a non-negative `value` is exactly `(digits - 0.5) * 10 ** scale`. */
-function isTie(value: number, digits: number, scale: number): boolean {
-  const { mantissa, exponent } = binaryParts(value);
-  // Compare 2 * mantissa * 2^exponent with (2 * digits - 1) * 10^scale in integers.
-  let left = 2n * mantissa;
-  let right = 2n * BigInt(digits) - 1n;
-  if (exponent >= 0) left <<= BigInt(exponent);
-  else right <<= BigInt(-exponent);
-  if (scale >= 0) right *= 10n ** BigInt(scale);
-  else left *= 10n ** BigInt(-scale);
-  return left === right;
-}
-
-/** Format a floating-point number the way `std::cout` defaultfloat (precision 6) prints it. */
-export function formatFloat(value: number): string {
-  if (Object.is(value, -0)) return '-0';
-  if (value === 0) return '0';
-  const sign = value < 0 ? '-' : '';
-  const magnitude = Math.abs(value);
-  const [mantissa, e] = magnitude.toExponential(PRINTED_DIGITS - 1).split('e');
-  const exp = Number(e);
-  let rounded = Number(mantissa.replace('.', ''));
-  // toExponential rounds an exact tie up, printf rounds it to the even neighbour. The larger
-  // neighbour of a tie that carries into the next power of ten is 100000, already even.
-  if (rounded % 2 === 1 && isTie(magnitude, rounded, exp - (PRINTED_DIGITS - 1))) rounded -= 1;
-  const digits = String(rounded);
-  if (exp < -4 || exp >= PRINTED_DIGITS) {
-    const trimmed = (digits[0] + '.' + digits.slice(1)).replace(/\.?0+$/, '');
-    const expSign = exp < 0 ? '-' : '+';
-    return `${sign}${trimmed}e${expSign}${String(Math.abs(exp)).padStart(2, '0')}`;
-  }
-  const point = exp + 1;
-  const fixed =
-    point <= 0
-      ? '0.' + '0'.repeat(-point) + digits
-      : point >= digits.length
-        ? digits + '0'.repeat(point - digits.length)
-        : digits.slice(0, point) + '.' + digits.slice(point);
-  return sign + (fixed.includes('.') ? fixed.replace(/\.?0+$/, '') : fixed);
-}
-
 export class Pointer {
   target: string | null;
 
@@ -270,6 +215,28 @@ function hasRecord(records: unknown, name: string): boolean {
     return [...records].includes(name);
   }
   return Object.hasOwn(records as object, name);
+}
+
+/**
+ * How a value of a type is shown: a float's byte size, `null` for an integer or a pointer, or a
+ * record's shape for each of its fields.
+ */
+export type Shape = number | null | { readonly [field: string]: Shape };
+
+function recordShape(record: RecordInfo, records: unknown): Shape {
+  return Object.fromEntries(
+    record.fields.map(field => {
+      const nested = field.kind === 'struct' && field.type ? getRecord(records, field.type) : undefined;
+      return [field.name, nested ? recordShape(nested, records) : field.floating ? field.size : null];
+    })
+  );
+}
+
+function shapeOf(node: AstNode | null | undefined, records: unknown): Shape {
+  const float = floatType(node, records);
+  if (float) return float.size;
+  const record = pointerDepth(node, records) ? undefined : getRecord(records, recordName(node));
+  return record ? recordShape(record, records) : null;
 }
 
 function getRecord(records: unknown, name: string): RecordInfo | undefined {
@@ -521,7 +488,7 @@ export function extractMainAstFromStdout(stdout: string, program: string): AstNo
  * - `convert`: a value of the type `source` becomes the `value` it has in `type`, even when it
  *   reads the same.
  */
-export type Reduction = { readonly span: Span; readonly type: string; readonly floating?: boolean } & (
+export type Reduction = { readonly span: Span; readonly type: string; readonly shape: Shape } & (
   | { readonly kind: 'read'; readonly name: string; readonly record: string | null }
   | { readonly kind: 'addr'; readonly name: string }
   | { readonly kind: 'deref'; readonly name: string; readonly value: Pointer | null }
@@ -532,7 +499,7 @@ export type Reduction = { readonly span: Span; readonly type: string; readonly f
 );
 
 /** A reduction's own fields, one shape per kind: the evaluator adds where it is and its type. */
-type ReductionDetails = Reduction extends infer R ? (R extends unknown ? Omit<R, 'span' | 'type' | 'floating'> : never) : never;
+type ReductionDetails = Reduction extends infer R ? (R extends unknown ? Omit<R, 'span' | 'type' | 'shape'> : never) : never;
 
 function load(state: State, name: string, missing = false): Value {
   const [owner, ...path] = name.split('.');
@@ -643,12 +610,11 @@ class Evaluator {
   }
 
   private reduce(node: AstNode, details: ReductionDetails): void {
-    const floating = Boolean(floatType(node, this.records));
     this.reductions.push({
       ...details,
       span: this.locate(node),
       type: displayedType(node),
-      ...(floating ? { floating: true } : {}),
+      shape: shapeOf(node, this.records),
     });
   }
 
@@ -1145,7 +1111,7 @@ export class Statement {
   slot: Span | null;
   type: string | null;
   size: number | null;
-  floating: boolean;
+  shape: Shape;
 
   constructor({
     source,
@@ -1168,7 +1134,7 @@ export class Statement {
     slot = null,
     type = null,
     size = null,
-    floating = false,
+    shape = null,
   }: {
     source: string;
     span: Span | null;
@@ -1190,7 +1156,7 @@ export class Statement {
     slot?: Span | null;
     type?: string | null;
     size?: number | null;
-    floating?: boolean;
+    shape?: Shape;
   }) {
     this.source = source;
     this.span = span;
@@ -1212,7 +1178,7 @@ export class Statement {
     this.slot = slot;
     this.type = type;
     this.size = size;
-    this.floating = floating;
+    this.shape = shape;
   }
 }
 
@@ -1522,7 +1488,7 @@ function analyzeStatement(
       slot: [0, pane.length],
       type: displayedType(variable),
       size,
-      floating: Boolean(floatType(variable, records)),
+      shape: shapeOf(variable, records),
     });
   }
 
@@ -1651,7 +1617,7 @@ function analyzeStatement(
     slot,
     type: declared ? displayedType(variable) : null,
     size,
-    floating: Boolean(floatType(declared ? variable : root, records)),
+    shape: shapeOf(declared ? variable : root, records),
   });
 }
 
@@ -2109,14 +2075,14 @@ class Renderer {
     return `0x${address.toString(16).padStart(16, '0')}`;
   }
 
-  show(value: Value): string {
+  show(value: Value, shape: Shape): string {
     if (isPlainObject(value)) {
-      return `{${Object.values(value)
-        .map(item => this.show(item))
+      const fields = shape !== null && typeof shape === 'object' ? shape : {};
+      return `{${Object.entries(value)
+        .map(([field, item]) => this.show(item, fields[field] ?? null))
         .join(', ')}}`;
     }
-    const val = this.stored(value);
-    return Object.is(val, -0) ? '-0' : String(val);
+    return displayNumber(this.stored(value), typeof shape === 'number' ? shape : null);
   }
 
   stored(value: Value): number {
@@ -2193,7 +2159,7 @@ class Renderer {
       if (reduction.kind === 'read') {
         text =
           (reduction.record ?? '') +
-          this.show(load(before, reduction.name));
+          this.show(load(before, reduction.name), reduction.shape);
         op = { kind: 'read', name: reduction.name, value: text };
       } else if (reduction.kind === 'addr') {
         text = String(this.addresses[reduction.name]);
@@ -2214,12 +2180,12 @@ class Renderer {
         this.types &&
         !pane.insideTyped(reduction.span[0], reduction.span[1])
       ) {
-        text = this.show(reduction.value);
+        text = this.show(reduction.value, reduction.shape);
         op = { kind: 'convert', value: text, from: reduction.source, to: reduction.type };
       } else {
         text =
           (reduction.kind === 'eval' ? (reduction.record ?? '') : '') +
-          this.show(reduction.value);
+          this.show(reduction.value, reduction.shape);
         op = { kind: 'eval', value: text };
         // A brace list of plain values is already its value, however it is spaced.
         if (
@@ -2257,9 +2223,9 @@ class Renderer {
     }
     if (typeof statement.value === 'number') {
       const shown =
-        statement.outputSuffix !== null && statement.floating
+        statement.outputSuffix !== null && typeof statement.shape === 'number'
           ? formatFloat(statement.value)
-          : this.show(statement.value);
+          : this.show(statement.value, statement.shape);
       if (pane.read(statement.result[0], statement.result[1]) !== shown) {
         const op = {
           kind: 'eval' as const,
@@ -2404,7 +2370,7 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
               )
             );
           } else {
-            flds.push(traceField(item.name, item.offset, item.size, item.kind, shade));
+            flds.push(traceField(item.name, item.offset, item.size, item.kind, shade, Boolean(item.floating)));
           }
         }
         return flds;
@@ -2412,7 +2378,15 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
       variables.push(struct(name, record.name, top, size, fieldsOf(record, name), color));
     } else {
       variables.push(
-        scalar(name, top, size, declaration.pointer ? 'ptr' : 'int', color, types ? declaration.type : null)
+        scalar(
+          name,
+          top,
+          size,
+          declaration.pointer ? 'ptr' : 'int',
+          color,
+          types ? declaration.type : null,
+          typeof declaration.shape === 'number'
+        )
       );
     }
   }

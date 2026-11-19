@@ -10,7 +10,7 @@ import {
   type TraceStep,
   validate,
 } from '../src/core/trace_format.ts';
-import { formatFloat } from '../src/core/tracing.ts';
+import { displayFloat, formatFloat } from '../src/core/floats.ts';
 import { text as svgText } from '../src/player/svg.ts';
 import * as tracing from '../src/node/tracing.ts';
 import { INTEGERS, Unsupported } from '../src/node/tracing.ts';
@@ -247,6 +247,32 @@ describe('FloatFormatTests', () => {
     for (const [printed, value] of Object.entries(cases)) {
       assert.equal(formatFloat(value), printed, String(value));
     }
+  });
+
+  test('cells_show_the_shortest_decimal_up_to_eight_digits', () => {
+    const cases: [number, number, string][] = [
+      [Math.fround(0.1), 4, '0.1'],
+      [Math.fround(1 / 3), 4, '0.33333334'],
+      [0.1 + 0.2, 8, '≈0.3'],
+      [1 / 3, 8, '≈0.33333333'],
+      [1.0000001, 8, '1.0000001'],
+      [123456789012, 8, '123456789012'],
+      [5e-324, 8, '5e-324'],
+      [-0, 4, '-0'],
+    ];
+    for (const [value, size, shown] of cases) assert.equal(displayFloat(value, size), shown, String(value));
+    const t = tracing.trace('float f = 0.1f; double c = 0.1 + 0.2; float g = f;', { runtime: false });
+    const texts = t.steps.flatMap(s => (s.op && 'value' in s.op ? [`${s.op.kind} ${s.op.value}`] : []));
+    assert.ok(texts.includes('eval ≈0.3') && texts.includes('read 0.1'), texts.join('; '));
+    assert.deepEqual(
+      t.variables.map(v => [v.name, 'floating' in v && v.floating]),
+      [
+        ['g', true],
+        ['c', true],
+        ['f', true],
+      ]
+    );
+    validate(t);
   });
 
   test('validation_compares_floating_values_exactly', () => {
