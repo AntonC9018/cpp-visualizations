@@ -1263,56 +1263,61 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return active;
   }
-  function touched(op) {
+  function reached(op) {
     if (!op) return null;
-    if (op.kind === "read" || op.kind === "write" || op.kind === "addr") return op.name;
-    if (op.kind === "deref" || op.kind === "alias" || op.kind === "bind") return op.target;
-    return null;
+    switch (op.kind) {
+      // A read lights the cell as its walk lands on the last level, a write as its value lands.
+      case "read":
+        return { name: op.name, at: memoryWalk(op.name, arrival(op)).at(-1)[0] };
+      case "write":
+        return { name: op.name, at: arrival(op) };
+      // An address and a binding highlight their storage from the start.
+      case "addr":
+        return { name: op.name, at: 0 };
+      case "bind":
+        return { name: op.target, at: 0 };
+      case "deref":
+      case "alias":
+        return { name: op.target, at: arrival(op) - 0.15 };
+      default:
+        return null;
+    }
   }
   const topOf = (leaf) => leaf.group ?? leaf.name;
-  function reachTime(op) {
-    const at = arrival(op);
-    if (op.kind !== "read" && op.kind !== "write") return at - 0.15;
-    const walked = memoryWalk(op.name, at).at(-1)[0];
-    return op.kind === "write" ? Math.max(walked, at - 0.35) : walked;
+  const covers = (name, cell) => cell === name || cell.startsWith(name + ".");
+  function statementStart(m, i) {
+    let start = i;
+    while (start > 0 && m.steps[start - 1].line === m.steps[i].line) start--;
+    return start;
   }
-  function reachOf(m, op) {
-    const name = touched(op);
-    if (!(name == null ? void 0 : name.includes("."))) return null;
-    const top = name.split(".")[0];
-    const all = m.leaves.filter((leaf) => topOf(leaf) === top);
-    const cells = new Set(
-      all.filter((leaf) => leaf.name === name || leaf.name.startsWith(name + ".")).map((leaf) => leaf.name)
-    );
-    return cells.size < all.length ? { top, cells, at: reachTime(op) } : null;
-  }
-  function lit(m, tops, reach) {
+  function litAt(m, i) {
+    var _a;
+    const tops = activeVariables(m, i);
+    const names = [];
+    for (let j = statementStart(m, i); j <= i; j++) {
+      const name = (_a = reached(m.steps[j].op)) == null ? void 0 : _a.name;
+      if (name) names.push(name);
+    }
     const shown = new Set(tops);
     for (const leaf of m.leaves) {
-      const top = topOf(leaf);
-      if (tops.has(top) && ((reach == null ? void 0 : reach.top) !== top || reach.cells.has(leaf.name))) shown.add(leaf.name);
+      if (!tops.has(topOf(leaf))) continue;
+      if (!leaf.group || names.some((name) => covers(name, leaf.name))) shown.add(leaf.name);
     }
     return shown;
   }
   function stepFocus(m, i, animate) {
-    const op = m.steps[i].op;
-    const reach = reachOf(m, op);
-    const now = lit(m, activeVariables(m, i), reach);
+    const now = litAt(m, i);
     const begin = /* @__PURE__ */ new Map();
-    const dip = /* @__PURE__ */ new Set();
-    if (!animate || i === 0) return { now, before: now, begin, dip };
-    const before = lit(m, activeVariables(m, i - 1), reachOf(m, m.steps[i - 1].op));
-    if ((op == null ? void 0 : op.kind) === "deref") begin.set(op.target.split(".")[0], arrival(op) - 0.15);
-    for (const leaf of m.leaves) {
-      const top = topOf(leaf);
-      if ((reach == null ? void 0 : reach.top) === top && reach.cells.has(leaf.name)) {
-        begin.set(leaf.name, reach.at);
-        if (before.has(leaf.name)) dip.add(leaf.name);
-      } else if (begin.has(top)) {
-        begin.set(leaf.name, begin.get(top));
+    if (!animate || i === 0) return { now, before: now, begin };
+    const before = litAt(m, i - 1);
+    const target = reached(m.steps[i].op);
+    if (target) {
+      const top = target.name.split(".")[0];
+      for (const name of now) {
+        if (!before.has(name) && (name === top || covers(target.name, name))) begin.set(name, target.at);
       }
     }
-    return { now, before, begin, dip };
+    return { now, before, begin };
   }
   const SHOWN_DIGITS = 8;
   const FLOAT_DIGITS = 9;
@@ -1396,7 +1401,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const was = focus.before.has(name);
     const fade2 = (from2, to, begin2) => `<animate attributeName="opacity" from="${from2}" to="${to}" dur="0.35s" begin="${round(begin2)}s" ${EASE} fill="freeze"/>`;
     const begin = focus.begin.get(name) ?? 0;
-    if (focus.dip.has(name)) return `<g>${fade2(1, DIM, 0)}${fade2(DIM, 1, begin)}${markup}</g>`;
     if (on === was) return on ? markup : `<g opacity="${DIM}">${markup}</g>`;
     const from = was ? 1 : DIM;
     return `<g opacity="${from}">${fade2(from, on ? 1 : DIM, begin)}${markup}</g>`;
@@ -2417,7 +2421,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const ext = act.signBit === 1 ? { stroke: P.write, fill: P.writeFill } : { stroke: P.read, fill: P.readFill };
       const srcX = slotX(fromBytes.length - 1);
       const msbX = bitCx(srcX, 0);
-      const litAt = Math.max(0.2, at - 0.25);
+      const litAt2 = Math.max(0.2, at - 0.25);
       fromBytes.forEach((b, idx) => {
         const lsbPos = fromBytes.length - 1 - idx;
         const bx = slotX(lsbPos);
@@ -2425,9 +2429,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           out += drawByte(bx, yBits, yHex, b, { bits: P.fg, hex: toCol });
           return;
         }
-        const lit2 = signFrame(bx, yBits, ext.stroke, ext.fill) + drawByte(bx, yBits, yHex, b, { bits: P.fg, hex: toCol, msb: ext.stroke });
+        const lit = signFrame(bx, yBits, ext.stroke, ext.fill) + drawByte(bx, yBits, yHex, b, { bits: P.fg, hex: toCol, msb: ext.stroke });
         const plain = drawByte(bx, yBits, yHex, b, { bits: P.fg, hex: toCol });
-        out += animate ? swap(litAt, plain, scaled(msbX, yBits - 8, lit2, litAt)) : lit2;
+        out += animate ? swap(litAt2, plain, scaled(msbX, yBits - 8, lit, litAt2)) : lit;
       });
       const extCount = toBytes.length - fromBytes.length;
       const doneAt = at + (extCount - 1) * STAGGER + TRAVEL;

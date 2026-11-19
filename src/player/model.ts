@@ -237,86 +237,80 @@ export function activeVariables(m: PreparedModel, i: number): Set<string> {
   return active;
 }
 
-/** The storage an operation reads, writes, points at or binds, by name. */
-function touched(op: TraceOperation | null): string | null {
+/** The storage an operation gets to, by name, and when: where it lights that storage up. */
+function reached(op: TraceOperation | null): { name: string; at: number } | null {
   if (!op) return null;
-  if (op.kind === 'read' || op.kind === 'write' || op.kind === 'addr') return op.name;
-  if (op.kind === 'deref' || op.kind === 'alias' || op.kind === 'bind') return op.target;
-  return null;
-}
-
-/** Part of a struct an operation reaches into: its variable, the cells reached, and when. */
-interface Reach {
-  top: string;
-  cells: Set<string>;
-  at: number;
+  switch (op.kind) {
+    // A read lights the cell as its walk lands on the last level, a write as its value lands.
+    case 'read':
+      return { name: op.name, at: memoryWalk(op.name, arrival(op)).at(-1)![0] };
+    case 'write':
+      return { name: op.name, at: arrival(op) };
+    // An address and a binding highlight their storage from the start.
+    case 'addr':
+      return { name: op.name, at: 0 };
+    case 'bind':
+      return { name: op.target, at: 0 };
+    case 'deref':
+    case 'alias':
+      return { name: op.target, at: arrival(op) - 0.15 };
+    default:
+      return null;
+  }
 }
 
 const topOf = (leaf: ModelLeaf): string => leaf.group ?? leaf.name;
+const covers = (name: string, cell: string): boolean => cell === name || cell.startsWith(name + '.');
+
+/** The first step of the statement that step `i` belongs to. */
+function statementStart(m: PreparedModel, i: number): number {
+  let start = i;
+  while (start > 0 && m.steps[start - 1].line === m.steps[i].line) start--;
+  return start;
+}
 
 /**
- * When an operation reaches the cells it touches: a read as its walk lands on the last level, a
- * write as its value lands, anything else as it arrives.
+ * The variables and cells lit as step `i` ends. Every variable the statement uses is lit, and a
+ * scalar with it; a struct's cells light only as the statement's operations reach them, and
+ * stay lit to its end.
  */
-function reachTime(op: TraceOperation): number {
-  const at = arrival(op);
-  if (op.kind !== 'read' && op.kind !== 'write') return at - 0.15;
-  const walked = memoryWalk(op.name, at).at(-1)![0];
-  return op.kind === 'write' ? Math.max(walked, at - 0.35) : walked;
-}
-
-/** The part of a struct `op` reaches into, or null when it takes whole variables. */
-function reachOf(m: PreparedModel, op: TraceOperation | null): Reach | null {
-  const name = touched(op);
-  if (!name?.includes('.')) return null;
-  const top = name.split('.')[0];
-  const all = m.leaves.filter(leaf => topOf(leaf) === top);
-  const cells = new Set(
-    all.filter(leaf => leaf.name === name || leaf.name.startsWith(name + '.')).map(leaf => leaf.name)
-  );
-  return cells.size < all.length ? { top, cells, at: reachTime(op!) } : null;
-}
-
-/** The variables and cells lit: every cell of a variable in use, but of a reached struct only its reached cells. */
-function lit(m: PreparedModel, tops: Set<string>, reach: Reach | null): Set<string> {
+function litAt(m: PreparedModel, i: number): Set<string> {
+  const tops = activeVariables(m, i);
+  const names: string[] = [];
+  for (let j = statementStart(m, i); j <= i; j++) {
+    const name = reached(m.steps[j].op)?.name;
+    if (name) names.push(name);
+  }
   const shown = new Set(tops);
   for (const leaf of m.leaves) {
-    const top = topOf(leaf);
-    if (tops.has(top) && (reach?.top !== top || reach.cells.has(leaf.name))) shown.add(leaf.name);
+    if (!tops.has(topOf(leaf))) continue;
+    if (!leaf.group || names.some(name => covers(name, leaf.name))) shown.add(leaf.name);
   }
   return shown;
 }
 
 /**
  * What a step lights, by variable and cell name: `now` as it ends, `before` as it starts, and
- * when each change begins. A step that reaches into part of a struct dims all of its cells and
- * lights the reached ones only when it gets to them (`dip`: lit before, dimmed in between).
+ * when each change begins. What dims does so at once; what the step reaches lights as it gets
+ * there.
  */
 export interface Focus {
   now: Set<string>;
   before: Set<string>;
   begin: Map<string, number>;
-  dip: Set<string>;
 }
 
 export function stepFocus(m: PreparedModel, i: number, animate: boolean): Focus {
-  const op = m.steps[i].op;
-  const reach = reachOf(m, op);
-  const now = lit(m, activeVariables(m, i), reach);
+  const now = litAt(m, i);
   const begin = new Map<string, number>();
-  const dip = new Set<string>();
-  if (!animate || i === 0) return { now, before: now, begin, dip };
-  const before = lit(m, activeVariables(m, i - 1), reachOf(m, m.steps[i - 1].op));
-  // A dereference lights its target as the arrow arrives.
-  if (op?.kind === 'deref') begin.set(op.target.split('.')[0], arrival(op) - 0.15);
-  for (const leaf of m.leaves) {
-    const top = topOf(leaf);
-    if (reach?.top === top && reach.cells.has(leaf.name)) {
-      begin.set(leaf.name, reach.at);
-      if (before.has(leaf.name)) dip.add(leaf.name);
-    } else if (begin.has(top)) {
-      begin.set(leaf.name, begin.get(top)!);
+  if (!animate || i === 0) return { now, before: now, begin };
+  const before = litAt(m, i - 1);
+  const target = reached(m.steps[i].op);
+  if (target) {
+    const top = target.name.split('.')[0];
+    for (const name of now) {
+      if (!before.has(name) && (name === top || covers(target.name, name))) begin.set(name, target.at);
     }
   }
-  return { now, before, begin, dip };
+  return { now, before, begin };
 }

@@ -160,8 +160,6 @@ function dim(c: SceneContext, name: string, markup: string): string {
   const fade = (from: number, to: number, begin: number): string =>
     `<animate attributeName="opacity" from="${from}" to="${to}" dur="0.35s" begin="${round(begin)}s" ${EASE} fill="freeze"/>`;
   const begin = focus.begin.get(name) ?? 0;
-  // Lit before and after, but dimmed while an operation reaches into its struct.
-  if (focus.dip.has(name)) return `<g>${fade(1, DIM, 0)}${fade(DIM, 1, begin)}${markup}</g>`;
   if (on === was) return on ? markup : `<g opacity="${DIM}">${markup}</g>`;
   const from = was ? 1 : DIM;
   return `<g opacity="${from}">${fade(from, on ? 1 : DIM, begin)}${markup}</g>`;
