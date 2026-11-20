@@ -260,6 +260,13 @@ c=b.n; b.n={5, 6}; std::cout << c.g;`;
     }
   });
 
+  test('a_global_struct_may_not_read_its_column', () => {
+    const source = '#include <source_location>\n#include <type_traits>\n' +
+      'struct S { std::conditional_t<(std::source_location::current().column() < 55), long, int> x; };\n' +
+      'int main() {\n    S s{1};\n}';
+    assert.throws(() => tracing.trace(source), /may not read its source column/);
+  });
+
   test('a_global_using_directive_may_follow_a_struct', () => {
     const source = '#include <iostream>\nstruct S { int x; };\nusing namespace std;\n' +
       'int main() {\n    S a{1};\n    a.x += 2;\n    cout << a.x;\n}';

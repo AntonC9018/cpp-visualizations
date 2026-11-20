@@ -882,17 +882,22 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }
   const USING_STD = "using namespace std;\n";
   const INCLUDE_LINE = new RegExp("(?<![^\\r\\n])[ \\t]*(?:#|%:)[ \\t]*include[ \\t]*<([^<>\\r\\n]+)>[ \\t]*(?:\\/\\/[^\\r\\n]*)?(?![^\\r\\n])", "g");
-  function blank(text) {
-    return text.replace(/[^\r\n]/g, " ");
+  function blank(text, spans) {
+    let result = "";
+    let at = 0;
+    for (const [start, end] of spans) {
+      result += text.slice(at, start) + text.slice(start, end).replace(/[^\r\n]/g, " ");
+      at = end;
+    }
+    return result + text.slice(at);
   }
   function lex(source, frontend, array, ignoreExpansions) {
     var _a, _b;
     const lines = [...source.matchAll(INCLUDE_LINE)];
     const includeLines = lines.map((line) => [line.index, line.index + line[0].length]);
     const directives = ((_a = source.match(/#|%:/g)) == null ? void 0 : _a.length) ?? 0;
-    if (directives === 0 || directives === lines.length && !/\/\*|R"/.test(source)) {
-      let text = source;
-      for (const [start, end] of includeLines) text = text.slice(0, start) + blank(text.slice(start, end)) + text.slice(end);
+    if (directives === 0 || directives === lines.length && !/\/\*|R"|_Pragma/.test(source)) {
+      const text = blank(source, includeLines);
       const includes2 = HEADERS + array + lines.map((line) => `#include <${line[1]}>
 `).join("");
       const { tokens: tokens2 } = frontend.tokens(text, { ignoreExpansions });
@@ -980,10 +985,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       let body = source;
       if (this.fragment) {
         const late = this.lexed.includeLines.filter(([start]) => start >= first);
-        body = source.slice(first);
-        for (const [start, end] of late) {
-          body = body.slice(0, start - first) + blank(source.slice(start, end)) + body.slice(end - first);
-        }
+        body = blank(source, late).slice(first);
         prefix = headers + USING_STD + source.slice(0, first) + late.map(([start, end]) => source.slice(start, end) + "\n").join("") + "int main() { ";
       }
       this.program = prefix + body + (this.fragment ? "\n}\n" : "\n");
@@ -1006,21 +1008,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     without(start, end, frontend) {
       const first = start - this.shift;
       const last = end - this.shift;
-      const source = this.source.slice(0, first) + this.blankTokens(start, end) + this.source.slice(last);
-      const lexed = { ...this.lexed, tokens: this.lexed.tokens.filter((token) => token.start < first || token.end > last) };
+      const cut = (token) => token.start >= first && token.end <= last;
+      const source = blank(this.source, this.lexed.tokens.filter(cut).map((token) => [token.start, token.end]));
+      const lexed = { ...this.lexed, tokens: this.lexed.tokens.filter((token) => !cut(token)) };
       return new SourceFile(source, frontend, { kept: { lexed, array: this.array } });
-    }
-    /** Remove only active tokens, leaving directives, comments and line breaks in place. */
-    blankTokens(start, end) {
-      let at = start;
-      const parts = [];
-      for (const token of this.tokens) {
-        if (token.start < start || token.end > end) continue;
-        parts.push(this.program.slice(at, token.start));
-        parts.push(this.program.slice(token.start, token.end).replace(/[^\r\n]/g, " "));
-        at = token.end;
-      }
-      return parts.join("") + this.program.slice(at, end);
     }
     /** The spellings of the tokens within the range, without the spacing between them. */
     tokenText(start, end) {
@@ -1134,6 +1125,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const leading = this.tokens.filter((token) => token.start >= from && token.end <= to);
       leading.forEach((token, i) => {
         var _a;
+        if (/^(?:source_location|__builtin_COLUMN|__builtin_source_location)$/.test(spell(token))) {
+          throw new Unsupported("a declaration before main may not read its source column");
+        }
         depth += token.kind === "l_brace" ? 1 : token.kind === "r_brace" ? -1 : 0;
         if (depth !== 0) return;
         if (token.kind === "struct" && ((_a = leading[i + 1]) == null ? void 0 : _a.kind) === "identifier") names.add(spell(leading[i + 1]));

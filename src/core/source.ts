@@ -137,8 +137,15 @@ const USING_STD = 'using namespace std;\n';
 // Lines end at \r and \n alone, as Clang reads them: U+2028 continues a comment.
 const INCLUDE_LINE = /(?<![^\r\n])[ \t]*(?:#|%:)[ \t]*include[ \t]*<([^<>\r\n]+)>[ \t]*(?:\/\/[^\r\n]*)?(?![^\r\n])/g;
 
-function blank(text: string): string {
-  return text.replace(/[^\r\n]/g, ' ');
+/** Replace the characters of sorted, disjoint spans with spaces, keeping offsets and line breaks. */
+function blank(text: string, spans: Span[]): string {
+  let result = '';
+  let at = 0;
+  for (const [start, end] of spans) {
+    result += text.slice(at, start) + text.slice(start, end).replace(/[^\r\n]/g, ' ');
+    at = end;
+  }
+  return result + text.slice(at);
 }
 
 /**
@@ -155,10 +162,10 @@ function lex(source: string, frontend: CompilerFrontend, array: string, ignoreEx
   const lines = [...source.matchAll(INCLUDE_LINE)];
   const includeLines = lines.map((line): Span => [line.index, line.index + line[0].length]);
   const directives = source.match(/#|%:/g)?.length ?? 0;
-  // A comment or raw string could hide what looks like an include line.
-  if (directives === 0 || (directives === lines.length && !/\/\*|R"/.test(source))) {
-    let text = source;
-    for (const [start, end] of includeLines) text = text.slice(0, start) + blank(text.slice(start, end)) + text.slice(end);
+  // A comment or raw string could hide what looks like an include line, and a header could
+  // redefine `_Pragma`, which Clang reads before macros.
+  if (directives === 0 || (directives === lines.length && !/\/\*|R"|_Pragma/.test(source))) {
+    const text = blank(source, includeLines);
     const includes = HEADERS + array + lines.map(line => `#include <${line[1]}>\n`).join('');
     const { tokens } = frontend.tokens(text, { ignoreExpansions });
     const first = tokens[0]?.start ?? source.length;
@@ -265,10 +272,7 @@ export class SourceFile {
     if (this.fragment) {
       // An include inside the generated main would declare the header's names there.
       const late = this.lexed.includeLines.filter(([start]) => start >= first);
-      body = source.slice(first);
-      for (const [start, end] of late) {
-        body = body.slice(0, start - first) + blank(source.slice(start, end)) + body.slice(end - first);
-      }
+      body = blank(source, late).slice(first);
       prefix = headers + USING_STD + source.slice(0, first) +
         late.map(([start, end]) => source.slice(start, end) + '\n').join('') + 'int main() { ';
     }
@@ -297,23 +301,12 @@ export class SourceFile {
   without(start: number, end: number, frontend: CompilerFrontend): SourceFile {
     const first = start - this.shift;
     const last = end - this.shift;
-    const source = this.source.slice(0, first) + this.blankTokens(start, end) + this.source.slice(last);
+    // Only active tokens go: directives, comments and line breaks stay, an include among them too.
+    const cut = (token: SourceToken): boolean => token.start >= first && token.end <= last;
+    const source = blank(this.source, this.lexed.tokens.filter(cut).map((token): Span => [token.start, token.end]));
     // Blanking active tokens under the same headers changes neither directives nor the others.
-    const lexed = { ...this.lexed, tokens: this.lexed.tokens.filter(token => token.start < first || token.end > last) };
+    const lexed = { ...this.lexed, tokens: this.lexed.tokens.filter(token => !cut(token)) };
     return new SourceFile(source, frontend, { kept: { lexed, array: this.array } });
-  }
-
-  /** Remove only active tokens, leaving directives, comments and line breaks in place. */
-  blankTokens(start: number, end: number): string {
-    let at = start;
-    const parts: string[] = [];
-    for (const token of this.tokens) {
-      if (token.start < start || token.end > end) continue;
-      parts.push(this.program.slice(at, token.start));
-      parts.push(this.program.slice(token.start, token.end).replace(/[^\r\n]/g, ' '));
-      at = token.end;
-    }
-    return parts.join('') + this.program.slice(at, end);
   }
 
   /** The spellings of the tokens within the range, without the spacing between them. */
@@ -434,6 +427,10 @@ export class SourceFile {
     let depth = 0;
     const leading = this.tokens.filter(token => token.start >= from && token.end <= to);
     leading.forEach((token, i) => {
+      // The namespace's opening shifts the columns on its line.
+      if (/^(?:source_location|__builtin_COLUMN|__builtin_source_location)$/.test(spell(token))) {
+        throw new Unsupported('a declaration before main may not read its source column');
+      }
       depth += token.kind === 'l_brace' ? 1 : token.kind === 'r_brace' ? -1 : 0;
       if (depth !== 0) return;
       if (token.kind === 'struct' && leading[i + 1]?.kind === 'identifier') names.add(spell(leading[i + 1]));

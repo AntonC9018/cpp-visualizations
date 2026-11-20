@@ -1,6 +1,6 @@
 // Behavioral coverage for compiler-backed traces and fail-closed eligibility.
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, test } from 'node:test';
@@ -678,6 +678,25 @@ describe('CompoundAssignmentTests', () => {
     const result = tracing.trace(source, { types: true });
     assert.deepEqual(result.source, ['int x=1;', 'int* array = 42;']);
     assert.equal(result.steps.at(-1)!.op?.kind, 'clash');
+  });
+
+  test('cutting_a_mismatch_keeps_an_include_inside_it', () => {
+    const source = 'int n = sizeof(std::chrono::seconds::rep);\nint* array =\n#include <chrono>\n42;';
+    assert.equal(tracing.trace(source, { types: true }).steps.at(-1)!.op?.kind, 'clash');
+  });
+
+  test('a_header_redefining_pragma_is_read_in_place', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'headers-'));
+    const cpath = process.env.CPATH;
+    try {
+      writeFileSync(join(directory, 'trace-op.h'), '#define _Pragma(message) <<\n');
+      process.env.CPATH = directory;
+      unsupported('#include <trace-op.h>\nint n = 2;\nstd::cout _Pragma("GCC diagnostic push") n;', /macro-expanded/);
+    } finally {
+      if (cpath === undefined) delete process.env.CPATH;
+      else process.env.CPATH = cpath;
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   test('a_macro_of_a_late_include_is_refused', () => {
