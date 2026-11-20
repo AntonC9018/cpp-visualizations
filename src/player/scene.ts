@@ -387,7 +387,12 @@ function arrows(c: SceneContext): string {
   if (op && op.kind === 'deref') {
     const l = now.find(link => link.from.name === op.via);
     if (l) {
-      out += `<path d="${l.d}" fill="none" stroke="${l.from.color}" stroke-width="7" stroke-linecap="round" data-follow="${T.prepare}"/>`;
+      // It dims with its pointer too, as `h.p` in `*h.p` once its value is in the pane.
+      out += dim(
+        c,
+        l.from.name,
+        `<path d="${l.d}" fill="none" stroke="${l.from.color}" stroke-width="7" stroke-linecap="round" data-follow="${T.prepare}"/>`
+      );
     }
   }
   return out;

@@ -1291,14 +1291,18 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return active;
   }
+  const PANE_NAME = new RegExp(`"(?:\\\\.|[^"\\\\])*"|'(?:\\\\.|[^'\\\\])*'|(?<!\\w)(?<!(?:\\.|->|::)\\s*)[A-Za-z_]\\w*(\\s*\\{)?`, "g");
   function paneVariables(m, step) {
     const named = /* @__PURE__ */ new Set();
     const refs = step.refs || {};
-    for (const [token] of step.pane.matchAll(new RegExp("(?<![\\w.]|->)[A-Za-z_]\\w*", "g"))) {
-      if (m.top.includes(token)) named.add(token);
-      if (Object.hasOwn(refs, token) && refs[token]) {
-        named.add(token);
-        named.add(refs[token].split(".")[0]);
+    const records = new Set(m.groups.map((group) => group.type));
+    for (const [token, brace] of step.pane.matchAll(PANE_NAME)) {
+      const name = brace ? token.slice(0, -brace.length) : token;
+      if (/^["']/.test(name) || brace && records.has(name)) continue;
+      if (m.top.includes(name)) named.add(name);
+      if (Object.hasOwn(refs, name) && refs[name]) {
+        named.add(name);
+        named.add(refs[name].split(".")[0]);
       }
     }
     return named;
@@ -1661,7 +1665,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     if (op && op.kind === "deref") {
       const l = now.find((link) => link.from.name === op.via);
       if (l) {
-        out += `<path d="${l.d}" fill="none" stroke="${l.from.color}" stroke-width="7" stroke-linecap="round" data-follow="${T.prepare}"/>`;
+        out += dim(
+          c,
+          l.from.name,
+          `<path d="${l.d}" fill="none" stroke="${l.from.color}" stroke-width="7" stroke-linecap="round" data-follow="${T.prepare}"/>`
+        );
       }
     }
     return out;
