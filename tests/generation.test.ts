@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import type { ExecutionTrace } from '../src/core/trace_format.ts';
 import * as fixtures from '../src/node/fixtures.ts';
 import * as generate from '../src/node/generate.ts';
+import * as tracing from '../src/node/tracing.ts';
 import { Unsupported } from '../src/node/tracing.ts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -60,6 +61,16 @@ describe('LayoutEligibilityTests', () => {
     trace.source = [...trace.source, ...trace.source, ...trace.source];
     trace.steps[trace.steps.length - 1].pane = 'x'.repeat(60);
     applicable(trace);
+  });
+
+  test('assignment_to_a_variable_named_size_t_is_not_a_declaration', () => {
+    const assignTrace = tracing.trace('int size_t; size_t = 7;');
+    applicable(assignTrace);
+    const declTrace = tracing.trace('size_t n = 7;');
+    assert.throws(
+      () => applicable(declTrace),
+      (err: unknown) => err instanceof Unsupported && /lone memory cell/.test(err.message)
+    );
   });
 });
 

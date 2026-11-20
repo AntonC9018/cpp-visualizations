@@ -223,7 +223,7 @@ pristine LLVM source tarball, apply the WASI executable-path patch in the source
 
 ```sh
 patch -d /path/to/llvm-project-21.1.8.src -p1 < wasm/llvm-wasi.patch
-JOBS=4 ./wasm/build.sh
+LLVM_SRC=/path/to/llvm-project-21.1.8.src JOBS=4 ./wasm/build.sh
 ```
 
 `wasm/build.sh` accepts paths to the sources and tools through its environment variables.

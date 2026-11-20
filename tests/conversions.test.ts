@@ -326,14 +326,33 @@ describe('FloatFormatTests', () => {
   test('validation_compares_floating_values_exactly', () => {
     const t = tracing.trace('double d = 1.0000001; double e = d;');
     validate(t);
-    const read = (value: string): ExecutionTrace => {
-      const copy = structuredClone(t);
-      const step = copy.steps.find(s => s.op?.kind === 'read' && s.op.name === 'd')!;
-      (step.op as { value: string }).value = value;
-      return copy;
-    };
-    // 1.00000012 is another double that rounds to the same float.
-    assert.throws(() => validate(read('1.00000012')), FormatError);
+    const copy = structuredClone(t);
+    const index = copy.steps.findIndex(s => s.op?.kind === 'read' && s.op.name === 'd');
+    const step = copy.steps[index];
+    const op = step.op as { value: string; span: [number, number] };
+    // 1.00000012 is another double that rounds to the same float; update pane and spans so
+    // checkOperation passes and checkMemory rejects the mismatch against stored `d`.
+    const wrong = '1.00000012';
+    const delta = wrong.length - op.value.length;
+    step.pane = step.pane.slice(0, op.span[0]) + wrong + step.pane.slice(op.span[0] + op.value.length);
+    if (step.expr) step.expr = [step.expr[0], step.expr[1] + delta];
+    op.value = wrong;
+    // Also update subsequent steps on the same statement that still show the read value.
+    for (let i = index + 1; i < copy.steps.length && copy.steps[i].line === step.line; i++) {
+      const next = copy.steps[i];
+      next.pane = next.pane.slice(0, op.span[0]) + wrong + next.pane.slice(op.span[0] + '1.0000001'.length);
+      if (next.expr) next.expr = [next.expr[0], next.expr[1] + delta];
+      if (next.op && 'span' in next.op && next.op.span[0] === op.span[0]) {
+        next.op.span = [next.op.span[0], next.op.span[1] + delta];
+      }
+      if (next.op && 'value' in next.op && next.op.value === '1.0000001') {
+        next.op.value = wrong;
+      }
+    }
+    assert.throws(
+      () => validate(copy),
+      (err: unknown) => err instanceof FormatError && /d holds 1\.0000001 before the read/.test(err.message)
+    );
   });
 
   /** `trace` with the value `from` spelled `to`, its spans moved to match. */
@@ -569,5 +588,26 @@ describe('BitsTests', () => {
     const t = tracing.trace('int a{ 5 }; int* p{ &a };', { types: true });
     assert.throws(() => validate({ ...t, bits: true }), FormatError);
     assert.throws(() => validate({ ...bits('int a{ 5 };'), bits: false }), FormatError);
+    const floating = structuredClone(bits('int a{ 5 };'));
+    (floating.variables[0] as { floating?: boolean }).floating = true;
+    assert.throws(() => validate(floating), FormatError);
+  });
+
+  test('typed_brace_initializers_show_field_conversions', () => {
+    const converted = tracing.trace('struct S { double x; }; float f = 1.25f; S s{ f };', { types: true });
+    validate(converted);
+    const line = converted.source.findIndex(s => s.includes('S s'));
+    assert.deepEqual(conversions(converted, line), [['S s{ 1.25 }', 'S s{ 1.25 }', 'float', 'double']]);
+    const convertStep = converted.steps.find(step => step.line === line && step.op?.kind === 'convert')!;
+    const writeStep = converted.steps.find(step => step.line === line && step.op?.kind === 'write')!;
+    assert.ok(typed(convertStep).includes('1.25:double'), typed(convertStep).join(', '));
+    assert.ok(typed(writeStep).includes('{ 1.25 }:S'), typed(writeStep).join(', '));
+
+    const plain = tracing.trace('struct S { int x; int y; }; S s{ 1, 2 };', { types: true });
+    validate(plain);
+    const plainLine = plain.source.findIndex(s => s.includes('S s'));
+    assert.deepEqual(conversions(plain, plainLine), []);
+    const plainWrite = plain.steps.find(step => step.line === plainLine && step.op?.kind === 'write')!;
+    assert.ok(typed(plainWrite).includes('{ 1, 2 }:S'), typed(plainWrite).join(', '));
   });
 });

@@ -1,6 +1,6 @@
 // Launch the pinned native Clang and translate its output into trace data.
 import { spawnSync } from 'node:child_process';
-import { accessSync, constants, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { accessSync, constants, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 
@@ -9,7 +9,7 @@ import {
 } from '../core/errors.ts';
 import { extractEnumConstantSizes } from '../core/records.ts';
 import {
-  type TokenizedSource, definedMacros, includesOnlyStandardHeaders, memo, parseAstDump, readTokens,
+  type TokenizedSource, definedMacros, includesOnlyStandardHeaders, memo, parseAstDump, readTokens, stripTokenDump,
 } from '../core/source.ts';
 
 export { Unsupported };
@@ -74,6 +74,36 @@ function withDirectory<T>(directory: string | undefined, fn: (dir: string) => T)
   }
 }
 
+const HEADER_SEARCH_ENV = ['CPATH', 'CPLUS_INCLUDE_PATH', 'C_INCLUDE_PATH', 'OBJC_INCLUDE_PATH'] as const;
+const HEADER_ENV = [...HEADER_SEARCH_ENV, 'SDKROOT', 'SYSROOT'] as const;
+
+function headerEnv(): string {
+  return HEADER_ENV.map(name => process.env[name] ?? '').join('\0');
+}
+
+function customHeaderDirs(): string[] {
+  const dirs: string[] = [];
+  for (const name of HEADER_SEARCH_ENV) {
+    for (const entry of (process.env[name] ?? '').split(delimiter)) {
+      if (entry) dirs.push(entry);
+    }
+  }
+  return dirs;
+}
+
+function pathStamp(paths: string[]): string | null {
+  try {
+    return paths
+      .map(path => {
+        const stat = statSync(path, { bigint: true });
+        return `${path}\0${stat.ino}:${stat.size}:${stat.mtimeNs}`;
+      })
+      .join('\n');
+  } catch {
+    return null;
+  }
+}
+
 /** The pinned compiler's standard headers define the same macros for every frontend. */
 const standardMacros = memo<Macros>(16);
 
@@ -93,30 +123,50 @@ export function createClangFrontend(directory?: string): CompilerFrontend {
       ]);
       return { ...result, path };
     });
-  // A program's tokens are read again for each check on the same snippet.
-  const lexed = new Map<string, TokenizedSource>();
+  // A program's tokens are read again for each check on the same snippet; invalidate if any
+  // included header or header search environment changes between calls.
+  interface CachedTokens {
+    tokens: TokenizedSource;
+    env: string;
+    paths: string[];
+    stamp: string | null;
+  }
+  const lexed = new Map<string, CachedTokens>();
 
   return {
     tokens(program, { ignoreExpansions = false } = {}) {
       const key = `${ignoreExpansions}\0${program}`;
-      let tokens = lexed.get(key);
-      if (!tokens) {
-        const result = clang(program, ['-H', '-Xclang', '-dump-tokens']);
-        if (result.returncode !== 0) throw illFormed(result.stderr, program);
-        tokens = readTokens(result.stderr, result.path, program, { ignoreExpansions });
-        lexed.set(key, tokens);
+      const env = headerEnv();
+      const cached = lexed.get(key);
+      if (
+        cached &&
+        cached.env === env &&
+        (cached.paths.length === 0 || (cached.stamp !== null && pathStamp(cached.paths) === cached.stamp))
+      ) {
+        return cached.tokens;
       }
+      const result = clang(program, ['-H', '-Xclang', '-dump-tokens']);
+      if (result.returncode !== 0) {
+        throw illFormed(stripTokenDump(result.stderr), program, { locatedOnly: true });
+      }
+      const tokens = readTokens(result.stderr, result.path, program, { ignoreExpansions });
+      const included = [...result.stderr.matchAll(/^\.+ ([^\r\n]+)$/gm)].map(m => m[1]);
+      const paths = [...new Set([...included, ...(included.length ? customHeaderDirs() : [])])];
+      const stamp = paths.length ? pathStamp(paths) : '';
+      lexed.set(key, { tokens, env, paths, stamp });
       return tokens;
     },
 
     macros(program) {
       const read = (): Macros => {
-        const result = clang(program, ['-E', '-dD']);
+        const result = clang(program, ['-E', '-dM']);
         if (result.returncode !== 0) throw illFormed(result.stderr, program);
         return definedMacros(result.stdout);
       };
-      // The snippet's own headers may change between traces.
-      return includesOnlyStandardHeaders(program) ? standardMacros(`${tool('CLANGXX', 'clang++')}\0${program}`, read) : read();
+      // The snippet's own headers or custom search paths may change between traces.
+      return includesOnlyStandardHeaders(program) && customHeaderDirs().length === 0
+        ? standardMacros(`${tool('CLANGXX', 'clang++')}\0${headerEnv()}\0${program}`, read)
+        : read();
     },
 
     astDump(program, filter, standard = 'c++20') {

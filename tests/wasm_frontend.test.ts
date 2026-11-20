@@ -159,6 +159,24 @@ describe('WasiAndCacheTests', () => {
     assert.deepEqual((await storage.keys()).sort(), ['another-cache', DEFAULT_CACHE_NAME, 'clang-trace-frontend-v999']);
   });
 
+  test('loadWasmModule keeps earlier caches when fetch or compilation fails', async () => {
+    const storage = new MemoryCacheStorage() as unknown as CacheStorage;
+    await storage.open('clang-trace-frontend-v1');
+    const failingFetch = (async () => new Response('missing', { status: 404 })) as unknown as typeof fetch;
+    await assert.rejects(
+      () => loadWasmModule('https://example.test/fail.wasm', { cachesImpl: storage, fetchImpl: failingFetch }),
+      /404/
+    );
+    assert.ok((await storage.keys()).includes('clang-trace-frontend-v1'));
+
+    const corruptWasm = new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0xff]);
+    const badCompileFetch = (async () => new Response(corruptWasm, { status: 200 })) as unknown as typeof fetch;
+    await assert.rejects(() =>
+      loadWasmModule('https://example.test/corrupt.wasm', { cachesImpl: storage, fetchImpl: badCompileFetch })
+    );
+    assert.ok((await storage.keys()).includes('clang-trace-frontend-v1'));
+  });
+
   test('loadWasmModule deduplicates concurrent loads and evicts corrupt cache entries', async () => {
     const storage = new MemoryCacheStorage() as unknown as CacheStorage;
     const wasmUrl = 'https://example.test/assets/clang-concurrent.wasm';

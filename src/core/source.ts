@@ -15,6 +15,14 @@ export interface TokenizedSource {
   includes: string[];
 }
 
+// DumpTokens quotes original spellings, which can themselves contain quotes and newlines.
+const TOKEN_DUMP_ENTRY = /^(\w+) '([\s\S]*?)'\t[^\n]*?\tLoc=<([^\n]*)>\r?$/gm;
+
+/** Remove `-dump-tokens` lines from stderr so raw-string token text cannot mask diagnostics. */
+export function stripTokenDump(stderr: string): string {
+  return stderr.replace(TOKEN_DUMP_ENTRY, '');
+}
+
 export function readTokens(
   dump: string,
   file: string,
@@ -26,9 +34,7 @@ export function readTokens(
   let physicalEof = false;
   let cursor = 0;
   const includes: string[] = [];
-  // DumpTokens quotes original spellings, which can themselves contain quotes and newlines.
-  const entry = /^(\w+) '([\s\S]*?)'\t[^\n]*?\tLoc=<([^\n]*)>\r?$/gm;
-  for (const match of dump.matchAll(entry)) {
+  for (const match of dump.matchAll(TOKEN_DUMP_ENTRY)) {
     const [record, kind, spelling, location] = match;
     if (match.index > cursor + 2) {
       for (const [, path] of dump.slice(cursor, match.index).matchAll(/^\. ([^\r\n]+)$/gm)) {
@@ -65,7 +71,7 @@ export function readTokens(
   return { tokens, includes };
 }
 
-/** The macros `-E -dD` output defines anywhere, also those it later undefines. */
+/** The macros `-E -dM` output leaves defined. */
 export function definedMacros(preprocessed: string): Macros {
   const objects: string[] = [];
   const functions: string[] = [];
@@ -223,7 +229,15 @@ function mainDefinition(tokens: SourceToken[], source: string): { name: number; 
   for (let i = 0; i < tokens.length; i++) {
     if (source.slice(tokens[i].start, tokens[i].end) !== 'main' || tokens[i + 1]?.kind !== 'l_paren') continue;
     const close = tokens.findIndex((next, j) => j > i + 1 && next.kind === 'r_paren');
-    if (close !== -1 && tokens[close + 1]?.kind === 'l_brace') return { name: i, body: close + 1 };
+    if (close === -1) continue;
+    let body = close + 1;
+    if (tokens[body]?.kind === 'arrow') {
+      body = tokens.findIndex(
+        (next, j) => j > close + 1 && ['l_brace', 'r_brace', 'semi', 'equal'].includes(next.kind)
+      );
+      if (body === -1) continue;
+    }
+    if (tokens[body]?.kind === 'l_brace') return { name: i, body };
   }
   return null;
 }
@@ -391,8 +405,9 @@ export class SourceFile {
     for (let i = 0; i < leading.length;) {
       const token = leading[i];
       const next = leading[i + 1];
-      if (usesNamespaceStd(leading, i, spell)) {
-        i += 4;
+      const stdDirective = usesNamespaceStd(leading, i, spell);
+      if (stdDirective) {
+        i += stdDirective;
         continue;
       }
       if (token.kind === 'macro') throw new Unsupported('macro-expanded declarations outside main are unsupported');
@@ -434,7 +449,7 @@ export class SourceFile {
       depth += token.kind === 'l_brace' ? 1 : token.kind === 'r_brace' ? -1 : 0;
       if (depth !== 0) return;
       if (token.kind === 'struct' && leading[i + 1]?.kind === 'identifier') names.add(spell(leading[i + 1]));
-      opensStd ||= usesNamespaceStd(leading, i, spell);
+      opensStd ||= usesNamespaceStd(leading, i, spell) > 0;
     });
     // Inside the namespace, `::Name` would look past the record it names in the program.
     if (leading.some((token, i) => token.kind === 'coloncolon' && leading[i + 1] && names.has(spell(leading[i + 1])))) {
@@ -462,10 +477,14 @@ export class SourceFile {
   }
 }
 
-/** Whether the tokens at `i` spell `using namespace std;`. */
-function usesNamespaceStd(tokens: SourceToken[], i: number, spell: (token: SourceToken) => string): boolean {
-  return tokens[i]?.kind === 'using' && tokens[i + 1]?.kind === 'namespace' &&
-    tokens[i + 2] !== undefined && spell(tokens[i + 2]) === 'std' && tokens[i + 3]?.kind === 'semi';
+/** Number of tokens of `using namespace [::]std;` at `i`, or 0. */
+function usesNamespaceStd(tokens: SourceToken[], i: number, spell: (token: SourceToken) => string): number {
+  if (tokens[i]?.kind !== 'using' || tokens[i + 1]?.kind !== 'namespace') return 0;
+  const name = i + 2 + (tokens[i + 2]?.kind === 'coloncolon' ? 1 : 0);
+  if (tokens[name] === undefined || spell(tokens[name]) !== 'std' || tokens[name + 1]?.kind !== 'semi') {
+    return 0;
+  }
+  return name + 2 - i;
 }
 
 function useCharacterOffsets(node: AstNode, offsets: number[]): void {

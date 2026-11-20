@@ -41,10 +41,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return { lines: lines.map((character2) => offsets.indexOf(character2)), offsets };
   }
-  function illFormed(stderr, program) {
+  function illFormed(stderr, program, { locatedOnly = false } = {}) {
     const diagnostics = stderr.split(/\r?\n/);
-    const messageLine = /^(?:.*?:\d+:\d+: )?(?:fatal )?error:/;
-    const index = diagnostics.findIndex((line) => messageLine.test(line));
+    const located = /^.*?:\d+:\d+: (?:fatal )?error:/;
+    const unlocated = /^(?:fatal )?error:/;
+    const found = diagnostics.findIndex((line) => located.test(line));
+    const index = found >= 0 || locatedOnly ? found : diagnostics.findIndex((line) => unlocated.test(line));
     if (index < 0) return new IllFormed("error: ill-formed C++");
     const diagnostic = diagnostics[index];
     const place = /^.*?:(\d+):(\d+): (?:fatal )?error:/.exec(diagnostic);
@@ -190,7 +192,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const fetchFn = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
       const storage = getCacheStorage(options.cachesImpl);
       onProgress == null ? void 0 : onProgress({ phase: "checking-cache" });
-      void deleteStaleCaches(storage, cacheName);
       const cache = await openCacheSafe(storage, cacheName);
       let bytes = null;
       let fromCache = false;
@@ -221,23 +222,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           throw new Error(`Invalid WASM binary received from ${resolvedUrl}`);
         }
         bytes = downloaded;
-        if (cache) {
-          try {
-            const cacheBody = new Uint8Array(bytes.byteLength);
-            cacheBody.set(bytes);
-            await cache.put(
-              resolvedUrl,
-              new Response(cacheBody, {
-                status: 200,
-                headers: {
-                  "Content-Type": "application/wasm",
-                  "Content-Length": String(cacheBody.byteLength)
-                }
-              })
-            );
-          } catch {
-          }
-        }
       }
       onProgress == null ? void 0 : onProgress({
         phase: "compiling",
@@ -248,6 +232,24 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const wasmBuffer = new Uint8Array(bytes.byteLength);
       wasmBuffer.set(bytes);
       const module = await WebAssembly.compile(wasmBuffer);
+      if (!fromCache && cache) {
+        try {
+          const cacheBody = new Uint8Array(bytes.byteLength);
+          cacheBody.set(bytes);
+          await cache.put(
+            resolvedUrl,
+            new Response(cacheBody, {
+              status: 200,
+              headers: {
+                "Content-Type": "application/wasm",
+                "Content-Length": String(cacheBody.byteLength)
+              }
+            })
+          );
+        } catch {
+        }
+      }
+      await deleteStaleCaches(storage, cacheName);
       const elapsedMs = Math.round(performance.now() - start);
       onProgress == null ? void 0 : onProgress({
         phase: "ready",
@@ -571,7 +573,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         const base = canonical.replace(/^struct /, "").replace(/ \*+$/, "");
         const isPtr = canonical.endsWith("*") && !qualified.startsWith("const ");
         const shadowed = Object.hasOwn(definitions, qualified.replace(/^const /, "").replace(/^std::/, "").replace(/ \*+$/, ""));
-        let allowed = !shadowed && (Boolean(integerSpelled(canonical)) || floatSpelled(canonical)) && !qualified.startsWith("const ") || isPtr && (!shadowed && (Boolean(integerSpelled(base)) || floatSpelled(base)) || base === "void" || Object.hasOwn(definitions, base) || arrayTypes.has(base));
+        let allowed = !shadowed && (Boolean(integerSpelled(canonical)) || floatSpelled(canonical)) && !qualified.startsWith("const ") || isPtr && (!shadowed && (Boolean(integerSpelled(base)) || floatSpelled(base)) || base === "void" || Object.hasOwn(definitions, base) || Boolean(arrayType(base)));
         allowed || (allowed = Object.hasOwn(definitions, qualified) && qualified !== name);
         allowed || (allowed = arrayTypes.has(recordName(child)));
         if (layoutOnly) {
@@ -707,6 +709,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return records;
   }
+  const TOKEN_DUMP_ENTRY = /^(\w+) '([\s\S]*?)'\t[^\n]*?\tLoc=<([^\n]*)>\r?$/gm;
+  function stripTokenDump(stderr) {
+    return stderr.replace(TOKEN_DUMP_ENTRY, "");
+  }
   function readTokens(dump, file, source, { ignoreExpansions = false } = {}) {
     var _a, _b;
     const { lines, offsets } = sourceCoordinates(source);
@@ -714,8 +720,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     let physicalEof = false;
     let cursor = 0;
     const includes = [];
-    const entry = /^(\w+) '([\s\S]*?)'\t[^\n]*?\tLoc=<([^\n]*)>\r?$/gm;
-    for (const match of dump.matchAll(entry)) {
+    for (const match of dump.matchAll(TOKEN_DUMP_ENTRY)) {
       const [record, kind, spelling, location] = match;
       if (match.index > cursor + 2) {
         for (const [, path] of dump.slice(cursor, match.index).matchAll(/^\. ([^\r\n]+)$/gm)) {
@@ -942,11 +947,19 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     });
   }
   function mainDefinition(tokens, source) {
-    var _a, _b;
+    var _a, _b, _c;
     for (let i = 0; i < tokens.length; i++) {
       if (source.slice(tokens[i].start, tokens[i].end) !== "main" || ((_a = tokens[i + 1]) == null ? void 0 : _a.kind) !== "l_paren") continue;
       const close = tokens.findIndex((next, j) => j > i + 1 && next.kind === "r_paren");
-      if (close !== -1 && ((_b = tokens[close + 1]) == null ? void 0 : _b.kind) === "l_brace") return { name: i, body: close + 1 };
+      if (close === -1) continue;
+      let body = close + 1;
+      if (((_b = tokens[body]) == null ? void 0 : _b.kind) === "arrow") {
+        body = tokens.findIndex(
+          (next, j) => j > close + 1 && ["l_brace", "r_brace", "semi", "equal"].includes(next.kind)
+        );
+        if (body === -1) continue;
+      }
+      if (((_c = tokens[body]) == null ? void 0 : _c.kind) === "l_brace") return { name: i, body };
     }
     return null;
   }
@@ -1087,8 +1100,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       for (let i = 0; i < leading.length; ) {
         const token = leading[i];
         const next = leading[i + 1];
-        if (usesNamespaceStd(leading, i, spell)) {
-          i += 4;
+        const stdDirective = usesNamespaceStd(leading, i, spell);
+        if (stdDirective) {
+          i += stdDirective;
           continue;
         }
         if (token.kind === "macro") throw new Unsupported("macro-expanded declarations outside main are unsupported");
@@ -1131,7 +1145,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         depth += token.kind === "l_brace" ? 1 : token.kind === "r_brace" ? -1 : 0;
         if (depth !== 0) return;
         if (token.kind === "struct" && ((_a = leading[i + 1]) == null ? void 0 : _a.kind) === "identifier") names.add(spell(leading[i + 1]));
-        opensStd || (opensStd = usesNamespaceStd(leading, i, spell));
+        opensStd || (opensStd = usesNamespaceStd(leading, i, spell) > 0);
       });
       if (leading.some((token, i) => token.kind === "coloncolon" && leading[i + 1] && names.has(spell(leading[i + 1])))) {
         throw new Unsupported("a declaration before main may not qualify another one with ::");
@@ -1154,8 +1168,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
   }
   function usesNamespaceStd(tokens, i, spell) {
-    var _a, _b, _c;
-    return ((_a = tokens[i]) == null ? void 0 : _a.kind) === "using" && ((_b = tokens[i + 1]) == null ? void 0 : _b.kind) === "namespace" && tokens[i + 2] !== void 0 && spell(tokens[i + 2]) === "std" && ((_c = tokens[i + 3]) == null ? void 0 : _c.kind) === "semi";
+    var _a, _b, _c, _d;
+    if (((_a = tokens[i]) == null ? void 0 : _a.kind) !== "using" || ((_b = tokens[i + 1]) == null ? void 0 : _b.kind) !== "namespace") return 0;
+    const name = i + 2 + (((_c = tokens[i + 2]) == null ? void 0 : _c.kind) === "coloncolon" ? 1 : 0);
+    if (tokens[name] === void 0 || spell(tokens[name]) !== "std" || ((_d = tokens[name + 1]) == null ? void 0 : _d.kind) !== "semi") {
+      return 0;
+    }
+    return name + 2 - i;
   }
   function useCharacterOffsets(node, offsets) {
     var _a, _b;
@@ -1990,7 +2009,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       check(
         !Object.hasOwn(trace, "references") && variables.every((v) => {
           var _a2;
-          return v.kind === "int" && ((_a2 = integerSpelled(v.type ?? "", aliases)) == null ? void 0 : _a2.size) === v.size;
+          return v.kind === "int" && !v.floating && ((_a2 = integerSpelled(v.type ?? "", aliases)) == null ? void 0 : _a2.size) === v.size;
         }),
         "trace.bits",
         "expected only integer variables, each with its type"
@@ -2502,8 +2521,9 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
     }
     /** A type spelling with its pointee and integer typedefs resolved: `uint8_t *` is `unsigned char *`. */
     storageType(spelling) {
+      var _a;
       const [, base, stars] = /^(.*?)((?:\s*\*)*)$/.exec(spelling.replace(/^struct /, "").trim());
-      const name = base.trim();
+      const name = ((_a = arrayType(base.trim())) == null ? void 0 : _a.name) ?? base.trim();
       const integer = hasRecord(this.records, bareSpelling(name)) ? null : integerName(name);
       return { base: integer ?? name, stars: stars.replace(/\s/g, "").length };
     }
@@ -3042,7 +3062,7 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
       this.typeOnly = typeOnly;
     }
   }
-  function typedParts(node, locate, names, records) {
+  function typedParts(node, locate, names, records, conversions = []) {
     var _a, _b;
     if (node.kind === "UnaryExprOrTypeTraitExpr") return [];
     let plain = node;
@@ -3050,12 +3070,13 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
       plain = plain.inner[0];
     }
     const local = (plain == null ? void 0 : plain.kind) === "DeclRefExpr" && names.has(((_a = plain.referencedDecl) == null ? void 0 : _a.name) ?? "");
-    const aggregate = (node.kind === "InitListExpr" || node.kind === "CXXFunctionalCastExpr") && hasRecord(records, recordName(node));
+    const span = locate(node);
+    const aggregate = (node.kind === "InitListExpr" || node.kind === "CXXFunctionalCastExpr") && hasRecord(records, recordName(node)) && !conversions.some(([start, end]) => span[0] <= start && end <= span[1]);
     if (local || aggregate || node.kind === "IntegerLiteral" || node.kind === "FloatingLiteral" || node.kind === "CXXNullPtrLiteralExpr") {
-      return [[locate(node), displayedType(node)]];
+      return [[span, displayedType(node)]];
     }
     const children = ((_b = node.array_filler) == null ? void 0 : _b.slice(1)) ?? node.inner ?? [];
-    return children.flatMap((child) => typedParts(child, locate, names, records));
+    return children.flatMap((child) => typedParts(child, locate, names, records, conversions));
   }
   function compareTyped([a, at], [b, bt]) {
     return a[0] - b[0] || a[1] - b[1] || (at < bt ? -1 : at > bt ? 1 : 0);
@@ -3329,9 +3350,9 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
     }
     const evaluator = new Reductions(state, locate, records, references, storageTypes, numbers, file);
     const names = /* @__PURE__ */ new Set([...Object.keys(state), ...Object.keys(references)]);
-    const typed = [
-      ...left !== null ? typedParts(left, locate, names, records) : [],
-      ...typedParts(root, locate, names, records)
+    const typedFor = (conversions = []) => [
+      ...left !== null ? typedParts(left, locate, names, records, conversions) : [],
+      ...typedParts(root, locate, names, records, conversions)
     ].sort(compareTyped);
     if (reference2) {
       const bound = evaluator.lvalue(root);
@@ -3349,7 +3370,7 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
         declared,
         bound,
         destination: [toPane(nameOffset), toPane(nameOffset) + declared.length],
-        typed,
+        typed: typedFor(),
         slot: [0, toPane(nameOffset) + declared.length],
         type: displayedType(variable)
       });
@@ -3370,6 +3391,9 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
     }
     const [value] = evaluator.rvalue(root);
     evaluator.reductions.push(...designation);
+    const typed = typedFor(
+      evaluator.reductions.filter((r) => r.kind === "convert").map((r) => r.span)
+    );
     let slot = null;
     if (declared) {
       destination = [toPane(nameOffset), toPane(nameOffset) + declared.length];
@@ -3840,6 +3864,7 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
       else delete step.types;
     }
     statement(line, statement, before, after) {
+      var _a;
       const typed = statement.slot ? [...statement.typed, [statement.slot, statement.type]] : statement.typed;
       const pane = new Pane(statement.pane, typed, statement.slot, statement.fold);
       const expr = statement.expr;
@@ -3902,7 +3927,8 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
           this.add(line, pane, expr, before, { ...op2, span: span2 });
         } else {
           pane.retype(reduction.span[0], reduction.span[1], reduction.type);
-          this.retyped(this.steps[this.steps.length - 1], pane);
+          const last = this.steps[this.steps.length - 1];
+          if (((_a = last.op) == null ? void 0 : _a.kind) !== "convert") this.retyped(last, pane);
         }
       }
       if (statement.result === null) {
@@ -4384,14 +4410,14 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
     return {
       tokens(program, options) {
         const result = clang(program, ["-Xclang", "-dump-tokens"]);
-        if (result.returncode !== 0) throw illFormed(result.stderr, program);
+        if (result.returncode !== 0) throw illFormed(stripTokenDump(result.stderr), program, { locatedOnly: true });
         return readTokens(result.stderr, "/virtual/source.cpp", program, options);
       },
       macros(program) {
         let cache = macroCache.get(module);
         if (!cache) macroCache.set(module, cache = memo(16));
         return cache(program, () => {
-          const result = clang(program, ["-E", "-dD"]);
+          const result = clang(program, ["-E", "-dM"]);
           if (result.returncode !== 0) throw illFormed(result.stderr, program);
           return definedMacros(result.stdout);
         });

@@ -5,7 +5,7 @@ import {
 import { extractEnumConstantSizes } from '../core/records.ts';
 import type { Template, TraceSettings } from '../core/settings.ts';
 import { type TraceOf, traceSnippet } from '../core/snippet.ts';
-import { definedMacros, memo, parseAstDump, readTokens } from '../core/source.ts';
+import { definedMacros, memo, parseAstDump, readTokens, stripTokenDump } from '../core/source.ts';
 import { runWasiModule } from './wasi.ts';
 
 /** Each module's macros by header list, which repeats across a page's traces. */
@@ -19,7 +19,7 @@ export function createWasmClangFrontend(module: WebAssembly.Module): CompilerFro
   return {
     tokens(program, options) {
       const result = clang(program, ['-Xclang', '-dump-tokens']);
-      if (result.returncode !== 0) throw illFormed(result.stderr, program);
+      if (result.returncode !== 0) throw illFormed(stripTokenDump(result.stderr), program, { locatedOnly: true });
       return readTokens(result.stderr, '/virtual/source.cpp', program, options);
     },
 
@@ -27,7 +27,7 @@ export function createWasmClangFrontend(module: WebAssembly.Module): CompilerFro
       let cache = macroCache.get(module);
       if (!cache) macroCache.set(module, cache = memo(16));
       return cache(program, () => {
-        const result = clang(program, ['-E', '-dD']);
+        const result = clang(program, ['-E', '-dM']);
         if (result.returncode !== 0) throw illFormed(result.stderr, program);
         return definedMacros(result.stdout);
       });

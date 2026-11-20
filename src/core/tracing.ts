@@ -384,7 +384,7 @@ class Reductions {
   /** A type spelling with its pointee and integer typedefs resolved: `uint8_t *` is `unsigned char *`. */
   private storageType(spelling: string): { base: string; stars: number } {
     const [, base, stars] = /^(.*?)((?:\s*\*)*)$/.exec(spelling.replace(/^struct /, '').trim())!;
-    const name = base.trim();
+    const name = arrayType(base.trim())?.name ?? base.trim();
     const integer = hasRecord(this.records, bareSpelling(name)) ? null : integerName(name);
     return { base: integer ?? name, stars: stars.replace(/\s/g, '').length };
   }
@@ -1059,7 +1059,8 @@ function typedParts(
   node: AstNode,
   locate: (item: AstNode) => Span,
   names: Set<string>,
-  records: Record<string, RecordInfo>
+  records: Record<string, RecordInfo>,
+  conversions: Span[] = []
 ): Typed[] {
   if (node.kind === 'UnaryExprOrTypeTraitExpr') return [];
   let plain = node;
@@ -1067,9 +1068,11 @@ function typedParts(
     plain = plain.inner![0];
   }
   const local = plain?.kind === 'DeclRefExpr' && names.has(plain.referencedDecl?.name ?? '');
+  const span = locate(node);
   const aggregate =
     (node.kind === 'InitListExpr' || node.kind === 'CXXFunctionalCastExpr') &&
-    hasRecord(records, recordName(node));
+    hasRecord(records, recordName(node)) &&
+    !conversions.some(([start, end]) => span[0] <= start && end <= span[1]);
   if (
     local ||
     aggregate ||
@@ -1077,10 +1080,10 @@ function typedParts(
     node.kind === 'FloatingLiteral' ||
     node.kind === 'CXXNullPtrLiteralExpr'
   ) {
-    return [[locate(node), displayedType(node)]];
+    return [[span, displayedType(node)]];
   }
   const children = node.array_filler?.slice(1) ?? node.inner ?? [];
-  return children.flatMap(child => typedParts(child, locate, names, records));
+  return children.flatMap(child => typedParts(child, locate, names, records, conversions));
 }
 
 function compareTyped([a, at]: Typed, [b, bt]: Typed): number {
@@ -1422,10 +1425,11 @@ function analyzeStatement(
 
   const evaluator = new Reductions(state, locate, records, references, storageTypes, numbers, file);
   const names = new Set([...Object.keys(state), ...Object.keys(references)]);
-  const typed = [
-    ...(left !== null ? typedParts(left, locate, names, records) : []),
-    ...typedParts(root, locate, names, records),
-  ].sort(compareTyped);
+  const typedFor = (conversions: Span[] = []): Typed[] =>
+    [
+      ...(left !== null ? typedParts(left, locate, names, records, conversions) : []),
+      ...typedParts(root, locate, names, records, conversions),
+    ].sort(compareTyped);
   if (reference) {
     const bound = evaluator.lvalue(root);
     evaluator.respell(root, bound, pane.slice(...locate(root)));
@@ -1442,7 +1446,7 @@ function analyzeStatement(
       declared,
       bound,
       destination: [toPane(nameOffset!), toPane(nameOffset!) + declared!.length],
-      typed,
+      typed: typedFor(),
       slot: [0, toPane(nameOffset!) + declared!.length],
       type: displayedType(variable),
     });
@@ -1467,6 +1471,9 @@ function analyzeStatement(
   }
   const [value] = evaluator.rvalue(root);
   evaluator.reductions.push(...designation);
+  const typed = typedFor(
+    evaluator.reductions.filter(r => r.kind === 'convert').map(r => r.span)
+  );
   let slot: Span | null = null;
   if (declared) {
     destination = [toPane(nameOffset!), toPane(nameOffset!) + declared.length];
@@ -2133,8 +2140,10 @@ class Renderer {
         this.add(line, pane, expr, before, { ...op, span });
       } else {
         // No step of its own, but the text now reads as one value of its type.
+        // Keep a conversion step's result label visible; the next step gets the enclosing label.
         pane.retype(reduction.span[0], reduction.span[1], reduction.type);
-        this.retyped(this.steps[this.steps.length - 1], pane);
+        const last = this.steps[this.steps.length - 1];
+        if (last.op?.kind !== 'convert') this.retyped(last, pane);
       }
     }
     if (statement.result === null) {

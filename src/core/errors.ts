@@ -57,10 +57,16 @@ export function sourceCoordinates(source: string): { lines: number[]; offsets: n
  * differs between runs. Assigning to a struct fails overload resolution, and only the note
  * that follows says which types did not fit, so it joins the message.
  */
-export function illFormed(stderr: string, program: string): IllFormed {
+export function illFormed(
+  stderr: string,
+  program: string,
+  { locatedOnly = false }: { locatedOnly?: boolean } = {}
+): IllFormed {
   const diagnostics = stderr.split(/\r?\n/);
-  const messageLine = /^(?:.*?:\d+:\d+: )?(?:fatal )?error:/;
-  const index = diagnostics.findIndex(line => messageLine.test(line));
+  const located = /^.*?:\d+:\d+: (?:fatal )?error:/;
+  const unlocated = /^(?:fatal )?error:/;
+  const found = diagnostics.findIndex(line => located.test(line));
+  const index = found >= 0 || locatedOnly ? found : diagnostics.findIndex(line => unlocated.test(line));
   if (index < 0) return new IllFormed('error: ill-formed C++');
   const diagnostic = diagnostics[index];
   const place = /^.*?:(\d+):(\d+): (?:fatal )?error:/.exec(diagnostic);
@@ -139,7 +145,7 @@ export interface Macros {
 
 /**
  * The language options both frontends give Clang. The replay asks C++26's constant evaluator
- * while feature-test macros keep the C++20 values the program was read with.
+ * while pinning `__cplusplus` to C++20; other feature-test macros keep their C++2c values.
  */
 export const STANDARD_FLAGS: Record<Standard, readonly string[]> = {
   'c++20': ['-std=c++20', '-Werror=extra-tokens'],

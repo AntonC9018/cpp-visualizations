@@ -179,7 +179,7 @@ export function layoutsFromFrontend(
           ((!shadowed && (Boolean(integerSpelled(base)) || floatSpelled(base))) ||
             base === 'void' ||
             Object.hasOwn(definitions, base) ||
-            arrayTypes.has(base)));
+            Boolean(arrayType(base))));
       allowed ||= Object.hasOwn(definitions, qualified) && qualified !== name;
       allowed ||= arrayTypes.has(recordName(child));
       if (layoutOnly) {

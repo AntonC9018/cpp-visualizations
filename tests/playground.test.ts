@@ -171,6 +171,31 @@ test(
       assert.match(svgText, /pp/);
       assert.match(svgText, /7/);
 
+      // Instant speed survives remounting on language switches.
+      await page.selectOption('.pg-vis-host .cv-speed', 'instant');
+      assert.equal(
+        await page.evaluate(() => {
+          const host = document.querySelector('.pg-vis-host') as HTMLElement & {
+            cvPlayer: { instant: boolean };
+          };
+          return host.cvPlayer.instant;
+        }),
+        true
+      );
+      await page.click('.pg-lang-btn');
+      assert.equal(await page.locator('.pg-vis-host .cv-speed').inputValue(), 'instant');
+      assert.equal(
+        await page.evaluate(() => {
+          const host = document.querySelector('.pg-vis-host') as HTMLElement & {
+            cvPlayer: { instant: boolean };
+          };
+          return host.cvPlayer.instant;
+        }),
+        true
+      );
+      await page.click('.pg-lang-btn');
+      assert.equal(await page.locator('.pg-vis-host .cv-speed').inputValue(), 'instant');
+
       // Switch to struct-shallow-copy preset -> traces cleanly in Worker without re-downloading.
       await page.selectOption('.pg-preset-select', 'struct-shallow-copy');
       await page.waitForFunction(() => {

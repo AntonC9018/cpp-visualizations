@@ -207,7 +207,6 @@ export function loadWasmModule(
     const storage = getCacheStorage(options.cachesImpl);
 
     onProgress?.({ phase: 'checking-cache' });
-    void deleteStaleCaches(storage, cacheName);
     const cache = await openCacheSafe(storage, cacheName);
 
     let bytes: Uint8Array | null = null;
@@ -242,25 +241,6 @@ export function loadWasmModule(
         throw new Error(`Invalid WASM binary received from ${resolvedUrl}`);
       }
       bytes = downloaded;
-
-      if (cache) {
-        try {
-          const cacheBody = new Uint8Array(bytes.byteLength);
-          cacheBody.set(bytes);
-          await cache.put(
-            resolvedUrl,
-            new Response(cacheBody, {
-              status: 200,
-              headers: {
-                'Content-Type': 'application/wasm',
-                'Content-Length': String(cacheBody.byteLength),
-              },
-            })
-          );
-        } catch {
-          // Cache storage quota or private mode may reject put(); execution can still continue.
-        }
-      }
     }
 
     onProgress?.({
@@ -273,6 +253,27 @@ export function loadWasmModule(
     const wasmBuffer = new Uint8Array(bytes.byteLength);
     wasmBuffer.set(bytes);
     const module = await WebAssembly.compile(wasmBuffer);
+
+    if (!fromCache && cache) {
+      try {
+        const cacheBody = new Uint8Array(bytes.byteLength);
+        cacheBody.set(bytes);
+        await cache.put(
+          resolvedUrl,
+          new Response(cacheBody, {
+            status: 200,
+            headers: {
+              'Content-Type': 'application/wasm',
+              'Content-Length': String(cacheBody.byteLength),
+            },
+          })
+        );
+      } catch {
+        // Cache storage quota or private mode may reject put(); execution can still continue.
+      }
+    }
+    await deleteStaleCaches(storage, cacheName);
+
     const elapsedMs = Math.round(performance.now() - start);
 
     onProgress?.({

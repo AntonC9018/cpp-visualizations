@@ -159,6 +159,24 @@ test('arrays of floats, doubles, narrow integers and void pointers', () => {
   assert.equal(last.stdout, '6.75\n');
 });
 
+test('a struct may hold a pointer to std::array without a separate array variable', () => {
+  const result = trace(`
+    struct S { std::array<int, 2>* p; };
+    S s{ nullptr };
+  `);
+  assert.equal(result.steps.at(-1)?.values['s.p'], 0);
+});
+
+test('unqualified array pointers normalize before dereference checks', () => {
+  const result = trace(`
+    using namespace std;
+    array<int, 2> a{ 1, 2 };
+    array<int, 2>* p = &a;
+    int x = (*p)[1];
+  `);
+  assert.equal(result.steps.at(-1)?.values.x, 2);
+});
+
 test('the tracer rejects invalid array operations before execution', () => {
   for (const [source, reason] of [
     ['std::array<int, 2> a{}; a[2] = 1;', /index 2 is out of bounds/],

@@ -424,4 +424,20 @@ describe('GenerateCommandTests', () => {
       reason: 'pointer arithmetic and comparison are not supported',
     });
   });
+
+  test('dumpsSorted normalizes numeric indentation and serializes sparse array holes as null', () => {
+    assert.equal(dumpsSorted({ b: 1, a: 2 }, -1), '{"a": 2, "b": 1}');
+    assert.equal(dumpsSorted({ b: 1, a: 2 }, 0), '{"a": 2, "b": 1}');
+    assert.equal(dumpsSorted({ b: 1, a: 2 }, Number.NaN), '{"a": 2, "b": 1}');
+    assert.equal(dumpsSorted({ a: 1 }, 2.9), JSON.stringify({ a: 1 }, null, 2));
+    assert.equal(dumpsSorted({ a: 1 }, 20), JSON.stringify({ a: 1 }, null, 10));
+    // eslint-disable-next-line no-sparse-arrays
+    const sparse = [1, , -0];
+    const encoded = dumpsSorted(sparse);
+    assert.equal(encoded, '[1, null, -0]');
+    const decoded = JSON.parse(encoded) as unknown[];
+    assert.equal(decoded[0], 1);
+    assert.equal(decoded[1], null);
+    assert.equal(Object.is(decoded[2], -0), true);
+  });
 });

@@ -295,3 +295,13 @@ test('an operator lights before the first of its operands converts, and stays th
   assert.deepEqual(converts.map(i => continuesOperator(t.steps, i)), [false, true]);
   assert.deepEqual(converts.map(i => arrival(t.steps[i].op!)), [T.operator + T.evaluate, T.evaluate]);
 });
+
+test('a pointer field stays lit while dereferenced', () => {
+  const mm = model('struct S { int* p; }; int n = 1; S s{ &n }; *s.p = 2;');
+  const deref = stepOf(mm, 'deref', 'n');
+  const focus = stepFocus(mm, deref, true);
+  assert.equal(focus.before.has('s.p'), true);
+  assert.equal(focus.now.has('s.p'), true);
+  assert.equal(focus.now.has('n'), true);
+  assert.equal(focus.begin.get('n'), arrival(mm.steps[deref].op!) - 0.15);
+});

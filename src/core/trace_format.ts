@@ -1125,7 +1125,7 @@ export function validate(trace: unknown): asserts trace is AnyTrace {
     check(trace.bits === true, 'trace.bits', 'expected true');
     check(
       !Object.hasOwn(trace, 'references') &&
-        variables.every(v => v.kind === 'int' && integerSpelled(v.type ?? '', aliases)?.size === v.size),
+        variables.every(v => v.kind === 'int' && !v.floating && integerSpelled(v.type ?? '', aliases)?.size === v.size),
       'trace.bits',
       'expected only integer variables, each with its type'
     );

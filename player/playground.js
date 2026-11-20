@@ -1402,12 +1402,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const handsOn = (op2 == null ? void 0 : op2.kind) === "addr" || (op2 == null ? void 0 : op2.kind) === "read" && !op2.compound;
       if (j === i || !handsOn) names.push(name);
     }
+    const op = m.steps[i].op;
+    if ((op == null ? void 0 : op.kind) === "deref") names.push(op.via);
     const shown = new Set(tops);
     for (const leaf of m.leaves) {
       if (!tops.has(topOf(leaf))) continue;
       if (!leaf.group || names.some((name) => covers(name, leaf.name))) shown.add(leaf.name);
     }
-    const op = m.steps[i].op;
     for (const group of m.groups) {
       const taken = addressOfStruct(m, op) && op.name === group.name;
       const inner = m.leaves.some((leaf) => shown.has(leaf.name) && covers(group.name, leaf.name));
@@ -2679,6 +2680,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       __publicField(this, "typeBox");
       __publicField(this, "stacked");
       __publicField(this, "layoutWidth");
+      __publicField(this, "syncSpeedMenu", null);
       __publicField(this, "observer", null);
       __publicField(this, "P");
       __publicField(this, "g");
@@ -2741,14 +2743,19 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         const focused = document.activeElement === menu;
         instant.textContent = focused && menu.value !== "instant" ? `${S.instant} ⚡` : "⚡";
       };
+      const syncMenu = () => {
+        const choice = this.instant ? "instant" : String(this.rate);
+        if (menu.value !== choice) menu.value = choice;
+        const label = choice === "instant" ? `${S.speed}: ${S.instant}` : S.speed;
+        menu.title = label;
+        menu.setAttribute("aria-label", label);
+        spell();
+      };
+      this.syncSpeedMenu = syncMenu;
       menu.addEventListener("focus", spell);
       menu.addEventListener("blur", spell);
       menu.addEventListener("change", () => {
         this.speed(menu.value);
-        const label = menu.value === "instant" ? `${S.speed}: ${S.instant}` : S.speed;
-        menu.title = label;
-        menu.setAttribute("aria-label", label);
-        spell();
       });
       this.scrub.addEventListener("input", () => {
         this.pristine = false;
@@ -3009,8 +3016,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
      * running one holds there before the next, a paused one stays paused.
      */
     speed(choice) {
+      var _a;
       this.instant = choice === "instant";
       if (!this.instant) this.rate = Number(choice);
+      (_a = this.syncSpeedMenu) == null ? void 0 : _a.call(this);
       if (!this.instant || !this.animated) return;
       if (this.running) {
         this.start(this.index, this.continuous);
@@ -3758,10 +3767,16 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       renderStrings();
       syncUrl();
       if (lastTrace) {
-        const stepIndex = currentView instanceof Player ? currentView.index : null;
+        const prior = currentView instanceof Player ? {
+          index: currentView.index,
+          speed: currentView.instant ? "instant" : String(currentView.rate),
+          littleEndian: currentView.littleEndian
+        } : null;
         mountTrace(lastTrace);
-        if (currentView instanceof Player && stepIndex !== null) {
-          currentView.settle(stepIndex);
+        if (currentView instanceof Player && prior) {
+          currentView.speed(prior.speed);
+          currentView.byteOrder(prior.littleEndian);
+          currentView.settle(prior.index);
         }
       }
     });

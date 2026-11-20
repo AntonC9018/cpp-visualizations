@@ -18,7 +18,7 @@ import {
 } from '../src/core/trace_format.ts';
 import { createClangFrontend } from '../src/node/toolchain.ts';
 import * as tracing from '../src/node/tracing.ts';
-import { Pointer, Unsupported } from '../src/node/tracing.ts';
+import { IllFormed, Pointer, Unsupported } from '../src/node/tracing.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -834,8 +834,9 @@ describe('CompilerTraceTests', () => {
 
   test('double_pointer_runs_as_predicted', () => {
     const traced = tracing.trace(DOUBLE_POINTER);
-    const predicted = tracing.trace(DOUBLE_POINTER);
-    assert.deepEqual(traced, predicted);
+    assert.equal(final(traced).a, 7);
+    assert.equal(final(traced).b, 8);
+    assert.equal(final(traced, 'stdout'), '7\n8\n');
     assert.deepEqual(final(traced, 'targets'), { p: 'b', pp: 'p' });
     assert.ok(Object.values(addresses(traced)).every(address => 64 <= address && address < 128));
   });
@@ -958,5 +959,77 @@ describe('CompilerTraceTests', () => {
         tracing.hooks.after = original;
       }
     }
+  });
+
+  test('leading_using_namespace_global_std_and_trailing_return_main', () => {
+    const withGlobalStd = tracing.trace('using namespace ::std; int main() { int n = 1; cout << n; }');
+    assert.deepEqual(final(withGlobalStd), { n: 1 });
+    assert.equal(final(withGlobalStd, 'stdout'), '1');
+
+    const withTrailing = tracing.trace('auto main() -> int { int n = 4; }');
+    assert.deepEqual(final(withTrailing), { n: 4 });
+  });
+
+  test('reused_frontend_invalidates_token_cache_when_included_header_changes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'trace-hdr-'));
+    const saved = process.env.CPATH;
+    try {
+      const header = join(dir, 'custom_val.h');
+      writeFileSync(header, '#define CUSTOM_VAL 1\n');
+      process.env.CPATH = saved ? `${dir}:${saved}` : dir;
+      const frontend = createClangFrontend(dir);
+      const source = '#include <custom_val.h>\n#if CUSTOM_VAL == 1\nint a = 1;\n#else\nint a = 42;\n#endif';
+      const first = tracing.trace(source, { frontend });
+      assert.equal(final(first).a, 1);
+
+      writeFileSync(header, '#define CUSTOM_VAL 2\n');
+      const second = tracing.trace(source, { frontend });
+      assert.equal(final(second).a, 42);
+    } finally {
+      if (saved === undefined) delete process.env.CPATH;
+      else process.env.CPATH = saved;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('cpath_header_override_does_not_poison_standard_macro_cache_and_undef_is_respected', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'trace-macro-'));
+    const saved = process.env.CPATH;
+    try {
+      writeFileSync(join(dir, 'cmath'), '#define trace_counter 1\n');
+      process.env.CPATH = saved ? `${dir}:${saved}` : dir;
+      assert.throws(
+        () => tracing.trace('int trace_counter = 5;\n#include <cmath>\nint a = trace_counter;'),
+        (err: unknown) => err instanceof Unsupported && /macro from a header/.test(err.message)
+      );
+
+      // Restoring CPATH must not reuse the shadowed <cmath> macro table.
+      if (saved === undefined) delete process.env.CPATH;
+      else process.env.CPATH = saved;
+      const clean = tracing.trace('int trace_counter = 5;\n#include <cmath>\nint a = trace_counter;');
+      assert.equal(final(clean).a, 5);
+
+      // A macro defined and then #undef'd in a header is not active at the end of preprocessing.
+      writeFileSync(join(dir, 'cmath'), '#define trace_counter 1\n#undef trace_counter\n');
+      process.env.CPATH = saved ? `${dir}:${saved}` : dir;
+      const undefd = tracing.trace('int trace_counter = 9;\n#include <cmath>\nint a = trace_counter;');
+      assert.equal(final(undefd).a, 9);
+    } finally {
+      if (saved === undefined) delete process.env.CPATH;
+      else process.env.CPATH = saved;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ill_formed_diagnostics_ignore_error_text_inside_raw_string_token_dumps', () => {
+    const source = 'int n = sizeof(R"(\nerror: lesson text\n)");\n#error boom\n';
+    assert.throws(
+      () => tracing.trace(source),
+      (err: unknown) =>
+        err instanceof IllFormed &&
+        /error: boom|#error boom/.test(err.message) &&
+        !/lesson text/.test(err.message) &&
+        err.offset !== null
+    );
   });
 });

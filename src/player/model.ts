@@ -439,6 +439,8 @@ function litAt(m: PreparedModel, i: number): Set<string> {
     const handsOn = op?.kind === 'addr' || (op?.kind === 'read' && !op.compound);
     if (j === i || !handsOn) names.push(name);
   }
+  const op = m.steps[i].op;
+  if (op?.kind === 'deref') names.push(op.via);
   const shown = new Set(tops);
   for (const leaf of m.leaves) {
     if (!tops.has(topOf(leaf))) continue;
@@ -446,7 +448,6 @@ function litAt(m: PreparedModel, i: number): Set<string> {
   }
   // A nested struct's frame lights with the first of its cells to light, or whole as its address
   // is taken.
-  const op = m.steps[i].op;
   for (const group of m.groups) {
     const taken = addressOfStruct(m, op) && op.name === group.name;
     const inner = m.leaves.some(leaf => shown.has(leaf.name) && covers(group.name, leaf.name));

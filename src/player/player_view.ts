@@ -51,6 +51,7 @@ export class Player {
   typeBox!: HTMLDivElement;
   stacked: boolean | null;
   private layoutWidth: number | undefined;
+  private syncSpeedMenu: (() => void) | null = null;
   observer: ResizeObserver | null = null;
   P!: Palette;
   g!: Geometry;
@@ -148,14 +149,19 @@ export class Player {
       const focused = document.activeElement === menu;
       instant.textContent = focused && menu.value !== 'instant' ? `${S.instant} ⚡` : '⚡';
     };
+    const syncMenu = (): void => {
+      const choice = this.instant ? 'instant' : String(this.rate);
+      if (menu.value !== choice) menu.value = choice;
+      const label = choice === 'instant' ? `${S.speed}: ${S.instant}` : S.speed;
+      menu.title = label;
+      menu.setAttribute('aria-label', label);
+      spell();
+    };
+    this.syncSpeedMenu = syncMenu;
     menu.addEventListener('focus', spell);
     menu.addEventListener('blur', spell);
     menu.addEventListener('change', () => {
       this.speed(menu.value);
-      const label = menu.value === 'instant' ? `${S.speed}: ${S.instant}` : S.speed;
-      menu.title = label;
-      menu.setAttribute('aria-label', label);
-      spell();
     });
     this.scrub.addEventListener('input', () => {
       this.pristine = false;
@@ -445,6 +451,7 @@ export class Player {
   speed(choice: string): void {
     this.instant = choice === 'instant';
     if (!this.instant) this.rate = Number(choice);
+    this.syncSpeedMenu?.();
     if (!this.instant || !this.animated) return;
     if (this.running) {
       this.start(this.index, this.continuous);

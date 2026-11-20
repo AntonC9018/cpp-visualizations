@@ -536,10 +536,18 @@ export function initPlayground(root: HTMLElement): PlaygroundController {
     renderStrings();
     syncUrl();
     if (lastTrace) {
-      const stepIndex = currentView instanceof Player ? currentView.index : null;
+      const prior = currentView instanceof Player
+        ? {
+            index: currentView.index,
+            speed: currentView.instant ? 'instant' : String(currentView.rate),
+            littleEndian: currentView.littleEndian,
+          }
+        : null;
       mountTrace(lastTrace);
-      if (currentView instanceof Player && stepIndex !== null) {
-        currentView.settle(stepIndex);
+      if (currentView instanceof Player && prior) {
+        currentView.speed(prior.speed);
+        currentView.byteOrder(prior.littleEndian);
+        currentView.settle(prior.index);
       }
     }
   });
