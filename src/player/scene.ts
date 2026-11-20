@@ -40,6 +40,7 @@ import {
   copyBegin,
   departure,
   landing,
+  statementSteps,
   stores,
   walkOf,
 } from './model.ts';
@@ -461,12 +462,11 @@ function memory(c: SceneContext): string {
     Boolean(shown && Object.values(shown.targets).some(t => startsAt(t, cell)));
   // Once `&` has taken an address, it stays shown until the statement ends.
   const taking = (i: number, cell: { name: string; address: number }): boolean => {
-    const steps = c.m.steps;
-    for (let j = i; j >= 0 && steps[j].line === steps[Math.max(i, 0)].line; j--) {
-      const o = steps[j].op;
-      if (o?.kind === 'addr' && startsAt(o.name, cell)) return true;
-    }
-    return false;
+    if (i < 0) return false;
+    return statementSteps(c.m.steps, i).some(j => {
+      const o = c.m.steps[j].op;
+      return j <= i && o?.kind === 'addr' && startsAt(o.name, cell);
+    });
   };
   // A variable's start address always shows, even when an array starts it.
   const startsVariable = (cell: { name: string; address: number }): boolean =>
@@ -737,7 +737,7 @@ function paneBody(c: SceneContext, copying: boolean): string {
     const sy = g.lineY(step.line);
     const begin = copyBegin(c.m.steps, c.index);
     const total = begin + T.copyTravel;
-    if (prev && prev.line !== step.line) {
+    if (prev) {
       out += `<g>${fade(1, 0, 0.3, begin + 0.2)}${settledPane(c, prev, tx, ty)}</g>`;
     }
     const scale = CODE_SIZE / c.g.paneSize;

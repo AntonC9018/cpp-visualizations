@@ -24,7 +24,7 @@ const walks = (op: TraceOperation): op is WalkingOperation =>
 /**
  * The walks that do not start at the top of their chain, recorded by `prepare`. They are kept by
  * operation, not on the model, as an operation's timing (`departure`, `arrival`) follows from it
- * alone wherever it is drawn.
+ * alone wherever it is drawn; `prepare` gives each step an operation of its own for this.
  */
 const shortWalks = new WeakMap<TraceOperation, string[]>();
 
@@ -53,8 +53,24 @@ export function arrival(op: TraceOperation): number {
 export const opSeconds = (op: TraceOperation): number =>
   arrival(op) + T.settle + (stores(op) ? 0.5 : 0);
 
-export const copies = (steps: TraceStep[], i: number): boolean =>
-  !steps[i].op && (i === 0 || steps[i - 1].line !== steps[i].line);
+/**
+ * Whether step `i` opens a statement. Each statement opens with a step that has no operation,
+ * so two in a row on one line are still two.
+ */
+export const opensStatement = (steps: TraceStep[], i: number): boolean =>
+  i === 0 || !steps[i].op || steps[i - 1].line !== steps[i].line;
+
+/** The steps of the statement that step `i` belongs to. */
+export function statementSteps(steps: TraceStep[], i: number): number[] {
+  let start = i;
+  while (!opensStatement(steps, start)) start--;
+  let end = i;
+  while (end + 1 < steps.length && !opensStatement(steps, end + 1)) end++;
+  return Array.from({ length: end - start + 1 }, (_, k) => start + k);
+}
+
+/** A statement's first step copies its line from the code into the pane. */
+export const copies = (steps: TraceStep[], i: number): boolean => !steps[i].op;
 
 export const copyBegin = (_steps: TraceStep[], i: number): number =>
   i > 0 ? 0.3 : T.copyBegin;
@@ -198,7 +214,8 @@ export function prepare(trace: ExecutionTrace): PreparedModel {
     trace,
     typeColours: typeColours(trace),
     typed: trace.steps.some(step => step.types),
-    steps: trace.steps,
+    // Each step's own operation, which its walk is recorded by.
+    steps: trace.steps.map(step => (step.op ? { ...step, op: { ...step.op } } : step)),
     source: trace.source,
     spans: trace.spans || [],
     types: trace.types || {},
@@ -228,7 +245,7 @@ function recordShortWalks(m: PreparedModel, continuations: number[]): void {
     }
     // The write of `s.a += 1` lands where its read already walked.
     if (op.kind === 'read' && op.compound) {
-      const write = statementSteps(m, j).find(k => k > j && m.steps[k].op?.kind === 'write');
+      const write = statementSteps(m.steps, j).find(k => k > j && m.steps[k].op?.kind === 'write');
       const written = write === undefined ? null : m.steps[write].op;
       if (written?.kind === 'write' && written.name === op.name) shortWalks.set(written, [op.name]);
     }
@@ -332,15 +349,6 @@ function reached(op: TraceOperation | null): Reach | null {
 const topOf = (leaf: ModelLeaf): string => leaf.group ?? leaf.name;
 const covers = (name: string, cell: string): boolean => cell === name || cell.startsWith(name + '.');
 
-/** The steps of the statement that step `i` belongs to. */
-function statementSteps(m: PreparedModel, i: number): number[] {
-  let start = i;
-  while (start > 0 && m.steps[start - 1].line === m.steps[i].line) start--;
-  let end = i;
-  while (end + 1 < m.steps.length && m.steps[end + 1].line === m.steps[i].line) end++;
-  return Array.from({ length: end - start + 1 }, (_, k) => start + k);
-}
-
 /** The address of a struct: its walk outlines it whole, and it lights none of its cells. */
 const addressOfStruct = (m: PreparedModel, op: TraceOperation | null): op is AddrOperation =>
   op?.kind === 'addr' && m.groups.some(group => group.name === op.name);
@@ -370,7 +378,7 @@ function continuation(m: PreparedModel, j: number): number {
   if (op?.kind !== 'deref' && op?.kind !== 'alias') return -1;
   const name = op.target;
   let at = op.span[0];
-  for (let k = j + 1; k < m.steps.length && m.steps[k].line === m.steps[j].line; k++) {
+  for (let k = j + 1; k < m.steps.length && !opensStatement(m.steps, k); k++) {
     const op = m.steps[k].op;
     if (!op || !('span' in op)) continue;
     const later = reached(op)?.name;
@@ -402,7 +410,7 @@ function continuation(m: PreparedModel, j: number): number {
 function litAt(m: PreparedModel, i: number): Set<string> {
   const tops = activeVariables(m, i);
   const names: string[] = [];
-  for (const j of statementSteps(m, i)) {
+  for (const j of statementSteps(m.steps, i)) {
     const op = m.steps[j].op;
     const name = m.reach[j]?.name;
     if (j > i || !name) continue;
@@ -454,7 +462,7 @@ export function stepFocus(m: PreparedModel, i: number, animate: boolean): Focus 
   }
   // What dims does so at once, unless the pane still names it until the step rewrites it, as
   // `a` in `a.size()`.
-  if (op && m.steps[i - 1].line === m.steps[i].line) {
+  if (op && !opensStatement(m.steps, i)) {
     const named = paneVariables(m, m.steps[i - 1]);
     const still = paneVariables(m, m.steps[i]);
     for (const name of before) {

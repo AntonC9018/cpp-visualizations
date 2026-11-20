@@ -260,3 +260,27 @@ test('the pane box of a walk ends where each level ends, however the chain is sp
   assert.equal(paneLevels(walk, 'a.n.gx', 0), null);
   assert.equal(paneLevels(['a'], 'a', 0), null);
 });
+
+test('two statements on one line are still two', () => {
+  const t = trace('struct S { int x; int y; }; S s{ 1, 2 }; s.x = 5; int b = s.y;');
+  const last = t.steps.at(-1)!.line;
+  for (const step of t.steps) if (step.line === last - 1) step.line = last;
+  const m = prepare(t);
+  const opening = m.steps.findIndex((step, i) => i > 0 && !step.op && step.line === last && m.steps[i - 1].line === last);
+  // The write of `s.x` stays with its own statement, not lit into the next.
+  assert.deepEqual(cells(stepFocus(m, opening, true).now), []);
+});
+
+test('a walk recorded for one step does not shorten another that shares its operation', () => {
+  const t = trace(
+    'struct In { int a; int b; }; struct S { int x; In in; }; S s{ 1, { 2, 3 } }; In* q = &s.in; ' +
+      'int y = (*q).b; int z = s.in.b;'
+  );
+  const reads = t.steps.flatMap((step, i) => (step.op?.kind === 'read' && step.op.name === 's.in.b' ? [i] : []));
+  assert.deepEqual(t.steps[reads[0]].op, t.steps[reads[1]].op);
+  t.steps[reads[1]].op = t.steps[reads[0]].op;
+  const m = prepare(t);
+  const walk = (i: number): string[] => walkOf(m.steps[i].op as WalkingOperation);
+  assert.deepEqual(walk(reads[0]), ['s.in', 's.in.b']);
+  assert.deepEqual(walk(reads[1]), ['s', 's.in', 's.in.b']);
+});

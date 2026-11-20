@@ -1078,7 +1078,15 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return departure(op) + T.travel;
   }
   const opSeconds = (op) => arrival(op) + T.settle + (stores(op) ? 0.5 : 0);
-  const copies = (steps, i) => !steps[i].op && (i === 0 || steps[i - 1].line !== steps[i].line);
+  const opensStatement = (steps, i) => i === 0 || !steps[i].op || steps[i - 1].line !== steps[i].line;
+  function statementSteps(steps, i) {
+    let start = i;
+    while (!opensStatement(steps, start)) start--;
+    let end = i;
+    while (end + 1 < steps.length && !opensStatement(steps, end + 1)) end++;
+    return Array.from({ length: end - start + 1 }, (_, k) => start + k);
+  }
+  const copies = (steps, i) => !steps[i].op;
   const copyBegin = (_steps, i) => i > 0 ? 0.3 : T.copyBegin;
   function animationSeconds(steps, i) {
     const step = steps[i];
@@ -1157,7 +1165,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       trace,
       typeColours: typeColours(trace),
       typed: trace.steps.some((step) => step.types),
-      steps: trace.steps,
+      // Each step's own operation, which its walk is recorded by.
+      steps: trace.steps.map((step) => step.op ? { ...step, op: { ...step.op } } : step),
       source: trace.source,
       spans: trace.spans || [],
       types: trace.types || {},
@@ -1184,7 +1193,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         shortWalks.set(next, chainOf(next.name).slice(chainOf(op.target).length - 1));
       }
       if (op.kind === "read" && op.compound) {
-        const write = statementSteps(m, j).find((k) => {
+        const write = statementSteps(m.steps, j).find((k) => {
           var _a2;
           return k > j && ((_a2 = m.steps[k].op) == null ? void 0 : _a2.kind) === "write";
         });
@@ -1259,13 +1268,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }
   const topOf = (leaf) => leaf.group ?? leaf.name;
   const covers = (name, cell) => cell === name || cell.startsWith(name + ".");
-  function statementSteps(m, i) {
-    let start = i;
-    while (start > 0 && m.steps[start - 1].line === m.steps[i].line) start--;
-    let end = i;
-    while (end + 1 < m.steps.length && m.steps[end + 1].line === m.steps[i].line) end++;
-    return Array.from({ length: end - start + 1 }, (_, k) => start + k);
-  }
   const addressOfStruct = (m, op) => (op == null ? void 0 : op.kind) === "addr" && m.groups.some((group) => group.name === op.name);
   function reachedIn(m, j, next) {
     var _a;
@@ -1284,7 +1286,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     if ((op == null ? void 0 : op.kind) !== "deref" && (op == null ? void 0 : op.kind) !== "alias") return -1;
     const name = op.target;
     let at = op.span[0];
-    for (let k = j + 1; k < m.steps.length && m.steps[k].line === m.steps[j].line; k++) {
+    for (let k = j + 1; k < m.steps.length && !opensStatement(m.steps, k); k++) {
       const op2 = m.steps[k].op;
       if (!op2 || !("span" in op2)) continue;
       const later = (_a = reached(op2)) == null ? void 0 : _a.name;
@@ -1307,7 +1309,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     var _a;
     const tops = activeVariables(m, i);
     const names = [];
-    for (const j of statementSteps(m, i)) {
+    for (const j of statementSteps(m.steps, i)) {
       const op2 = m.steps[j].op;
       const name = (_a = m.reach[j]) == null ? void 0 : _a.name;
       if (j > i || !name) continue;
@@ -1341,7 +1343,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         }
       }
     }
-    if (op && m.steps[i - 1].line === m.steps[i].line) {
+    if (op && !opensStatement(m.steps, i)) {
       const named = paneVariables(m, m.steps[i - 1]);
       const still = paneVariables(m, m.steps[i]);
       for (const name of before) {
@@ -1654,12 +1656,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     };
     const pointed = (shown, cell) => Boolean(shown && Object.values(shown.targets).some((t) => startsAt(t, cell)));
     const taking = (i, cell) => {
-      const steps = c.m.steps;
-      for (let j = i; j >= 0 && steps[j].line === steps[Math.max(i, 0)].line; j--) {
-        const o = steps[j].op;
-        if ((o == null ? void 0 : o.kind) === "addr" && startsAt(o.name, cell)) return true;
-      }
-      return false;
+      if (i < 0) return false;
+      return statementSteps(c.m.steps, i).some((j) => {
+        const o = c.m.steps[j].op;
+        return j <= i && (o == null ? void 0 : o.kind) === "addr" && startsAt(o.name, cell);
+      });
     };
     const startsVariable = (cell) => {
       var _a;
@@ -1880,7 +1881,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const sy = g.lineY(step.line);
       const begin = copyBegin(c.m.steps, c.index);
       const total = begin + T.copyTravel;
-      if (prev && prev.line !== step.line) {
+      if (prev) {
         out += `<g>${fade(1, 0, 0.3, begin + 0.2)}${settledPane(c, prev, tx, ty)}</g>`;
       }
       const scale = CODE_SIZE / c.g.paneSize;
