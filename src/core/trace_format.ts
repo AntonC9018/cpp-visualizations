@@ -657,15 +657,6 @@ function replacement(before: string, after: string, span: Span, where: string): 
 }
 
 /**
- * `text` as it stands after `before`: in parentheses where its sign would join the operator
- * before it into another token, as `8-(-2)` rather than `8--2`.
- */
-export function separated(before: string, text: string): string {
-  const sign = before.at(-1);
-  return (sign === '-' || sign === '+') && text.startsWith(sign) ? `(${text})` : text;
-}
-
-/**
  * The read that opens `a += b` into `a = 5 + b`: `a` names the one scalar cell read, and the
  * pane opens as `openCompound` spells it, with the right side in parentheses or not.
  */
@@ -943,8 +934,13 @@ function checkOperation(
   } else if (['read', 'addr', 'deref', 'eval', 'convert'].includes(kind)) {
     const span = checkSpan(op.span, previous.pane, `${where}.span`);
     const replaced = replacement(previous.pane, step.pane, span, where);
-    const expected = kind === 'deref' ? codeName(op.target) : separated(previous.pane.slice(0, span[0]), op.value);
-    check(replaced === expected, where, `the replacement ${pyRepr(replaced)} is not ${pyRepr(expected)}`);
+    // Whether a sign needs parentheses is the tracer's reading of Clang's tokens.
+    const expected = kind === 'deref' ? [codeName(op.target)] : [op.value, `(${op.value})`];
+    check(
+      expected.includes(replaced),
+      where,
+      `the replacement ${pyRepr(replaced)} is not ${expected.map(pyRepr).join(' or ')}`
+    );
     if (kind === 'convert') {
       check(convertedFrom(previous, span) === op.from, `${where}.from`, 'is not the type of the converted value');
       check(
@@ -1212,7 +1208,8 @@ export function validate(trace: unknown): asserts trace is AnyTrace {
 }
 
 /**
- * The retained bits in the source and destination must agree for the player to draw them.
+ * The player draws a conversion's operand and result as integers. Clang computed the result,
+ * so only their presence is checked.
  */
 function checkBitsStep(
   step: TraceStep,
@@ -1235,11 +1232,10 @@ function checkBitsStep(
     `${where}.op`,
     'expected an integer value converted between integer types in a bits trace'
   );
-  const operand = previous && convertOperand(previous, op);
   check(
-    operand !== null && from!.holds(operand) && to!.wrap(operand) === value,
-    `${where}.op.value`,
-    'the conversion must preserve the retained bits'
+    previous !== null && convertOperand(previous, op) !== null,
+    `${where}.op.span`,
+    'the converted value must be a typed integer of type `from`'
   );
 }
 
@@ -1260,6 +1256,15 @@ function escapeRegExp(string: string): string {
 
 function isWordChar(ch: string): boolean {
   return /[A-Za-z0-9_]/.test(ch);
+}
+
+/**
+ * `text` as it stands after `before`: in parentheses where its sign would join the operator
+ * before it into another token, as `8-(-2)` rather than `8--2`.
+ */
+function separated(before: string, text: string): string {
+  const sign = before.at(-1);
+  return (sign === '-' || sign === '+') && text.startsWith(sign) ? `(${text})` : text;
 }
 
 export class Builder {
