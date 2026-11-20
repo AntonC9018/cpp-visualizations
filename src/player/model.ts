@@ -9,15 +9,29 @@ import type {
   TraceStep,
   TraceVariable,
 } from '../core/trace_format.ts';
-import { chainDelay, memoryWalk } from './storage_path.ts';
+import { chainDelay, chainOf, memoryWalk } from './storage_path.ts';
 import { T, TYPE_COLOURS } from './constants.ts';
 
 export const stores = (op: TraceOperation): boolean =>
   op.kind === 'write' || op.kind === 'bind';
 
+export type WalkingOperation = Extract<TraceOperation, { kind: 'read' | 'write' | 'addr' }>;
+
+const walks = (op: TraceOperation): op is WalkingOperation =>
+  op.kind === 'read' || op.kind === 'write' || op.kind === 'addr';
+
+/**
+ * The levels a read, write or address walks through memory, `a` → `a.f` → `a.f.[0]`. One that
+ * goes on from a dereference starts where the dereference arrived, as `q->g`, once `b.n.g`,
+ * walks no further: `prepare` records these.
+ */
+const continued = new WeakMap<TraceOperation, string[]>();
+
+export const walkOf = (op: WalkingOperation): string[] => continued.get(op) ?? chainOf(op.name);
+
 export const departure = (op: TraceOperation): number =>
   (stores(op) ? T.writeHold : op.kind === 'print' ? 0.2 : T.prepare) +
-  (op.kind === 'read' || op.kind === 'write' ? chainDelay(op.name) : 0);
+  (walks(op) ? chainDelay(walkOf(op)) : 0);
 
 export function arrival(op: TraceOperation): number {
   if (op.kind === 'deref') return T.prepare + T.follow;
@@ -169,7 +183,7 @@ export function prepare(trace: ExecutionTrace): PreparedModel {
     }
   }
   const top = variables.map(variable => variable.name);
-  return {
+  const model: PreparedModel = {
     trace,
     typeColours: typeColours(trace),
     typed: trace.steps.some(step => step.types),
@@ -184,6 +198,19 @@ export function prepare(trace: ExecutionTrace): PreparedModel {
     top,
     rise: Math.max(0, ...groups.map(group => group.rise)),
   };
+  recordContinuations(model);
+  return model;
+}
+
+/** Where a dereference or alias arrived, the walk of what goes on from it starts. */
+function recordContinuations(m: PreparedModel): void {
+  m.steps.forEach((step, j) => {
+    if (step.op?.kind !== 'deref' && step.op?.kind !== 'alias') return;
+    const next = m.steps[continuation(m, j)]?.op;
+    if (next && walks(next)) {
+      continued.set(next, chainOf(next.name).slice(chainOf(step.op.target).length - 1));
+    }
+  });
 }
 
 /**
@@ -242,14 +269,14 @@ export function activeVariables(m: PreparedModel, i: number): Set<string> {
 function reached(op: TraceOperation | null): { name: string; at: number } | null {
   if (!op) return null;
   switch (op.kind) {
-    // A read lights the cell as its walk lands on the last level, a write as its value lands.
+    // A read or address lights the cell as its walk lands on the last level, a write as its
+    // value lands.
     case 'read':
-      return { name: op.name, at: memoryWalk(op.name, arrival(op)).at(-1)![0] };
+    case 'addr':
+      return { name: op.name, at: memoryWalk(walkOf(op), arrival(op)).at(-1)![0] };
     case 'write':
       return { name: op.name, at: arrival(op) };
-    // An address and a binding highlight their storage from the start.
-    case 'addr':
-      return { name: op.name, at: 0 };
+    // A binding highlights its storage from the start.
     case 'bind':
       return { name: op.target, at: 0 };
     case 'deref':
@@ -278,15 +305,17 @@ function reachedIn(m: PreparedModel, j: number): { name: string; at: number } | 
   const target = reached(m.steps[j].op);
   const op = m.steps[j].op;
   if (!target || (op?.kind !== 'deref' && op?.kind !== 'alias')) return target;
-  return goesInto(m, j, target.name) ? null : target;
+  const next = reached(m.steps[continuation(m, j)]?.op ?? null);
+  return next && next.name !== target.name ? null : target;
 }
 
 /**
- * Whether a later step of the statement reads, writes or binds a field of `name` from where
- * step `j` left it in the pane, as `(s).a` does: the struct it named was only the way to that
- * field.
+ * The later step of the statement that reads, writes, binds or takes the address of what
+ * dereference or alias `j` arrived at, or a field of it, from where `j` left it in the pane, as
+ * `(s).a` does; -1 when none does.
  */
-function goesInto(m: PreparedModel, j: number, name: string): boolean {
+function continuation(m: PreparedModel, j: number): number {
+  const name = (m.steps[j].op as { target: string }).target;
   let at = (m.steps[j].op as { span: Span }).span[0];
   for (let k = j + 1; k < m.steps.length && m.steps[k].line === m.steps[j].line; k++) {
     const op = m.steps[k].op;
@@ -295,7 +324,7 @@ function goesInto(m: PreparedModel, j: number, name: string): boolean {
     // A compound read opens at its operator; the field it reads stands before it.
     const [from, to] =
       op.kind === 'write' ? op.destination : op.kind === 'read' && op.compound ? [0, op.span[0]] : op.span;
-    if (later && later !== name && covers(name, later) && from <= at && at < to) return true;
+    if (later && covers(name, later) && from <= at && at < to) return k;
     if (m.steps[k].pane === m.steps[k - 1].pane) continue;
     const [s, e] = op.span;
     if (at >= e) {
@@ -304,11 +333,11 @@ function goesInto(m: PreparedModel, j: number, name: string): boolean {
       // A rewrite around the struct, as `(s).a` to `s.a`, keeps it only if it now starts there.
       const spelled = codeName(name);
       const pane = m.steps[k].pane;
-      if (!pane.startsWith(spelled, s) || /\w/.test(pane[s + spelled.length] ?? '')) return false;
+      if (!pane.startsWith(spelled, s) || /\w/.test(pane[s + spelled.length] ?? '')) return -1;
       at = s;
     }
   }
-  return false;
+  return -1;
 }
 
 /**

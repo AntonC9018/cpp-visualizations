@@ -3,7 +3,17 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { trace } from '../src/node/tracing.ts';
-import { type PreparedModel, arrival, prepare, stepFocus } from '../src/player/model.ts';
+import { T } from '../src/player/constants.ts';
+import {
+  type PreparedModel,
+  type WalkingOperation,
+  arrival,
+  departure,
+  prepare,
+  stepFocus,
+  walkOf,
+} from '../src/player/model.ts';
+import { memoryWalk } from '../src/player/storage_path.ts';
 
 const model = (source: string): PreparedModel => prepare(trace(source));
 const stepOf = (m: PreparedModel, kind: string, name: string): number =>
@@ -88,9 +98,25 @@ test('a dereference dims the siblings at once and lights its target as the arrow
   assert.deepEqual(changes(d, statementOf(d, deref)), { 's.b': 0 });
 });
 
-test('an address lights its cell with the highlight, from the start', () => {
+test('an address walks to its cell and lights it as the walk lands', () => {
   const a = model('struct S { int a; int b; }; S s{ 1, 2 }; int* p = &s.a;');
-  assert.deepEqual(changes(a, stepOf(a, 'addr', 's.a')), { 's.a': 0 });
+  const i = stepOf(a, 'addr', 's.a');
+  const op = a.steps[i].op as WalkingOperation;
+  assert.deepEqual(walkOf(op), ['s', 's.a']);
+  assert.ok(departure(op) > T.prepare);
+  assert.deepEqual(changes(a, i), { 's.a': memoryWalk(['s', 's.a'], arrival(op)).at(-1)![0] });
+});
+
+test('a chain a dereference arrived at walks only from where it arrived', () => {
+  const d = model(
+    'struct N { int f; int g; }; struct A { N n; int f; }; A b{ { 1, 2 }, 3 }; N* q = &b.n; ' +
+      'q->g = 9; int x = (*q).f;'
+  );
+  const write = d.steps[stepOf(d, 'write', 'b.n.g')].op as WalkingOperation;
+  assert.deepEqual(walkOf(write), ['b.n.g']);
+  assert.equal(departure(write), T.writeHold);
+  const read = d.steps[stepOf(d, 'read', 'b.n.f')].op as WalkingOperation;
+  assert.deepEqual(walkOf(read), ['b.n', 'b.n.f']);
 });
 
 function statementOf(mm: PreparedModel, i: number): number {

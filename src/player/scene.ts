@@ -30,8 +30,18 @@ import {
   typeLabelWidth,
   valueCentre,
 } from './geometry.ts';
-import { chainOf, memoryWalk, paneLevels, walkWindows } from './storage_path.ts';
-import { type Focus, type PreparedModel, arrival, copies, copyBegin, departure, stores } from './model.ts';
+import { memoryWalk, paneLevels, walkWindows } from './storage_path.ts';
+import {
+  type Focus,
+  type PreparedModel,
+  type WalkingOperation,
+  arrival,
+  copies,
+  copyBegin,
+  departure,
+  stores,
+  walkOf,
+} from './model.ts';
 import {
   animateAttr,
   animated,
@@ -460,8 +470,8 @@ function memory(c: SceneContext): string {
     const now = pointed(step, cell) || taking(c.index, cell);
     const before = c.animate ? pointed(prev, cell) || taking(c.index - 1, cell) : now;
     if (now && before) return label;
-    // `&` shows the address as it starts taking it; a pointer's write, as the value lands.
-    const appear = op?.kind === 'addr' ? 0 : at;
+    // `&` shows the address as its walk lands; a pointer's write, as the value lands.
+    const appear = op?.kind === 'addr' ? landing(op) : at;
     if (now) return `<g opacity="0">${fade(0, 1, 0.3, appear)}${label}</g>`;
     if (before) return `<g>${fade(1, 0, 0.3, at)}${label}</g>`;
     return '';
@@ -491,7 +501,7 @@ function memory(c: SceneContext): string {
     const cell = g.cellsOf(op.name)[0];
     const [lx, ly] = labelCentre(cell);
     out +=
-      `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.2, at + 0.1)}` +
+      `<g opacity="0">${fade(0, 1, 0.15, landing(op))}${fade(1, 0, 0.2, at + 0.1)}` +
       rect(lx - labelWidth(cell) / 2 - 5, ly - 13, labelWidth(cell) + 10, 24, P.readFill, P.read, 5, 2) +
       '</g>';
   }
@@ -545,7 +555,7 @@ function memory(c: SceneContext): string {
     }
     out += dim(c, cell.name, markup);
   }
-  if (op && (op.kind === 'read' || op.kind === 'write')) {
+  if (op && (op.kind === 'read' || op.kind === 'write' || op.kind === 'addr')) {
     out += chainHighlight(c, op, at);
   }
   if (op && op.kind === 'deref') {
@@ -565,12 +575,15 @@ function memory(c: SceneContext): string {
   return out + tags(c, at);
 }
 
-/** Reading or writing `a.f[0]` outlines `a`, then `a.f`, then `a.f[0]`. */
-function chainHighlight(c: SceneContext, op: { kind: 'read' | 'write'; name: string }, at: number): string {
+/** When a walk lands on the last level of its chain. */
+const landing = (op: WalkingOperation): number => memoryWalk(walkOf(op), arrival(op)).at(-1)![0];
+
+/** Reading, writing or taking the address of `a.f[0]` outlines `a`, then `a.f`, then `a.f[0]`. */
+function chainHighlight(c: SceneContext, op: WalkingOperation, at: number): string {
   const { g, P } = c;
   const color = op.kind === 'write' ? P.write : P.read;
-  const levels = chainOf(op.name);
-  const windows = memoryWalk(op.name, at);
+  const levels = walkOf(op);
+  const windows = memoryWalk(levels, at);
   return levels
     .map((level, k) => {
       const box = g.box(level);
@@ -774,10 +787,12 @@ function paneBody(c: SceneContext, copying: boolean): string {
           ? [P.write, P.writeFill]
           : [P.fg, P.derefFill];
     out += exprBackground(c, tx, ty, step.expr, prev.expr, at + 0.1);
+    // `&a.f` grows its box from `&a`.
+    const lead = op.kind === 'addr' ? 1 : 0;
     out += walkBoxes(
-      op.kind === 'read' ? paneLevels(op.name, before.slice(s, e)) : null,
+      op.kind === 'read' || op.kind === 'addr' ? paneLevels(walkOf(op), before.slice(s + lead, e)) : null,
       at - 0.1,
-      chars => markBox(sx, ty, chars * c.g.paneChar, stroke, fill),
+      chars => markBox(sx, ty, (chars + lead) * c.g.paneChar, stroke, fill),
       `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.2, at - 0.1)}${markBox(sx, ty, (e - s) * c.g.paneChar, stroke, fill)}</g>`
     );
     out += paneText(c, tx, ty, before, 0, s, prev.expr);
@@ -823,7 +838,7 @@ function paneBody(c: SceneContext, copying: boolean): string {
     const destination = (chars: number): string =>
       rect(tx + ns * c.g.paneChar - 3, ty - 32, chars * c.g.paneChar + 6 - tight, 42, 'none', P.write, 6, 2);
     out += walkBoxes(
-      paneLevels(op.name, step.pane.slice(ns, ne)),
+      paneLevels(walkOf(op), step.pane.slice(ns, ne)),
       at + 0.4,
       destination,
       `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.3, at + 0.4)}${destination(ne - ns)}</g>`

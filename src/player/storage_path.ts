@@ -10,21 +10,20 @@ export function chainOf(name: string): string[] {
   return parts.map((_, i) => parts.slice(0, i + 1).join('.'));
 }
 
-/** The extra time a chained read or write waits before its value moves. */
-export function chainDelay(name: string | undefined): number {
-  const count = name ? chainOf(name).length : 1;
-  return count > 1 ? (count - 1) * CHAIN_STEP + CHAIN_LEAD : 0;
+/** The extra time a walk along these levels holds back the value. */
+export function chainDelay(levels: string[]): number {
+  return levels.length > 1 ? (levels.length - 1) * CHAIN_STEP + CHAIN_LEAD : 0;
 }
 
-/** The levels of a chain as the pane spells them from `start`, or null when it does not. */
-export function paneLevels(name: string, spelled: string): string[] | null {
-  const levels = chainOf(name).map(codeName);
+/** The levels of a walk as the pane spells them, or null when it does not. */
+export function paneLevels(walk: string[], spelled: string): string[] | null {
+  const levels = walk.map(codeName);
   return levels.length > 1 && levels.every(level => spelled.startsWith(level)) ? levels : null;
 }
 
-/** Memory's windows along a chained read or write whose value arrives at `at`. */
-export const memoryWalk = (name: string, at: number): Array<[number, number]> =>
-  walkWindows(chainOf(name).length, at + 0.15, CHAIN_LEAD);
+/** Memory's windows along a walk whose value arrives at `at`. */
+export const memoryWalk = (levels: string[], at: number): Array<[number, number]> =>
+  walkWindows(levels.length, at + 0.15, CHAIN_LEAD);
 
 /**
  * Each level's window: shown from `begin`, gone at `leave` (the last stays until `end`).

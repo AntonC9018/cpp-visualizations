@@ -1035,15 +1035,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const parts = name.split(".");
     return parts.map((_, i) => parts.slice(0, i + 1).join("."));
   }
-  function chainDelay(name) {
-    const count = name ? chainOf(name).length : 1;
-    return count > 1 ? (count - 1) * CHAIN_STEP + CHAIN_LEAD : 0;
+  function chainDelay(levels) {
+    return levels.length > 1 ? (levels.length - 1) * CHAIN_STEP + CHAIN_LEAD : 0;
   }
-  function paneLevels(name, spelled) {
-    const levels = chainOf(name).map(codeName);
+  function paneLevels(walk, spelled) {
+    const levels = walk.map(codeName);
     return levels.length > 1 && levels.every((level) => spelled.startsWith(level)) ? levels : null;
   }
-  const memoryWalk = (name, at) => walkWindows(chainOf(name).length, at + 0.15, CHAIN_LEAD);
+  const memoryWalk = (levels, at) => walkWindows(levels.length, at + 0.15, CHAIN_LEAD);
   function walkWindows(count, end, offset = 0) {
     const start = count > 1 ? offset : 0;
     return Array.from({ length: count }, (_, k) => [
@@ -1052,7 +1051,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     ]);
   }
   const stores = (op) => op.kind === "write" || op.kind === "bind";
-  const departure = (op) => (stores(op) ? T.writeHold : op.kind === "print" ? 0.2 : T.prepare) + (op.kind === "read" || op.kind === "write" ? chainDelay(op.name) : 0);
+  const walks = (op) => op.kind === "read" || op.kind === "write" || op.kind === "addr";
+  const continued = /* @__PURE__ */ new WeakMap();
+  const walkOf = (op) => continued.get(op) ?? chainOf(op.name);
+  const departure = (op) => (stores(op) ? T.writeHold : op.kind === "print" ? 0.2 : T.prepare) + (walks(op) ? chainDelay(walkOf(op)) : 0);
   function arrival(op) {
     if (op.kind === "deref") return T.prepare + T.follow;
     if (op.kind === "eval" || op.kind === "alias" || op.kind === "convert") return T.evaluate;
@@ -1136,7 +1138,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
     }
     const top = variables.map((variable) => variable.name);
-    return {
+    const model = {
       trace,
       typeColours: typeColours(trace),
       typed: trace.steps.some((step) => step.types),
@@ -1151,6 +1153,18 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       top,
       rise: Math.max(0, ...groups.map((group) => group.rise))
     };
+    recordContinuations(model);
+    return model;
+  }
+  function recordContinuations(m) {
+    m.steps.forEach((step, j) => {
+      var _a, _b, _c;
+      if (((_a = step.op) == null ? void 0 : _a.kind) !== "deref" && ((_b = step.op) == null ? void 0 : _b.kind) !== "alias") return;
+      const next = (_c = m.steps[continuation(m, j)]) == null ? void 0 : _c.op;
+      if (next && walks(next)) {
+        continued.set(next, chainOf(next.name).slice(chainOf(step.op.target).length - 1));
+      }
+    });
   }
   function typeColours(trace) {
     const types = new Set(
@@ -1196,14 +1210,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   function reached(op) {
     if (!op) return null;
     switch (op.kind) {
-      // A read lights the cell as its walk lands on the last level, a write as its value lands.
+      // A read or address lights the cell as its walk lands on the last level, a write as its
+      // value lands.
       case "read":
-        return { name: op.name, at: memoryWalk(op.name, arrival(op)).at(-1)[0] };
+      case "addr":
+        return { name: op.name, at: memoryWalk(walkOf(op), arrival(op)).at(-1)[0] };
       case "write":
         return { name: op.name, at: arrival(op) };
-      // An address and a binding highlight their storage from the start.
-      case "addr":
-        return { name: op.name, at: 0 };
+      // A binding highlights its storage from the start.
       case "bind":
         return { name: op.target, at: 0 };
       case "deref":
@@ -1221,20 +1235,23 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return start;
   }
   function reachedIn(m, j) {
+    var _a;
     const target = reached(m.steps[j].op);
     const op = m.steps[j].op;
     if (!target || (op == null ? void 0 : op.kind) !== "deref" && (op == null ? void 0 : op.kind) !== "alias") return target;
-    return goesInto(m, j, target.name) ? null : target;
+    const next = reached(((_a = m.steps[continuation(m, j)]) == null ? void 0 : _a.op) ?? null);
+    return next && next.name !== target.name ? null : target;
   }
-  function goesInto(m, j, name) {
+  function continuation(m, j) {
     var _a;
+    const name = m.steps[j].op.target;
     let at = m.steps[j].op.span[0];
     for (let k = j + 1; k < m.steps.length && m.steps[k].line === m.steps[j].line; k++) {
       const op = m.steps[k].op;
       if (!op || !("span" in op)) continue;
       const later = (_a = reached(op)) == null ? void 0 : _a.name;
       const [from, to] = op.kind === "write" ? op.destination : op.kind === "read" && op.compound ? [0, op.span[0]] : op.span;
-      if (later && later !== name && covers(name, later) && from <= at && at < to) return true;
+      if (later && covers(name, later) && from <= at && at < to) return k;
       if (m.steps[k].pane === m.steps[k - 1].pane) continue;
       const [s, e] = op.span;
       if (at >= e) {
@@ -1242,11 +1259,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       } else if (at >= s) {
         const spelled = codeName(name);
         const pane2 = m.steps[k].pane;
-        if (!pane2.startsWith(spelled, s) || /\w/.test(pane2[s + spelled.length] ?? "")) return false;
+        if (!pane2.startsWith(spelled, s) || /\w/.test(pane2[s + spelled.length] ?? "")) return -1;
         at = s;
       }
     }
-    return false;
+    return -1;
   }
   function litAt(m, i) {
     var _a;
@@ -1594,7 +1611,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const now = pointed(step, cell) || taking(c.index, cell);
       const before = c.animate ? pointed(prev, cell) || taking(c.index - 1, cell) : now;
       if (now && before) return label;
-      const appear = (op == null ? void 0 : op.kind) === "addr" ? 0 : at;
+      const appear = (op == null ? void 0 : op.kind) === "addr" ? landing(op) : at;
       if (now) return `<g opacity="0">${fade(0, 1, 0.3, appear)}${label}</g>`;
       if (before) return `<g>${fade(1, 0, 0.3, at)}${label}</g>`;
       return "";
@@ -1620,7 +1637,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     if (op && op.kind === "addr") {
       const cell = g.cellsOf(op.name)[0];
       const [lx, ly] = labelCentre(cell);
-      out += `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.2, at + 0.1)}` + rect(lx - labelWidth$1(cell) / 2 - 5, ly - 13, labelWidth$1(cell) + 10, 24, P.readFill, P.read, 5, 2) + "</g>";
+      out += `<g opacity="0">${fade(0, 1, 0.15, landing(op))}${fade(1, 0, 0.2, at + 0.1)}` + rect(lx - labelWidth$1(cell) / 2 - 5, ly - 13, labelWidth$1(cell) + 10, 24, P.readFill, P.read, 5, 2) + "</g>";
     }
     for (const cell of g.leaves) {
       const on = live(cell);
@@ -1667,7 +1684,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
       out += dim(c, cell.name, markup);
     }
-    if (op && (op.kind === "read" || op.kind === "write")) {
+    if (op && (op.kind === "read" || op.kind === "write" || op.kind === "addr")) {
       out += chainHighlight(c, op, at);
     }
     if (op && op.kind === "deref") {
@@ -1686,11 +1703,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return out + tags(c, at);
   }
+  const landing = (op) => memoryWalk(walkOf(op), arrival(op)).at(-1)[0];
   function chainHighlight(c, op, at) {
     const { g, P } = c;
     const color = op.kind === "write" ? P.write : P.read;
-    const levels = chainOf(op.name);
-    const windows = memoryWalk(op.name, at);
+    const levels = walkOf(op);
+    const windows = memoryWalk(levels, at);
     return levels.map((level, k) => {
       const box = g.box(level);
       if (!box) return "";
@@ -1828,10 +1846,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const sx = tx + s * c.g.paneChar;
       const [stroke, fill] = op.kind === "read" || op.kind === "addr" ? [P.read, P.readFill] : op.kind === "convert" ? [P.write, P.writeFill] : [P.fg, P.derefFill];
       out += exprBackground(c, tx, ty, step.expr, prev.expr, at + 0.1);
+      const lead = op.kind === "addr" ? 1 : 0;
       out += walkBoxes(
-        op.kind === "read" ? paneLevels(op.name, before.slice(s, e)) : null,
+        op.kind === "read" || op.kind === "addr" ? paneLevels(walkOf(op), before.slice(s + lead, e)) : null,
         at - 0.1,
-        (chars) => markBox(sx, ty, chars * c.g.paneChar, stroke, fill),
+        (chars) => markBox(sx, ty, (chars + lead) * c.g.paneChar, stroke, fill),
         `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.2, at - 0.1)}${markBox(sx, ty, (e - s) * c.g.paneChar, stroke, fill)}</g>`
       );
       out += paneText(c, tx, ty, before, 0, s, prev.expr);
@@ -1869,7 +1888,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       ) + "</g>";
       const destination = (chars) => rect(tx + ns * c.g.paneChar - 3, ty - 32, chars * c.g.paneChar + 6 - tight, 42, "none", P.write, 6, 2);
       out += walkBoxes(
-        paneLevels(op.name, step.pane.slice(ns, ne)),
+        paneLevels(walkOf(op), step.pane.slice(ns, ne)),
         at + 0.4,
         destination,
         `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.3, at + 0.4)}${destination(ne - ns)}</g>`
