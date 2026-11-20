@@ -1345,6 +1345,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       if (!tops.has(topOf(leaf))) continue;
       if (!leaf.group || names.some((name) => covers(name, leaf.name))) shown.add(leaf.name);
     }
+    for (const group of m.groups) {
+      if (group.parent && m.leaves.some((leaf) => shown.has(leaf.name) && covers(group.name, leaf.name))) {
+        shown.add(group.name);
+      }
+    }
     return shown;
   }
   function stepFocus(m, i, animate) {
@@ -1354,9 +1359,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const before = litAt(m, i - 1);
     const target = reachedIn(m, i);
     if (target) {
-      const top = target.name.split(".")[0];
       for (const name of now) {
-        if (!before.has(name) && (name === top || covers(target.name, name))) begin.set(name, target.at);
+        if (!before.has(name) && (covers(name, target.name) || covers(target.name, name))) {
+          begin.set(name, target.at);
+        }
       }
     }
     return { now, before, begin };
@@ -1689,7 +1695,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const color = on ? arrayGroup ? s.color : s.fieldColor || s.color : null;
       out += dim(
         c,
-        s.top,
+        // A nested struct's frame dims on its own, the outermost with its variable.
+        s.parent ? s.name : s.top,
         rect(f.x, f.y, f.w, f.h, "none", color || P.deadStroke, 6, FRAME.stroke) + (s.parent ? text(
           s.x + s.w / 2,
           f.y + f.h + 24,

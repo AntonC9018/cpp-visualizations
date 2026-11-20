@@ -39,22 +39,25 @@ const m = model(
 test('a read into a struct lights only its cell, as the walk reaches it', () => {
   const i = stepOf(m, 'read', 's.in.b');
   const focus = stepFocus(m, i, true);
-  // The statement starts with the struct's cells dimmed; the walk lights the one it reads.
+  // The statement starts with the struct's cells dimmed; the walk lights the one it reads, and
+  // the frame of the struct nested around it with it.
   assert.deepEqual(cells(focus.before), []);
-  assert.deepEqual(cells(focus.now), ['s.in.b']);
+  assert.deepEqual(cells(focus.now), ['s.in', 's.in.b']);
   assert.ok(focus.begin.get('s.in.b')! > 1);
+  assert.equal(focus.begin.get('s.in'), focus.begin.get('s.in.b'));
 });
 
 test('a variable whose value went into the pane dims as the statement moves on', () => {
   const write = stepOf(m, 'write', 'y');
   assert.deepEqual(cells(stepFocus(m, write, true).now), []);
-  assert.deepEqual(changes(m, write), { 's.in.b': 0 });
+  assert.deepEqual(changes(m, write), { 's.in': 0, 's.in.b': 0 });
   assert.ok(!stepFocus(m, write, true).now.has('s'));
 });
 
 test('a write into a struct lights its cell only as the value lands', () => {
   const i = stepOf(m, 'write', 's.in.a');
-  assert.deepEqual(changes(m, i), { 's.in.a': arrival(m.steps[i].op!) });
+  const at = arrival(m.steps[i].op!);
+  assert.deepEqual(changes(m, i), { 's.in': at, 's.in.a': at });
   // Settled, without animation, the step shows its end.
   const still = stepFocus(m, i, false);
   assert.deepEqual(still.before, still.now);
@@ -64,7 +67,7 @@ test('a write into a struct lights its cell only as the value lands', () => {
 
 test('a whole struct read lights all of it', () => {
   const focus = stepFocus(m, stepOf(m, 'read', 's'), true);
-  assert.deepEqual(cells(focus.now), ['s.in.a', 's.in.b', 's.x']);
+  assert.deepEqual(cells(focus.now), ['s.in', 's.in.a', 's.in.b', 's.x']);
 });
 
 test('copying a field lights the source as read and the destination as written', () => {
@@ -75,10 +78,11 @@ test('copying a field lights the source as read and the destination as written',
   const read = stepOf(c, 'read', 's.in');
   assert.deepEqual(cells(stepFocus(c, read, true).now, 'u.'), [], 'the destination waits for its value');
   const write = stepOf(c, 'write', 'u.in');
-  assert.deepEqual(cells(stepFocus(c, read, true).now), ['s.in.a', 's.in.b']);
+  assert.deepEqual(cells(stepFocus(c, read, true).now), ['s.in', 's.in.a', 's.in.b']);
   // The source dims as its value leaves the pane for the destination.
   assert.deepEqual(cells(stepFocus(c, write, true).now), []);
   assert.deepEqual(changes(c, write, 'u.'), {
+    'u.in': arrival(c.steps[write].op!),
     'u.in.a': arrival(c.steps[write].op!),
     'u.in.b': arrival(c.steps[write].op!),
   });

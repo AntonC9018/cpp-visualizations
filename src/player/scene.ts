@@ -484,7 +484,8 @@ function memory(c: SceneContext): string {
     const color = on ? (arrayGroup ? s.color : s.fieldColor || s.color) : null;
     out += dim(
       c,
-      s.top,
+      // A nested struct's frame dims on its own, the outermost with its variable.
+      s.parent ? s.name : s.top,
       rect(f.x, f.y, f.w, f.h, 'none', color || P.deadStroke, 6, FRAME.stroke) +
         (s.parent
           ? text(

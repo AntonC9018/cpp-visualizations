@@ -358,6 +358,12 @@ function litAt(m: PreparedModel, i: number): Set<string> {
     if (!tops.has(topOf(leaf))) continue;
     if (!leaf.group || names.some(name => covers(name, leaf.name))) shown.add(leaf.name);
   }
+  // A nested struct's frame lights with the first of its cells to light.
+  for (const group of m.groups) {
+    if (group.parent && m.leaves.some(leaf => shown.has(leaf.name) && covers(group.name, leaf.name))) {
+      shown.add(group.name);
+    }
+  }
   return shown;
 }
 
@@ -379,9 +385,10 @@ export function stepFocus(m: PreparedModel, i: number, animate: boolean): Focus 
   const before = litAt(m, i - 1);
   const target = reachedIn(m, i);
   if (target) {
-    const top = target.name.split('.')[0];
     for (const name of now) {
-      if (!before.has(name) && (name === top || covers(target.name, name))) begin.set(name, target.at);
+      if (!before.has(name) && (covers(name, target.name) || covers(target.name, name))) {
+        begin.set(name, target.at);
+      }
     }
   }
   return { now, before, begin };
