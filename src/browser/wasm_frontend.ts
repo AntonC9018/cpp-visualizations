@@ -5,12 +5,11 @@ import {
 import { extractEnumConstantSizes } from '../core/records.ts';
 import type { Template, TraceSettings } from '../core/settings.ts';
 import { type TraceOf, traceSnippet } from '../core/snippet.ts';
-import { definedMacros, parseAstDump, readTokens } from '../core/source.ts';
+import { definedMacros, memo, parseAstDump, readTokens } from '../core/source.ts';
 import { runWasiModule } from './wasi.ts';
 
 /** Each module's macros by header list, which repeats across a page's traces. */
-const macroCache = new WeakMap<WebAssembly.Module, Map<string, Macros>>();
-const MACRO_CACHE_SIZE = 16;
+const macroCache = new WeakMap<WebAssembly.Module, (key: string, compute: () => Macros) => Macros>();
 
 export function createWasmClangFrontend(module: WebAssembly.Module): CompilerFrontend {
   /** Run the frontend on `program` with the shared language options. */
@@ -26,16 +25,12 @@ export function createWasmClangFrontend(module: WebAssembly.Module): CompilerFro
 
     macros(program) {
       let cache = macroCache.get(module);
-      if (!cache) macroCache.set(module, cache = new Map());
-      let macros = cache.get(program);
-      if (!macros) {
+      if (!cache) macroCache.set(module, cache = memo(16));
+      return cache(program, () => {
         const result = clang(program, ['-E', '-dD']);
         if (result.returncode !== 0) throw illFormed(result.stderr, program);
-        macros = definedMacros(result.stdout);
-        if (cache.size >= MACRO_CACHE_SIZE) cache.delete(cache.keys().next().value!);
-        cache.set(program, macros);
-      }
-      return macros;
+        return definedMacros(result.stdout);
+      });
     },
 
     astDump(program, filter, standard = 'c++20') {

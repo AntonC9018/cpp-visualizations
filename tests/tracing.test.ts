@@ -660,7 +660,9 @@ describe('CompoundAssignmentTests', () => {
   test('an_include_after_the_first_statement_stays_outside_main', () => {
     assert.deepEqual(final(tracing.trace('int a = 1;\n#include <cmath>\na = a + 1;')), { a: 2 });
     // Moved before main, a header of the program's own could change an earlier overload.
-    unsupported('int a = 1;\n#include <math.h>\na = a + 1;', /must name a standard C\+\+ header/);
+    for (const header of ['math.h', 'streamstyle']) {
+      unsupported(`int a = 1;\n#include <${header}>\na = a + 1;`, /must name a standard C\+\+ header/);
+    }
     // Only a parenthesis after its name calls the function-like `assert`.
     const assertName = 'int assert = 1;\n#include <cmath>\n#include <cassert>\nassert += 1;';
     assert.deepEqual(final(tracing.trace(assertName)), { assert: 2 });

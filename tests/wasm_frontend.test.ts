@@ -231,6 +231,7 @@ describe('ClangWasmParityTests', { skip: !existsSync(WASM_PATH) }, () => {
       'struct P { int x; }; P s{ 5 }; P* p{ &s }; p->x -= 2; short c = 1; c += 1; double d = 1; d *= c;',
       'struct data { int x; };\nint main() {\n    data v{1};\n    v.x = v.x + 2;\n}',
       '#include <iostream>\n#include <array>\nint n = 1;\nstd::array a{n, 2};\n#include <cstdint>\nn += a[1];',
+      '#if defined(COURSE_VIRTUAL_ARRAY_H)\nint n = 1;\n#else\nint n = 2;\n#endif\nstd::array a{n};',
     ];
     for (const source of moreTraces) {
       assert.equal(

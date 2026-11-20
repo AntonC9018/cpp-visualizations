@@ -8,7 +8,9 @@ import {
   STANDARD_FLAGS, Unsupported, illFormed, type AstNode, type CompilerFrontend, type Macros, type Standard,
 } from '../core/errors.ts';
 import { extractEnumConstantSizes } from '../core/records.ts';
-import { type TokenizedSource, definedMacros, parseAstDump, readTokens } from '../core/source.ts';
+import {
+  type TokenizedSource, definedMacros, includesOnlyStandardHeaders, memo, parseAstDump, readTokens,
+} from '../core/source.ts';
 
 export { Unsupported };
 
@@ -73,8 +75,7 @@ function withDirectory<T>(directory: string | undefined, fn: (dir: string) => T)
 }
 
 /** The pinned compiler's standard headers define the same macros for every frontend. */
-const standardMacros = new Map<string, Macros>();
-const STANDARD_INCLUDES = /^(?:#include <\w+>\n)*$/;
+const standardMacros = memo<Macros>(16);
 
 export function createClangFrontend(directory?: string): CompilerFrontend {
   /**
@@ -92,9 +93,8 @@ export function createClangFrontend(directory?: string): CompilerFrontend {
       ]);
       return { ...result, path };
     });
-  // A program's tokens and macros are read again for each check on the same snippet.
+  // A program's tokens are read again for each check on the same snippet.
   const lexed = new Map<string, TokenizedSource>();
-  const defined = new Map<string, Macros>();
 
   return {
     tokens(program, { ignoreExpansions = false } = {}) {
@@ -110,16 +110,13 @@ export function createClangFrontend(directory?: string): CompilerFrontend {
     },
 
     macros(program) {
-      const cache = STANDARD_INCLUDES.test(program) ? standardMacros : defined;
-      const key = `${tool('CLANGXX', 'clang++')}\0${program}`;
-      let macros = cache.get(key);
-      if (!macros) {
+      const read = (): Macros => {
         const result = clang(program, ['-E', '-dD']);
         if (result.returncode !== 0) throw illFormed(result.stderr, program);
-        macros = definedMacros(result.stdout);
-        cache.set(key, macros);
-      }
-      return macros;
+        return definedMacros(result.stdout);
+      };
+      // The snippet's own headers may change between traces.
+      return includesOnlyStandardHeaders(program) ? standardMacros(`${tool('CLANGXX', 'clang++')}\0${program}`, read) : read();
     },
 
     astDump(program, filter, standard = 'c++20') {

@@ -63,10 +63,10 @@ using uintptr_t = std::uintptr_t;
 #endif
 )cpp";
 
-// The layout and signatures the tracer uses. Like the native header, it takes one line to include.
+// The layout and signatures the tracer uses. Like the native header, it takes one line to include,
+// and it defines no guard macro a snippet could test.
 static const char *kVirtualArrayHeader = R"cpp(
-#ifndef COURSE_VIRTUAL_ARRAY_H
-#define COURSE_VIRTUAL_ARRAY_H
+#pragma once
 #include <cstddef>
 namespace std {
 template<class T, size_t N> struct array {
@@ -87,7 +87,6 @@ template<class T> struct array<T, 0> {};
 template<class T, class... U> requires (__is_same(T, U) && ...)
 array(T, U...) -> array<T, 1 + sizeof...(U)>;
 }
-#endif
 )cpp";
 
 int main(int argc, char **argv) {

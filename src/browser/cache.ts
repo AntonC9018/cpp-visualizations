@@ -3,7 +3,7 @@
 // and concurrent load deduplication.
 
 /** Bump with every rebuilt binary: it renames the cache and bypasses HTTP caches. */
-export const WASM_VERSION = 5;
+export const WASM_VERSION = 6;
 const CACHE_PREFIX = 'clang-trace-frontend-v';
 export const DEFAULT_CACHE_NAME = `${CACHE_PREFIX}${WASM_VERSION}`;
 export const DEFAULT_WASM_URL = `./clang-trace-frontend.wasm?v=${WASM_VERSION}`;

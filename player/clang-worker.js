@@ -67,7 +67,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     "c++20": ["-std=c++20", "-Werror=extra-tokens"],
     "c++2c": ["-std=c++2c", "-Werror=extra-tokens", "-Wno-builtin-macro-redefined", "-D__cplusplus=202002L"]
   };
-  const WASM_VERSION = 5;
+  const WASM_VERSION = 6;
   const CACHE_PREFIX = "clang-trace-frontend-v";
   const DEFAULT_CACHE_NAME = `${CACHE_PREFIX}${WASM_VERSION}`;
   const DEFAULT_WASM_URL = `./clang-trace-frontend.wasm?v=${WASM_VERSION}`;
@@ -748,12 +748,134 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return { tokens, includes };
   }
   function definedMacros(preprocessed) {
-    const macros = { objects: /* @__PURE__ */ new Set(), functions: /* @__PURE__ */ new Set() };
+    const objects = [];
+    const functions = [];
     for (const [, name, parameters] of preprocessed.matchAll(/^#define (\w+)(\(?)/gm)) {
-      (parameters ? macros.functions : macros.objects).add(name);
+      (parameters ? functions : objects).push(name);
     }
-    return macros;
+    const copy = (names) => new Set(JSON.parse(JSON.stringify(names)));
+    return { objects: copy(objects), functions: copy(functions) };
   }
+  function memo(limit) {
+    const entries = /* @__PURE__ */ new Map();
+    return (key, compute) => {
+      let value = entries.get(key);
+      if (value === void 0) {
+        value = compute();
+        if (entries.size >= limit) entries.delete(entries.keys().next().value);
+        entries.set(key, value);
+      }
+      return value;
+    };
+  }
+  const STANDARD_HEADERS = /* @__PURE__ */ new Set([
+    "algorithm",
+    "any",
+    "array",
+    "atomic",
+    "barrier",
+    "bit",
+    "bitset",
+    "cassert",
+    "cctype",
+    "cerrno",
+    "cfenv",
+    "cfloat",
+    "charconv",
+    "chrono",
+    "cinttypes",
+    "climits",
+    "clocale",
+    "cmath",
+    "codecvt",
+    "compare",
+    "complex",
+    "concepts",
+    "condition_variable",
+    "coroutine",
+    "csetjmp",
+    "csignal",
+    "cstdarg",
+    "cstddef",
+    "cstdint",
+    "cstdio",
+    "cstdlib",
+    "cstring",
+    "ctime",
+    "cuchar",
+    "cwchar",
+    "cwctype",
+    "deque",
+    "exception",
+    "execution",
+    "expected",
+    "filesystem",
+    "flat_map",
+    "flat_set",
+    "format",
+    "forward_list",
+    "fstream",
+    "functional",
+    "future",
+    "generator",
+    "initializer_list",
+    "iomanip",
+    "ios",
+    "iosfwd",
+    "iostream",
+    "istream",
+    "iterator",
+    "latch",
+    "limits",
+    "list",
+    "locale",
+    "map",
+    "mdspan",
+    "memory",
+    "memory_resource",
+    "mutex",
+    "new",
+    "numbers",
+    "numeric",
+    "optional",
+    "ostream",
+    "print",
+    "queue",
+    "random",
+    "ranges",
+    "ratio",
+    "regex",
+    "scoped_allocator",
+    "semaphore",
+    "set",
+    "shared_mutex",
+    "source_location",
+    "span",
+    "spanstream",
+    "sstream",
+    "stack",
+    "stacktrace",
+    "stdexcept",
+    "stdfloat",
+    "stop_token",
+    "streambuf",
+    "string",
+    "string_view",
+    "syncstream",
+    "system_error",
+    "thread",
+    "tuple",
+    "type_traits",
+    "typeindex",
+    "typeinfo",
+    "unordered_map",
+    "unordered_set",
+    "utility",
+    "valarray",
+    "variant",
+    "vector",
+    "version"
+  ]);
   const HEADERS = "#include <iostream>\n#include <cstdint>\n#include <cstddef>\n";
   function arrayHeader(source) {
     return /\barray\b/.test(source) ? "#include <array>\n" : "";
@@ -776,7 +898,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const { tokens: tokens2 } = frontend.tokens(text, { ignoreExpansions });
       const first = ((_b = tokens2[0]) == null ? void 0 : _b.start) ?? source.length;
       const hoisted = mainDefinition(tokens2, text) ? [] : lines.filter((line) => line.index > first);
-      if (hoisted.some((line) => !/^\w+$/.test(line[1]))) {
+      if (hoisted.some((line) => !STANDARD_HEADERS.has(line[1]))) {
         throw new Unsupported("an #include after the first statement must name a standard C++ header");
       }
       const macros = definedBy(frontend, includes2);
@@ -4188,7 +4310,6 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
     return decoder.decode(out);
   }
   const macroCache = /* @__PURE__ */ new WeakMap();
-  const MACRO_CACHE_SIZE = 16;
   function createWasmClangFrontend(module) {
     const clang = (program, args, standard = "c++20") => runWasiModule(module, { args: ["clang-trace-frontend", ...STANDARD_FLAGS[standard], ...args, "-"], stdin: program });
     return {
@@ -4199,16 +4320,12 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
       },
       macros(program) {
         let cache = macroCache.get(module);
-        if (!cache) macroCache.set(module, cache = /* @__PURE__ */ new Map());
-        let macros = cache.get(program);
-        if (!macros) {
+        if (!cache) macroCache.set(module, cache = memo(16));
+        return cache(program, () => {
           const result = clang(program, ["-E", "-dD"]);
           if (result.returncode !== 0) throw illFormed(result.stderr, program);
-          macros = definedMacros(result.stdout);
-          if (cache.size >= MACRO_CACHE_SIZE) cache.delete(cache.keys().next().value);
-          cache.set(program, macros);
-        }
-        return macros;
+          return definedMacros(result.stdout);
+        });
       },
       astDump(program, filter, standard = "c++20") {
         const result = clang(program, ["-Xclang", "-ast-dump=json", "-Xclang", "-ast-dump-filter=" + filter], standard);

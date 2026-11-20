@@ -67,11 +67,51 @@ export function readTokens(
 
 /** The macros `-E -dD` output defines anywhere, also those it later undefines. */
 export function definedMacros(preprocessed: string): Macros {
-  const macros: Macros = { objects: new Set(), functions: new Set() };
+  const objects: string[] = [];
+  const functions: string[] = [];
   for (const [, name, parameters] of preprocessed.matchAll(/^#define (\w+)(\(?)/gm)) {
-    (parameters ? macros.functions : macros.objects).add(name);
+    (parameters ? functions : objects).push(name);
   }
-  return macros;
+  // Copied, as matches can be slices that keep the whole output alive.
+  const copy = (names: string[]): Set<string> => new Set(JSON.parse(JSON.stringify(names)) as string[]);
+  return { objects: copy(objects), functions: copy(functions) };
+}
+
+/** Remember up to `limit` results by key, forgetting the oldest first. */
+export function memo<V>(limit: number): (key: string, compute: () => V) => V {
+  const entries = new Map<string, V>();
+  return (key, compute) => {
+    let value = entries.get(key);
+    if (value === undefined) {
+      value = compute();
+      if (entries.size >= limit) entries.delete(entries.keys().next().value!);
+      entries.set(key, value);
+    }
+    return value;
+  };
+}
+
+/** The C++ standard library's headers, which a snippet cannot redefine. */
+const STANDARD_HEADERS = new Set([
+  'algorithm', 'any', 'array', 'atomic', 'barrier', 'bit', 'bitset', 'cassert', 'cctype', 'cerrno',
+  'cfenv', 'cfloat', 'charconv', 'chrono', 'cinttypes', 'climits', 'clocale', 'cmath', 'codecvt',
+  'compare', 'complex', 'concepts', 'condition_variable', 'coroutine', 'csetjmp', 'csignal',
+  'cstdarg', 'cstddef', 'cstdint', 'cstdio', 'cstdlib', 'cstring', 'ctime', 'cuchar', 'cwchar',
+  'cwctype', 'deque', 'exception', 'execution', 'expected', 'filesystem', 'flat_map', 'flat_set',
+  'format', 'forward_list', 'fstream', 'functional', 'future', 'generator', 'initializer_list',
+  'iomanip', 'ios', 'iosfwd', 'iostream', 'istream', 'iterator', 'latch', 'limits', 'list',
+  'locale', 'map', 'mdspan', 'memory', 'memory_resource', 'mutex', 'new', 'numbers', 'numeric',
+  'optional', 'ostream', 'print', 'queue', 'random', 'ranges', 'ratio', 'regex',
+  'scoped_allocator', 'semaphore', 'set', 'shared_mutex', 'source_location', 'span', 'spanstream',
+  'sstream', 'stack', 'stacktrace', 'stdexcept', 'stdfloat', 'stop_token', 'streambuf', 'string',
+  'string_view', 'syncstream', 'system_error', 'thread', 'tuple', 'type_traits', 'typeindex',
+  'typeinfo', 'unordered_map', 'unordered_set', 'utility', 'valarray', 'variant', 'vector',
+  'version',
+]);
+
+/** Whether `program` only includes standard headers, whose macros never change. */
+export function includesOnlyStandardHeaders(program: string): boolean {
+  return program.split('\n').every(line => !line || STANDARD_HEADERS.has(/^#include <(.*)>$/.exec(line)?.[1] ?? ''));
 }
 
 export const HEADERS = '#include <iostream>\n#include <cstdint>\n#include <cstddef>\n';
@@ -123,7 +163,7 @@ function lex(source: string, frontend: CompilerFrontend, array: string, ignoreEx
     const { tokens } = frontend.tokens(text, { ignoreExpansions });
     const first = tokens[0]?.start ?? source.length;
     const hoisted = mainDefinition(tokens, text) ? [] : lines.filter(line => line.index > first);
-    if (hoisted.some(line => !/^\w+$/.test(line[1]))) {
+    if (hoisted.some(line => !STANDARD_HEADERS.has(line[1]))) {
       throw new Unsupported('an #include after the first statement must name a standard C++ header');
     }
     const macros = definedBy(frontend, includes);
