@@ -7,8 +7,10 @@ import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { dumpsSorted } from '../src/core/json_format.ts';
+import { SourceFile } from '../src/core/source.ts';
 import { type ExecutionTrace, validate } from '../src/core/trace_format.ts';
 import * as generate from '../src/node/generate.ts';
+import { createClangFrontend } from '../src/node/toolchain.ts';
 import * as tracing from '../src/node/tracing.ts';
 import { Unsupported } from '../src/node/tracing.ts';
 
@@ -252,8 +254,18 @@ c=b.n; b.n={5, 6}; std::cout << c.g;`;
   });
 
   test('a_using_directive_in_main_is_replayed_in_place', () => {
-    const source = 'struct pair { int x; };\nint main() {\n    pair a{1};\n    using namespace std;\n    a.x += 2;\n}';
-    assert.deepEqual(tracing.trace(source).steps.at(-1)!.values, { 'a.x': 3 });
+    for (const directive of ['using namespace std;', 'using namespace ::std;']) {
+      const source = `struct pair { int x; };\nint main() {\n    pair a{1};\n    ${directive}\n    a.x += 2;\n}`;
+      assert.deepEqual(tracing.trace(source).steps.at(-1)!.values, { 'a.x': 3 });
+    }
+  });
+
+  test('main_may_qualify_a_global_struct_beside_the_standard_library', () => {
+    const source = '#include <utility>\nusing namespace std;\nstruct pair { int x; };\n' +
+      'int main() {\n    int n = sizeof(::pair);\n}';
+    // The tracer cannot yet read a qualified type, but the definition before main is found.
+    const frontend = createClangFrontend();
+    assert.equal(new SourceFile(source, frontend).ast(frontend)[1], 1);
   });
 
   test('a_global_struct_reads_the_branches_the_program_does', () => {

@@ -5,7 +5,7 @@ import {
 import { extractEnumConstantSizes } from '../core/records.ts';
 import type { Template, TraceSettings } from '../core/settings.ts';
 import { type TraceOf, traceSnippet } from '../core/snippet.ts';
-import { parseAstDump, readTokens } from '../core/source.ts';
+import { macroNames, parseAstDump, readTokens } from '../core/source.ts';
 import { ARRAY_PREAMBLE } from './array_header.ts';
 import { runWasiModule } from './wasi.ts';
 
@@ -21,6 +21,12 @@ export function createWasmClangFrontend(module: WebAssembly.Module): CompilerFro
       const result = clang(program, ['-Xclang', '-dump-tokens']);
       if (result.returncode !== 0) throw illFormed(result.stderr, program);
       return readTokens(result.stderr, '/virtual/source.cpp', program, options);
+    },
+
+    macros(program) {
+      const result = clang(program, ['-E', '-dM']);
+      if (result.returncode !== 0) throw illFormed(result.stderr, program);
+      return macroNames(result.stdout);
     },
 
     astDump(program, filter, standard = 'c++20') {

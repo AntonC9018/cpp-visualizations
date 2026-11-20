@@ -144,6 +144,8 @@ export interface CompilerFrontend {
   /** Declaration text for frontends that cannot include the native <array> header. */
   arrayPreamble?: string;
   tokens(program: string, options?: { ignoreExpansions?: boolean }): TokenizedSource;
+  /** The names of the macros defined at the end of `program`. */
+  macros(program: string): Set<string>;
   astDump(program: string, filter: string, standard?: Standard): AstNode[];
   recordLayoutsDump(program: string): string;
   typeSizes(types: string[]): Record<string, number>;

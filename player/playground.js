@@ -2997,7 +2997,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.update();
     }
   }
-  const WASM_VERSION = 3;
+  const WASM_VERSION = 4;
   const CACHE_PREFIX = "clang-trace-frontend-v";
   const DEFAULT_CACHE_NAME = `${CACHE_PREFIX}${WASM_VERSION}`;
   const DEFAULT_WASM_URL = `./clang-trace-frontend.wasm?v=${WASM_VERSION}`;

@@ -67,7 +67,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     "c++20": ["-std=c++20", "-Werror=extra-tokens"],
     "c++2c": ["-std=c++2c", "-Werror=extra-tokens", "-Wno-builtin-macro-redefined", "-D__cplusplus=202002L"]
   };
-  const WASM_VERSION = 3;
+  const WASM_VERSION = 4;
   const CACHE_PREFIX = "clang-trace-frontend-v";
   const DEFAULT_CACHE_NAME = `${CACHE_PREFIX}${WASM_VERSION}`;
   const DEFAULT_WASM_URL = `./clang-trace-frontend.wasm?v=${WASM_VERSION}`;
@@ -747,30 +747,30 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     if (!physicalEof) throw new Unsupported("Clang did not report physical source locations");
     return { tokens, includes };
   }
+  function macroNames(definitions) {
+    return new Set([...definitions.matchAll(/^#define (\w+)/gm)].map((match) => match[1]));
+  }
   const HEADERS = "#include <iostream>\n#include <cstdint>\n#include <cstddef>\n";
   function arrayHeader(source, frontend) {
     return /\barray\b/.test(source) ? (frontend == null ? void 0 : frontend.arrayPreamble) ?? "#include <array>\n" : "";
   }
   const USING_STD = "using namespace std;\n";
-  const INCLUDE_LINE = /^[ \t]*(?:#|%:)[ \t]*include[ \t]*<(\w+)>[ \t]*(?:\/\/[^\r\n]*)?$/gm;
+  const INCLUDE_LINE = /^[ \t]*(?:#|%:)[ \t]*include[ \t]*<([^<>\r\n]+)>[ \t]*(?:\/\/[^\r\n]*)?$/gm;
   function blank(text) {
     return text.replace(/[^\r\n]/g, " ");
   }
-  function lex(source, frontend, ignoreExpansions) {
+  function lex(source, frontend, array, ignoreExpansions) {
     var _a;
-    const array = arrayHeader(source, frontend);
     const lines = [...source.matchAll(INCLUDE_LINE)];
     const includeLines = lines.map((line) => [line.index, line.index + line[0].length]);
     const directives = ((_a = source.match(/#|%:/g)) == null ? void 0 : _a.length) ?? 0;
     if (directives === 0 || directives === lines.length && !/\/\*|R"/.test(source)) {
       let text = source;
       for (const [start, end] of includeLines) text = text.slice(0, start) + blank(text.slice(start, end)) + text.slice(end);
-      return {
-        tokens: frontend.tokens(text, { ignoreExpansions }).tokens,
-        includes: HEADERS + array + lines.map((line) => `#include <${line[1]}>
-`).join(""),
-        includeLines
-      };
+      const includes2 = HEADERS + array + lines.map((line) => `#include <${line[1]}>
+`).join("");
+      const { tokens: tokens2 } = frontend.tokens(text, { ignoreExpansions });
+      if (!spellsMacro(tokens2, text, frontend, includes2)) return { tokens: tokens2, includes: includes2, includeLines };
     }
     const context = HEADERS + array + USING_STD;
     const lexed = frontend.tokens(context + source, { ignoreExpansions });
@@ -787,6 +787,16 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       includeLines: []
     };
   }
+  function spellsMacro(tokens, text, frontend, includes) {
+    let macros;
+    try {
+      macros = frontend.macros(includes);
+    } catch (error) {
+      if (error instanceof IllFormed) return true;
+      throw error;
+    }
+    return tokens.some((token) => macros.has(text.slice(token.start, token.end)));
+  }
   function mainDefinition(tokens, source) {
     var _a, _b;
     for (let i = 0; i < tokens.length; i++) {
@@ -798,7 +808,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }
   const GLOBALS_NAMESPACE = "__course_globals";
   class SourceFile {
-    constructor(source, frontend, { ignoreExpansions = false, lexed } = {}) {
+    constructor(source, frontend, { ignoreExpansions = false, kept } = {}) {
       __publicField(this, "program");
       __publicField(this, "replayPreamble");
       __publicField(this, "tokens");
@@ -807,13 +817,16 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       __publicField(this, "bodyStart");
       __publicField(this, "source");
       __publicField(this, "lexed");
+      /** The array header before the source, kept by `without` so lines keep their numbers. */
+      __publicField(this, "array");
       __publicField(this, "shift");
       var _a;
       if (!source.trim() || source.length > 1e4) throw new Unsupported("empty or oversized snippet");
       if (/\\[ \t\f\v]*(?:\r\n?|\n)/.test(source)) {
         throw new Unsupported("a backslash at the end of a line (a line splice) is not supported");
       }
-      this.lexed = lexed ?? lex(source, frontend, ignoreExpansions);
+      this.array = (kept == null ? void 0 : kept.array) ?? arrayHeader(source, frontend);
+      this.lexed = (kept == null ? void 0 : kept.lexed) ?? lex(source, frontend, this.array, ignoreExpansions);
       const { tokens } = this.lexed;
       const spell = (token) => source.slice(token.start, token.end);
       if (tokens.some((token) => token.kind === "identifier" && !/^[A-Za-z_]\w*$/.test(spell(token)))) {
@@ -822,7 +835,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const main = mainDefinition(tokens, source);
       this.fragment = main === null;
       this.bodyStart = main ? main.body + 1 : 0;
-      const headers = HEADERS + arrayHeader(source, frontend);
+      const headers = HEADERS + this.array;
       const first = ((_a = tokens[0]) == null ? void 0 : _a.start) ?? source.length;
       let prefix = headers + "\n";
       let body = source;
@@ -855,8 +868,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const first = start - this.shift;
       const last = end - this.shift;
       const source = this.source.slice(0, first) + this.blankTokens(start, end) + this.source.slice(last);
-      const lexed = arrayHeader(source, frontend) === arrayHeader(this.source, frontend) ? { ...this.lexed, tokens: this.lexed.tokens.filter((token) => token.start < first || token.end > last) } : void 0;
-      return new SourceFile(source, frontend, { lexed });
+      const lexed = { ...this.lexed, tokens: this.lexed.tokens.filter((token) => token.start < first || token.end > last) };
+      return new SourceFile(source, frontend, { kept: { lexed, array: this.array } });
     }
     /** Remove only active tokens, leaving directives, comments and line breaks in place. */
     blankTokens(start, end) {
@@ -869,6 +882,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         at = token.end;
       }
       return parts.join("") + this.program.slice(at, end);
+    }
+    /** The spellings of the tokens within the range, without the spacing between them. */
+    tokenText(start, end) {
+      return this.tokens.filter((token) => token.start >= start && token.end <= end).map((token) => this.program.slice(token.start, token.end)).join("");
     }
     /** End at the next preprocessed semicolon when the AST's range leaves it out. */
     statementEnd(end) {
@@ -965,12 +982,24 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     /**
      * The declarations from `from` up to `main` at `to`. Clang's AST filter matches every name
      * containing its text, the standard library's too, so they are dumped from a namespace
-     * that no other name contains. It opens and closes within lines, so `__LINE__` and
-     * conditionals spanning the program read as in the program.
+     * that no other name contains. Using-declarations bring the records back for main, which
+     * finds them there as the program's own, even qualified. The namespace opens and closes
+     * within lines, so `__LINE__` and conditionals spanning the program read as in the program.
      */
     globalRecords(frontend, from, to) {
+      const names = /* @__PURE__ */ new Set();
+      let depth = 0;
+      const leading = this.tokens.filter((token) => token.start >= from && token.end <= to);
+      leading.forEach((token, i) => {
+        depth += token.kind === "l_brace" ? 1 : token.kind === "r_brace" ? -1 : 0;
+        const next = leading[i + 1];
+        if (depth === 0 && token.kind === "struct" && (next == null ? void 0 : next.kind) === "identifier") {
+          names.add(this.program.slice(next.start, next.end));
+        }
+      });
       const open = `namespace ${GLOBALS_NAMESPACE} { `;
-      const probe = this.program.slice(0, from) + open + this.program.slice(from, to) + `} using namespace ${GLOBALS_NAMESPACE}; ` + this.program.slice(to);
+      const declarations = [...names].map((name) => `using ${GLOBALS_NAMESPACE}::${name}; `).join("");
+      const probe = this.program.slice(0, from) + open + this.program.slice(from, to) + "} " + declarations + this.program.slice(to);
       let nodes;
       try {
         nodes = frontend.astDump(probe, GLOBALS_NAMESPACE);
@@ -3333,6 +3362,9 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
     }
     return found;
   }
+  function opensStdNamespace(directive) {
+    return directive === "usingnamespacestd;" || directive === "usingnamespace::std;";
+  }
   function analyzeSource(file, frontend) {
     var _a, _b, _c, _d;
     const [ast, globalCount] = file.ast(frontend);
@@ -3354,7 +3386,7 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
         }
         throw new Unsupported("only a final return 0 is supported");
       }
-      if (node.kind === "DeclStmt" && ((_c = node.inner) == null ? void 0 : _c.length) === 1 && node.inner[0].kind === "UsingDirectiveDecl" && ((_d = node.inner[0].nominatedNamespace) == null ? void 0 : _d.name) === "std") {
+      if (node.kind === "DeclStmt" && ((_d = (_c = node.inner) == null ? void 0 : _c[0]) == null ? void 0 : _d.kind) === "UsingDirectiveDecl" && opensStdNamespace(file.tokenText(...bounds(node)))) {
         opensStd = true;
         continue;
       }
@@ -4164,6 +4196,11 @@ array(T, U...) -> array<T, 1 + sizeof...(U)>;
         const result = clang(program, ["-Xclang", "-dump-tokens"]);
         if (result.returncode !== 0) throw illFormed(result.stderr, program);
         return readTokens(result.stderr, "/virtual/source.cpp", program, options);
+      },
+      macros(program) {
+        const result = clang(program, ["-E", "-dM"]);
+        if (result.returncode !== 0) throw illFormed(result.stderr, program);
+        return macroNames(result.stdout);
       },
       astDump(program, filter, standard = "c++20") {
         const result = clang(program, ["-Xclang", "-ast-dump=json", "-Xclang", "-ast-dump-filter=" + filter], standard);

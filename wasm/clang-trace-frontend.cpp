@@ -78,6 +78,8 @@ int main(int argc, char **argv) {
   std::string astDumpFilter;
   bool dumpTokens = false;
   bool dumpRecordLayoutsComplete = false;
+  bool preprocess = false;
+  bool dumpMacros = false;
   std::string inputPath;
   // The language options come from the caller, shared with the native frontend.
   std::vector<const char *> languageArgs;
@@ -95,6 +97,10 @@ int main(int argc, char **argv) {
       } else if (xarg == "-fdump-record-layouts-complete") {
         dumpRecordLayoutsComplete = true;
       }
+    } else if (arg == "-E") {
+      preprocess = true;
+    } else if (arg == "-dM") {
+      dumpMacros = true;
     } else if (arg.starts_with("-std=") || arg.starts_with("-W") || arg.starts_with("-D")) {
       languageArgs.push_back(argv[i]);
     } else if (arg == "-" || !arg.starts_with("-")) {
@@ -121,13 +127,16 @@ int main(int argc, char **argv) {
   std::vector<const char *> cc1Args = {
       "-triple",
       "x86_64-unknown-linux-gnu",
-      "-fsyntax-only",
+      preprocess ? "-E" : "-fsyntax-only",
       "-nostdsysteminc",
       "-nobuiltininc",
       "-isystem",
       "/virtual/include",
   };
   cc1Args.insert(cc1Args.end(), languageArgs.begin(), languageArgs.end());
+  if (dumpMacros) {
+    cc1Args.push_back("-dM");
+  }
   if (dumpTokens) {
     // As the driver does for -H: the virtual headers are system headers.
     cc1Args.push_back("-H");
@@ -163,7 +172,10 @@ int main(int argc, char **argv) {
   Clang.createSourceManager(Clang.getFileManager());
 
   std::unique_ptr<clang::FrontendAction> Act;
-  if (dumpTokens) {
+  if (preprocess) {
+    // Writes to standard output, as no output file is named.
+    Act = std::make_unique<clang::PrintPreprocessedAction>();
+  } else if (dumpTokens) {
     Act = std::make_unique<clang::DumpTokensAction>();
   } else if (astDump) {
     Act = std::make_unique<clang::ASTDumpAction>();

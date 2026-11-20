@@ -65,6 +65,11 @@ export function readTokens(
   return { tokens, includes };
 }
 
+/** The names `-E -dM` output defines. */
+export function macroNames(definitions: string): Set<string> {
+  return new Set([...definitions.matchAll(/^#define (\w+)/gm)].map(match => match[1]));
+}
+
 export const HEADERS = '#include <iostream>\n#include <cstdint>\n#include <cstddef>\n';
 
 export function arrayHeader(source: string, frontend?: CompilerFrontend): string {
@@ -85,23 +90,20 @@ interface Lexed {
 /** Precedes a fragment, which may name the standard library's declarations unqualified. */
 const USING_STD = 'using namespace std;\n';
 
-// Standard C++ headers only: a header of the snippet's own could define an empty macro,
-// which would leave the trace a token Clang removed.
-const INCLUDE_LINE = /^[ \t]*(?:#|%:)[ \t]*include[ \t]*<(\w+)>[ \t]*(?:\/\/[^\r\n]*)?$/gm;
+const INCLUDE_LINE = /^[ \t]*(?:#|%:)[ \t]*include[ \t]*<([^<>\r\n]+)>[ \t]*(?:\/\/[^\r\n]*)?$/gm;
 
 function blank(text: string): string {
   return text.replace(/[^\r\n]/g, ' ');
 }
 
 /**
- * Lex `source` with Clang. Standard include lines alone cannot choose which tokens are active,
- * and the headers' tokens are nearly all of Clang's dump, so such a source is lexed with them
- * blanked. A macro they define stays an identifier there, and its AST range is refused later.
- * Any other directive may test a header's macros: that source is lexed after the convenience
- * headers, and -H names the headers the C++20 preprocessor selected.
+ * Lex `source` with Clang. Include lines alone cannot choose which tokens are active, and the
+ * headers' tokens are nearly all of Clang's dump, so such a source is lexed with them blanked,
+ * unless it spells a macro they define. Any other directive may test a header's macros:
+ * that source is lexed after the convenience headers, and -H names the headers the C++20
+ * preprocessor selected.
  */
-function lex(source: string, frontend: CompilerFrontend, ignoreExpansions: boolean): Lexed {
-  const array = arrayHeader(source, frontend);
+function lex(source: string, frontend: CompilerFrontend, array: string, ignoreExpansions: boolean): Lexed {
   const lines = [...source.matchAll(INCLUDE_LINE)];
   const includeLines = lines.map((line): Span => [line.index, line.index + line[0].length]);
   const directives = source.match(/#|%:/g)?.length ?? 0;
@@ -109,11 +111,9 @@ function lex(source: string, frontend: CompilerFrontend, ignoreExpansions: boole
   if (directives === 0 || (directives === lines.length && !/\/\*|R"/.test(source))) {
     let text = source;
     for (const [start, end] of includeLines) text = text.slice(0, start) + blank(text.slice(start, end)) + text.slice(end);
-    return {
-      tokens: frontend.tokens(text, { ignoreExpansions }).tokens,
-      includes: HEADERS + array + lines.map(line => `#include <${line[1]}>\n`).join(''),
-      includeLines,
-    };
+    const includes = HEADERS + array + lines.map(line => `#include <${line[1]}>\n`).join('');
+    const { tokens } = frontend.tokens(text, { ignoreExpansions });
+    if (!spellsMacro(tokens, text, frontend, includes)) return { tokens, includes, includeLines };
   }
   // The same lines as before the program's own, so `__LINE__` selects the same branches.
   const context = HEADERS + array + USING_STD;
@@ -130,6 +130,21 @@ function lex(source: string, frontend: CompilerFrontend, ignoreExpansions: boole
     includes: includes + (frontend.arrayPreamble ? array : ''),
     includeLines: [],
   };
+}
+
+/**
+ * Whether a token spells a macro `includes` define, which the blanked lines left unexpanded.
+ * Headers Clang cannot read count as defining one: lexing them reports the error.
+ */
+function spellsMacro(tokens: SourceToken[], text: string, frontend: CompilerFrontend, includes: string): boolean {
+  let macros: Set<string>;
+  try {
+    macros = frontend.macros(includes);
+  } catch (error) {
+    if (error instanceof IllFormed) return true;
+    throw error;
+  }
+  return tokens.some(token => macros.has(text.slice(token.start, token.end)));
 }
 
 /** The token index of `main` and of the `{` opening its body, if `main` is defined. */
@@ -155,18 +170,21 @@ export class SourceFile {
   readonly bodyStart: number;
   private readonly source: string;
   private readonly lexed: Lexed;
+  /** The array header before the source, kept by `without` so lines keep their numbers. */
+  private readonly array: string;
   private readonly shift: number;
 
   constructor(
     source: string,
     frontend: CompilerFrontend,
-    { ignoreExpansions = false, lexed }: { ignoreExpansions?: boolean; lexed?: Lexed } = {}
+    { ignoreExpansions = false, kept }: { ignoreExpansions?: boolean; kept?: { lexed: Lexed; array: string } } = {}
   ) {
     if (!source.trim() || source.length > 10_000) throw new Unsupported('empty or oversized snippet');
     if (/\\[ \t\f\v]*(?:\r\n?|\n)/.test(source)) {
       throw new Unsupported('a backslash at the end of a line (a line splice) is not supported');
     }
-    this.lexed = lexed ?? lex(source, frontend, ignoreExpansions);
+    this.array = kept?.array ?? arrayHeader(source, frontend);
+    this.lexed = kept?.lexed ?? lex(source, frontend, this.array, ignoreExpansions);
     const { tokens } = this.lexed;
     const spell = (token: SourceToken): string => source.slice(token.start, token.end);
     if (tokens.some(token => token.kind === 'identifier' && !/^[A-Za-z_]\w*$/.test(spell(token)))) {
@@ -176,7 +194,7 @@ export class SourceFile {
     const main = mainDefinition(tokens, source);
     this.fragment = main === null;
     this.bodyStart = main ? main.body + 1 : 0;
-    const headers = HEADERS + arrayHeader(source, frontend);
+    const headers = HEADERS + this.array;
     const first = tokens[0]?.start ?? source.length;
     // A blank line in place of a fragment's using-directive, so lines keep the numbers
     // the token pass saw.
@@ -218,12 +236,9 @@ export class SourceFile {
     const first = start - this.shift;
     const last = end - this.shift;
     const source = this.source.slice(0, first) + this.blankTokens(start, end) + this.source.slice(last);
-    // Blanking active tokens changes neither directives nor the remaining tokens, unless it
-    // drops the array header and with it the lines before the source.
-    const lexed = arrayHeader(source, frontend) === arrayHeader(this.source, frontend)
-      ? { ...this.lexed, tokens: this.lexed.tokens.filter(token => token.start < first || token.end > last) }
-      : undefined;
-    return new SourceFile(source, frontend, { lexed });
+    // Blanking active tokens under the same headers changes neither directives nor the others.
+    const lexed = { ...this.lexed, tokens: this.lexed.tokens.filter(token => token.start < first || token.end > last) };
+    return new SourceFile(source, frontend, { kept: { lexed, array: this.array } });
   }
 
   /** Remove only active tokens, leaving directives, comments and line breaks in place. */
@@ -237,6 +252,12 @@ export class SourceFile {
       at = token.end;
     }
     return parts.join('') + this.program.slice(at, end);
+  }
+
+  /** The spellings of the tokens within the range, without the spacing between them. */
+  tokenText(start: number, end: number): string {
+    return this.tokens.filter(token => token.start >= start && token.end <= end)
+      .map(token => this.program.slice(token.start, token.end)).join('');
   }
 
   /** End at the next preprocessed semicolon when the AST's range leaves it out. */
@@ -339,13 +360,25 @@ export class SourceFile {
   /**
    * The declarations from `from` up to `main` at `to`. Clang's AST filter matches every name
    * containing its text, the standard library's too, so they are dumped from a namespace
-   * that no other name contains. It opens and closes within lines, so `__LINE__` and
-   * conditionals spanning the program read as in the program.
+   * that no other name contains. Using-declarations bring the records back for main, which
+   * finds them there as the program's own, even qualified. The namespace opens and closes
+   * within lines, so `__LINE__` and conditionals spanning the program read as in the program.
    */
   private globalRecords(frontend: CompilerFrontend, from: number, to: number): AstNode[] {
+    const names = new Set<string>();
+    let depth = 0;
+    const leading = this.tokens.filter(token => token.start >= from && token.end <= to);
+    leading.forEach((token, i) => {
+      depth += token.kind === 'l_brace' ? 1 : token.kind === 'r_brace' ? -1 : 0;
+      const next = leading[i + 1];
+      if (depth === 0 && token.kind === 'struct' && next?.kind === 'identifier') {
+        names.add(this.program.slice(next.start, next.end));
+      }
+    });
     const open = `namespace ${GLOBALS_NAMESPACE} { `;
+    const declarations = [...names].map(name => `using ${GLOBALS_NAMESPACE}::${name}; `).join('');
     const probe = this.program.slice(0, from) + open + this.program.slice(from, to) +
-      `} using namespace ${GLOBALS_NAMESPACE}; ` + this.program.slice(to);
+      '} ' + declarations + this.program.slice(to);
     let nodes: AstNode[];
     try {
       nodes = frontend.astDump(probe, GLOBALS_NAMESPACE);

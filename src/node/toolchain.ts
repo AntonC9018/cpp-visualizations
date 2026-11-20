@@ -8,7 +8,7 @@ import {
   STANDARD_FLAGS, Unsupported, illFormed, type AstNode, type CompilerFrontend, type Standard,
 } from '../core/errors.ts';
 import { extractEnumConstantSizes } from '../core/records.ts';
-import { type TokenizedSource, parseAstDump, readTokens } from '../core/source.ts';
+import { type TokenizedSource, macroNames, parseAstDump, readTokens } from '../core/source.ts';
 
 export { Unsupported };
 
@@ -73,19 +73,24 @@ function withDirectory<T>(directory: string | undefined, fn: (dir: string) => T)
 }
 
 export function createClangFrontend(directory?: string): CompilerFrontend {
-  /** Run Clang on `program` with the shared language options; the path names it in diagnostics. */
+  /**
+   * Run Clang on `program` with the shared language options, checking its syntax unless `args`
+   * name another action. The path names the program in diagnostics.
+   */
   const clang = (program: string, args: string[], standard: Standard = 'c++20'): CommandResult & { path: string } =>
     withDirectory(directory, dir => {
       const path = join(dir, 'source.cpp');
       writeFileSync(path, program);
+      const action = args.includes('-E') ? [] : ['-fsyntax-only'];
       const result = run([
-        tool('CLANGXX', 'clang++'), ...STANDARD_FLAGS[standard], '-fsyntax-only', '-fno-color-diagnostics',
+        tool('CLANGXX', 'clang++'), ...STANDARD_FLAGS[standard], ...action, '-fno-color-diagnostics',
         ...args, path,
       ]);
       return { ...result, path };
     });
-  // A program's tokens are read again for each check on the same snippet.
+  // A program's tokens and macros are read again for each check on the same snippet.
   const lexed = new Map<string, TokenizedSource>();
+  const defined = new Map<string, Set<string>>();
 
   return {
     tokens(program, { ignoreExpansions = false } = {}) {
@@ -98,6 +103,17 @@ export function createClangFrontend(directory?: string): CompilerFrontend {
         lexed.set(key, tokens);
       }
       return tokens;
+    },
+
+    macros(program) {
+      let names = defined.get(program);
+      if (!names) {
+        const result = clang(program, ['-E', '-dM']);
+        if (result.returncode !== 0) throw illFormed(result.stderr, program);
+        names = macroNames(result.stdout);
+        defined.set(program, names);
+      }
+      return names;
     },
 
     astDump(program, filter, standard = 'c++20') {

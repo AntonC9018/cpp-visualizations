@@ -659,14 +659,24 @@ describe('CompoundAssignmentTests', () => {
 
   test('an_include_after_the_first_statement_stays_outside_main', () => {
     assert.deepEqual(final(tracing.trace('int a = 1;\n#include <cmath>\na = a + 1;')), { a: 2 });
+    assert.deepEqual(final(tracing.trace('int a = 1;\n#include <math.h>\na = a + 1;')), { a: 2 });
     // Among other directives, an include stays where it is: here Clang skips it.
     assert.deepEqual(final(tracing.trace('int n = 1;\n#if 0\n#include <missing>\n#endif\nn += 1;')), { n: 2 });
   });
 
-  test('cutting_a_mismatch_relexes_when_the_lines_before_the_source_change', () => {
-    // Without its last statement the fragment no longer names `array`, nor gets its header.
+  test('cutting_a_mismatch_keeps_the_lines_before_the_source', () => {
+    // Without its last statement the fragment no longer names `array`, but keeps its header.
     const source = '#if __LINE__ == 6\nint x=1;\n#else\nint y=2;\n#endif\nint* array = 42;';
-    assert.equal(tracing.trace(source, { types: true }).steps.at(-1)!.op?.kind, 'clash');
+    const result = tracing.trace(source, { types: true });
+    assert.deepEqual(result.source, ['int x=1;', 'int* array = 42;']);
+    assert.equal(result.steps.at(-1)!.op?.kind, 'clash');
+  });
+
+  test('a_macro_from_the_headers_is_expanded_as_in_the_program', () => {
+    // libstdc++ defines this one empty, so the statement starts at `a`.
+    const result = tracing.trace('int a = 1;\n_GLIBCXX_BEGIN_NAMESPACE_VERSION a = 2;');
+    assert.deepEqual(result.source, ['int a = 1;', 'a = 2;']);
+    assert.deepEqual(final(result), { a: 2 });
   });
 
   test('identifiers_beyond_ascii_are_refused_by_name', () => {

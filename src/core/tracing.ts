@@ -1644,6 +1644,11 @@ export function analyzeWithFrontend(
   return analyzeSource(new SourceFile(source, frontend), frontend);
 }
 
+/** Whether a using-directive's tokens name the standard library's namespace itself. */
+function opensStdNamespace(directive: string): boolean {
+  return directive === 'usingnamespacestd;' || directive === 'usingnamespace::std;';
+}
+
 function analyzeSource(
   file: SourceFile,
   frontend: CompilerFrontend
@@ -1672,8 +1677,8 @@ function analyzeSource(
       }
       throw new Unsupported('only a final return 0 is supported');
     }
-    if (node.kind === 'DeclStmt' && node.inner?.length === 1 &&
-        node.inner[0].kind === 'UsingDirectiveDecl' && node.inner[0].nominatedNamespace?.name === 'std') {
+    if (node.kind === 'DeclStmt' && node.inner?.[0]?.kind === 'UsingDirectiveDecl' &&
+        opensStdNamespace(file.tokenText(...bounds(node)))) {
       opensStd = true;
       continue;
     }
