@@ -260,6 +260,12 @@ c=b.n; b.n={5, 6}; std::cout << c.g;`;
     }
   });
 
+  test('a_global_using_directive_may_follow_a_struct', () => {
+    const source = '#include <iostream>\nstruct S { int x; };\nusing namespace std;\n' +
+      'int main() {\n    S a{1};\n    a.x += 2;\n    cout << a.x;\n}';
+    assert.equal(tracing.trace(source).steps.at(-1)!.stdout, '3');
+  });
+
   test('main_may_qualify_a_global_struct_beside_the_standard_library', () => {
     const source = '#include <utility>\nusing namespace std;\nstruct pair { int x; };\n' +
       'int main() {\n    int n = sizeof(::pair);\n}';

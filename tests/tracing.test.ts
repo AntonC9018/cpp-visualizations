@@ -1,6 +1,6 @@
 // Behavioral coverage for compiler-backed traces and fail-closed eligibility.
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, test } from 'node:test';
@@ -659,7 +659,8 @@ describe('CompoundAssignmentTests', () => {
 
   test('an_include_after_the_first_statement_stays_outside_main', () => {
     assert.deepEqual(final(tracing.trace('int a = 1;\n#include <cmath>\na = a + 1;')), { a: 2 });
-    assert.deepEqual(final(tracing.trace('int a = 1;\n#include <math.h>\na = a + 1;')), { a: 2 });
+    // Moved before main, a header of the program's own could change an earlier overload.
+    unsupported('int a = 1;\n#include <math.h>\na = a + 1;', /must name a standard C\+\+ header/);
     // Only a parenthesis after its name calls the function-like `assert`.
     const assertName = 'int assert = 1;\n#include <cmath>\n#include <cassert>\nassert += 1;';
     assert.deepEqual(final(tracing.trace(assertName)), { assert: 2 });
@@ -677,20 +678,9 @@ describe('CompoundAssignmentTests', () => {
     assert.equal(result.steps.at(-1)!.op?.kind, 'clash');
   });
 
-  test('a_macro_of_a_late_include_is_refused_even_if_it_is_undefined_later', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'headers-'));
-    const cpath = process.env.CPATH;
-    try {
-      writeFileSync(join(directory, 'define_number.h'), '#define TRACE_NUMBER 9\n');
-      writeFileSync(join(directory, 'undef_number.h'), '#undef TRACE_NUMBER\n');
-      process.env.CPATH = directory;
-      const source = 'int TRACE_NUMBER = 2;\n#include <define_number.h>\nint x = TRACE_NUMBER;\n#include <undef_number.h>';
-      unsupported(source, /macro from a header included after the first statement/);
-    } finally {
-      if (cpath === undefined) delete process.env.CPATH;
-      else process.env.CPATH = cpath;
-      rmSync(directory, { recursive: true, force: true });
-    }
+  test('a_macro_of_a_late_include_is_refused', () => {
+    // Moved before main, <climits> would define INT_MAX for the statements before it too.
+    unsupported('int a = 1;\n#include <climits>\na = INT_MAX;', /macro from a header included after the first statement/);
   });
 
   test('a_macro_from_the_headers_is_expanded_as_in_the_program', () => {

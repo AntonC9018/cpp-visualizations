@@ -106,8 +106,10 @@ function blank(text: string): string {
  * headers' tokens are nearly all of Clang's dump, so such a source is lexed with them blanked,
  * unless it spells a macro they define. Any other directive may test a header's macros:
  * that source is lexed after the convenience headers, and -H names the headers the C++20
- * preprocessor selected. A fragment's late includes move before its `main`, where the
- * macros they define would apply to the statements before them, so it may not spell those.
+ * preprocessor selected. A fragment's late includes move before its `main`, where their
+ * declarations and macros apply to the statements before them too. Only a standard header is
+ * moved, as its overloads hardly depend on the order, and only if the source spells none of
+ * its macros.
  */
 function lex(source: string, frontend: CompilerFrontend, array: string, ignoreExpansions: boolean): Lexed {
   const lines = [...source.matchAll(INCLUDE_LINE)];
@@ -119,10 +121,14 @@ function lex(source: string, frontend: CompilerFrontend, array: string, ignoreEx
     for (const [start, end] of includeLines) text = text.slice(0, start) + blank(text.slice(start, end)) + text.slice(end);
     const includes = HEADERS + array + lines.map(line => `#include <${line[1]}>\n`).join('');
     const { tokens } = frontend.tokens(text, { ignoreExpansions });
+    const first = tokens[0]?.start ?? source.length;
+    const hoisted = mainDefinition(tokens, text) ? [] : lines.filter(line => line.index > first);
+    if (hoisted.some(line => !/^\w+$/.test(line[1]))) {
+      throw new Unsupported('an #include after the first statement must name a standard C++ header');
+    }
     const macros = definedBy(frontend, includes);
     if (macros && !spellsMacro(tokens, text, macros)) return { tokens, includes, includeLines };
-    const late = includeLines.some(([start]) => start > (tokens[0]?.start ?? source.length));
-    if (macros && late && !mainDefinition(tokens, text)) {
+    if (macros && hoisted.length) {
       throw new Unsupported('a macro from a header included after the first statement is not supported');
     }
   }
@@ -377,22 +383,25 @@ export class SourceFile {
    * The declarations from `from` up to `main` at `to`. Clang's AST filter matches every name
    * containing its text, the standard library's too, so they are dumped from a namespace
    * that no other name contains. Using-declarations bring the records back for main, which
-   * finds them there as the program's own, even qualified. The namespace opens and closes
-   * within lines, so `__LINE__` and conditionals spanning the program read as in the program.
+   * finds them there as the program's own, even qualified, and a using-directive among them
+   * is repeated for main. The namespace opens and closes within lines, so `__LINE__` and
+   * conditionals spanning the program read as in the program.
    */
   private globalRecords(frontend: CompilerFrontend, from: number, to: number): AstNode[] {
+    const spell = (token: SourceToken): string => this.program.slice(token.start, token.end);
     const names = new Set<string>();
+    let opensStd = false;
     let depth = 0;
     const leading = this.tokens.filter(token => token.start >= from && token.end <= to);
     leading.forEach((token, i) => {
       depth += token.kind === 'l_brace' ? 1 : token.kind === 'r_brace' ? -1 : 0;
-      const next = leading[i + 1];
-      if (depth === 0 && token.kind === 'struct' && next?.kind === 'identifier') {
-        names.add(this.program.slice(next.start, next.end));
-      }
+      if (depth !== 0) return;
+      if (token.kind === 'struct' && leading[i + 1]?.kind === 'identifier') names.add(spell(leading[i + 1]));
+      opensStd ||= usesNamespaceStd(leading, i, spell);
     });
     const open = `namespace ${GLOBALS_NAMESPACE} { `;
-    const declarations = [...names].map(name => `using ${GLOBALS_NAMESPACE}::${name}; `).join('');
+    const declarations = [...names].map(name => `using ${GLOBALS_NAMESPACE}::${name}; `).join('') +
+      (opensStd ? 'using namespace std; ' : '');
     const probe = this.program.slice(0, from) + open + this.program.slice(from, to) +
       '} ' + declarations + this.program.slice(to);
     let nodes: AstNode[];

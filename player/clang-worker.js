@@ -764,7 +764,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return text.replace(/[^\r\n]/g, " ");
   }
   function lex(source, frontend, array, ignoreExpansions) {
-    var _a;
+    var _a, _b;
     const lines = [...source.matchAll(INCLUDE_LINE)];
     const includeLines = lines.map((line) => [line.index, line.index + line[0].length]);
     const directives = ((_a = source.match(/#|%:/g)) == null ? void 0 : _a.length) ?? 0;
@@ -774,13 +774,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const includes2 = HEADERS + array + lines.map((line) => `#include <${line[1]}>
 `).join("");
       const { tokens: tokens2 } = frontend.tokens(text, { ignoreExpansions });
+      const first = ((_b = tokens2[0]) == null ? void 0 : _b.start) ?? source.length;
+      const hoisted = mainDefinition(tokens2, text) ? [] : lines.filter((line) => line.index > first);
+      if (hoisted.some((line) => !/^\w+$/.test(line[1]))) {
+        throw new Unsupported("an #include after the first statement must name a standard C++ header");
+      }
       const macros = definedBy(frontend, includes2);
       if (macros && !spellsMacro(tokens2, text, macros)) return { tokens: tokens2, includes: includes2, includeLines };
-      const late = includeLines.some(([start]) => {
-        var _a2;
-        return start > (((_a2 = tokens2[0]) == null ? void 0 : _a2.start) ?? source.length);
-      });
-      if (macros && late && !mainDefinition(tokens2, text)) {
+      if (macros && hoisted.length) {
         throw new Unsupported("a macro from a header included after the first statement is not supported");
       }
     }
@@ -999,22 +1000,25 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
      * The declarations from `from` up to `main` at `to`. Clang's AST filter matches every name
      * containing its text, the standard library's too, so they are dumped from a namespace
      * that no other name contains. Using-declarations bring the records back for main, which
-     * finds them there as the program's own, even qualified. The namespace opens and closes
-     * within lines, so `__LINE__` and conditionals spanning the program read as in the program.
+     * finds them there as the program's own, even qualified, and a using-directive among them
+     * is repeated for main. The namespace opens and closes within lines, so `__LINE__` and
+     * conditionals spanning the program read as in the program.
      */
     globalRecords(frontend, from, to) {
+      const spell = (token) => this.program.slice(token.start, token.end);
       const names = /* @__PURE__ */ new Set();
+      let opensStd = false;
       let depth = 0;
       const leading = this.tokens.filter((token) => token.start >= from && token.end <= to);
       leading.forEach((token, i) => {
+        var _a;
         depth += token.kind === "l_brace" ? 1 : token.kind === "r_brace" ? -1 : 0;
-        const next = leading[i + 1];
-        if (depth === 0 && token.kind === "struct" && (next == null ? void 0 : next.kind) === "identifier") {
-          names.add(this.program.slice(next.start, next.end));
-        }
+        if (depth !== 0) return;
+        if (token.kind === "struct" && ((_a = leading[i + 1]) == null ? void 0 : _a.kind) === "identifier") names.add(spell(leading[i + 1]));
+        opensStd || (opensStd = usesNamespaceStd(leading, i, spell));
       });
       const open = `namespace ${GLOBALS_NAMESPACE} { `;
-      const declarations = [...names].map((name) => `using ${GLOBALS_NAMESPACE}::${name}; `).join("");
+      const declarations = [...names].map((name) => `using ${GLOBALS_NAMESPACE}::${name}; `).join("") + (opensStd ? "using namespace std; " : "");
       const probe = this.program.slice(0, from) + open + this.program.slice(from, to) + "} " + declarations + this.program.slice(to);
       let nodes;
       try {

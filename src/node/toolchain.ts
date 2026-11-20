@@ -72,6 +72,10 @@ function withDirectory<T>(directory: string | undefined, fn: (dir: string) => T)
   }
 }
 
+/** The pinned compiler's standard headers define the same macros for every frontend. */
+const standardMacros = new Map<string, Macros>();
+const STANDARD_INCLUDES = /^(?:#include <\w+>\n)*$/;
+
 export function createClangFrontend(directory?: string): CompilerFrontend {
   /**
    * Run Clang on `program` with the shared language options, checking its syntax unless `args`
@@ -106,14 +110,16 @@ export function createClangFrontend(directory?: string): CompilerFrontend {
     },
 
     macros(program) {
-      let names = defined.get(program);
-      if (!names) {
+      const cache = STANDARD_INCLUDES.test(program) ? standardMacros : defined;
+      const key = `${tool('CLANGXX', 'clang++')}\0${program}`;
+      let macros = cache.get(key);
+      if (!macros) {
         const result = clang(program, ['-E', '-dD']);
         if (result.returncode !== 0) throw illFormed(result.stderr, program);
-        names = definedMacros(result.stdout);
-        defined.set(program, names);
+        macros = definedMacros(result.stdout);
+        cache.set(key, macros);
       }
-      return names;
+      return macros;
     },
 
     astDump(program, filter, standard = 'c++20') {
