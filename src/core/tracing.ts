@@ -1917,13 +1917,16 @@ class Renderer {
     return `0x${address.toString(16).padStart(16, '0')}`;
   }
 
-  /** A value as the pane spells it; `named`, a record and those nested in it carry their names. */
+  /**
+   * A value as the pane spells it. The records nested in it carry their names, as `{1, N{2, 3}}`,
+   * and so does the record itself when `named`, where nothing else in the pane names its type.
+   */
   show(value: Value, shape: Shape, named = false): string {
     if (isPlainObject(value)) {
       const record = shape !== null && typeof shape === 'object' ? shape : null;
       const fields = record?.fields ?? {};
       return `${(named && record?.record) || ''}{${Object.entries(value)
-        .map(([field, item]) => this.show(item, fields[field] ?? null, named))
+        .map(([field, item]) => this.show(item, fields[field] ?? null, true))
         .join(', ')}}`;
     }
     return displayNumber(this.stored(value), typeof shape === 'number' ? shape : null);

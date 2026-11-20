@@ -3728,12 +3728,15 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
       const address = this.addresses[pointer.target];
       return `0x${address.toString(16).padStart(16, "0")}`;
     }
-    /** A value as the pane spells it; `named`, a record and those nested in it carry their names. */
+    /**
+     * A value as the pane spells it. The records nested in it carry their names, as `{1, N{2, 3}}`,
+     * and so does the record itself when `named`, where nothing else in the pane names its type.
+     */
     show(value, shape, named = false) {
       if (isPlainObject(value)) {
         const record = shape !== null && typeof shape === "object" ? shape : null;
         const fields = (record == null ? void 0 : record.fields) ?? {};
-        return `${named && (record == null ? void 0 : record.record) || ""}{${Object.entries(value).map(([field2, item]) => this.show(item, fields[field2] ?? null, named)).join(", ")}}`;
+        return `${named && (record == null ? void 0 : record.record) || ""}{${Object.entries(value).map(([field2, item]) => this.show(item, fields[field2] ?? null, true)).join(", ")}}`;
       }
       return displayNumber(this.stored(value), typeof shape === "number" ? shape : null);
     }

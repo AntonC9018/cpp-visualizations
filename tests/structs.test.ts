@@ -98,6 +98,10 @@ p->next->x=9; c=*p; (*p).x=7; std::cout << a.x;`;
       ['c = A{{1, 2}, 3}', null],
       ['c = A{{1, 2}, 3}', 'write'],
     ]);
+    // A brace list the declaration already types names only what is nested in it.
+    const declared = tracing.trace('struct N { int f; int g; };\nstruct A { int* p; N n; };\nint v = 1;\nA d{ .p = &v, .n = { .f = 2 } };');
+    assert.match(declared.steps.at(-1)!.pane, /^A d\{\d+, N\{2, 0\}\}$/);
+    validate(declared);
     // However it is spaced around the names.
     for (const list of ['A {1, N{2, 3}}', 'A{1, N {2, 3}}']) {
       const spaced = tracing.trace(`struct N { int f; int g; };\nstruct A { int f; N n; };\nA a{1, {2, 3}};\na = ${list};`);
@@ -216,7 +220,7 @@ c=b.n; b.n={5, 6}; std::cout << c.g;`;
       'A a{ .p = &v, .n = { .f = 2 } }',
       `A a{ .p = ${last.values['a.p']}, .n = { .f = 2 } }`,
     ]);
-    assert.equal(first[2], `A a{${last.values['a.p']}, {2, 0}, 0}`);
+    assert.equal(first[2], `A a{${last.values['a.p']}, N{2, 0}, 0}`);
     const copy = result.steps.filter(step => step.line === 8 && step.op).map(step => step.op!);
     assert.deepEqual(
       copy.map(op => [
