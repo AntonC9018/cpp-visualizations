@@ -3,6 +3,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
 
+import { WASM_VERSION } from './src/browser/cache.ts';
 import { renderDemoHtml } from './src/node/demo.ts';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
@@ -62,7 +63,7 @@ export default defineConfig(({ mode }) => {
               const demoPath = resolve(ROOT, 'player/demo.html');
               const rawHtml = existsSync(demoPath)
                 ? readFileSync(demoPath, 'utf8')
-                : renderDemoHtml({ runtime: false });
+                : renderDemoHtml();
               const devHtml = rawHtml
                 .replace('href="player.css"', 'href="/player/player.css"')
                 .replace(
@@ -82,7 +83,8 @@ export default defineConfig(({ mode }) => {
             if (url === '/playground.html' || url === '/player/playground.html') {
               const rawHtml = readFileSync(resolve(ROOT, 'player/playground.html'), 'utf8');
               const devConfig =
-                '<script>window.CoursePlaygroundConfig = Object.assign({ workerUrl: "/src/browser/worker.ts", workerType: "module", wasmUrl: "/player/clang-trace-frontend.wasm" }, window.CoursePlaygroundConfig || {});</script>\n';
+                '<script>window.CoursePlaygroundConfig = Object.assign({ workerUrl: "/src/browser/worker.ts", workerType: "module", ' +
+                `wasmUrl: "/player/clang-trace-frontend.wasm?v=${WASM_VERSION}" }, window.CoursePlaygroundConfig || {});</script>\n`;
               const devHtml = rawHtml
                 .replace('href="player.css"', 'href="/player/player.css"')
                 .replace('href="playground.css"', 'href="/player/playground.css"')

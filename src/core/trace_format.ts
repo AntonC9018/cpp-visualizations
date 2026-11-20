@@ -6,6 +6,8 @@
 // `player/README.md` documents every field.
 
 import { arrayType, codeName, elementLabel } from './arrays.ts';
+import { COMPOUND_OPERATORS, openCompound } from './compound.ts';
+import { displayFloat } from './floats.ts';
 import { INTEGERS, integerLiteral, integerSpelled } from './integers.ts';
 
 export const FORMAT = 1;
@@ -46,6 +48,8 @@ export interface ScalarField {
   kind: ScalarKind;
   color: number;
   type?: string;
+  /** A float (size 4) or double (size 8) cell: its value shows as `displayFloat` reads it. */
+  floating?: true;
 }
 
 export interface StructField {
@@ -68,6 +72,8 @@ export interface ScalarVariable {
   color: number;
   /** The declared type as the lessons write it (`int*`); the player labels with it. */
   type?: string;
+  /** A float (size 4) or double (size 8) cell: its value shows as `displayFloat` reads it. */
+  floating?: true;
 }
 
 export interface StructVariable {
@@ -92,6 +98,10 @@ export type ReadOperation = {
   name: string;
   value: string;
   span: Span;
+  /** The read opens `a += b` into `a = 5 + b`: `span` covers `+=`, here `+`. */
+  compound?: string;
+  /** Parentheses required by the compound assignment’s right operand. */
+  grouped?: boolean;
 };
 
 export type AddrOperation = {
@@ -149,6 +159,8 @@ export type ConvertOperation = {
   span: Span;
   from: string;
   to: string;
+  /** The operator whose operands this converts, as `+` promotes both `a`s of `a + a`. */
+  operator?: Span;
 };
 
 export type ClashOperation = {
@@ -259,10 +271,12 @@ export function scalar(
   size = 4,
   kind: ScalarKind = 'int',
   color = 0,
-  type: string | null = null
+  type: string | null = null,
+  floating = false
 ): ScalarVariable {
   const variable: ScalarVariable = { name, address, size, kind, color };
   if (type) variable.type = type;
+  if (floating) variable.floating = true;
   return variable;
 }
 
@@ -286,9 +300,10 @@ export function field(
   offset: number,
   size = 4,
   kind: ScalarKind = 'int',
-  color = 0
+  color = 0,
+  floating = false
 ): ScalarField {
-  return { name, offset, size, kind, color };
+  return { name, offset, size, kind, color, ...(floating ? { floating: true as const } : {}) };
 }
 
 export function structField(
@@ -432,7 +447,8 @@ function checkFields(owner: Record<string, any>, here: string): void {
     const spot = `${here}.fields[${position}]`;
     const nested = isPlainObject(item) && item.kind === STRUCT;
     const req = ['name', 'offset', 'size', 'kind', 'color', ...(nested ? ['type', 'fields'] : [])];
-    checkKeys(item, spot, req);
+    checkKeys(item, spot, req, nested ? [] : ['floating']);
+    checkFloating(item, spot);
     if (array) {
       check(item.name === elementLabel(position), spot, 'invalid array element name');
       check(
@@ -462,6 +478,16 @@ function checkFields(owner: Record<string, any>, here: string): void {
   check(end <= owner.size, here, 'fields exceed the struct size');
 }
 
+/** A floating cell is a 4-byte float or an 8-byte double, never a pointer. */
+function checkFloating(cell: Record<string, any>, where: string): void {
+  if (!Object.hasOwn(cell, 'floating')) return;
+  check(
+    cell.floating === true && cell.kind === 'int' && (cell.size === 4 || cell.size === 8),
+    `${where}.floating`,
+    'only a 4- or 8-byte value cell is floating, and it says true'
+  );
+}
+
 function checkVariables(
   variables: unknown,
   where: string
@@ -474,7 +500,8 @@ function checkVariables(
     const here = `${where}[${index}]`;
     const struct_ = isPlainObject(variable) && variable.kind === 'struct';
     const req = ['name', 'address', 'size', 'kind', 'color', ...(struct_ ? ['type', 'fields'] : [])];
-    checkKeys(variable, here, req, ['type']);
+    checkKeys(variable, here, req, struct_ ? ['type'] : ['type', 'floating']);
+    checkFloating(variable, here);
     check(typeof (variable.type ?? '') === 'string', `${here}.type`, 'expected text');
     check(IDENTIFIER.test(String(variable.name)), here, 'name is not an identifier');
     check(!names.has(variable.name), here, `duplicate variable ${pyRepr(variable.name)}`);
@@ -522,12 +549,34 @@ function checkReferences(
   return names;
 }
 
-function checkValue(value: unknown, where: string): void {
+function checkValue(
+  value: unknown,
+  cell: ScalarVariable | ScalarField | undefined,
+  aliases: Record<string, string>,
+  where: string
+): void {
+  const integer = cell?.kind === 'int' ? integerSpelled(cell.type ?? '', aliases) : null;
+  check(integer === null || integer.size === cell!.size, where, `${cell?.type} is not ${cell?.size} bytes`);
+  if (value === null || value === UNKNOWN) return;
+  if (cell?.floating) {
+    check(
+      typeof value === 'number' && Number.isFinite(value) && (cell.size === 8 || Math.fround(value) === value),
+      where,
+      `a ${cell.size}-byte floating value is a finite number it can hold, "?" or null`
+    );
+    return;
+  }
   check(
-    value === null || value === UNKNOWN || (Number.isInteger(value) && typeof value === 'number'),
+    typeof value === 'number' && Number.isInteger(value),
     where,
     'a value is an integer, "?" (declared, unknown) or null (no storage yet)'
   );
+  if (cell?.kind !== 'int') return;
+  // Without its type, a cell holds what some integer of its size can, signed or not.
+  const bits = BigInt(8 * cell.size);
+  const stored = BigInt(value as number);
+  const fits = integer ? integer.holds(stored) : -(1n << (bits - 1n)) <= stored && stored < 1n << bits;
+  check(fits, where, `${value} does not fit in ${cell.type ?? `${cell.size} bytes`}`);
 }
 
 /** Typed spans of the pane are disjoint; at most one of them is the statement's slot. */
@@ -609,26 +658,81 @@ function replacement(before: string, after: string, span: Span, where: string): 
   return replaced;
 }
 
-const LITERAL = /^-?\d+$/;
+/**
+ * The read that opens `a += b` into `a = 5 + b`: `a` names the one scalar cell read, and the
+ * pane opens as `openCompound` spells it, with the right side in parentheses or not.
+ */
+function checkCompoundRead(
+  op: Record<string, any>,
+  step: Record<string, any>,
+  previous: Record<string, any>,
+  storage: StorageContext,
+  where: string
+): void {
+  check(COMPOUND_OPERATORS.includes(op.compound), `${where}.compound`, 'is not an arithmetic operator');
+  const span = checkSpan(op.span, previous.pane, `${where}.span`);
+  const spelling = `${op.compound}=`;
+  check(previous.pane.slice(...span) === spelling, `${where}.span`, `does not cover ${spelling}`);
+  check(
+    previous.pane.slice(0, span[0]).trim() === codeName(op.name),
+    `${where}.name`,
+    `${pyRepr(previous.pane.slice(0, span[0]).trim())} does not designate ${op.name}`
+  );
+  const cell = storage.cells[op.name];
+  check(
+    cell !== undefined && cell.kind !== 'ptr' && arraysEqual(storage.cellsOf(op.name), [op.name]),
+    `${where}.name`,
+    'is not one arithmetic cell'
+  );
+  check(op.value !== UNKNOWN, `${where}.value`, 'reads an uninitialized value');
+  check(LITERAL.test(op.value), `${where}.value`, `${pyRepr(op.value)} is not one number`);
+  const grouping = Object.hasOwn(op, 'grouped') ? [op.grouped] : [false, true];
+  const candidates = grouping.map(grouped =>
+    openCompound(previous.pane, span, op.value, op.compound, grouped).text);
+  check(candidates.includes(step.pane), where, `${pyRepr(step.pane)} is not ${candidates.map(pyRepr).join(' or ')}`);
+}
 
-function stored(text: string, where: string): (number | string)[] {
-  const braced = /^(?:[A-Za-z_]\w*)?\{[\s\S]*\}$/.test(text);
+const LITERAL = /^≈?-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i;
+
+/** A brace list without the names of the records nested in it: `{1, N{2, 3}}` → `{1, {2, 3}}`. */
+export const withoutNestedNames = (text: string): string =>
+  text.replace(/(?<=[{,]\s*)[A-Za-z_][\w:]*\s*(?=\{)/g, '');
+
+/** The items a value text spells: one, or each of a brace list. */
+function storedItems(text: string, where: string): string[] {
+  const braced = /^(?:[A-Za-z_][\w:]*\s*)?\{[\s\S]*\}$/.test(text);
   const inner = braced ? text.slice(text.indexOf('{')) : text;
-  const items = braced ? inner.replace(/[{}]/g, '').split(',').map(s => s.trim()) : [inner];
-  const result: (number | string)[] = [];
+  const items = braced
+    ? withoutNestedNames(inner).replace(/[{}]/g, '').split(',').map(s => s.trim())
+    : [inner];
   for (const item of items) {
     check(
       item === 'nullptr' || item === UNKNOWN || LITERAL.test(item),
       where,
       `${pyRepr(inner)} is not a value: expected an integer, nullptr, "?" or {…} of them`
     );
-    result.push(item === 'nullptr' ? 0 : item === UNKNOWN ? item : Number.parseInt(item, 10));
   }
-  return result;
+  return items;
 }
 
+/** Whether `item` is how a cell shows `value`: a float as `displayFloat` does, the rest exactly. */
+function showsCell(item: string, value: unknown, cell: ScalarVariable | ScalarField | undefined): boolean {
+  if (item === UNKNOWN || value === UNKNOWN) return item === value;
+  if (item === 'nullptr') return cell?.kind === 'ptr' && value === 0;
+  if (cell?.floating && typeof value === 'number') {
+    // Traces from before the short display spell a whole float with all its digits.
+    return item === displayFloat(value, cell.size) || (Number.isSafeInteger(value) && !Object.is(value, -0) && item === String(value));
+  }
+  return !item.startsWith('≈') && Object.is(Number(item), value);
+}
+
+function stored(text: string, where: string): (number | string)[] {
+  return storedItems(text, where).map(item => (item === 'nullptr' ? 0 : item === UNKNOWN ? item : Number(item)));
+}
+
+/** Element-wise `Object.is`, so a -0 cell never passes for 0. */
 function arraysEqual(a: unknown[], b: unknown[]): boolean {
-  return a.length === b.length && a.every((v, i) => v === b[i]);
+  return a.length === b.length && a.every((v, i) => Object.is(v, b[i]));
 }
 
 interface StorageContext {
@@ -662,8 +766,9 @@ function checkMemory(
   const shown =
     cells.length === 1 && cells[0] === name ? String(expected[0]) : `{${expected.map(String).join(', ')}}`;
   const when = kind === 'write' ? 'after the write' : 'before the read';
+  const items = storedItems(op.value, where);
   check(
-    arraysEqual(stored(op.value, where), expected),
+    items.length === cells.length && items.every((item, i) => showsCell(item, expected[i], storage.cells[cells[i]])),
     `${where}.value`,
     `${name} holds ${shown} ${when}, not ${pyRepr(op.value)}`
   );
@@ -793,7 +898,13 @@ function checkOperation(
     clash: ['span', 'destination', 'from', 'to'],
   };
   const fields = fieldMap[kind];
-  checkKeys(op, where, [...fields, 'kind']);
+  const optional: Partial<Record<OperationKind, string[]>> = { read: ['compound', 'grouped'], convert: ['operator'] };
+  checkKeys(op, where, [...fields, 'kind'], optional[kind] ?? []);
+  if (Object.hasOwn(op, 'operator')) checkSpan(op.operator, previous.pane, `${where}.operator`);
+  if (Object.hasOwn(op, 'grouped')) {
+    check(Object.hasOwn(op, 'compound') && typeof op.grouped === 'boolean', `${where}.grouped`,
+      'expected a boolean on a compound read');
+  }
   for (const key of fields.filter(k => ['name', 'target', 'via', 'value', 'from', 'to'].includes(k))) {
     check(typeof op[key] === 'string' && op[key].length > 0, `${where}.${key}`, 'expected text');
   }
@@ -828,11 +939,18 @@ function checkOperation(
       `${op.via} does not point to ${op.target}`
     );
   }
-  if (['read', 'addr', 'deref', 'eval', 'convert'].includes(kind)) {
+  if (Object.hasOwn(op, 'compound')) {
+    checkCompoundRead(op, step, previous, storage, where);
+  } else if (['read', 'addr', 'deref', 'eval', 'convert'].includes(kind)) {
     const span = checkSpan(op.span, previous.pane, `${where}.span`);
     const replaced = replacement(previous.pane, step.pane, span, where);
-    const expected = kind === 'deref' ? codeName(op.target) : op.value;
-    check(replaced === expected, where, `the replacement ${pyRepr(replaced)} is not ${pyRepr(expected)}`);
+    // Whether a sign needs parentheses is the tracer's reading of Clang's tokens.
+    const expected = kind === 'deref' ? [codeName(op.target)] : [op.value, `(${op.value})`];
+    check(
+      expected.includes(replaced),
+      where,
+      `the replacement ${pyRepr(replaced)} is not ${expected.map(pyRepr).join(' or ')}`
+    );
     if (kind === 'convert') {
       check(convertedFrom(previous, span) === op.from, `${where}.from`, 'is not the type of the converted value');
       check(
@@ -866,7 +984,7 @@ function checkChanges(
   for (const [name, value] of Object.entries(step.values)) {
     const old = previous.values[name];
     check(
-      value === old || written.has(name) || (!step.op && old === null && value === UNKNOWN),
+      Object.is(value, old) || written.has(name) || (!step.op && old === null && value === UNKNOWN),
       `${where}.values.${name}`,
       'only a write, or a declaration ("?"), changes a value'
     );
@@ -1007,7 +1125,7 @@ export function validate(trace: unknown): asserts trace is AnyTrace {
     check(trace.bits === true, 'trace.bits', 'expected true');
     check(
       !Object.hasOwn(trace, 'references') &&
-        variables.every(v => v.kind === 'int' && integerSpelled(v.type ?? '', aliases)?.size === v.size),
+        variables.every(v => v.kind === 'int' && !v.floating && integerSpelled(v.type ?? '', aliases)?.size === v.size),
       'trace.bits',
       'expected only integer variables, each with its type'
     );
@@ -1056,7 +1174,7 @@ export function validate(trace: unknown): asserts trace is AnyTrace {
       `expected exactly ${pyListRepr(sortedCellNames)}`
     );
     for (const [name, value] of Object.entries(step.values)) {
-      checkValue(value, `${where}.values.${name}`);
+      checkValue(value, storage.cells[name], aliases, `${where}.values.${name}`);
     }
     check(isPlainObject(step.targets), `${where}.targets`, 'expected an object');
     checkPointers(step, storage, where);
@@ -1100,8 +1218,8 @@ export function validate(trace: unknown): asserts trace is AnyTrace {
 }
 
 /**
- * A bits trace types every part with an integer, and a conversion's value is its operand
- * converted, so the bits drawn agree with it.
+ * The retained bits in the source and destination must agree for the player to draw them:
+ * it draws the operand's bits and labels them with the result.
  */
 function checkBitsStep(
   step: TraceStep,
@@ -1126,9 +1244,9 @@ function checkBitsStep(
   );
   const operand = previous && convertOperand(previous, op);
   check(
-    operand !== null && to!.wrap(operand) === value,
+    operand !== null && from!.holds(operand) && to!.wrap(operand) === value,
     `${where}.op.value`,
-    `expected the operand converted to ${op.to}`
+    'the conversion must preserve the retained bits'
   );
 }
 
@@ -1137,7 +1255,8 @@ export function convertOperand(previous: TraceStep, op: ConvertOperation): bigin
   const part = previous.types?.find(
     t => !t.slot && t.type === op.from && t.span[0] >= op.span[0] && t.span[1] <= op.span[1]
   );
-  return integerLiteral(previous.pane.slice(...(part?.span ?? op.span)));
+  // A value apart from the sign before it stands in parentheses: `-(-2)`.
+  return integerLiteral(previous.pane.slice(...(part?.span ?? op.span)).replace(/^\((.*)\)$/, '$1'));
 }
 
 // Hand-written traces --------------------------------------------------------------------------
@@ -1148,6 +1267,15 @@ function escapeRegExp(string: string): string {
 
 function isWordChar(ch: string): boolean {
   return /[A-Za-z0-9_]/.test(ch);
+}
+
+/**
+ * `text` as it stands after `before`: in parentheses where its sign would join the operator
+ * before it into another token, as `8-(-2)` rather than `8--2`.
+ */
+function separated(before: string, text: string): string {
+  const sign = before.at(-1);
+  return (sign === '-' || sign === '+') && text.startsWith(sign) ? `(${text})` : text;
 }
 
 export class Builder {
@@ -1213,7 +1341,8 @@ export class Builder {
 
   _replace(token: string, newText: string): Span {
     const start = this._find(token);
-    this.pane = this.pane.slice(0, start) + newText + this.pane.slice(start + token.length);
+    const text = separated(this.pane.slice(0, start), newText);
+    this.pane = this.pane.slice(0, start) + text + this.pane.slice(start + token.length);
     return [start, start + token.length];
   }
 

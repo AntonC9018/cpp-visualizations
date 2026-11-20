@@ -15,7 +15,7 @@ import {
   themeName,
 } from './constants.ts';
 import { type Geometry, type TypeTarget, geometry } from './geometry.ts';
-import { type PreparedModel, activeVariables, arrival, prepare } from './model.ts';
+import { type PreparedModel, prepare, stepFocus } from './model.ts';
 import { type SceneContext, describe, lineTargets, placeLineTargets } from './scene.ts';
 import { esc } from './svg.ts';
 import { type TraceView, viewOf } from './views.ts';
@@ -29,6 +29,8 @@ export class Player {
   elapsed: number;
   duration: number;
   rate: number;
+  /** Steps jump to their settled state instead of animating. */
+  instant: boolean;
   /** Memory's byte order, for a view that draws bytes. */
   littleEndian: boolean;
   running: boolean;
@@ -49,6 +51,7 @@ export class Player {
   typeBox!: HTMLDivElement;
   stacked: boolean | null;
   private layoutWidth: number | undefined;
+  private syncSpeedMenu: (() => void) | null = null;
   observer: ResizeObserver | null = null;
   P!: Palette;
   g!: Geometry;
@@ -63,6 +66,7 @@ export class Player {
     this.elapsed = 0;
     this.duration = 0;
     this.rate = 1;
+    this.instant = false;
     this.littleEndian = true;
     this.running = false;
     this.continuous = false;
@@ -112,6 +116,7 @@ export class Player {
       [0.5, 1, 1.5, 2]
         .map(v => `<option value="${v}"${v === 1 ? ' selected' : ''}>${v}×</option>`)
         .join('') +
+      `<option value="instant" title="${esc(S.instant)}" aria-label="${esc(S.instant)}">⚡</option>` +
       '</select>' +
       endianToggle +
       button('reset', S.reset, 'reset', ' cv-reset') +
@@ -136,8 +141,27 @@ export class Player {
       const side = (event.target as Element | null)?.closest('[data-endian-side]') as HTMLElement | null;
       if (side) this.byteOrder(side.dataset.endianSide === 'le');
     });
-    root.querySelector('.cv-speed')!.addEventListener('change', event => {
-      this.rate = Number((event.target as HTMLSelectElement).value);
+    const menu = root.querySelector('.cv-speed') as HTMLSelectElement;
+    const instant = menu.querySelector('option[value=instant]') as HTMLOptionElement;
+    // The menu keeps the width of `1.5×`: a word would push the controls onto two rows. So
+    // Instant is a glyph once chosen, and a word to find (and type) while the menu has focus.
+    const spell = (): void => {
+      const focused = document.activeElement === menu;
+      instant.textContent = focused && menu.value !== 'instant' ? `${S.instant} ⚡` : '⚡';
+    };
+    const syncMenu = (): void => {
+      const choice = this.instant ? 'instant' : String(this.rate);
+      if (menu.value !== choice) menu.value = choice;
+      const label = choice === 'instant' ? `${S.speed}: ${S.instant}` : S.speed;
+      menu.title = label;
+      menu.setAttribute('aria-label', label);
+      spell();
+    };
+    this.syncSpeedMenu = syncMenu;
+    menu.addEventListener('focus', spell);
+    menu.addEventListener('blur', spell);
+    menu.addEventListener('change', () => {
+      this.speed(menu.value);
     });
     this.scrub.addEventListener('input', () => {
       this.pristine = false;
@@ -307,12 +331,6 @@ export class Player {
     const step = steps[this.index];
     const prev = this.index ? steps[this.index - 1] : null;
     const g = this.g;
-    const now = activeVariables(this.m, this.index);
-    const before = animate && this.index ? activeVariables(this.m, this.index - 1) : now;
-    const begin = new Map<string, number>();
-    if (animate && step.op && step.op.kind === 'deref') {
-      begin.set(step.op.target.split('.')[0], arrival(step.op) - 0.15);
-    }
     const c: SceneContext = {
       m: this.m,
       g,
@@ -323,7 +341,7 @@ export class Player {
       prev,
       animate,
       op: animate ? step.op : null,
-      focus: { now, before, begin },
+      focus: stepFocus(this.m, this.index, animate),
       littleEndian: this.littleEndian,
     };
     this.animated = animate;
@@ -420,9 +438,27 @@ export class Player {
     this.continuous = autoplay;
     this.index = index;
     this.elapsed = 0;
-    this.duration = this.view.stepSeconds(this.m, index);
-    this.render(true);
+    // Instant, a step shows settled; playing, it holds there a moment before the next.
+    this.duration = this.instant ? (autoplay ? T.instantHold : 0) : this.view.stepSeconds(this.m, index);
+    this.render(!this.instant);
     if (this.duration > 0 || autoplay) this.resume();
+  }
+
+  /**
+   * A speed menu choice: a playback rate, or `instant`. A step under way at Instant settles: a
+   * running one holds there before the next, a paused one stays paused.
+   */
+  speed(choice: string): void {
+    this.instant = choice === 'instant';
+    if (!this.instant) this.rate = Number(choice);
+    this.syncSpeedMenu?.();
+    if (!this.instant || !this.animated) return;
+    if (this.running) {
+      this.start(this.index, this.continuous);
+    } else if (!this.finished) {
+      this.render(false);
+      this.elapsed = this.duration = 0;
+    }
   }
 
   resume(): void {
@@ -452,10 +488,9 @@ export class Player {
   tick(now: number): void {
     this.frame = 0;
     if (!this.running) return;
-    this.elapsed = Math.min(
-      this.duration,
-      this.elapsed + ((now - this.last) / 1000) * this.rate
-    );
+    // The rate speeds animations; a settled step's hold is wall-clock time.
+    const rate = this.animated ? this.rate : 1;
+    this.elapsed = Math.min(this.duration, this.elapsed + ((now - this.last) / 1000) * rate);
     this.last = now;
     if (this.animated) this.seek(this.elapsed);
     if (this.elapsed < this.duration) {

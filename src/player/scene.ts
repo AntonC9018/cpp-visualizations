@@ -1,5 +1,6 @@
 // SVG scene rendering for code, tether, pointer arcs, memory cells, evaluation pane, and stdout.
-import { arrayType } from '../core/arrays.ts';
+import { arrayType, codeName } from '../core/arrays.ts';
+import { displayNumber } from '../core/floats.ts';
 import type { Span, TraceStep } from '../core/trace_format.ts';
 import {
   CELL,
@@ -29,8 +30,22 @@ import {
   typeLabelWidth,
   valueCentre,
 } from './geometry.ts';
-import { CHAIN_LEAD, chainOf, paneLevels, walkWindows } from './storage_path.ts';
-import { type PreparedModel, arrival, copies, copyBegin, departure, stores } from './model.ts';
+import { memoryWalk, paneLevels, walkWindows } from './storage_path.ts';
+import {
+  type Focus,
+  type PreparedModel,
+  type WalkingOperation,
+  arrival,
+  continuesOperator,
+  copies,
+  copyBegin,
+  departure,
+  landing,
+  lead,
+  statementSteps,
+  stores,
+  walkOf,
+} from './model.ts';
 import {
   animateAttr,
   animated,
@@ -50,11 +65,6 @@ import {
   text,
 } from './svg.ts';
 
-export interface SceneFocus {
-  now: Set<string>;
-  before: Set<string>;
-  begin: Map<string, number>;
-}
 
 export interface SceneContext {
   m: PreparedModel;
@@ -66,7 +76,7 @@ export interface SceneContext {
   prev: TraceStep | null;
   animate: boolean;
   op: TraceStep['op'];
-  focus: SceneFocus;
+  focus: Focus;
   littleEndian: boolean;
 }
 
@@ -161,12 +171,12 @@ function dim(c: SceneContext, name: string, markup: string): string {
   const { focus } = c;
   const on = focus.now.has(name);
   const was = focus.before.has(name);
-  const to = on ? 1 : DIM;
-  if (on === was) return to === 1 ? markup : `<g opacity="${DIM}">${markup}</g>`;
-  return (
-    `<g opacity="${was ? 1 : DIM}"><animate attributeName="opacity" from="${was ? 1 : DIM}" ` +
-    `to="${to}" dur="0.35s" begin="${round(focus.begin.get(name) ?? 0)}s" ${EASE} fill="freeze"/>${markup}</g>`
-  );
+  const fade = (from: number, to: number, begin: number): string =>
+    `<animate attributeName="opacity" from="${from}" to="${to}" dur="0.35s" begin="${round(begin)}s" ${EASE} fill="freeze"/>`;
+  const begin = focus.begin.get(name) ?? 0;
+  if (on === was) return on ? markup : `<g opacity="${DIM}">${markup}</g>`;
+  const from = was ? 1 : DIM;
+  return `<g opacity="${from}">${fade(from, on ? 1 : DIM, begin)}${markup}</g>`;
 }
 
 // Types ------------------------------------------------------------------------------------
@@ -346,9 +356,10 @@ function linkMarkup(
   const color = l.from.color;
   const head = `<path d="M -11 -6.5 L 0 0 L -11 6.5 Z" fill="${color}" transform="translate(${round(x)} ${y}) rotate(90)"/>`;
   const growing = grow !== null ? ` data-grow="${round(grow)}"` : '';
+  // An arrow dims with the pointer it leaves.
   return dim(
     c,
-    l.from.name.split('.')[0],
+    l.from.name,
     `<g>` +
       (fadeOut !== null ? fade(1, 0, 0.3, fadeOut) : '') +
       `<path d="${l.d}" fill="none" stroke="${c.P.bg}" stroke-width="9"${growing}/>` +
@@ -379,7 +390,12 @@ function arrows(c: SceneContext): string {
   if (op && op.kind === 'deref') {
     const l = now.find(link => link.from.name === op.via);
     if (l) {
-      out += `<path d="${l.d}" fill="none" stroke="${l.from.color}" stroke-width="7" stroke-linecap="round" data-follow="${T.prepare}"/>`;
+      // It dims with its pointer too, as `h.p` in `*h.p` once its value is in the pane.
+      out += dim(
+        c,
+        l.from.name,
+        `<path d="${l.d}" fill="none" stroke="${l.from.color}" stroke-width="7" stroke-linecap="round" data-follow="${T.prepare}"/>`
+      );
     }
   }
   return out;
@@ -448,12 +464,11 @@ function memory(c: SceneContext): string {
     Boolean(shown && Object.values(shown.targets).some(t => startsAt(t, cell)));
   // Once `&` has taken an address, it stays shown until the statement ends.
   const taking = (i: number, cell: { name: string; address: number }): boolean => {
-    const steps = c.m.steps;
-    for (let j = i; j >= 0 && steps[j].line === steps[Math.max(i, 0)].line; j--) {
-      const o = steps[j].op;
-      if (o?.kind === 'addr' && startsAt(o.name, cell)) return true;
-    }
-    return false;
+    if (i < 0) return false;
+    return statementSteps(c.m.steps, i).some(j => {
+      const o = c.m.steps[j].op;
+      return j <= i && o?.kind === 'addr' && startsAt(o.name, cell);
+    });
   };
   // A variable's start address always shows, even when an array starts it.
   const startsVariable = (cell: { name: string; address: number }): boolean =>
@@ -464,8 +479,8 @@ function memory(c: SceneContext): string {
     const now = pointed(step, cell) || taking(c.index, cell);
     const before = c.animate ? pointed(prev, cell) || taking(c.index - 1, cell) : now;
     if (now && before) return label;
-    // `&` shows the address as it starts taking it; a pointer's write, as the value lands.
-    const appear = op?.kind === 'addr' ? 0 : at;
+    // `&` shows the address as its walk lands; a pointer's write, as the value lands.
+    const appear = op?.kind === 'addr' ? landing(op) : at;
     if (now) return `<g opacity="0">${fade(0, 1, 0.3, appear)}${label}</g>`;
     if (before) return `<g>${fade(1, 0, 0.3, at)}${label}</g>`;
     return '';
@@ -477,7 +492,8 @@ function memory(c: SceneContext): string {
     const color = on ? (arrayGroup ? s.color : s.fieldColor || s.color) : null;
     out += dim(
       c,
-      s.top,
+      // A nested struct's frame dims on its own, the outermost with its variable.
+      s.parent ? s.name : s.top,
       rect(f.x, f.y, f.w, f.h, 'none', color || P.deadStroke, 6, FRAME.stroke) +
         (s.parent
           ? text(
@@ -495,7 +511,7 @@ function memory(c: SceneContext): string {
     const cell = g.cellsOf(op.name)[0];
     const [lx, ly] = labelCentre(cell);
     out +=
-      `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.2, at + 0.1)}` +
+      `<g opacity="0">${fade(0, 1, 0.15, landing(op))}${fade(1, 0, 0.2, at + 0.1)}` +
       rect(lx - labelWidth(cell) / 2 - 5, ly - 13, labelWidth(cell) + 10, 24, P.readFill, P.read, 5, 2) +
       '</g>';
   }
@@ -528,16 +544,18 @@ function memory(c: SceneContext): string {
     );
     if (on) {
       const shown = (value: unknown): string => {
-        const length = String(value).length;
+        const display =
+          typeof value === 'number' ? displayNumber(value, cell.floating ? cell.size : null) : String(value);
+        const length = display.length;
         const size = Math.min(30, (cell.w - Math.min(12, cell.w / 5)) / (length * CHAR));
-        return text(0, size / 3 + 1, value, round(size), value === '?' ? P.grey : P.fg, 'middle');
+        return text(0, size / 3 + 1, display, round(size), value === '?' ? P.grey : P.fg, 'middle');
       };
       markup +=
         `<g transform="translate(${round(cell.x + cell.w / 2)} ${cell.y + cell.h / 2})"><g>` +
         (changing ? pulse(at - 0.2) : '');
       const before = prev ? prev.values[cell.name] : null;
       const after = step.values[cell.name];
-      if (changing && before !== after) {
+      if (changing && !Object.is(before, after)) {
         if (before !== null) markup += `<g>${hide(at)}${shown(before)}</g>`;
         markup += `<g opacity="0">${show(at)}${shown(after)}</g>`;
       } else {
@@ -545,9 +563,9 @@ function memory(c: SceneContext): string {
       }
       markup += '</g></g>';
     }
-    out += dim(c, cell.group || cell.name, markup);
+    out += dim(c, cell.name, markup);
   }
-  if (op && (op.kind === 'read' || op.kind === 'write')) {
+  if (op && (op.kind === 'read' || op.kind === 'write' || op.kind === 'addr')) {
     out += chainHighlight(c, op, at);
   }
   if (op && op.kind === 'deref') {
@@ -567,12 +585,12 @@ function memory(c: SceneContext): string {
   return out + tags(c, at);
 }
 
-/** Reading or writing `a.f[0]` outlines `a`, then `a.f`, then `a.f[0]`. */
-function chainHighlight(c: SceneContext, op: { kind: 'read' | 'write'; name: string }, at: number): string {
+/** Reading, writing or taking the address of `a.f[0]` outlines `a`, then `a.f`, then `a.f[0]`. */
+function chainHighlight(c: SceneContext, op: WalkingOperation, at: number): string {
   const { g, P } = c;
   const color = op.kind === 'write' ? P.write : P.read;
-  const levels = chainOf(op.name);
-  const windows = walkWindows(levels.length, at + 0.15, CHAIN_LEAD);
+  const levels = walkOf(op);
+  const windows = memoryWalk(levels, at);
   return levels
     .map((level, k) => {
       const box = g.box(level);
@@ -588,21 +606,40 @@ function chainHighlight(c: SceneContext, op: { kind: 'read' | 'write'; name: str
     .join('');
 }
 
-/** The pane's highlight box grows along the chain, `a` → `a.f` → `a.f[0]`. */
+/** The pane's highlight box grows along the chain, `a` → `a.f` → `a.f[0]`, to each level's end. */
 function walkBoxes(
-  levels: string[] | null,
+  ends: number[] | null,
   end: number,
   box: (chars: number) => string,
   whole: string
 ): string {
-  if (!levels) return whole;
-  const windows = walkWindows(levels.length, end);
-  return levels
-    .map((level, k) => {
+  if (!ends) return whole;
+  const windows = walkWindows(ends.length, end);
+  return ends
+    .map((chars, k) => {
       const [begin, leave] = windows[k];
-      return `<g opacity="0">${fade(0, 1, 0.15, begin)}${fade(1, 0, 0.2, leave)}${box(level.length)}</g>`;
+      return `<g opacity="0">${fade(0, 1, 0.15, begin)}${fade(1, 0, 0.2, leave)}${box(chars)}</g>`;
     })
     .join('');
+}
+
+/**
+ * The operator whose operands convert, as the `+` of `a + a`: lit before the first conversion
+ * starts, and through the rest, moving with the text after a conversion that changes its length.
+ */
+function operatorMark(c: SceneContext, dx: number): string {
+  const { op, P, g } = c;
+  if (op?.kind !== 'convert' || !op.operator) return '';
+  const [s, e] = op.operator;
+  const at = arrival(op);
+  const opens = !c.animate || !continuesOperator(c.m.steps, c.index);
+  const lasts = continuesOperator(c.m.steps, c.index + 1);
+  const box = markBox(g.tx + s * g.paneChar, g.ty, (e - s) * g.paneChar, P.fg, P.derefFill);
+  const moved = s >= op.span[1] && dx !== 0 ? glide(box, dx, at + 0.1, 0.3) : box;
+  return (
+    `<g opacity="${opens ? 0 : 1}">${opens ? fade(0, 1, 0.25) : ''}` +
+    `${lasts ? '' : fade(1, 0, 0.3, at + 0.3)}${moved}</g>`
+  );
 }
 
 function valueBox(
@@ -721,7 +758,7 @@ function paneBody(c: SceneContext, copying: boolean): string {
     const sy = g.lineY(step.line);
     const begin = copyBegin(c.m.steps, c.index);
     const total = begin + T.copyTravel;
-    if (prev && prev.line !== step.line) {
+    if (prev) {
       out += `<g>${fade(1, 0, 0.3, begin + 0.2)}${settledPane(c, prev, tx, ty)}</g>`;
     }
     const scale = CODE_SIZE / c.g.paneSize;
@@ -735,6 +772,30 @@ function paneBody(c: SceneContext, copying: boolean): string {
       '</g>' +
       settledPane(c, step, 0, 0) +
       '</g></g>';
+    return out;
+  }
+  if (op?.kind === 'read' && op.compound && prev) {
+    // `a += b` opens into `a = 5 + b`: the read value lands on the operator, and the pane, which
+    // changes all over, turns into its opened form at once, the value marked where it now stands.
+    const [s, e] = op.span;
+    const at = arrival(op);
+    const left = prev.pane.slice(0, s).trimEnd().length + ' = '.length;
+    out += exprBackground(c, tx, ty, step.expr, prev.expr, at);
+    // The operand it reads, the whole pane before the operator, grows its box along its chain.
+    const operand = prev.pane.length - prev.pane.trimStart().length;
+    out += walkBoxes(
+      paneLevels(walkOf(op), prev.pane, operand),
+      at - 0.1,
+      chars => markBox(tx + operand * c.g.paneChar, ty, chars * c.g.paneChar, P.read, P.readFill),
+      ''
+    );
+    out +=
+      `<g opacity="0">${fade(0, 1, 0.15)}${hide(at)}` +
+      `${markBox(tx + s * c.g.paneChar, ty, (e - s) * c.g.paneChar, P.read, P.readFill)}</g>` +
+      `<g opacity="0">${show(at)}${fade(1, 0, 0.3, at + 0.3)}` +
+      `${markBox(tx + left * c.g.paneChar, ty, op.value.length * c.g.paneChar, P.read, P.readFill)}</g>`;
+    out += `<g>${hide(at)}${paneText(c, tx, ty, prev.pane, 0, prev.pane.length, prev.expr)}</g>`;
+    out += `<g opacity="0">${show(at)}${paneText(c, tx, ty, step.pane, 0, step.pane.length, step.expr)}</g>`;
     return out;
   }
   if (
@@ -760,12 +821,14 @@ function paneBody(c: SceneContext, copying: boolean): string {
           ? [P.write, P.writeFill]
           : [P.fg, P.derefFill];
     out += exprBackground(c, tx, ty, step.expr, prev.expr, at + 0.1);
+    // `&a.f` grows its box from `&a`.
     out += walkBoxes(
-      op.kind === 'read' ? paneLevels(op.name, before.slice(s, e)) : null,
+      op.kind === 'read' || op.kind === 'addr' ? paneLevels(walkOf(op), before, s) : null,
       at - 0.1,
       chars => markBox(sx, ty, chars * c.g.paneChar, stroke, fill),
-      `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.2, at - 0.1)}${markBox(sx, ty, (e - s) * c.g.paneChar, stroke, fill)}</g>`
+      `<g opacity="0">${fade(0, 1, 0.15, lead(op))}${fade(1, 0, 0.2, at - 0.1)}${markBox(sx, ty, (e - s) * c.g.paneChar, stroke, fill)}</g>`
     );
+    out += operatorMark(c, dx);
     out += paneText(c, tx, ty, before, 0, s, prev.expr);
     let old = paneText(c, sx, ty, before, s, e, prev.expr);
     let fresh = paneText(c, sx, ty, step.pane, s, s + length, step.expr);
@@ -809,7 +872,7 @@ function paneBody(c: SceneContext, copying: boolean): string {
     const destination = (chars: number): string =>
       rect(tx + ns * c.g.paneChar - 3, ty - 32, chars * c.g.paneChar + 6 - tight, 42, 'none', P.write, 6, 2);
     out += walkBoxes(
-      paneLevels(op.name, step.pane.slice(ns, ne)),
+      paneLevels(walkOf(op), step.pane, ns),
       at + 0.4,
       destination,
       `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.3, at + 0.4)}${destination(ne - ns)}</g>`
@@ -902,5 +965,6 @@ export function describe(c: SceneContext): string {
       slot: step.pane.slice(...op.destination),
     });
   }
+  if (op.kind === 'read' && op.compound) return format(S.compound, { ...op, name: codeName(op.name) });
   return format(S[op.kind], op as unknown as Record<string, unknown>);
 }

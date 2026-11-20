@@ -1,15 +1,24 @@
 // Behavioral coverage for compiler-backed traces and fail-closed eligibility.
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { dumpsSorted } from '../src/core/json_format.ts';
-import { type ExecutionTrace, type TraceOperation, type TraceStep, scalar } from '../src/core/trace_format.ts';
-import { Cell, Execution } from '../src/node/execution.ts';
+import {
+  Builder,
+  type ExecutionTrace,
+  FormatError,
+  type TraceOperation,
+  type TraceStep,
+  scalar,
+  validate,
+} from '../src/core/trace_format.ts';
+import { createClangFrontend } from '../src/node/toolchain.ts';
 import * as tracing from '../src/node/tracing.ts';
-import { Pointer, Unsupported } from '../src/node/tracing.ts';
+import { IllFormed, Pointer, Unsupported } from '../src/node/tracing.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -45,7 +54,7 @@ function addresses(trace: ExecutionTrace): Record<string, number> {
 }
 
 describe('StaticIntegerTraceTests', () => {
-  const traceStatic = (source: string): ExecutionTrace => tracing.trace(source, { runtime: false });
+  const traceStatic = (source: string): ExecutionTrace => tracing.trace(source);
 
   test('expression_and_cumulative_output', () => {
     const trace = traceStatic('int a = 5; int b = a + 6; a = 7; std::cout << b << std::endl;');
@@ -198,7 +207,7 @@ int main() {
 });
 
 describe('StaticPointerTraceTests', () => {
-  const traceStatic = (source: string): ExecutionTrace => tracing.trace(source, { runtime: false });
+  const traceStatic = (source: string): ExecutionTrace => tracing.trace(source);
 
   test('double_pointer_reduces_in_lesson_notation', () => {
     const trace = traceStatic(DOUBLE_POINTER);
@@ -360,6 +369,15 @@ describe('StaticPointerTraceTests', () => {
     assert.equal(trace.steps[trace.steps.length - 3].values.q, '?');
   });
 
+  test('void_pointers_and_sizeof_reduce_cleanly', () => {
+    const trace = traceStatic(
+      'int a = 5; void* vp = &a; int* ip = static_cast<int*>(vp); *ip = sizeof(a) + sizeof(*ip);'
+    );
+    assert.equal(final(trace, 'targets').vp, 'a');
+    assert.equal(final(trace, 'targets').ip, 'a');
+    assert.equal(final(trace).a, 8);
+  });
+
   test('unsupported_and_undefined_never_execute', () => {
     const sources = [
       'int a; std::cout << a;',
@@ -370,7 +388,7 @@ describe('StaticPointerTraceTests', () => {
       'int a{50000}; int b=a*a;',
       'int a{1}; int b=a/0;',
       'int a{1}; int b=a%0;',
-      'double a{1.5};',
+      'long double a{1.5};',
       'bool a{true};',
       'static int a{1};',
       'int a{1}; while(a) a=0;',
@@ -385,20 +403,7 @@ describe('StaticPointerTraceTests', () => {
       'int f() { return 1; }\nint main() { int a{ f() }; }',
       'int a{1}; int b{2}; int c{3}; int d{4}; int e{5}; int f{6}; int g{7}; int h{8}; int i{9};',
     ];
-    const original = tracing.hooks.execute;
-    let called = false;
-    tracing.hooks.execute = () => {
-      called = true;
-      throw new Error('unreachable');
-    };
-    try {
-      for (const source of sources) {
-        assert.throws(() => tracing.trace(source), Unsupported);
-      }
-      assert.equal(called, false);
-    } finally {
-      tracing.hooks.execute = original;
-    }
+    for (const source of sources) assert.throws(() => tracing.trace(source), Unsupported, source);
   });
 
   test('unsupported_pointer_constructs_never_execute', () => {
@@ -413,7 +418,10 @@ describe('StaticPointerTraceTests', () => {
       'int a{1}; int* p = (int*)&a;': /CStyleCastExpr/,
       'int a{1}; long* p = reinterpret_cast<long*>(&a);': /unsupported expression: CXXReinterpretCastExpr/,
       'int* p = new int{1};': /CXXNewExpr/,
-      'int a{1}; void* p = &a;': /pointers to int/,
+      'char* p{};': /not char/,
+      'int a = 42; void* p = &a; float* q = static_cast<float*>(p); float y = *q;': /dereferencing a pointer to float when a holds int/,
+      'int a = 42; void* p = &a; float* q = static_cast<float*>(p); *q = 1.0f;': /dereferencing a pointer to float when a holds int/,
+      'struct A { int x; }; struct B { float x; }; A a{ 1 }; void* p = &a; B* bp = static_cast<B*>(p); float y = bp->x;': /dereferencing a pointer to B when a holds A/,
       'const int a{1}; const int* p = &a;': /pointers to int/,
       'int a{1}; int* const p = &a;': /pointers to int/,
       'int a{5}; int b = *(&a);': /pointer variable/,
@@ -421,7 +429,7 @@ describe('StaticPointerTraceTests', () => {
       'int* p{}; *p = 1;': /null pointer p/,
       'int* p; *p = 1;': /uninitialized variable p/,
       'int a{5}; int* b{&a}; int* c = b++;': /UnaryOperator/,
-      'int a{5}; int* p{&a}; *p += 1;': /CompoundAssignOperator/,
+      'int a{5}; int* p{&a}; *p <<= 1;': /unsupported compound assignment <<=/,
       'int a{5}; std::cout << std::endl << a;': /one integer output followed only by whitespace/,
       'int a{5}; int* p{&a}; std::cout << std::endl << p;':
         /one integer output followed only by whitespace/,
@@ -430,22 +438,8 @@ describe('StaticPointerTraceTests', () => {
       "int a{5}; std::cout << 'x';": /not char/,
       'int a; (a) = 5;': /parenthesized variable/,
     };
-    const original = tracing.hooks.execute;
     for (const [source, reason] of Object.entries(cases)) {
-      let called = false;
-      tracing.hooks.execute = () => {
-        called = true;
-        throw new Error('unreachable');
-      };
-      try {
-        assert.throws(
-          () => tracing.trace(source),
-          (err: unknown) => err instanceof Unsupported && reason.test(err.message)
-        );
-        assert.equal(called, false);
-      } finally {
-        tracing.hooks.execute = original;
-      }
+      assert.throws(() => tracing.trace(source), (err: unknown) => err instanceof Unsupported && reason.test(err.message));
     }
   });
 
@@ -459,44 +453,304 @@ describe('StaticPointerTraceTests', () => {
   });
 });
 
-describe('ObservationTests', () => {
-  const PREDICTED: tracing.State[] = [{ a: 5 }, { a: 5, p: new Pointer('a') }];
-  const VARIABLES = [scalar('a', 0, 4), scalar('p', 0, 8, 'ptr')];
-  const observed = (execution: Execution) => tracing.observeExecution(execution, PREDICTED, VARIABLES, {});
+describe('CompoundAssignmentTests', () => {
+  const unsupported = (source: string, reason: RegExp): void => {
+    assert.throws(
+      () => tracing.trace(source),
+      (err: unknown) => err instanceof Unsupported && reason.test(err.message)
+    );
+  };
 
-  function makeExecution(pointerValue: number, size = 8): Execution {
-    const a = new Cell({ address: 0x7ffc_1004, size: 4, pointer: false, value: 5 });
-    const p = new Cell({ address: 0x7ffc_0ff8, size, pointer: true, value: pointerValue });
-    return new Execution([{ a }, { a, p }], '');
-  }
-
-  test('pointer_values_map_back_to_variables', () => {
-    const [addrs, states] = observed(makeExecution(0x7ffc_1004));
-    assert.deepEqual(states, PREDICTED);
-    assert.deepEqual(tracing.normalizeAddresses(addrs, { a: 4, p: 8 }), { a: 76, p: 64 });
+  test('the_read_opens_the_operator_into_a_plain_assignment', () => {
+    const trace = tracing.trace('int a = 5; int b = 2; a += b;');
+    assert.deepEqual(panes(trace, 2), ['a += b', 'a = 5 + b', 'a = 5 + 2', 'a = 7', 'a = 7']);
+    assert.deepEqual(ops(trace, 2)[0], {
+      kind: 'read',
+      name: 'a',
+      value: '5',
+      compound: '+',
+      grouped: false,
+      span: [2, 4],
+    });
+    const expressions = trace.steps.filter(step => step.line === 2).map(step => step.pane.slice(...step.expr!));
+    assert.deepEqual(expressions, ['+= b', '5 + b', '5 + 2', '7', '7']);
+    assert.deepEqual(final(trace), { a: 7, b: 2 });
   });
 
-  test('a_pointer_to_anything_else_is_rejected', () => {
+  test('the_target_is_designated_once_before_its_value_is_read', () => {
+    const trace = tracing.trace(
+      'struct P { int x; int y; }; P s{1, 2}; P* p = &s; p->x -= 3; s.y%=2; int& r = s.x; r *= 4;'
+    );
+    assert.deepEqual(panes(trace, 2), ['p->x -= 3', '72->x -= 3', 's.x -= 3', 's.x = 1 - 3', 's.x = -2', 's.x = -2']);
+    assert.deepEqual(panes(trace, 3), ['s.y%=2', 's.y = 2 % 2', 's.y = 0', 's.y = 0']);
+    assert.deepEqual(panes(trace, 5), ['r *= 4', 's.x *= 4', 's.x = -2 * 4', 's.x = -8', 's.x = -8']);
+    const deref = tracing.trace('int a{5}; int* p{&a}; *p += 1;');
+    assert.deepEqual(panes(deref, 2), ['*p += 1', '*76 += 1', 'a += 1', 'a = 5 + 1', 'a = 6', 'a = 6']);
+  });
+
+  test('the_operation_runs_in_the_type_clang_computes_and_converts_back', () => {
+    const trace = tracing.trace('short c = 1; c += 1; int a = 7; a *= 1.5; float f = 1.5f; f /= 2;', {
+      types: true,
+    });
+    const converts = (line: number): string[] =>
+      ops(trace, line).flatMap(op => (op.kind === 'convert' ? [`${op.from}->${op.to}`] : []));
+    assert.deepEqual(panes(trace, 1), ['c += 1', 'c = 1 + 1', 'c = 1 + 1', 'c = 2', 'c = 2', 'c = 2']);
+    assert.deepEqual(converts(1), ['short->int', 'int->short']);
+    assert.deepEqual(panes(trace, 3), ['a *= 1.5', 'a = 7 * 1.5', 'a = 7 * 1.5', 'a = 10.5', 'a = 10', 'a = 10']);
+    assert.deepEqual(converts(3), ['int->double', 'double->int']);
+    assert.deepEqual(converts(5), ['int->float']);
+    assert.deepEqual(final(trace), { c: 2, a: 10, f: 0.75 });
+  });
+
+  test('operators_without_a_binary_form_and_pointers_are_rejected', () => {
+    unsupported('int a = 5; a <<= 1;', /unsupported compound assignment <<=/);
+    unsupported('int a = 5; a |= 1;', /unsupported compound assignment \|=/);
+    unsupported('int a = 5; int* p = &a; p += 1;', /pointer arithmetic/);
+    unsupported('int a; a += 1;', /uninitialized variable a/);
+    unsupported('int a = 5; a /= 0;', /undefined integer division/);
+  });
+
+  test('the_validator_checks_the_opened_operator', () => {
+    const trace = tracing.trace('int b = 1; int a = 5; a -= 2;');
+    const index = trace.steps.findIndex(step => step.op?.kind === 'read');
+    const rejects = (message: RegExp, change: (op: Record<string, unknown>) => void): void => {
+      const broken = structuredClone(trace);
+      change(broken.steps[index].op as unknown as Record<string, unknown>);
+      assert.throws(() => validate(broken), (err: unknown) => err instanceof FormatError && message.test(err.message));
+    };
+    validate(trace);
+    rejects(/does not cover \+=/, op => (op.compound = '+'));
+    rejects(/not an arithmetic operator/, op => (op.compound = '<<'));
+    rejects(/expected a boolean on a compound read/, op => delete op.compound);
+    rejects(/'a' does not designate b/, op => (op.name = 'b'));
+    rejects(/reads an uninitialized value/, op => (op.value = '?'));
+    const merged = structuredClone(trace);
+    merged.steps[index].pane = 'a = 5 -2';
+    merged.steps[index].expr = [4, 8];
+    assert.throws(() => validate(merged), (err: unknown) => err instanceof FormatError && /is not 'a = 5 - 2'/.test(err.message));
+    rejects(/'\{5\}' is not one number/, op => (op.value = '{5}'));
+  });
+
+  test('the_validator_requires_the_following_reductions_to_match_the_opened_pane', () => {
+    const trace = tracing.trace('int a = 5; int b = 2; int c = 3; a *= b + c;');
+    const index = trace.steps.findIndex(step => step.op?.kind === 'read');
+    const broken = structuredClone(trace);
+    broken.steps[index].pane = 'a = 5 * b + c';
+    broken.steps[index].expr = [4, 13];
     assert.throws(
-      () => observed(makeExecution(0x7ffc_1008)),
-      (err: unknown) => err instanceof Unsupported && /not the address of a variable/.test(err.message)
+      () => validate(broken),
+      (err: unknown) => err instanceof FormatError && /is not 'a = 5 \* \(b \+ c\)'/.test(err.message)
     );
   });
 
-  test('a_disagreeing_target_is_rejected', () => {
-    assert.throws(
-      () => observed(makeExecution(0)),
-      (err: unknown) => err instanceof Unsupported && /runtime verification failed: p/.test(err.message)
+  test('groups the AST right operand, including template calls and raw string tokens', () => {
+    const trace = tracing.trace([
+      'std::array b{2, 3}; int a = 1;',
+      'a *= b.size();',
+      'a += b<:0:> * b[1];',
+      'a *= sizeof(R"(say "two  words")") + 3;',
+      'a *= (2 + 3);',
+    ].join('\n'));
+    assert.equal(panes(trace, 2)[1], 'a = 1 * b.size()');
+    assert.equal(panes(trace, 3)[1], 'a = 2 + b<:0:> * b[1]');
+    assert.equal(panes(trace, 4)[1], 'a = 8 * (sizeof(R"(say "two  words")") + 3)');
+    assert.equal(panes(trace, 5)[1], 'a = 160 * (2 + 3)');
+  });
+
+  test('a_negative_value_does_not_join_the_sign_before_it', () => {
+    const trace = tracing.trace('int a = 5; int b = 8; int c = -2; a *= b-c; int y = -c;');
+    assert.equal(panes(trace, 3)[3], 'a = 5 * (8-(-2))');
+    assert.deepEqual(panes(trace, 4).slice(0, 2), ['int y = -c', 'int y = -(-2)']);
+    assert.deepEqual(final(trace), { a: 50, b: 8, c: -2, y: 2 });
+    const written = tracing.trace('int y = -(-2);', { types: true });
+    assert.deepEqual(panes(written, 0), ['int y = -(-2)', 'int y = 2', 'int y = 2']);
+    const bits = tracing.trace('short x = -2; int y = -x;', { bits: true });
+    assert.deepEqual(final(bits), { x: -2, y: 2 });
+  });
+
+  test('signs in the target of a compound assignment stay separate', () => {
+    const source = 'std::array a{1,2}; int i=-1; a[0-i] += 3;';
+    const trace = tracing.trace(source);
+    assert.ok(panes(trace, 2).includes('a[0-(-1)] += 3'));
+    assert.deepEqual(final(trace), { 'a.[0]': 1, 'a.[1]': 5, i: -1 });
+  });
+
+  test('hand_written_traces_keep_signs_apart_too', () => {
+    const t = new Builder(['int x = -2;', 'int y = -x;'], [scalar('x', 64, 4), scalar('y', 68, 4)]);
+    t.statement(0).write('x');
+    t.statement(1).read('x').evaluate('-(-2)', 2).write('y');
+    assert.deepEqual(
+      t.build().steps.filter(step => step.line === 1).map(step => step.pane),
+      ['int y = -x', 'int y = -(-2)', 'int y = 2', 'int y = 2']
     );
   });
 
-  test('unexpected_storage_is_rejected', () => {
-    assert.throws(
-      () => observed(makeExecution(0x7ffc_1004, 4)),
-      (err: unknown) => err instanceof Unsupported && /runtime storage of p/.test(err.message)
-    );
+  test('the_validator_reads_only_one_arithmetic_cell', () => {
+    const trace = tracing.trace('int a = 5; int* p = &a; a -= 2;');
+    const index = trace.steps.findIndex(step => step.op?.kind === 'read');
+    const broken = structuredClone(trace);
+    const op = broken.steps[index].op as unknown as Record<string, unknown>;
+    broken.steps[index - 1].pane = broken.steps[index - 1].pane.replace(/^a/, 'p');
+    op.name = 'p';
+    assert.throws(() => validate(broken), (err: unknown) => err instanceof FormatError && /not one arithmetic cell/.test(err.message));
   });
 
+  test('a_right_side_that_binds_looser_keeps_its_parentheses', () => {
+    const trace = tracing.trace(
+      'int a = 5; int b = 2; int c = 3; a *= b + c; a -= b - c; a += b * c; a += +b; double d = 1.5; d *= b + 1;'
+    );
+    assert.deepEqual(panes(trace, 3), [
+      'a *= b + c',
+      'a = 5 * (b + c)',
+      'a = 5 * (2 + c)',
+      'a = 5 * (2 + 3)',
+      'a = 5 * (5)',
+      'a = 5 * 5',
+      'a = 25',
+      'a = 25',
+    ]);
+    assert.equal(panes(trace, 4)[1], 'a = 25 - (b - c)');
+    assert.equal(panes(trace, 5)[1], 'a = 26 + b * c');
+    assert.equal(panes(trace, 6)[1], 'a = 32 + +b');
+    assert.equal(panes(trace, 8)[1], 'd = 1.5 * (b + 1)');
+    assert.deepEqual(final(trace), { a: 34, b: 2, c: 3, d: 4.5 });
+  });
+
+  test('a_target_written_otherwise_is_spelled_as_its_name_first', () => {
+    const trace = tracing.trace('struct S { int x; }; S s{1}; (s.x) += 2; s . x *= 3; (s.x) = 4;', {
+    });
+    assert.deepEqual(panes(trace, 1), ['(s.x) += 2', 's.x += 2', 's.x = 1 + 2', 's.x = 3', 's.x = 3']);
+    assert.deepEqual(panes(trace, 2), ['s . x *= 3', 's.x *= 3', 's.x = 3 * 3', 's.x = 9', 's.x = 9']);
+    assert.deepEqual(panes(trace, 3), ['(s.x) = 4', 's.x = 4', 's.x = 4']);
+  });
+
+  test('spaces_and_comments_before_the_semicolon_still_run', () => {
+    const trace = tracing.trace('int a = 5; a += 2 ; a *= 3 /* thrice */ ;\nint b = 1 // one\n;');
+    assert.deepEqual(panes(trace, 1), ['a += 2', 'a = 5 + 2', 'a = 7', 'a = 7']);
+    assert.deepEqual(final(trace), { a: 21, b: 1 });
+    assert.deepEqual(trace.source.slice(1), ['a += 2;', 'a *= 3;', 'int b = 1 ;']);
+  });
+
+  test('line_splices_are_refused', () => {
+    unsupported('int a = 5; a += 2 \\\n;', /line splice/);
+    unsupported('int a = 1; // note \\ \na *= 3;', /line splice/);
+    unsupported('int a = sizeof(+"a\\\n//b"[0]);', /line splice/);
+    unsupported('int a = 5; a *= 1\\\r2;', /line splice/);
+    unsupported('int a = 1;\n// R"(example \\\na += 3; // )"', /line splice/);
+  });
+
+  test('raw_strings_and_other_quotes_are_read_whole', () => {
+    const raw = 'int n = sizeof(u8R"x(\n#include <iostream>\n)x");';
+    assert.deepEqual(final(tracing.trace(raw)), { n: 22 });
+    // A digit separator is no quote, and quotes in a comment or string open nothing.
+    const trace = tracing.trace("int a = 1'000; // it's\nint b = 2'0; /* R\"( */ // R\"(\na += b;");
+    assert.deepEqual(final(trace), { a: 1020, b: 20 });
+    // A line comment ends at a carriage return as well.
+    assert.deepEqual(final(tracing.trace('int a = 1; // note\ra += 3;')), { a: 4 });
+  });
+
+  test('a_comment_in_a_directive_keeps_it_one_line', () => {
+    const include = '#include /* Gives us\nfixed-width integers. */ <cstdint>\nint n = 1;';
+    assert.deepEqual(final(tracing.trace(include)), { n: 1 });
+    unsupported('int n = 1;\n#include <cstdint> /* already\nincluded */ n += 3;', /extra tokens at end of #include|one variable/);
+    // A lone carriage return ends a directive as it ends any line.
+    assert.deepEqual(final(tracing.trace('int n = 1;\r#include <cstdint>\rn += 3;')), { n: 4 });
+  });
+
+  test('an_include_after_the_first_statement_stays_outside_main', () => {
+    assert.deepEqual(final(tracing.trace('int a = 1;\n#include <cmath>\na = a + 1;')), { a: 2 });
+    // Moved before main, a header of the program's own could change an earlier overload.
+    for (const header of ['math.h', 'streamstyle']) {
+      unsupported(`int a = 1;\n#include <${header}>\na = a + 1;`, /must name a standard C\+\+ header/);
+    }
+    // Only a parenthesis after its name calls the function-like `assert`.
+    const assertName = 'int assert = 1;\n#include <cmath>\n#include <cassert>\nassert += 1;';
+    assert.deepEqual(final(tracing.trace(assertName)), { assert: 2 });
+    // Clang ends a line comment only at a line break.
+    assert.deepEqual(final(tracing.trace('int n=1; // note\u2028#include <missing>\nn += 2;')), { n: 3 });
+    // Among other directives, an include stays where it is: here Clang skips it.
+    assert.deepEqual(final(tracing.trace('int n = 1;\n#if 0\n#include <missing>\n#endif\nn += 1;')), { n: 2 });
+  });
+
+  test('cutting_a_mismatch_keeps_the_lines_before_the_source', () => {
+    // Without its last statement the fragment no longer names `array`, but keeps its header.
+    const source = '#if __LINE__ == 6\nint x=1;\n#else\nint y=2;\n#endif\nint* array = 42;';
+    const result = tracing.trace(source, { types: true });
+    assert.deepEqual(result.source, ['int x=1;', 'int* array = 42;']);
+    assert.equal(result.steps.at(-1)!.op?.kind, 'clash');
+  });
+
+  test('cutting_a_mismatch_keeps_an_include_inside_it', () => {
+    const source = 'int n = sizeof(std::chrono::seconds::rep);\nint* array =\n#include <chrono>\n42;';
+    assert.equal(tracing.trace(source, { types: true }).steps.at(-1)!.op?.kind, 'clash');
+  });
+
+  test('a_header_redefining_pragma_is_read_in_place', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'headers-'));
+    const cpath = process.env.CPATH;
+    try {
+      writeFileSync(join(directory, 'trace-op.h'), '#define _Pragma(message) <<\n');
+      process.env.CPATH = directory;
+      unsupported('#include <trace-op.h>\nint n = 2;\nstd::cout _Pragma("GCC diagnostic push") n;', /macro-expanded/);
+    } finally {
+      if (cpath === undefined) delete process.env.CPATH;
+      else process.env.CPATH = cpath;
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('a_macro_of_a_late_include_is_refused', () => {
+    // Moved before main, <climits> would define INT_MAX for the statements before it too.
+    unsupported('int a = 1;\n#include <climits>\na = INT_MAX;', /macro from a header included after the first statement/);
+  });
+
+  test('a_macro_from_the_headers_is_expanded_as_in_the_program', () => {
+    // libstdc++ defines this one empty, so the statement starts at `a`.
+    const result = tracing.trace('int a = 1;\n_GLIBCXX_BEGIN_NAMESPACE_VERSION a = 2;');
+    assert.deepEqual(result.source, ['int a = 1;', 'a = 2;']);
+    assert.deepEqual(final(result), { a: 2 });
+  });
+
+  test('identifiers_beyond_ascii_are_refused_by_name', () => {
+    unsupported('int переменная = 5;\nint b = переменная + 1;', /identifiers outside ASCII/);
+  });
+
+  test('compiler headers are in scope when finding the first active token', () => {
+    const source = '#ifndef UINT8_MAX\nint skipped=1;\n#endif\nint b=2;';
+    assert.deepEqual(final(tracing.trace(source)), { b: 2 });
+  });
+
+  test('remapped source locations are rejected before building spans', () => {
+    unsupported('int a=1;\n#line 4 "lesson"\na=2;', /physical source locations/);
+  });
+
+  test('tokens inside a raw string cannot be mistaken for diagnostics', () => {
+    const source = 'int n = sizeof(R"(abc: error: text)");';
+    assert.deepEqual(final(tracing.trace(source)), { n: 17 });
+  });
+
+  test('the_statement_ends_at_its_own_semicolon_past_comments', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'analyze-'));
+    try {
+      const frontend = createClangFrontend(directory);
+      const sources = (source: string): string[] =>
+        tracing.analyzeWithFrontend(source, frontend)[0].map(statement => statement.source);
+      assert.deepEqual(sources('int a = 5; /* before */ a *= 3 /* after */ ;'), ['int a = 5;', 'a *= 3;']);
+      assert.deepEqual(sources('int a = 5; a *= 3 // note\r;'), ['int a = 5;', 'a *= 3;']);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('clang_values_agree', () => {
+    const trace = tracing.trace(
+      'int a = 5; a += 2; a %= 4; unsigned u = 1; u -= 2; double d = 0.1; d *= 3; long l = 9; l /= -2;'
+    );
+    assert.deepEqual(final(trace), { a: 3, u: 4294967295, d: 0.30000000000000004, l: -4 });
+  });
+});
+
+describe('MemoryLayoutTests', () => {
   test('normalization_keeps_alignment', () => {
     assert.deepEqual(
       tracing.normalizeAddresses({ a: 0x1004, p: 0x1008 }, { a: 4, p: 8 }),
@@ -509,8 +763,8 @@ describe('ObservationTests', () => {
   });
 });
 
-describe('RuntimeTraceTests', () => {
-  test('real_frame_values_and_relative_addresses', () => {
+describe('CompilerTraceTests', () => {
+  test('values_and_illustrative_addresses', () => {
     const trace = tracing.trace('int a{5}; int b{a + 6}; a = 7; std::cout << b << std::endl;');
     assert.deepEqual(final(trace), { a: 7, b: 11 });
     assert.equal(final(trace, 'stdout'), '11\n');
@@ -546,24 +800,10 @@ describe('RuntimeTraceTests', () => {
     }
   });
 
-  test('whitespace_output_is_verified_against_stdout', () => {
+  test('whitespace_output_is_rendered', () => {
     const source =
       "int a{5}; std::cout << std::endl; std::cout << a; std::cout << '\\n' << ' ' << std::endl;";
     assert.equal(final(tracing.trace(source), 'stdout'), '\n5\n \n');
-    const original = tracing.hooks.execute;
-    tracing.hooks.execute = () =>
-      new Execution(
-        Array(4).fill({ a: new Cell({ address: 0x1000, size: 4, pointer: false, value: 5 }) }),
-        '5\n \n'
-      );
-    try {
-      assert.throws(
-        () => tracing.trace(source),
-        (err: unknown) => err instanceof Unsupported && /runtime output disagrees/.test(err.message)
-      );
-    } finally {
-      tracing.hooks.execute = original;
-    }
   });
 
   test('generated_endl_browser_fixture_is_current', () => {
@@ -594,8 +834,9 @@ describe('RuntimeTraceTests', () => {
 
   test('double_pointer_runs_as_predicted', () => {
     const traced = tracing.trace(DOUBLE_POINTER);
-    const predicted = tracing.trace(DOUBLE_POINTER, { runtime: false });
-    assert.deepEqual(traced, predicted);
+    assert.equal(final(traced).a, 7);
+    assert.equal(final(traced).b, 8);
+    assert.equal(final(traced, 'stdout'), '7\n8\n');
     assert.deepEqual(final(traced, 'targets'), { p: 'b', pp: 'p' });
     assert.ok(Object.values(addresses(traced)).every(address => 64 <= address && address < 128));
   });
@@ -624,16 +865,64 @@ describe('RuntimeTraceTests', () => {
     );
   });
 
-  test('static_layout_matches_the_frame', () => {
-    for (const source of [
-      'int a{1}; int* p{&a}; int b{2}; int** pp{&p}; int c{3};',
-      'int* p{}; int a{1}; int b{2}; int* q{&b};',
-      'int x{ 0 }; int* px{ &x }; int y{ x }; int* py{ px }; *px = 1;',
-    ]) {
-      assert.deepEqual(
-        addresses(tracing.trace(source)),
-        addresses(tracing.trace(source, { runtime: false }))
+  test('illustrative_addresses_keep_each_object_aligned', () => {
+    const traced = tracing.trace('int a{1}; int* p{&a}; int b{2}; int** pp{&p}; int c{3};');
+    assert.deepEqual(addresses(traced), { a: 100, p: 88, b: 84, pp: 72, c: 68 });
+  });
+
+  test('removing output preserves preprocessor directives in the replay', () => {
+    const source = 'int a=5; std::cout << a\n#if 1\n;\n#endif\na=7;';
+    const traced = tracing.trace(source);
+    assert.deepEqual(final(traced), { a: 7 });
+    assert.equal(final(traced, 'stdout'), '5');
+  });
+
+  test('replay checks the active C++20 branch of feature tests', () => {
+    const source = 'int n=1;\n#if __cpp_constexpr < 202211L\nn=2;\n#else\nn=3;\n#endif';
+    const original = tracing.hooks.after;
+    tracing.hooks.after = (statement, state) => {
+      const next = original(statement, state);
+      return next.n === 2 ? { ...next, n: 4 } : next;
+    };
+    try {
+      assert.throws(
+        () => tracing.trace(source),
+        (error: unknown) => error instanceof Unsupported && /verification failed after statement 2/.test(error.message)
       );
+    } finally {
+      tracing.hooks.after = original;
+    }
+    assert.deepEqual(final(tracing.trace(source)), { n: 2 });
+  });
+
+  test('replay retains global record scope', () => {
+    const source = 'struct S { int x; }; int main() { std::array<int, sizeof(::S)> a{}; a[0] = 1; }';
+    assert.equal(final(tracing.trace(source))['a.[0]'], 1);
+  });
+
+  test('replay retains headers selected by preprocessing', () => {
+    const source = '#if __cpp_constexpr < 202211L\n#include <csignal>\n#endif\nstd::sig_atomic_t n = 7;';
+    assert.deepEqual(final(tracing.trace(source)), { n: 7 });
+  });
+
+  test('fragment wrapping preserves the line used in a preprocessor condition', () => {
+    const source = 'int n=1;\n#if __LINE__ == 6\nn=2;\n#else\nn=3;\n#endif';
+    assert.deepEqual(final(tracing.trace(source)), { n: 2 });
+  });
+
+  test('compiler verification distinguishes objects at the same address', () => {
+    const original = tracing.hooks.after;
+    tracing.hooks.after = (statement, state) => {
+      const next = original(statement, state);
+      return statement.target === 'p' ? { ...next, p: new Pointer('s.x') } : next;
+    };
+    try {
+      assert.throws(
+        () => tracing.trace('struct S { int x; }; S s{1}; void* p=&s;'),
+        (error: unknown) => error instanceof Unsupported && /constant expression/.test(error.message)
+      );
+    } finally {
+      tracing.hooks.after = original;
     }
   });
 
@@ -664,11 +953,83 @@ describe('RuntimeTraceTests', () => {
         assert.throws(
           () => tracing.trace(source),
           (err: unknown) =>
-            err instanceof Unsupported && /runtime verification failed/.test(err.message)
+            err instanceof Unsupported && /compiler verification failed/.test(err.message)
         );
       } finally {
         tracing.hooks.after = original;
       }
     }
+  });
+
+  test('leading_using_namespace_global_std_and_trailing_return_main', () => {
+    const withGlobalStd = tracing.trace('using namespace ::std; int main() { int n = 1; cout << n; }');
+    assert.deepEqual(final(withGlobalStd), { n: 1 });
+    assert.equal(final(withGlobalStd, 'stdout'), '1');
+
+    const withTrailing = tracing.trace('auto main() -> int { int n = 4; }');
+    assert.deepEqual(final(withTrailing), { n: 4 });
+  });
+
+  test('reused_frontend_invalidates_token_cache_when_included_header_changes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'trace-hdr-'));
+    const saved = process.env.CPATH;
+    try {
+      const header = join(dir, 'custom_val.h');
+      writeFileSync(header, '#define CUSTOM_VAL 1\n');
+      process.env.CPATH = saved ? `${dir}:${saved}` : dir;
+      const frontend = createClangFrontend(dir);
+      const source = '#include <custom_val.h>\n#if CUSTOM_VAL == 1\nint a = 1;\n#else\nint a = 42;\n#endif';
+      const first = tracing.trace(source, { frontend });
+      assert.equal(final(first).a, 1);
+
+      writeFileSync(header, '#define CUSTOM_VAL 2\n');
+      const second = tracing.trace(source, { frontend });
+      assert.equal(final(second).a, 42);
+    } finally {
+      if (saved === undefined) delete process.env.CPATH;
+      else process.env.CPATH = saved;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('cpath_header_override_does_not_poison_standard_macro_cache_and_undef_is_respected', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'trace-macro-'));
+    const saved = process.env.CPATH;
+    try {
+      writeFileSync(join(dir, 'cmath'), '#define trace_counter 1\n');
+      process.env.CPATH = saved ? `${dir}:${saved}` : dir;
+      assert.throws(
+        () => tracing.trace('int trace_counter = 5;\n#include <cmath>\nint a = trace_counter;'),
+        (err: unknown) => err instanceof Unsupported && /macro from a header/.test(err.message)
+      );
+
+      // Restoring CPATH must not reuse the shadowed <cmath> macro table.
+      if (saved === undefined) delete process.env.CPATH;
+      else process.env.CPATH = saved;
+      const clean = tracing.trace('int trace_counter = 5;\n#include <cmath>\nint a = trace_counter;');
+      assert.equal(final(clean).a, 5);
+
+      // A macro defined and then #undef'd in a header is not active at the end of preprocessing.
+      writeFileSync(join(dir, 'cmath'), '#define trace_counter 1\n#undef trace_counter\n');
+      process.env.CPATH = saved ? `${dir}:${saved}` : dir;
+      const undefd = tracing.trace('int trace_counter = 9;\n#include <cmath>\nint a = trace_counter;');
+      assert.equal(final(undefd).a, 9);
+    } finally {
+      if (saved === undefined) delete process.env.CPATH;
+      else process.env.CPATH = saved;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ill_formed_diagnostics_ignore_error_text_inside_raw_string_token_dumps', () => {
+    const source = 'int n = sizeof(R"(\nerror: lesson text\n)");\n#error boom\n';
+    assert.throws(
+      () => tracing.trace(source),
+      (err: unknown) =>
+        err instanceof IllFormed &&
+        /error: boom|#error boom/.test(err.message) &&
+        !/lesson text/.test(err.message) &&
+        err.offset !== null
+    );
   });
 });

@@ -30,7 +30,7 @@ export function text(
   color: string,
   anchor = 'start'
 ): string {
-  const str = String(value);
+  const str = Object.is(value, -0) ? '-0' : String(value);
   if (!str.trim()) return '';
   const length =
     str.length > 1

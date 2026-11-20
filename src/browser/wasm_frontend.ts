@@ -1,39 +1,46 @@
 // CompilerFrontend implementation backed by the trimmed Clang WASM binary.
-import { type AstNode, type CompilerFrontend, Unsupported, illFormed } from '../core/errors.ts';
+import {
+  type AstNode, type CompilerFrontend, type Macros, STANDARD_FLAGS, type Standard, Unsupported, illFormed,
+} from '../core/errors.ts';
 import { extractEnumConstantSizes } from '../core/records.ts';
 import type { Template, TraceSettings } from '../core/settings.ts';
 import { type TraceOf, traceSnippet } from '../core/snippet.ts';
-import { extractMainAstFromStdout } from '../core/tracing.ts';
-import { ARRAY_PREAMBLE } from './array_header.ts';
+import { definedMacros, memo, parseAstDump, readTokens, stripTokenDump } from '../core/source.ts';
 import { runWasiModule } from './wasi.ts';
 
+/** Each module's macros by header list, which repeats across a page's traces. */
+const macroCache = new WeakMap<WebAssembly.Module, (key: string, compute: () => Macros) => Macros>();
 
 export function createWasmClangFrontend(module: WebAssembly.Module): CompilerFrontend {
+  /** Run the frontend on `program` with the shared language options. */
+  const clang = (program: string, args: string[], standard: Standard = 'c++20') =>
+    runWasiModule(module, { args: ['clang-trace-frontend', ...STANDARD_FLAGS[standard], ...args, '-'], stdin: program });
+
   return {
-    arrayPreamble: ARRAY_PREAMBLE,
-    mainAst(program: string): AstNode {
-      const result = runWasiModule(module, {
-        args: [
-          'clang-trace-frontend',
-          '-Xclang',
-          '-ast-dump=json',
-          '-Xclang',
-          '-ast-dump-filter=main',
-          '-',
-        ],
-        stdin: program,
+    tokens(program, options) {
+      const result = clang(program, ['-Xclang', '-dump-tokens']);
+      if (result.returncode !== 0) throw illFormed(stripTokenDump(result.stderr), program, { locatedOnly: true });
+      return readTokens(result.stderr, '/virtual/source.cpp', program, options);
+    },
+
+    macros(program) {
+      let cache = macroCache.get(module);
+      if (!cache) macroCache.set(module, cache = memo(16));
+      return cache(program, () => {
+        const result = clang(program, ['-E', '-dM']);
+        if (result.returncode !== 0) throw illFormed(result.stderr, program);
+        return definedMacros(result.stdout);
       });
-      if (result.returncode !== 0) {
-        throw illFormed(result.stderr, program);
-      }
-      return extractMainAstFromStdout(result.stdout, program);
+    },
+
+    astDump(program, filter, standard = 'c++20') {
+      const result = clang(program, ['-Xclang', '-ast-dump=json', '-Xclang', '-ast-dump-filter=' + filter], standard);
+      if (result.returncode !== 0) throw illFormed(result.stderr, program);
+      return parseAstDump(result.stdout);
     },
 
     recordLayoutsDump(program: string): string {
-      const result = runWasiModule(module, {
-        args: ['clang-trace-frontend', '-Xclang', '-fdump-record-layouts-complete', '-'],
-        stdin: program,
-      });
+      const result = clang(program, ['-Xclang', '-fdump-record-layouts-complete']);
       if (result.returncode !== 0) {
         throw new Unsupported('Clang could not compute record layouts');
       }
@@ -43,10 +50,7 @@ export function createWasmClangFrontend(module: WebAssembly.Module): CompilerFro
     typeSizes(types: string[]): Record<string, number> {
       if (types.length === 0) return {};
       const probe = types.map((t, i) => `enum { __course_${i} = sizeof(${t}) };\n`).join('');
-      const result = runWasiModule(module, {
-        args: ['clang-trace-frontend', '-Xclang', '-ast-dump=json', '-'],
-        stdin: probe,
-      });
+      const result = clang(probe, ['-Xclang', '-ast-dump=json']);
       if (result.returncode !== 0) {
         throw new Unsupported('Clang could not obtain field sizes');
       }
@@ -55,11 +59,11 @@ export function createWasmClangFrontend(module: WebAssembly.Module): CompilerFro
   };
 }
 
-/** Trace as `generate.mjs` would, without running the snippet: the browser has no GDB. */
+/** Trace with the same constant-evaluation pipeline as the CLI. */
 export function traceWithWasmModule<T extends Template>(
   source: string,
   module: WebAssembly.Module,
   settings: TraceSettings & { template: T }
 ): TraceOf[T] {
-  return traceSnippet(source, settings, { runtime: false, frontend: createWasmClangFrontend(module) });
+  return traceSnippet(source, settings, { frontend: createWasmClangFrontend(module) });
 }

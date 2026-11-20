@@ -18,6 +18,7 @@ import { createWasmClangFrontend, traceWithWasmModule } from '../src/browser/was
 import { Unsupported } from '../src/core/errors.ts';
 import { dumpsSorted } from '../src/core/json_format.ts';
 import { traceSnippet } from '../src/core/snippet.ts';
+import { mainAst } from '../src/core/source.ts';
 import { validate } from '../src/core/trace_format.ts';
 import { traceWithFrontend } from '../src/core/tracing.ts';
 import { createClangFrontend } from '../src/node/toolchain.ts';
@@ -64,6 +65,10 @@ class MemoryCacheStorage {
 
   async delete(cacheName: string): Promise<boolean> {
     return this.caches.delete(cacheName);
+  }
+
+  async keys(): Promise<string[]> {
+    return [...this.caches.keys()];
   }
 }
 
@@ -144,6 +149,34 @@ describe('WasiAndCacheTests', () => {
     assert.equal(await hasCachedWasm(wasmUrl, { cachesImpl: storage }), false);
   });
 
+  test('loadWasmModule deletes the caches of earlier binaries', async () => {
+    const storage = new MemoryCacheStorage() as unknown as CacheStorage;
+    await storage.open('clang-trace-frontend-v1');
+    await storage.open('clang-trace-frontend-v999');
+    await storage.open('another-cache');
+    const fetchImpl = (async () => new Response(TINY_VALID_WASM, { status: 200 })) as unknown as typeof fetch;
+    await loadWasmModule('https://example.test/clang.wasm', { cachesImpl: storage, fetchImpl });
+    assert.deepEqual((await storage.keys()).sort(), ['another-cache', DEFAULT_CACHE_NAME, 'clang-trace-frontend-v999']);
+  });
+
+  test('loadWasmModule keeps earlier caches when fetch or compilation fails', async () => {
+    const storage = new MemoryCacheStorage() as unknown as CacheStorage;
+    await storage.open('clang-trace-frontend-v1');
+    const failingFetch = (async () => new Response('missing', { status: 404 })) as unknown as typeof fetch;
+    await assert.rejects(
+      () => loadWasmModule('https://example.test/fail.wasm', { cachesImpl: storage, fetchImpl: failingFetch }),
+      /404/
+    );
+    assert.ok((await storage.keys()).includes('clang-trace-frontend-v1'));
+
+    const corruptWasm = new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0xff]);
+    const badCompileFetch = (async () => new Response(corruptWasm, { status: 200 })) as unknown as typeof fetch;
+    await assert.rejects(() =>
+      loadWasmModule('https://example.test/corrupt.wasm', { cachesImpl: storage, fetchImpl: badCompileFetch })
+    );
+    assert.ok((await storage.keys()).includes('clang-trace-frontend-v1'));
+  });
+
   test('loadWasmModule deduplicates concurrent loads and evicts corrupt cache entries', async () => {
     const storage = new MemoryCacheStorage() as unknown as CacheStorage;
     const wasmUrl = 'https://example.test/assets/clang-concurrent.wasm';
@@ -197,7 +230,6 @@ describe('ClangWasmParityTests', { skip: !existsSync(WASM_PATH) }, () => {
     for (const preset of PRESETS) {
       const wasmOut = traceWithWasmModule(preset.source, wasmModule, preset.settings);
       const nativeOut = traceSnippet(preset.source, preset.settings, {
-        runtime: false,
         frontend: nativeFrontend,
       });
       assert.equal(dumpsSorted(wasmOut), dumpsSorted(nativeOut), `parity for ${preset.id}`);
@@ -211,23 +243,47 @@ describe('ClangWasmParityTests', { skip: !existsSync(WASM_PATH) }, () => {
       'int a{}; std::cout << a;',
       'struct A { int f1; int f2; }; A a{ 1, 2 }; A b = A{ .f2 = 5 }; b = a;',
       'int x{ 0 }; int* px{ &x }; int* py{ px }; *px = 1; std::cout << *py;',
+      '%:include /* C header */ <stdint.h>\rint32_t a{2}; int b=sizeof(R"(two  words)") + a;',
+      'float f = 0.1f; double d = 0.1 + 0.2; float neg = -0.0f;',
+      'int n=3; void* p=&n; int* q=static_cast<int*>(p); *q += 2;',
+      'struct P { int x; }; P s{ 5 }; P* p{ &s }; p->x -= 2; short c = 1; c += 1; double d = 1; d *= c;',
+      'struct data { int x; };\nint main() {\n    data v{1};\n    v.x = v.x + 2;\n}',
+      '#include <iostream>\n#include <array>\nint n = 1;\nstd::array a{n, 2};\n#include <cstdint>\nn += a[1];',
+      '#if defined(COURSE_VIRTUAL_ARRAY_H)\nint n = 1;\n#else\nint n = 2;\n#endif\nstd::array a{n};',
     ];
     for (const source of moreTraces) {
       assert.equal(
         dumpsSorted(traceWithWasmModule(source, wasmModule, EXECUTION)),
-        dumpsSorted(traceWithFrontend(source, { runtime: false, frontend: nativeFrontend }))
+        dumpsSorted(traceWithFrontend(source, { frontend: nativeFrontend }))
       );
     }
+
+    const typed = { template: 'expression-timeline', flags: { types: true } } as const;
+    // Both frontends include <array> in one line, so `__LINE__` picks the same branch.
+    const lines = '#if __LINE__ == 6\nint x=1;\n#else\nint y=2;\n#endif\nint* array = 42;';
+    for (const source of ['float f=0.5f; std::cout << f;', 'short n=7; std::cout << n;', lines]) {
+      assert.deepEqual(
+        traceWithWasmModule(source, wasmModule, typed),
+        traceSnippet(source, typed, { frontend: nativeFrontend })
+      );
+    }
+
+    const layout = { template: 'layout', flags: {} } as const;
+    const offsetSource = '#include <cstddef>\nstruct S { int a; int b; }; int main() { return offsetof(S, b); }';
+    assert.deepEqual(
+      traceWithWasmModule(offsetSource, wasmModule, layout),
+      traceSnippet(offsetSource, layout, { frontend: nativeFrontend })
+    );
 
     const badSnippets = [
       'int a = ;',
       'struct Empty {};',
       'int x = 1; while (x > 0) { x = 0; }',
-      'double d = 1.5;',
+      'int* p = new int{ 1 };',
     ];
     for (const bad of badSnippets) {
       assert.throws(() => traceWithWasmModule(bad, wasmModule, EXECUTION), Unsupported);
     }
-    assert.throws(() => wasmFrontend.mainAst('int main() { unknown_sym; }'), Unsupported);
+    assert.throws(() => mainAst(wasmFrontend, 'int main() { unknown_sym; }'), Unsupported);
   });
 });

@@ -8,6 +8,8 @@ import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { type Browser, chromium } from 'playwright';
 
+import { DEFAULT_CACHE_NAME } from '../src/browser/cache.ts';
+
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PLAYER_DIR = resolve(ROOT, 'player');
 const REAL_WASM_PATH =
@@ -99,11 +101,11 @@ test('playground respects configurable wasmUrl and caches in Cache API across re
     await page.waitForSelector('.pg-clear-cache-btn');
     // tiny.wasm passes WASM compilation & Cache API storage, then fails on missing _start.
     await page.waitForSelector('.pg-error-box:not([hidden])');
-    const cachedCount = await page.evaluate(async () => {
-      const cache = await caches.open('clang-trace-frontend-v1');
+    const cachedCount = await page.evaluate(async cacheName => {
+      const cache = await caches.open(cacheName);
       const keys = await cache.keys();
       return keys.map(req => new URL(req.url).pathname);
-    });
+    }, DEFAULT_CACHE_NAME);
     assert.deepEqual(wasmFetchPaths, ['/tiny.wasm']);
     assert.deepEqual(cachedCount, ['/tiny.wasm']);
 
@@ -118,10 +120,10 @@ test('playground respects configurable wasmUrl and caches in Cache API across re
       const txt = document.querySelector('.pg-status-text')?.textContent || '';
       return /cleared/i.test(txt);
     });
-    const keysAfterClear = await page.evaluate(async () => {
-      const cache = await caches.open('clang-trace-frontend-v1');
+    const keysAfterClear = await page.evaluate(async cacheName => {
+      const cache = await caches.open(cacheName);
       return (await cache.keys()).length;
-    });
+    }, DEFAULT_CACHE_NAME);
     assert.equal(keysAfterClear, 0);
 
     // Reloading after clear re-fetches /tiny.wasm from the network.
@@ -169,6 +171,31 @@ test(
       assert.match(svgText, /pp/);
       assert.match(svgText, /7/);
 
+      // Instant speed survives remounting on language switches.
+      await page.selectOption('.pg-vis-host .cv-speed', 'instant');
+      assert.equal(
+        await page.evaluate(() => {
+          const host = document.querySelector('.pg-vis-host') as HTMLElement & {
+            cvPlayer: { instant: boolean };
+          };
+          return host.cvPlayer.instant;
+        }),
+        true
+      );
+      await page.click('.pg-lang-btn');
+      assert.equal(await page.locator('.pg-vis-host .cv-speed').inputValue(), 'instant');
+      assert.equal(
+        await page.evaluate(() => {
+          const host = document.querySelector('.pg-vis-host') as HTMLElement & {
+            cvPlayer: { instant: boolean };
+          };
+          return host.cvPlayer.instant;
+        }),
+        true
+      );
+      await page.click('.pg-lang-btn');
+      assert.equal(await page.locator('.pg-vis-host .cv-speed').inputValue(), 'instant');
+
       // Switch to struct-shallow-copy preset -> traces cleanly in Worker without re-downloading.
       await page.selectOption('.pg-preset-select', 'struct-shallow-copy');
       await page.waitForFunction(() => {
@@ -188,11 +215,27 @@ test(
       assert.equal(await page.locator('.pg-error-box').isHidden(), true);
       assert.match(page.url(), /[?&]types=1/);
 
-      // Without types, the same mismatch is a compile error.
+      // Without types, the same mismatch is a compile error that offers to turn types on.
       await page.click('[data-flag="types"]');
       await page.waitForSelector('.pg-error-box:not([hidden])');
-      assert.match((await page.locator('.pg-error-box').textContent()) ?? '', /IllFormed/);
+      assert.match((await page.locator('.pg-error-box').textContent()) ?? '', /IllFormed: .*with Types on/);
       assert.doesNotMatch(page.url(), /[?&]types=/);
+      // The action belongs to the code it is about: an edit takes it away, undoing it brings it back.
+      await page.locator('#pg-source').press('End');
+      await page.locator('#pg-source').press('Space');
+      assert.equal(await page.locator('.pg-error-box .pg-error-action').count(), 0);
+      await page.locator('#pg-source').press('Backspace');
+      assert.equal(await page.locator('.pg-error-box .pg-error-action').count(), 1);
+      await page.click('.pg-lang-btn');
+      assert.match((await page.locator('.pg-error-box').textContent()) ?? '', /если включить «Типы»/);
+      await page.click('.pg-lang-btn');
+      await page.locator('.pg-error-box .pg-error-action:has-text("Turn on Types")').press('Enter');
+      await page.waitForFunction(
+        () => (document.querySelector('.pg-vis-host .cv-stage')?.textContent || '').includes('uint8_t')
+      );
+      assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('data-flag')), 'types');
+      assert.equal(await page.locator('.pg-error-box').isHidden(), true);
+      assert.match(page.url(), /[?&]types=1/);
 
       // Switch to Struct layout preset -> renders Layout grid cleanly.
       await page.selectOption('.pg-preset-select', 'layout-padding');

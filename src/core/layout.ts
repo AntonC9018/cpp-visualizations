@@ -2,18 +2,13 @@
 
 import { type CompilerFrontend, Unsupported } from './errors.ts';
 import { layoutsFromFrontend } from './records.ts';
-import { snippetBody } from './tracing.ts';
+import { SourceFile } from './source.ts';
 import { FORMAT, type LayoutField, type LayoutTrace, validate } from './trace_format.ts';
 
 export function traceLayout(source: string, frontend: CompilerFrontend): LayoutTrace {
-  const body = snippetBody(source);
-  const program =
-    '#include <iostream>\n#include <cstdint>\n#include <cstddef>\n' +
-    'using namespace std;\nint main() {\n' +
-    body +
-    '\n}\n';
-  const ast = frontend.mainAst(program);
-  const records = layoutsFromFrontend(ast, program, frontend, { layoutOnly: true });
+  const file = new SourceFile(source, frontend, { ignoreExpansions: true });
+  const [ast] = file.ast(frontend);
+  const records = layoutsFromFrontend(ast, file.program, frontend, { layoutOnly: true });
   if (Object.keys(records).length === 0) {
     throw new Unsupported('layout requires at least one plain struct definition');
   }

@@ -72,7 +72,7 @@ test('deduced arrays can be referenced and addressed', () => {
   assert.equal(last.values['a.[1]'], 8);
 });
 
-test('an array field of pointers has GDB-verified element offsets and targets', () => {
+test('an array field of pointers has compiler-verified element offsets and targets', () => {
   const result = trace(`
     struct Box { int guard; std::array<int*, 2> ptrs; };
     int n;
@@ -116,8 +116,8 @@ test('a matrix has indexed rows that can be copied or written through a pointer'
 
 test('a long array type stays in the source and in the optional pane label', () => {
   const source = 'std::array<std::array<int, 2>, 2> matrix{}; matrix[1][0] = 7;';
-  const untyped = trace(source, { runtime: false });
-  const typed = trace(source, { runtime: false, types: true });
+  const untyped = trace(source);
+  const typed = trace(source, { types: true });
   assert.match(untyped.source[0], /^std::array<std::array<int, 2>, 2> matrix/);
   assert.equal(untyped.steps[0].pane, 'matrix = {}');
   assert.equal(typed.steps[0].pane, 'matrix = {}');
@@ -139,6 +139,44 @@ test('an array of structs supports aggregate writes and independent copies', () 
   assert.equal(last.values['copy.b'], 5);
 });
 
+test('arrays of floats, doubles, narrow integers and void pointers', () => {
+  const result = trace(`
+    int x = 9;
+    std::array<float, 2> f{ 1.5f, 2.25f };
+    std::array<uint8_t, 2> u{ 3, 4 };
+    std::array<double, 2> d{ f[0], f[1] };
+    std::array<void*, 2> vp{ &x, nullptr };
+    double sum = d[0] + d[1] + u[0];
+    std::cout << sum << std::endl;
+  `);
+  const last = result.steps.at(-1)!;
+  assert.equal(last.values['f.[0]'], 1.5);
+  assert.equal(last.values['u.[0]'], 3);
+  assert.equal(last.values['d.[0]'], 1.5);
+  assert.equal(last.values['d.[1]'], 2.25);
+  assert.equal(last.values.sum, 6.75);
+  assert.equal(last.targets['vp.[0]'], 'x');
+  assert.equal(last.stdout, '6.75\n');
+});
+
+test('a struct may hold a pointer to std::array without a separate array variable', () => {
+  const result = trace(`
+    struct S { std::array<int, 2>* p; };
+    S s{ nullptr };
+  `);
+  assert.equal(result.steps.at(-1)?.values['s.p'], 0);
+});
+
+test('unqualified array pointers normalize before dereference checks', () => {
+  const result = trace(`
+    using namespace std;
+    array<int, 2> a{ 1, 2 };
+    array<int, 2>* p = &a;
+    int x = (*p)[1];
+  `);
+  assert.equal(result.steps.at(-1)?.values.x, 2);
+});
+
 test('the tracer rejects invalid array operations before execution', () => {
   for (const [source, reason] of [
     ['std::array<int, 2> a{}; a[2] = 1;', /index 2 is out of bounds/],
@@ -146,8 +184,8 @@ test('the tracer rejects invalid array operations before execution', () => {
     ['std::array<int, 2> a; int b = a[1];', /reading uninitialized/],
     ['std::array<int, 0> a{};', /requires 1–32 elements/],
     ['std::array<std::array<int, 9>, 9> a{};', /at most 64 scalar cells/],
-    ['std::array<double, 2> a{};', /unsupported std::array element type/],
+    ['std::array<char, 2> a{};', /unsupported std::array element type/],
   ] as const) {
-    assert.throws(() => trace(source, { runtime: false }), { name: Unsupported.name, message: reason });
+    assert.throws(() => trace(source), { name: Unsupported.name, message: reason });
   }
 });

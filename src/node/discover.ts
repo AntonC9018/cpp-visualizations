@@ -20,7 +20,9 @@ import { delimiter, dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { type Flag, type Flags, enabledFlags, isFlag, parseSettings } from '../core/settings.ts';
+import type { ExecutionTrace } from '../core/trace_format.ts';
 import { applicable } from './generate.ts';
+import { createClangFrontend } from './toolchain.ts';
 import { Unsupported, trace } from './tracing.ts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -371,6 +373,8 @@ export function discover(
   const skipped: SkippedCandidate[] = [];
   const pending = new Set(tag);
   const edited = new Map<string, string>();
+  // Why a fence asked for with --tag cannot be one.
+  const refused = new Map<string, string>();
 
   for (const path of files) {
     let original = readFileSync(path, 'utf8');
@@ -380,13 +384,18 @@ export function discover(
     }
     const tagged = new Set(scanned.tags.map(t => t.source.start));
     const insertions: Array<[number, string]> = [];
+    const relPosix = relative(repo, path).split(sep).join('/');
     for (const fence of scanned.fences) {
+      const chosen = `${relPosix}:${fence.line}`;
       if (fence.depth || !CPP_LANGUAGES.has(fence.language)) {
+        if (pending.has(chosen)) refused.set(chosen, fence.depth ? 'a fence nested in another block' : 'not a C++ fence');
         continue;
       }
       if (!cache.has(fence.source)) {
         try {
-          applicable(trace(fence.source, { runtime: false, ...flags }), fence.source);
+          const frontend = createClangFrontend();
+          const accept = (traced: ExecutionTrace): void => applicable(traced, fence.source, frontend);
+          accept(trace(fence.source, { accept, frontend, ...flags }));
           cache.set(fence.source, null);
         } catch (exc) {
           if (exc instanceof Unsupported) {
@@ -397,14 +406,14 @@ export function discover(
         }
       }
       const reason = cache.get(fence.source) ?? null;
-      const relPosix = relative(repo, path).split(sep).join('/');
       const entry = { path: relPosix, line: fence.line, source: fence.source };
       if (reason) {
         skipped.push({ ...entry, reason });
+        if (pending.has(chosen)) refused.set(chosen, tagged.has(fence.start) ? 'already has a visualization tag' : reason);
         continue;
       }
       selected.push({ ...entry, already_tagged: tagged.has(fence.start) });
-      const chosen = `${entry.path}:${fence.line}`;
+      if (tagged.has(fence.start) && pending.has(chosen)) refused.set(chosen, 'already has a visualization tag');
       if (tagged.has(fence.start) || !pending.has(chosen)) {
         continue;
       }
@@ -434,7 +443,8 @@ export function discover(
     }
   }
   if (pending.size > 0) {
-    throw new Error('not an untagged candidate: ' + [...pending].sort().join(', '));
+    const reasons = [...pending].sort().map(chosen => `${chosen} (${refused.get(chosen) ?? 'no code fence starts on this line'})`);
+    throw new Error('not an untagged candidate: ' + reasons.join(', '));
   }
   for (const [path, text] of edited.entries()) {
     writeFileSync(path, text);

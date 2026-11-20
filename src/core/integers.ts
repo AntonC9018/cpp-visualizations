@@ -1,8 +1,6 @@
 // The builtin integer types: their sizes, signedness and spellings. Plain data shared by the
 // tracer and the player, which draws an integer's bytes from its type.
-import { Unsupported } from './errors.ts';
-
-/** A builtin integer type: its bytes and whether it is signed. Arithmetic is exact in bigint. */
+/** A builtin integer type and its representation in the trace. */
 export class Integer {
   readonly size: number;
   readonly signed: boolean;
@@ -22,17 +20,10 @@ export class Integer {
     return this.wrap(value) === value;
   }
 
-  /** The result of arithmetic in this type: unsigned wraps, signed overflow is undefined. */
-  result(value: bigint): bigint {
-    if (this.signed && !this.holds(value)) {
-      throw new Unsupported('signed integer overflow is outside the timeline category');
-    }
-    return this.wrap(value);
-  }
+
 }
 
-// By Clang's canonical spelling, with the sizes of the pinned x86-64 toolchain; GDB checks the
-// size of every cell. `char` and `bool` are not numbers in the lessons and stay out.
+// Canonical integer spellings and storage sizes in the pinned x86-64 ABI.
 export const INTEGERS: Readonly<Record<string, Integer>> = Object.freeze({
   'signed char': new Integer(1, true),
   'unsigned char': new Integer(1, false),
@@ -100,10 +91,16 @@ export const bareSpelling = (spelling: string): string => spelling.replace(/^con
  * maps further bare spellings to the builtin names Clang resolved them to (`streamsize`: `long`).
  */
 export function integerSpelled(spelling: string, aliases: Readonly<Record<string, string>> = {}): Integer | null {
+  const name = integerName(spelling, aliases);
+  return name === null ? null : INTEGERS[name];
+}
+
+/** The builtin name of the integer type a spelling names (`uint8_t`: `unsigned char`), if any. */
+export function integerName(spelling: string, aliases: Readonly<Record<string, string>> = {}): string | null {
   const name = bareSpelling(spelling);
   const known = Object.hasOwn(ALIASES, name) ? ALIASES[name] : name;
   const canonical = Object.hasOwn(INTEGERS, known) || !Object.hasOwn(aliases, name) ? known : aliases[name];
-  return Object.hasOwn(INTEGERS, canonical) ? INTEGERS[canonical] : null;
+  return Object.hasOwn(INTEGERS, canonical) ? canonical : null;
 }
 
 /**

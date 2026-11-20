@@ -1,5 +1,7 @@
 // Player model and timing: flattens execution trace storage into leaf cells and struct groups.
+import { codeName } from '../core/arrays.ts';
 import type {
+  AddrOperation,
   ExecutionTrace,
   Span,
   TraceField,
@@ -8,19 +10,60 @@ import type {
   TraceStep,
   TraceVariable,
 } from '../core/trace_format.ts';
-import { chainDelay } from './storage_path.ts';
+import { chainDelay, chainOf, memoryWalk } from './storage_path.ts';
 import { T, TYPE_COLOURS } from './constants.ts';
 
 export const stores = (op: TraceOperation): boolean =>
   op.kind === 'write' || op.kind === 'bind';
 
+export type WalkingOperation = Extract<TraceOperation, { kind: 'read' | 'write' | 'addr' }>;
+
+const walks = (op: TraceOperation): op is WalkingOperation =>
+  op.kind === 'read' || op.kind === 'write' || op.kind === 'addr';
+
+/**
+ * The walks that do not start at the top of their chain, recorded by `prepare`. They are kept by
+ * operation, not on the model, as an operation's timing (`departure`, `arrival`) follows from it
+ * alone wherever it is drawn; `prepare` gives each step an operation of its own for this.
+ */
+const shortWalks = new WeakMap<TraceOperation, string[]>();
+
+/**
+ * The levels a read, write or address walks through memory, `a` → `a.f` → `a.f.[0]`. One that
+ * goes on from where an earlier step of its statement already arrived starts there: `q->g`,
+ * once `b.n.g`, walks no further, and nor does the write of `s.a += 1` after its read.
+ */
+export const walkOf = (op: WalkingOperation): string[] => shortWalks.get(op) ?? chainOf(op.name);
+
+/** When a walk lands on the last level of its chain. */
+export const landing = (op: WalkingOperation): number => memoryWalk(walkOf(op), arrival(op)).at(-1)![0];
+
+/**
+ * The conversions that open their operator's, recorded by `prepare`: the operator lights first,
+ * as the `+` of `a + a` does before either `a` is promoted.
+ */
+const opening = new WeakSet<TraceOperation>();
+
+/** When an operation's own animation starts: after its operator lights, for the first conversion. */
+export const lead = (op: TraceOperation): number => (opening.has(op) ? T.operator : 0);
+
+/** Whether step `i` converts for the operator step `i - 1` converted for, as the second `a` of `a + a`. */
+export function continuesOperator(steps: TraceStep[], i: number): boolean {
+  const op = steps[i]?.op;
+  const last = steps[i - 1]?.op;
+  if (op?.kind !== 'convert' || !op.operator || last?.kind !== 'convert' || !last.operator || i < 2) return false;
+  // The operator moves along when the last conversion, before it, changed the text's length.
+  const shift = last.operator[0] >= last.span[1] ? steps[i - 1].pane.length - steps[i - 2].pane.length : 0;
+  return op.operator[0] === last.operator[0] + shift;
+}
+
 export const departure = (op: TraceOperation): number =>
   (stores(op) ? T.writeHold : op.kind === 'print' ? 0.2 : T.prepare) +
-  (op.kind === 'read' || op.kind === 'write' ? chainDelay(op.name) : 0);
+  (walks(op) ? chainDelay(walkOf(op)) : 0);
 
 export function arrival(op: TraceOperation): number {
   if (op.kind === 'deref') return T.prepare + T.follow;
-  if (op.kind === 'eval' || op.kind === 'alias' || op.kind === 'convert') return T.evaluate;
+  if (op.kind === 'eval' || op.kind === 'alias' || op.kind === 'convert') return lead(op) + T.evaluate;
   if (op.kind === 'clash') return T.clash;
   if (op.kind === 'print') return 0.9;
   return departure(op) + T.travel;
@@ -29,8 +72,24 @@ export function arrival(op: TraceOperation): number {
 export const opSeconds = (op: TraceOperation): number =>
   arrival(op) + T.settle + (stores(op) ? 0.5 : 0);
 
-export const copies = (steps: TraceStep[], i: number): boolean =>
-  !steps[i].op && (i === 0 || steps[i - 1].line !== steps[i].line);
+/**
+ * Whether step `i` opens a statement. Each statement opens with a step that has no operation,
+ * so two in a row on one line are still two.
+ */
+export const opensStatement = (steps: TraceStep[], i: number): boolean =>
+  i === 0 || !steps[i].op || steps[i - 1].line !== steps[i].line;
+
+/** The steps of the statement that step `i` belongs to. */
+export function statementSteps(steps: TraceStep[], i: number): number[] {
+  let start = i;
+  while (!opensStatement(steps, start)) start--;
+  let end = i;
+  while (end + 1 < steps.length && !opensStatement(steps, end + 1)) end++;
+  return Array.from({ length: end - start + 1 }, (_, k) => start + k);
+}
+
+/** A statement's first step copies its line from the code into the pane. */
+export const copies = (steps: TraceStep[], i: number): boolean => !steps[i].op;
 
 export const copyBegin = (_steps: TraceStep[], i: number): number =>
   i > 0 ? 0.3 : T.copyBegin;
@@ -54,6 +113,7 @@ export interface ModelLeaf {
   color: number;
   fieldColor?: number;
   type?: string;
+  floating?: true;
   children?: undefined;
   fields?: undefined;
 }
@@ -90,6 +150,8 @@ export interface PreparedModel {
   tops: ModelItem[];
   top: string[];
   rise: number;
+  /** What each step reaches, by name, and when it lights it up; null for nothing. */
+  reach: Array<Reach | null>;
 }
 
 export function prepare(trace: ExecutionTrace): PreparedModel {
@@ -141,6 +203,7 @@ export function prepare(trace: ExecutionTrace): PreparedModel {
           kind: field.kind,
           color: variable.color,
           fieldColor: field.color,
+          ...(field.floating ? { floating: true as const } : {}),
         };
         leaves.push(leaf);
         group.children.push(leaf);
@@ -166,11 +229,12 @@ export function prepare(trace: ExecutionTrace): PreparedModel {
     }
   }
   const top = variables.map(variable => variable.name);
-  return {
+  const model: PreparedModel = {
     trace,
     typeColours: typeColours(trace),
     typed: trace.steps.some(step => step.types),
-    steps: trace.steps,
+    // Each step's own operation, which its walk is recorded by.
+    steps: trace.steps.map(step => (step.op ? { ...step, op: { ...step.op } } : step)),
     source: trace.source,
     spans: trace.spans || [],
     types: trace.types || {},
@@ -180,7 +244,36 @@ export function prepare(trace: ExecutionTrace): PreparedModel {
     tops,
     top,
     rise: Math.max(0, ...groups.map(group => group.rise)),
+    reach: [],
   };
+  const continuations = model.steps.map((_, j) => continuation(model, j));
+  recordShortWalks(model, continuations);
+  model.steps.forEach((step, i) => {
+    if (step.op?.kind === 'convert' && step.op.operator && !continuesOperator(model.steps, i)) opening.add(step.op);
+  });
+  model.reach = model.steps.map((_, j) => reachedIn(model, j, continuations[j]));
+  return model;
+}
+
+/** The walks that start below the top of their chain, where an earlier step arrived. */
+function recordShortWalks(m: PreparedModel, continuations: number[]): void {
+  m.steps.forEach((step, j) => {
+    const op = step.op;
+    if (!op) return;
+    // What goes on from a dereference or alias starts where it arrived.
+    const next = m.steps[continuations[j]]?.op;
+    if ((op.kind === 'deref' || op.kind === 'alias') && next && walks(next)) {
+      shortWalks.set(next, chainOf(next.name).slice(chainOf(op.target).length - 1));
+    }
+    // The write of `s.a += 1` lands where its read already walked.
+    if (op.kind === 'read' && op.compound) {
+      const write = statementSteps(m.steps, j).find(k => k > j && m.steps[k].op?.kind === 'write');
+      const written = write === undefined ? null : m.steps[write].op;
+      if (written?.kind === 'write' && written.name === op.name) shortWalks.set(written, [op.name]);
+    }
+    // An address the pane does not spell with `&`, as `a.data()`, has no chain to walk.
+    if (op.kind === 'addr' && m.steps[j - 1]?.pane[op.span[0]] !== '&') shortWalks.set(op, [op.name]);
+  });
 }
 
 /**
@@ -209,28 +302,196 @@ function typeColours(trace: ExecutionTrace): Map<string, number> {
   return colours;
 }
 
-// Variables the current statement involves stay bright; the rest dim to half. A pointer's
-// target joins once evaluation reaches it.
+/**
+ * The variables step `i` involves: those its pane still names, a reference's with it, and what
+ * its operation reads, writes, binds or goes through. One whose value went into the pane is no
+ * longer involved once the statement moves on, as `a` in `A b = a` is while `b` is written.
+ */
 export function activeVariables(m: PreparedModel, i: number): Set<string> {
-  const line = m.steps[i].line;
-  const active = new Set<string>();
-  const refs = m.steps[i].refs || {};
-  for (const token of m.source[line].match(/\b[A-Za-z_]\w*\b/g) || []) {
-    if (m.top.includes(token)) active.add(token);
-    if (Object.prototype.hasOwnProperty.call(refs, token) && refs[token]) {
-      active.add(token);
-      active.add(refs[token].split('.')[0]);
+  const step = m.steps[i];
+  const active = paneVariables(m, step);
+  const op = step.op as Partial<Record<'name' | 'target' | 'via', string>> | null;
+  for (const name of [op?.name, op?.target, op?.via]) {
+    if (name) active.add(name.split('.')[0]);
+  }
+  return active;
+}
+
+/**
+ * A name in a pane, or a literal to skip: a field's name after `.` or `->` and a scope's after
+ * `::`, however spaced, are not a variable's, and nor is anything quoted.
+ */
+const PANE_NAME = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|(?<!\w)(?<!(?:\.|->|::)\s*)[A-Za-z_]\w*(\s*\{)?/g;
+
+/** The variables a pane names, and the variable a reference it names is bound to. */
+export function paneVariables(m: PreparedModel, step: TraceStep): Set<string> {
+  const named = new Set<string>();
+  const refs = step.refs || {};
+  // A struct's type that opens a brace list, as the `N` of `A{1, N{2, 3}}`, is not a variable.
+  const records = new Set(m.groups.map(group => group.type));
+  for (const [token, brace] of step.pane.matchAll(PANE_NAME)) {
+    const name = brace ? token.slice(0, -brace.length) : token;
+    if (/^["']/.test(name) || (brace && records.has(name))) continue;
+    if (m.top.includes(name)) named.add(name);
+    if (Object.hasOwn(refs, name) && refs[name]) {
+      named.add(name);
+      named.add(refs[name].split('.')[0]);
     }
   }
-  for (let j = i; j >= 0 && m.steps[j].line === line; j--) {
+  return named;
+}
+
+interface Reach {
+  name: string;
+  at: number;
+}
+
+/** The storage an operation gets to, by name, and when: where it lights that storage up. */
+function reached(op: TraceOperation | null): Reach | null {
+  if (!op) return null;
+  switch (op.kind) {
+    // A read or address lights the cell as its walk lands on the last level, a write as its
+    // value lands.
+    case 'read':
+    case 'addr':
+      return { name: op.name, at: landing(op) };
+    case 'write':
+      return { name: op.name, at: arrival(op) };
+    // A binding highlights its storage from the start.
+    case 'bind':
+      return { name: op.target, at: 0 };
+    case 'deref':
+    case 'alias':
+      return { name: op.target, at: arrival(op) - 0.15 };
+    default:
+      return null;
+  }
+}
+
+const topOf = (leaf: ModelLeaf): string => leaf.group ?? leaf.name;
+const covers = (name: string, cell: string): boolean => cell === name || cell.startsWith(name + '.');
+
+/** The address of a struct: its walk outlines it whole, and it lights none of its cells. */
+const addressOfStruct = (m: PreparedModel, op: TraceOperation | null): op is AddrOperation =>
+  op?.kind === 'addr' && m.groups.some(group => group.name === op.name);
+
+/**
+ * What step `j` reaches, given the step that goes on from it. A dereference or alias whose
+ * struct the statement goes on into, as `(*p).a` does, reaches none of it: the field does.
+ */
+function reachedIn(m: PreparedModel, j: number, next: number): Reach | null {
+  const op = m.steps[j].op;
+  if (addressOfStruct(m, op)) return null;
+  const target = reached(op);
+  if (!target || (op?.kind !== 'deref' && op?.kind !== 'alias')) return target;
+  const after = m.steps[next]?.op ?? null;
+  if (addressOfStruct(m, after)) return null;
+  const later = reached(after);
+  return later && later.name !== target.name ? null : target;
+}
+
+/**
+ * The later step of the statement that reads, writes, binds or takes the address of what
+ * dereference or alias `j` arrived at, or a field of it, from where `j` left it in the pane, as
+ * `(s).a` does; -1 when none does, or `j` is neither.
+ */
+function continuation(m: PreparedModel, j: number): number {
+  const op = m.steps[j].op;
+  if (op?.kind !== 'deref' && op?.kind !== 'alias') return -1;
+  const name = op.target;
+  let at = op.span[0];
+  for (let k = j + 1; k < m.steps.length && !opensStatement(m.steps, k); k++) {
+    const op = m.steps[k].op;
+    if (!op || !('span' in op)) continue;
+    const later = reached(op)?.name;
+    // A compound read opens at its operator; the field it reads stands before it.
+    const [from, to] =
+      op.kind === 'write' ? op.destination : op.kind === 'read' && op.compound ? [0, op.span[0]] : op.span;
+    if (later && covers(name, later) && from <= at && at < to) return k;
+    if (m.steps[k].pane === m.steps[k - 1].pane) continue;
+    const [s, e] = op.span;
+    if (at >= e) {
+      at += m.steps[k].pane.length - m.steps[k - 1].pane.length;
+    } else if (at >= s) {
+      // A rewrite around the struct, as `(s).a` to `s.a`, keeps it only if it now starts there.
+      const spelled = codeName(name);
+      const pane = m.steps[k].pane;
+      if (!pane.startsWith(spelled, s) || /\w/.test(pane[s + spelled.length] ?? '')) return -1;
+      at = s;
+    }
+  }
+  return -1;
+}
+
+/**
+ * The variables and cells lit as step `i` ends. Every variable the step involves is lit, and a
+ * scalar with it. A struct's cells light only as the statement's operations reach them; what a
+ * read or address reached stays lit for that step alone, as its value goes into the pane, and
+ * what the rest reached to the statement's end.
+ */
+function litAt(m: PreparedModel, i: number): Set<string> {
+  const tops = activeVariables(m, i);
+  const names: string[] = [];
+  for (const j of statementSteps(m.steps, i)) {
     const op = m.steps[j].op;
-    if (!op) continue;
-    for (const key of ['name', 'target', 'via'] as const) {
-      if (key in op) {
-        const val = (op as unknown as Record<string, string | undefined>)[key];
-        if (val) active.add(val.split('.')[0]);
+    const name = m.reach[j]?.name;
+    if (j > i || !name) continue;
+    const handsOn = op?.kind === 'addr' || (op?.kind === 'read' && !op.compound);
+    if (j === i || !handsOn) names.push(name);
+  }
+  const op = m.steps[i].op;
+  if (op?.kind === 'deref') names.push(op.via);
+  const shown = new Set(tops);
+  for (const leaf of m.leaves) {
+    if (!tops.has(topOf(leaf))) continue;
+    if (!leaf.group || names.some(name => covers(name, leaf.name))) shown.add(leaf.name);
+  }
+  // A nested struct's frame lights with the first of its cells to light, or whole as its address
+  // is taken.
+  for (const group of m.groups) {
+    const taken = addressOfStruct(m, op) && op.name === group.name;
+    const inner = m.leaves.some(leaf => shown.has(leaf.name) && covers(group.name, leaf.name));
+    if (group.parent && (taken || inner)) shown.add(group.name);
+  }
+  return shown;
+}
+
+/**
+ * What a step lights, by variable and cell name: `now` as it ends, `before` as it starts, and
+ * when each change begins. What dims does so at once; what the step reaches lights as it gets
+ * there.
+ */
+export interface Focus {
+  now: Set<string>;
+  before: Set<string>;
+  begin: Map<string, number>;
+}
+
+export function stepFocus(m: PreparedModel, i: number, animate: boolean): Focus {
+  const now = litAt(m, i);
+  const begin = new Map<string, number>();
+  if (!animate || i === 0) return { now, before: now, begin };
+  const before = litAt(m, i - 1);
+  const op = m.steps[i].op;
+  // What lights does so as the step gets there; a struct it only passes through, as the `b` of
+  // `(*q).f`, as the dereference arrives.
+  const target = m.reach[i] ?? reached(op);
+  if (target) {
+    for (const name of now) {
+      if (!before.has(name) && (covers(name, target.name) || covers(target.name, name))) {
+        begin.set(name, target.at);
       }
     }
   }
-  return active;
+  // What dims does so at once, unless the pane still names it until the step rewrites it, as
+  // `a` in `a.size()`.
+  if (op && !opensStatement(m.steps, i)) {
+    const named = paneVariables(m, m.steps[i - 1]);
+    const still = paneVariables(m, m.steps[i]);
+    for (const name of before) {
+      const top = name.split('.')[0];
+      if (!now.has(name) && named.has(top) && !still.has(top)) begin.set(name, arrival(op));
+    }
+  }
+  return { now, before, begin };
 }

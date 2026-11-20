@@ -49,7 +49,11 @@ export const T = {
   copyBegin: 0.15,
   copyTravel: 1.0,
   evaluate: 0.6,
+  // How long an operator shows lit before the first of its operands' conversions starts.
+  operator: 0.6,
   clash: 1.6,
+  // Instant playback: how long each settled state shows before the next.
+  instantHold: 0.8,
 } as const;
 
 export const KEYWORDS = new Set(['int', 'std', 'cout', 'endl', 'struct', 'auto', 'const']);
@@ -120,6 +124,7 @@ export interface PlayerStrings {
   replay: string;
   reset: string;
   speed: string;
+  instant: string;
   byteOrder: string;
   littleEndian: string;
   bigEndian: string;
@@ -131,6 +136,7 @@ export interface PlayerStrings {
   jump: string;
   copy: string;
   read: string;
+  compound: string;
   addr: string;
   deref: string;
   eval: string;
@@ -153,6 +159,7 @@ export const STRINGS: Record<string, PlayerStrings> = {
     replay: 'Replay step',
     reset: 'Reset',
     speed: 'Playback speed',
+    instant: 'Instant',
     byteOrder: 'Memory byte order',
     littleEndian: 'Little-endian (least significant byte first)',
     bigEndian: 'Big-endian (most significant byte first)',
@@ -164,6 +171,7 @@ export const STRINGS: Record<string, PlayerStrings> = {
     jump: 'Jump to line {line}: {code}',
     copy: 'Line {line}: {code}',
     read: 'Read {name}: {value}',
+    compound: 'Read {name}: {value}; {name} {compound}= … becomes {name} = {value} {compound} …',
     addr: 'Take the address of {name}: {value}',
     deref: 'Follow the address in {via} to {target}',
     eval: 'Evaluate: {value}',
@@ -184,6 +192,7 @@ export const STRINGS: Record<string, PlayerStrings> = {
     replay: 'Повторить шаг',
     reset: 'Сначала',
     speed: 'Скорость',
+    instant: 'Мгновенно',
     byteOrder: 'Порядок байтов в памяти',
     littleEndian: 'Little-endian (младший байт первым)',
     bigEndian: 'Big-endian (старший байт первым)',
@@ -195,6 +204,7 @@ export const STRINGS: Record<string, PlayerStrings> = {
     jump: 'Перейти к строке {line}: {code}',
     copy: 'Строка {line}: {code}',
     read: 'Чтение {name}: {value}',
+    compound: 'Чтение {name}: {value}; {name} {compound}= … превращается в {name} = {value} {compound} …',
     addr: 'Адрес {name}: {value}',
     deref: 'Переход по адресу из {via} к {target}',
     eval: 'Вычисление: {value}',

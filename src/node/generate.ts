@@ -1,10 +1,12 @@
 // Compiler-backed tracer adapter consumed by course maintenance.
 //
-// `trace` prints one example's trace in the unified player format (`trace_format.ts`), run and
-// verified under GDB; `probe` says, without running anything, whether an example is supported;
+// `trace` prints one example's trace in the unified player format (`trace_format.ts`).
+// `probe` says whether an example is supported;
 // `revision` versions every trace. The template and flags come from `../core/settings.ts`.
 import { readFileSync } from 'node:fs';
 
+import type { CompilerFrontend } from '../core/errors.ts';
+import { SourceFile } from '../core/source.ts';
 import { dumpsSorted } from '../core/json_format.ts';
 import { type AnyTrace, type ExecutionTrace, type TraceVariable, contiguous } from '../core/trace_format.ts';
 import {
@@ -16,6 +18,7 @@ import {
   parseSettings,
 } from '../core/settings.ts';
 import { revision } from './revision.ts';
+import { createClangFrontend } from './toolchain.ts';
 import { Unsupported, traceNatively } from './tracing.ts';
 
 export const TEMPLATE = DEFAULT_TEMPLATE;
@@ -24,7 +27,8 @@ export { TRACER_SOURCES, revision } from './revision.ts';
 // The memory row's legible capacity. Code, pane and output have no limit: the player's SVG
 // scales to its content, so longer or wider snippets just draw smaller text.
 export const MAX_VARIABLES = 5;
-const DECLARATION = /^\s*(?:const\s+)?(?:int|auto)\b/;
+const DECLARATION =
+  /^\s*(?:const\s+)?(?:(?:unsigned|signed)\s+)?(?:int|short|long|char|float|double|void|auto|(?:std::)?u?int(?:8|16|32|64)_t|(?:std::)?size_t|(?:std::)?ptrdiff_t)(?:\s+(?:const|unsigned|signed|short|long|int)\b)*(?:\s*(?:[*&]\s*(?:const(?:\s+|(?=[*&])))?)+|\s+)[A-Za-z_]\w*/;
 
 export function checkContiguousStorage(variables: TraceVariable[]): void {
   if (!contiguous(variables)) {
@@ -32,24 +36,13 @@ export function checkContiguousStorage(variables: TraceVariable[]): void {
   }
 }
 
-const LITERAL = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g;
-const LITERAL_OR_COMMENT = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\/\*[\s\S]*?\*\/|\/\/.*/g;
-
-export function spacingSurvives(snippet: string): boolean {
-  const stripped = snippet.replace(LITERAL_OR_COMMENT, match =>
-    match.startsWith('"') || match.startsWith("'")
-      ? '""'
-      : match.startsWith('/*')
-        ? match.replace(/[^\r\n]/g, '')
-        : ''
-  );
-  return !stripped
-    .split(/\r?\n/)
-    .some(line => /\S[ \t]{2,}\S/.test(line.trim()));
+export function spacingSurvives(snippet: string, frontend: CompilerFrontend = createClangFrontend()): boolean {
+  return new SourceFile(snippet, frontend).preservesSpacing();
 }
 
-export function applicable(traceData: ExecutionTrace, snippet: string): void {
-  if (!spacingSurvives(snippet)) {
+/** Whether a trace is worth showing. Share the trace's `frontend` to reuse its tokens. */
+export function applicable(traceData: ExecutionTrace, snippet: string, frontend?: CompilerFrontend): void {
+  if (!spacingSurvives(snippet, frontend)) {
     throw new Unsupported('the trace would collapse spacing inside a statement');
   }
   const { variables, steps, source } = traceData;
@@ -141,9 +134,13 @@ export function main(
   try {
     settings = parseSettings(template, flags);
     const snippet = readFileSync(sourcePath, 'utf8');
-    result = traceNatively(snippet, settings, { runtime: operation !== 'probe' });
+    const frontend = createClangFrontend();
+    result = traceNatively(snippet, settings, {
+      frontend,
+      accept: traced => applicable(traced, snippet, frontend),
+    });
     if (result.kind !== 'layout') {
-      applicable(result, snippet);
+      applicable(result, snippet, frontend);
     }
   } catch (exc) {
     if (exc instanceof Unsupported) {

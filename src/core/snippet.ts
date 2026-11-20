@@ -1,17 +1,15 @@
 // Trace a snippet with the settings it was asked for: the one entry point the command line and
-// the browser share, whichever compiler front end and runtime they bring.
+// the browser share across compiler frontends.
 import type { CompilerFrontend } from './errors.ts';
 import { traceLayout } from './layout.ts';
 import { type Template, type TraceSettings, checkSettings } from './settings.ts';
 import type { ExecutionTrace, LayoutTrace } from './trace_format.ts';
-import { type RuntimeExecutor, traceWithFrontend } from './tracing.ts';
+import { traceWithFrontend } from './tracing.ts';
 
 export interface TraceContext {
   frontend: CompilerFrontend;
-  /** Run the snippet to check the predicted values (the default); `false` only predicts. */
-  runtime?: boolean;
-  executor?: RuntimeExecutor | null;
-  directory?: string;
+  /** The caller's own checks, which throw: a flag is suggested only for a trace they accept. */
+  accept?: (trace: ExecutionTrace) => void;
 }
 
 /** The trace each template makes. */

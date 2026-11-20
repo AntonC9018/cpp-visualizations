@@ -1,4 +1,4 @@
-// Aggregate tracing against Clang's ABI and GDB, including pointer aliasing.
+// Aggregate tracing against Clang's ABI and constant evaluator, including pointer aliasing.
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -7,9 +7,10 @@ import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { dumpsSorted } from '../src/core/json_format.ts';
-import { type ExecutionTrace, validate } from '../src/core/trace_format.ts';
-import { Cell } from '../src/node/execution.ts';
+import { SourceFile } from '../src/core/source.ts';
+import { type ExecutionTrace, validate, withoutNestedNames } from '../src/core/trace_format.ts';
 import * as generate from '../src/node/generate.ts';
+import { createClangFrontend } from '../src/node/toolchain.ts';
 import * as tracing from '../src/node/tracing.ts';
 import { Unsupported } from '../src/node/tracing.ts';
 
@@ -85,6 +86,40 @@ p->next->x=9; c=*p; (*p).x=7; std::cout << a.x;`;
     validate(result);
   });
 
+  test('a_named_struct_value_names_the_structs_nested_in_it', () => {
+    const result = tracing.trace('struct N { int f; int g; };\nstruct A { N n; int f; };\nA a{ { 1, 2 }, 3 };\nA b = a;');
+    const read = result.steps.find(step => step.op?.kind === 'read')!;
+    assert.equal(read.pane, 'A b = A{N{1, 2}, 3}');
+    validate(result);
+    // A brace list the code spells unnamed is already its value: no step only to name it.
+    const spelled = tracing.trace('struct N { int f; int g; };\nstruct A { N n; int f; };\nA c{};\nc = A{{1, 2}, 3};');
+    const last = spelled.steps.filter(step => step.line === spelled.steps.at(-1)!.line);
+    assert.deepEqual(last.map(step => [step.pane, step.op?.kind ?? null]), [
+      ['c = A{{1, 2}, 3}', null],
+      ['c = A{{1, 2}, 3}', 'write'],
+    ]);
+    // A brace list the declaration already types names only what is nested in it.
+    const declared = tracing.trace('struct N { int f; int g; };\nstruct A { int* p; N n; };\nint v = 1;\nA d{ .p = &v, .n = { .f = 2 } };');
+    assert.match(declared.steps.at(-1)!.pane, /^A d\{\d+, N\{2, 0\}\}$/);
+    validate(declared);
+    // However it is spaced around the names.
+    for (const list of ['A {1, N{2, 3}}', 'A{1, N {2, 3}}']) {
+      const spaced = tracing.trace(`struct N { int f; int g; };\nstruct A { int f; N n; };\nA a{1, {2, 3}};\na = ${list};`);
+      const line = spaced.steps.filter(step => step.line === spaced.steps.at(-1)!.line);
+      assert.deepEqual(line.map(step => [step.pane, step.op?.kind ?? null]), [
+        [`a = ${list}`, null],
+        [`a = ${list}`, 'write'],
+      ]);
+      validate(spaced);
+    }
+  });
+
+  test('only a name that opens a nested brace list is stripped', () => {
+    assert.equal(withoutNestedNames('A{1, N{2, 3}}'), 'A{1, {2, 3}}');
+    assert.equal(withoutNestedNames('{1, 1N{2, 3}}'), '{1, 1N{2, 3}}');
+    assert.equal(withoutNestedNames('A {1, N {2, 3}}'), 'A {1, {2, 3}}');
+  });
+
   test('elided_aggregate_initialization_and_struct_double_pointer', () => {
     const result = tracing.trace(
       'struct S {int x;}; S a=S{1}; S b{}; S *p=&a; S **pp=&p; b=**pp; p->x=9;'
@@ -104,25 +139,13 @@ p->next->x=9; c=*p; (*p).x=7; std::cout << a.x;`;
         writeFileSync(path, source);
         let probeResult: { supported: boolean; reason: string } | null = null;
         let traceResult = '';
-        const original = tracing.hooks.execute;
         for (const operation of ['probe', 'trace'] as const) {
           let stdout = '';
           let stderr = '';
-          let called = false;
-          tracing.hooks.execute = () => {
-            called = true;
-            throw new Error('unreachable');
-          };
-          let status: number;
-          try {
-            status = generate.main([operation, '--source', path], {
-              stdout: { write: s => (stdout += s) },
-              stderr: { write: s => (stderr += s) },
-            });
-          } finally {
-            tracing.hooks.execute = original;
-          }
-          assert.equal(called, false);
+          const status = generate.main([operation, '--source', path], {
+            stdout: { write: s => (stdout += s) },
+            stderr: { write: s => (stderr += s) },
+          });
           if (operation === 'probe') {
             assert.equal(status, 0);
             probeResult = JSON.parse(stdout) as { supported: boolean; reason: string };
@@ -197,7 +220,7 @@ c=b.n; b.n={5, 6}; std::cout << c.g;`;
       'A a{ .p = &v, .n = { .f = 2 } }',
       `A a{ .p = ${last.values['a.p']}, .n = { .f = 2 } }`,
     ]);
-    assert.equal(first[2], `A a{${last.values['a.p']}, {2, 0}, 0}`);
+    assert.equal(first[2], `A a{${last.values['a.p']}, N{2, 0}, 0}`);
     const copy = result.steps.filter(step => step.line === 8 && step.op).map(step => step.op!);
     assert.deepEqual(
       copy.map(op => [
@@ -227,7 +250,6 @@ c=b.n; b.n={5, 6}; std::cout << c.g;`;
         `${spelling} *p=&s; p->x=2; ` +
         `${spelling} **pp=&p; (*pp)->x=3;`;
       const result = tracing.trace(source);
-      assert.deepEqual(result, tracing.trace(source, { runtime: false }));
       const last = result.steps[result.steps.length - 1];
       assert.equal(last.values['s.x'], 3);
       assert.deepEqual(last.targets, { p: 's', pp: 'p' });
@@ -241,7 +263,6 @@ c=b.n; b.n={5, 6}; std::cout << c.g;`;
         'S a{1,nullptr}; S b{2,&a}; b.next->x=9; ' +
         'b.next=&b; b.next->x=7;';
       const result = tracing.trace(source);
-      assert.deepEqual(result, tracing.trace(source, { runtime: false }));
       const last = result.steps[result.steps.length - 1];
       assert.equal(last.values['a.x'], 9);
       assert.equal(last.values['b.x'], 7);
@@ -256,10 +277,69 @@ c=b.n; b.n={5, 6}; std::cout << c.g;`;
     assert.equal(result.steps[result.steps.length - 1].stdout, '8');
   });
 
+  test('global_structs_may_share_names_with_the_standard_library', () => {
+    // A filter on `a` would match much of the library, and `data` is ambiguous under a
+    // using-directive the program does not have.
+    for (const name of ['a', 'data', 'pair']) {
+      const source = `#include <iostream>\nstruct ${name} { int x; };\nstruct B { ${name} in; };\n` +
+        `int main() {\n    B v{{1}};\n    v.in.x = v.in.x + 2;\n    std::cout << v.in.x;\n}`;
+      assert.equal(tracing.trace(source).steps.at(-1)!.stdout, '3');
+    }
+  });
+
+  test('a_using_directive_in_main_is_replayed_in_place', () => {
+    for (const directive of ['using namespace std;', 'using namespace ::std;']) {
+      const source = `struct pair { int x; };\nint main() {\n    pair a{1};\n    ${directive}\n    a.x += 2;\n}`;
+      assert.deepEqual(tracing.trace(source).steps.at(-1)!.values, { 'a.x': 3 });
+    }
+  });
+
+  test('a_global_struct_may_not_read_its_column', () => {
+    const source = '#include <source_location>\n#include <type_traits>\n' +
+      'struct S { std::conditional_t<(std::source_location::current().column() < 55), long, int> x; };\n' +
+      'int main() {\n    S s{1};\n}';
+    assert.throws(() => tracing.trace(source), /may not read its source column/);
+  });
+
+  test('a_global_struct_may_not_qualify_another_with_the_global_scope', () => {
+    const source = '#include <exception>\n#include <type_traits>\nusing namespace std;\n' +
+      'struct exception { int x; };\n' +
+      'struct Holder { std::conditional_t<std::is_polymorphic_v<::exception>, int, long> value; };\n' +
+      'int main() {\n    Holder h{1};\n}';
+    assert.throws(() => tracing.trace(source), /may not qualify another one with ::/);
+  });
+
+  test('a_global_using_directive_may_follow_a_struct', () => {
+    const source = '#include <iostream>\nstruct S { int x; };\nusing namespace std;\n' +
+      'int main() {\n    S a{1};\n    a.x += 2;\n    cout << a.x;\n}';
+    assert.equal(tracing.trace(source).steps.at(-1)!.stdout, '3');
+  });
+
+  test('main_may_qualify_a_global_struct_beside_the_standard_library', () => {
+    const source = '#include <utility>\nusing namespace std;\nstruct pair { int x; };\n' +
+      'int main() {\n    int n = sizeof(::pair);\n}';
+    // The tracer cannot yet read a qualified type, but the definition before main is found.
+    const frontend = createClangFrontend();
+    assert.equal(new SourceFile(source, frontend).ast(frontend)[1], 1);
+  });
+
+  test('a_global_struct_reads_the_branches_the_program_does', () => {
+    const source = '#if 1\nstruct S {\n#if __LINE__ == 7\n    int x;\n#else\n    int y;\n#endif\n};\n' +
+      'int main() {\n    S s{1};\n    s.x = s.x + 1;\n}\n#endif\n';
+    assert.deepEqual(tracing.trace(source).steps.at(-1)!.values, { 's.x': 2 });
+  });
+
+  test('a_mismatch_first_in_main_reports_itself', () => {
+    assert.throws(
+      () => tracing.trace('struct A { int x; };\nint main() {\n    int* p = 5;\n}', { types: true }),
+      (err: unknown) => err instanceof tracing.IllFormed && /cannot initialize a variable of type 'int \*'/.test(err.message)
+    );
+  });
+
   test('definitions_are_shown_on_hover_not_stepped', () => {
     const source =
       'struct S\n{\n    int x;\n};\n\nint main()\n{\n    struct T { int y; };\n    S a{ 1 };\n    T b{ 2 };\n}\n';
-    const result = tracing.trace(source, { runtime: false });
+    const result = tracing.trace(source);
     assert.deepEqual(result.source, ['S a{ 1 };', 'T b{ 2 };']);
     assert.deepEqual(result.types, {
       S: 'struct S\n{\n    int x;\n};',
@@ -273,13 +353,25 @@ c=b.n; b.n={5, 6}; std::cout << c.g;`;
 
   test('cold_runs_and_probe_layout', () => {
     const first = tracing.trace(STRUCT_POINTERS);
-    assert.deepEqual(first, tracing.trace(STRUCT_POINTERS, { runtime: false }));
+    assert.deepEqual(first, tracing.trace(STRUCT_POINTERS));
     assert.equal(dumpsSorted(first), dumpsSorted(tracing.trace(STRUCT_POINTERS)));
+  });
+
+  test('fields_of_different_types_and_brace_conversions', () => {
+    const traced = tracing.trace(
+      'struct Mixed { uint8_t tag; float ratio; void* ptr; }; ' +
+        'int x = 10; uint8_t t = 7; Mixed m{ t, 2, &x }; std::cout << m.ratio << std::endl;'
+    );
+    const last = traced.steps[traced.steps.length - 1];
+    assert.equal(last.values['m.tag'], 7);
+    assert.equal(last.values['m.ratio'], 2);
+    assert.equal(last.targets['m.ptr'], 'x');
+    assert.equal(last.stdout, '2\n');
   });
 
   test('unsupported_definitions_and_reads_never_execute', () => {
     const cases: Record<string, RegExp> = {
-      'struct S {double x;}; S s{};': /unsupported field type double/,
+      'struct S {bool x;}; S s{};': /unsupported field type bool/,
       'struct S {int x[2];}; S s{};': /unsupported field type int/,
       'struct S {int x:2;}; S s{};': /bitfields/,
       'struct S {int x=1;}; S s{};': /default initializers/,
@@ -291,22 +383,8 @@ c=b.n; b.n={5, 6}; std::cout << c.g;`;
       'struct S {int x;}; S a; int b=a.x;': /uninitialized variable a\.x/,
       'struct S {int x;}; S *p{}; p->x=1;': /null pointer p/,
     };
-    const original = tracing.hooks.execute;
     for (const [source, reason] of Object.entries(cases)) {
-      let called = false;
-      tracing.hooks.execute = () => {
-        called = true;
-        throw new Error('unreachable');
-      };
-      try {
-        assert.throws(
-          () => tracing.trace(source),
-          (err: unknown) => err instanceof Unsupported && reason.test(err.message)
-        );
-        assert.equal(called, false);
-      } finally {
-        tracing.hooks.execute = original;
-      }
+      assert.throws(() => tracing.trace(source), (err: unknown) => err instanceof Unsupported && reason.test(err.message));
     }
   });
 
@@ -318,20 +396,19 @@ c=b.n; b.n={5, 6}; std::cout << c.g;`;
   });
 
   test('unchanged_field_mismatch_is_fatal', () => {
-    const original = tracing.hooks.execute!;
-    tracing.hooks.execute = (...args) => {
-      const execution = original(...args);
-      const last = execution.checkpoints[execution.checkpoints.length - 1];
-      last['s.x'] = new Cell({ ...last['s.x'], value: 999 });
-      return execution;
+    const original = tracing.hooks.after;
+    tracing.hooks.after = (statement, state) => {
+      const next = original(statement, state);
+      if (statement.target === 's.y') return { ...next, s: { ...(next.s as tracing.StructValue), x: 999 } };
+      return next;
     };
     try {
       assert.throws(
         () => tracing.trace('struct S {int x; int y;}; S s{1,2}; s.y=3;'),
-        (err: unknown) => err instanceof Unsupported && /s\.x disagrees/.test(err.message)
+        (err: unknown) => err instanceof Unsupported && /compiler verification failed/.test(err.message)
       );
     } finally {
-      tracing.hooks.execute = original;
+      tracing.hooks.after = original;
     }
   });
 });

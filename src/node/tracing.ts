@@ -1,56 +1,45 @@
-// Node entrypoint for compiler-backed C++ tracing with Clang and GDB.
+// Node entrypoint for compiler-backed C++ tracing.
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { Flags, Template, TraceSettings } from '../core/settings.ts';
-import { type TraceOf, traceSnippet } from '../core/snippet.ts';
+import { type TraceContext, type TraceOf, traceSnippet } from '../core/snippet.ts';
 import type { ExecutionTrace } from '../core/trace_format.ts';
 import {
-  Cell,
-  Execution,
   INTEGERS,
   IllFormed,
   Integer,
+  NeedsFlag,
   Pointer,
-  REFERENCE,
   type Reduction,
   type State,
   Statement,
   type StructValue,
   Unsupported,
-  snippetBody,
   pointerDepth,
   normalizeAddresses,
-  observeExecution,
   analyzeWithFrontend,
   storeResult,
   hooks,
   traceWithFrontend,
   type Value,
 } from '../core/tracing.ts';
-import { execute as defaultExecute } from './execution.ts';
 import { createClangFrontend } from './toolchain.ts';
 
-hooks.execute = defaultExecute;
-
 export {
-  Cell,
-  Execution,
   INTEGERS,
   IllFormed,
   Integer,
+  NeedsFlag,
   Pointer,
-  REFERENCE,
   type Reduction,
   type State,
   Statement,
   type StructValue,
   Unsupported,
-  snippetBody,
   pointerDepth,
   normalizeAddresses,
-  observeExecution,
   analyzeWithFrontend,
   storeResult,
   hooks,
@@ -58,19 +47,20 @@ export {
   type Value,
 };
 
-/** Trace with the pinned native Clang, running the snippet under GDB unless `runtime` is off. */
+type NativeContext = Partial<TraceContext>;
+
+/** Trace with the pinned native Clang, or with `frontend` when the caller shares one. */
 export function traceNatively<T extends Template>(
   source: string,
   settings: TraceSettings & { template: T },
-  { runtime = true }: { runtime?: boolean } = {}
+  { accept, frontend }: NativeContext = {}
 ): TraceOf[T] {
+  if (frontend) return traceSnippet(source, settings, { accept, frontend });
   const directory = mkdtempSync(join(tmpdir(), 'trace-'));
   try {
     return traceSnippet(source, settings, {
-      runtime,
+      accept,
       frontend: createClangFrontend(directory),
-      executor: hooks.execute ?? defaultExecute,
-      directory,
     });
   } finally {
     rmSync(directory, { recursive: true, force: true });
@@ -80,7 +70,7 @@ export function traceNatively<T extends Template>(
 /** An execution trace, with flags given as options. */
 export function trace(
   source: string,
-  { runtime = true, ...flags }: { runtime?: boolean } & Flags = {}
+  { accept, frontend, ...flags }: NativeContext & Flags = {}
 ): ExecutionTrace {
-  return traceNatively(source, { template: 'expression-timeline', flags }, { runtime });
+  return traceNatively(source, { template: 'expression-timeline', flags }, { accept, frontend });
 }

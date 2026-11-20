@@ -13,6 +13,8 @@
 static const char *kVirtualStdHeader = R"cpp(
 #ifndef COURSE_VIRTUAL_STD_H
 #define COURSE_VIRTUAL_STD_H
+#define UINT8_MAX 255
+#define offsetof(type, member) __builtin_offsetof(type, member)
 namespace std {
   using size_t = decltype(sizeof(0));
   using ptrdiff_t = decltype(static_cast<char*>(nullptr) - static_cast<char*>(nullptr));
@@ -28,12 +30,15 @@ namespace std {
   using intptr_t = long;
   using uintptr_t = unsigned long;
   struct ostream {
+    ostream& operator<<(short);
+    ostream& operator<<(unsigned short);
     ostream& operator<<(int);
     ostream& operator<<(unsigned int);
     ostream& operator<<(long);
     ostream& operator<<(unsigned long);
     ostream& operator<<(long long);
     ostream& operator<<(unsigned long long);
+    ostream& operator<<(float);
     ostream& operator<<(double);
     ostream& operator<<(char);
     ostream& operator<<(const char*);
@@ -58,19 +63,51 @@ using uintptr_t = std::uintptr_t;
 #endif
 )cpp";
 
+// The layout and signatures the tracer uses. Like the native header, it takes one line to include,
+// and it defines no guard macro a snippet could test.
+static const char *kVirtualArrayHeader = R"cpp(
+#pragma once
+#include <cstddef>
+namespace std {
+template<class T, size_t N> struct array {
+  using value_type = T;
+  using size_type = size_t;
+  using pointer = T*;
+  using const_pointer = const T*;
+  using reference = T&;
+  using const_reference = const T&;
+  T elements[N];
+  constexpr reference operator[](size_type i) noexcept { return elements[i]; }
+  constexpr const_reference operator[](size_type i) const noexcept { return elements[i]; }
+  constexpr pointer data() noexcept { return elements; }
+  constexpr const_pointer data() const noexcept { return elements; }
+  constexpr size_type size() const noexcept { return N; }
+};
+template<class T> struct array<T, 0> {};
+template<class T, class... U> requires (__is_same(T, U) && ...)
+array(T, U...) -> array<T, 1 + sizeof...(U)>;
+}
+)cpp";
+
 int main(int argc, char **argv) {
   auto VFS = llvm::makeIntrusiveRefCnt<llvm::vfs::InMemoryFileSystem>();
-  VFS->addFile("/virtual/include/iostream", 0,
-               llvm::MemoryBuffer::getMemBuffer(kVirtualStdHeader));
-  VFS->addFile("/virtual/include/cstdint", 0,
-               llvm::MemoryBuffer::getMemBuffer(kVirtualStdHeader));
-  VFS->addFile("/virtual/include/cstddef", 0,
-               llvm::MemoryBuffer::getMemBuffer(kVirtualStdHeader));
+  for (const char *header : {"iostream", "cstdint", "cstddef", "stdint.h", "stddef.h"}) {
+    VFS->addFile(std::string("/virtual/include/") + header, 0,
+                 llvm::MemoryBuffer::getMemBuffer(kVirtualStdHeader));
+  }
+
+  VFS->addFile("/virtual/include/array", 0,
+               llvm::MemoryBuffer::getMemBuffer(kVirtualArrayHeader));
 
   bool astDump = false;
-  bool astDumpFilterMain = false;
+  std::string astDumpFilter;
+  bool dumpTokens = false;
   bool dumpRecordLayoutsComplete = false;
+  bool preprocess = false;
+  bool dumpMacros = false;
   std::string inputPath;
+  // The language options come from the caller, shared with the native frontend.
+  std::vector<const char *> languageArgs;
 
   for (int i = 1; i < argc; ++i) {
     llvm::StringRef arg(argv[i]);
@@ -78,11 +115,19 @@ int main(int argc, char **argv) {
       llvm::StringRef xarg(argv[++i]);
       if (xarg == "-ast-dump=json") {
         astDump = true;
-      } else if (xarg == "-ast-dump-filter=main") {
-        astDumpFilterMain = true;
+      } else if (xarg.starts_with("-ast-dump-filter=")) {
+        astDumpFilter = xarg.str();
+      } else if (xarg == "-dump-tokens") {
+        dumpTokens = true;
       } else if (xarg == "-fdump-record-layouts-complete") {
         dumpRecordLayoutsComplete = true;
       }
+    } else if (arg == "-E") {
+      preprocess = true;
+    } else if (arg == "-dD") {
+      dumpMacros = true;
+    } else if (arg.starts_with("-std=") || arg.starts_with("-W") || arg.starts_with("-D")) {
+      languageArgs.push_back(argv[i]);
     } else if (arg == "-" || !arg.starts_with("-")) {
       inputPath = arg.str();
     }
@@ -107,18 +152,26 @@ int main(int argc, char **argv) {
   std::vector<const char *> cc1Args = {
       "-triple",
       "x86_64-unknown-linux-gnu",
-      "-std=c++20",
-      "-fsyntax-only",
+      preprocess ? "-E" : "-fsyntax-only",
       "-nostdsysteminc",
       "-nobuiltininc",
       "-isystem",
       "/virtual/include",
   };
+  cc1Args.insert(cc1Args.end(), languageArgs.begin(), languageArgs.end());
+  if (dumpMacros) {
+    cc1Args.push_back("-dD");
+  }
+  if (dumpTokens) {
+    // As the driver does for -H: the virtual headers are system headers.
+    cc1Args.push_back("-H");
+    cc1Args.push_back("-sys-header-deps");
+  }
   if (astDump) {
     cc1Args.push_back("-ast-dump=json");
   }
-  if (astDumpFilterMain) {
-    cc1Args.push_back("-ast-dump-filter=main");
+  if (!astDumpFilter.empty()) {
+    cc1Args.push_back(astDumpFilter.c_str());
   }
   if (dumpRecordLayoutsComplete) {
     cc1Args.push_back("-fdump-record-layouts-complete");
@@ -144,7 +197,12 @@ int main(int argc, char **argv) {
   Clang.createSourceManager(Clang.getFileManager());
 
   std::unique_ptr<clang::FrontendAction> Act;
-  if (astDump) {
+  if (preprocess) {
+    // Writes to standard output, as no output file is named.
+    Act = std::make_unique<clang::PrintPreprocessedAction>();
+  } else if (dumpTokens) {
+    Act = std::make_unique<clang::DumpTokensAction>();
+  } else if (astDump) {
     Act = std::make_unique<clang::ASTDumpAction>();
   } else {
     Act = std::make_unique<clang::SyntaxOnlyAction>();

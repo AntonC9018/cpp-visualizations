@@ -1,9 +1,12 @@
 // Browser Cache API loader for the Clang WASM compiler module.
-// Caches the ~17 MB WASM binary across reloads with streaming download progress
+// Caches the ~22 MB WASM binary across reloads with streaming download progress
 // and concurrent load deduplication.
 
-export const DEFAULT_CACHE_NAME = 'clang-trace-frontend-v1';
-export const DEFAULT_WASM_URL = './clang-trace-frontend.wasm';
+/** Bump with every rebuilt binary: it renames the cache and bypasses HTTP caches. */
+export const WASM_VERSION = 6;
+const CACHE_PREFIX = 'clang-trace-frontend-v';
+export const DEFAULT_CACHE_NAME = `${CACHE_PREFIX}${WASM_VERSION}`;
+export const DEFAULT_WASM_URL = `./clang-trace-frontend.wasm?v=${WASM_VERSION}`;
 
 export type WasmLoadPhase = 'checking-cache' | 'downloading' | 'compiling' | 'ready';
 
@@ -65,6 +68,29 @@ async function openCacheSafe(storage: CacheStorage | null, cacheName: string): P
     return await storage.open(cacheName);
   } catch {
     return null;
+  }
+}
+
+/** The binary version a cache name holds, if it is one of ours. */
+function cacheVersion(name: string): number | null {
+  const version = /^\d+$/.test(name.slice(CACHE_PREFIX.length)) ? Number(name.slice(CACHE_PREFIX.length)) : NaN;
+  return name.startsWith(CACHE_PREFIX) && Number.isSafeInteger(version) ? version : null;
+}
+
+/**
+ * Delete the caches of earlier binaries, which no load reads again. A newer one stays for the
+ * page that deployed it.
+ */
+async function deleteStaleCaches(storage: CacheStorage | null, cacheName: string): Promise<void> {
+  const current = cacheVersion(cacheName);
+  if (!storage || current === null) return;
+  try {
+    for (const name of await storage.keys()) {
+      const version = cacheVersion(name);
+      if (version !== null && version < current) await storage.delete(name);
+    }
+  } catch {
+    // A cache that cannot be listed or deleted only costs storage.
   }
 }
 
@@ -215,25 +241,6 @@ export function loadWasmModule(
         throw new Error(`Invalid WASM binary received from ${resolvedUrl}`);
       }
       bytes = downloaded;
-
-      if (cache) {
-        try {
-          const cacheBody = new Uint8Array(bytes.byteLength);
-          cacheBody.set(bytes);
-          await cache.put(
-            resolvedUrl,
-            new Response(cacheBody, {
-              status: 200,
-              headers: {
-                'Content-Type': 'application/wasm',
-                'Content-Length': String(cacheBody.byteLength),
-              },
-            })
-          );
-        } catch {
-          // Cache storage quota or private mode may reject put(); execution can still continue.
-        }
-      }
     }
 
     onProgress?.({
@@ -246,6 +253,27 @@ export function loadWasmModule(
     const wasmBuffer = new Uint8Array(bytes.byteLength);
     wasmBuffer.set(bytes);
     const module = await WebAssembly.compile(wasmBuffer);
+
+    if (!fromCache && cache) {
+      try {
+        const cacheBody = new Uint8Array(bytes.byteLength);
+        cacheBody.set(bytes);
+        await cache.put(
+          resolvedUrl,
+          new Response(cacheBody, {
+            status: 200,
+            headers: {
+              'Content-Type': 'application/wasm',
+              'Content-Length': String(cacheBody.byteLength),
+            },
+          })
+        );
+      } catch {
+        // Cache storage quota or private mode may reject put(); execution can still continue.
+      }
+    }
+    await deleteStaleCaches(storage, cacheName);
+
     const elapsedMs = Math.round(performance.now() - start);
 
     onProgress?.({

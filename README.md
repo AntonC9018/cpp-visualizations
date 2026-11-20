@@ -19,8 +19,8 @@ from a host repository, prefix the paths with `visualizations/`.
   Node APIs so the same AST and layout logic can run in Node or a browser Web Worker.
   `settings.ts` lists the templates and flags a trace can be asked for, and `snippet.ts`
   traces a snippet with them: the one entry point of the command line and the browser.
-- `src/node/` holds the Node toolchain, GDB runtime verification, and CLI implementations
-  (`toolchain.ts`, `execution.ts`, `records.ts`, `layout.ts`, `tracing.ts`, `generate.ts`,
+- `src/node/` holds the native Clang adapter and CLI implementations
+  (`toolchain.ts`, `records.ts`, `layout.ts`, `tracing.ts`, `generate.ts`,
   `discover.ts`, `fixtures.ts`, `demo.ts`).
 - `src/player/` holds the modular TypeScript browser player (`constants.ts`, `svg.ts`,
   `model.ts`, `geometry.ts`, `scene.ts`, `player_view.ts`, `layout_view.ts`, `index.ts`), bundled
@@ -30,7 +30,7 @@ from a host repository, prefix the paths with `visualizations/`.
   `playground.ts`), bundled into
   `player/clang-worker.js` and `player/playground.js`.
 - `wasm/` holds the trimmed Clang 21 WASM frontend (`clang-trace-frontend.cpp`, WASI compatibility
-  shims, and `build.sh` producing the git-ignored `player/clang-trace-frontend.wasm`).
+  shims, and `build.sh` producing the bundled `player/clang-trace-frontend.wasm`).
 - `discover.mjs` lists the lesson examples the tracer supports and tags the ones chosen by hand.
 - `generate.mjs` is the command line maintenance uses: `trace`, `probe` and `revision`.
 - `player/` holds the bundled site engine (`player.js`, `player.css`), the browser playground
@@ -56,15 +56,16 @@ to `0`. The pane follows lesson notation: `**pp` → `**72` → `*p` → `*64` �
 
 Structs support aggregate and designated initialization, uninitialized field storage, whole-object
 copies, `.` and `->`, field addresses and pointer fields. Copies are shallow: pointer fields keep
-their original targets. Fields must be `int`, pointers to `int`, another struct of the snippet by
-value, or pointers to one. A nested struct is copied, assigned and initialized as a whole
+their original targets. Fields must be supported integers, `float`, `double`, pointers (including
+`void*`), another struct of the snippet by value, or `std::array`. A nested struct is copied,
+assigned and initialized as a whole
 (`a.inner = { 5 };`), and its fields are reached by path (`a.inner.x`, `p->inner.x`,
-`&a.inner.x`). Every live field is checked under GDB after every statement. The player draws
+`&a.inner.x`). Clang verifies the value of each initialized field after every statement. The player draws
 struct frames, a nested struct as a frame inside its owner's, per-field colours and separate
 arc endpoints for objects and fields.
 
 Execution traces support `std::array<T, N>` with 1–32 elements per dimension and up to
-64 scalar cells per array. Elements may be supported integers, pointers, structs, or arrays.
+64 scalar cells per array. Elements may be supported integers, `float`, `double`, pointers, structs, or arrays.
 Arrays can be struct fields. The tracer handles aggregate initialization, copies, assignments,
 indexed reads and writes, `.size()`, and `.data()` for obtaining a pointer to the first element.
 References can bind to an array or an element. The player draws an indexed frame, walks through
@@ -76,25 +77,29 @@ what a pointer points to) is another name for storage, as the lessons put it. Bi
 step; wherever its name is used afterwards, the name first becomes what it stands for
 (`c = 2` → `a = 2`). At `-O0` the compiler keeps a hidden pointer-sized slot per reference; the
 program cannot name it, so memory is drawn without it, with the variables in their real order.
-GDB checks every binding after every statement.
+Clang checks each binding when it is made.
 
-Output prints one integer or pointer value followed only by whitespace (`' '`, `'\t'`, `'\n'`) or
+Output prints one integer, floating-point or pointer value followed only by whitespace (`' '`, `'\t'`, `'\n'`) or
 `std::endl`. A statement of whitespace alone, such as `std::cout << std::endl;`, prints it as
 spelled; flushing is not shown. A pointer prints its normalized address as 8 bytes of
-hexadecimal (`64` → `0x0000000000000040`), one more step of the pane; the run's real,
-randomized address is checked but never published. A null pointer prints `0`. A string
+hexadecimal (`64` → `0x0000000000000040`), one more step of the pane. Nothing runs the
+program, so no real address exists: Clang's constant evaluation checks which object the
+pointer designates. A null pointer prints `0`. A string
 literal or another character is rejected.
 
 Integers of every width are values: `int`, `short`, `long`, `long long`, their unsigned kinds
 and the aliases over them (`uint8_t`, `int16_t`, `size_t`), each drawn at its own size.
-A conversion between two of them is one step, whether it is written (`static_cast<uint8_t>(a)`)
+`float` (4 bytes) and `double` (8 bytes) values and arithmetic (`+`, `-`, `*`, `/`), `void*`
+pointers (with implicit conversions to `void*` and `static_cast` to or from `void*`), and
+`sizeof` on supported types and expressions are also supported.
+A conversion between numeric or pointer types is one step, whether it is written (`static_cast<uint8_t>(a)`, `static_cast<double>(seven)`)
 or implied: an initializer or assignment of another type, and the promotion of an operand
 before arithmetic (`a + a` on `uint8_t` adds two `int`s, `~a` flips the 32 bits of an `int`).
-The value keeps its low bits, so `256` becomes `0` as `uint8_t` and `-2` becomes `65534` as
+An integer conversion keeps its low bits, so `256` becomes `0` as `uint8_t` and `-2` becomes `65534` as
 `uint16_t`. `static_cast` to the type the value already has only goes away.
-Unsigned arithmetic wraps; signed overflow is undefined and rejected.
-`char`, `bool` and floating-point types are not supported, a one-byte integer cannot be
-printed (the stream prints a character), and neither can a value beyond 2^53, which the player
+Unsigned arithmetic wraps; signed overflow and non-finite floating-point division are undefined and rejected.
+`char` and `bool` are not supported, a one-byte integer cannot be
+printed (the stream prints a character), and neither can an integer beyond 2^53, which the player
 could not draw exactly.
 
 Types are shown only where an example asks for them, with `--types` (the tag's `types`
@@ -113,7 +118,7 @@ changes, and a statement that does not compile is rejected.
 bytes in hex, and the player gets a Little-endian / Big-endian switch for their order. Under
 the pane a row of bits follows each value and conversion: narrowing strikes out the dropped
 bytes, and widening a signed value carries its sign bit into the new bytes while widening an
-unsigned one fills zeros. Only integer variables are taken; pointers, structs, arrays and
+unsigned one fills zeros. Only integer variables are taken; floats, pointers, structs, arrays and
 references are rejected.
 
 A brace list of plain values (`A a { 1, 2 };`) is stored as spelled, with no step that only
@@ -122,7 +127,7 @@ A struct value with a type of its own keeps it in the pane: a typed literal, and
 is read (`b = a` becomes `b = A{1, 2}`).
 
 Pointer arithmetic/comparison, C arrays, rvalue references, references bound to temporaries,
-casts other than `static_cast` between integers, a conversion inside a struct's braces,
+casts other than `static_cast`,
 heap allocation,
 other field types, methods, inheritance, bitfields, default member initializers, empty structs,
 qualified pointers, control flow, ill-formed snippets and undefined reads or
@@ -147,12 +152,10 @@ use it for examples that are about types, such as a conversion or a type-checkin
 Course maintenance traces every tag in CI inside the pinned toolchain and stores the results by content, so only
 changed examples are traced again; a tag that cannot be traced fails the build.
 
-Generation uses Clang AST types and operation ranges to build expression reductions. GDB
-verifies every post-statement value, output, storage size and frame location. Pointer targets
-retain their typed object or field identity; GDB verifies their numeric addresses. Addresses
-are normalized relative to observed stack offsets, aligned near 64, so no ASLR addresses are
-published. Cells are ordered by address, so declaration order may differ from the source.
-Unchanged-value writes, such as the failed swap, remain visible writes.
+Clang's token stream and AST provide the structure of the snippet. Constant evaluation provides
+numeric reductions and verifies each initialized scalar, struct field and pointer target after
+each statement. The player uses illustrative addresses and Clang's sizes and field offsets.
+Writes that leave a value unchanged, such as in the failed swap, still appear in the timeline.
 
 ```sh
 node generate.mjs probe --source /tmp/snippet.cpp
@@ -181,13 +184,17 @@ edges on the tape and offsets at each slot; otherwise the offsets mark where fie
 Hover, click or keyboard focus links a field's row, name and bytes; `struct` and `sizeof`
 highlight the whole object, `alignof` the widest fields. Theme changes preserve focus.
 
+Constant evaluation supports casting from `void*` back to the pointee's original type.
+Casting it to a different pointee type is outside the trace category.
+
 ## Toolchain and tests
 
 The flake pins the tools. A host repository that traces in CI keeps a flake of its own
-with the same shells, so that its lock decides when its traces are stale. `nix develop .#visualizations` provides Clang with C++
-standard headers, Python-enabled GDB and Node, which is all tracing needs; CI uses the same shell.
+with the same shells so that its lock decides when its traces are stale.
+`nix develop .#visualizations` provides Clang with C++ standard headers and Node.
+CI uses the same shell.
 The default shell (`nix develop`) adds Chromium for headless screenshots of the demo.
-`CLANGXX` and `GDB` select the tools; both shells set them.
+Both shells set `CLANGXX` to the pinned compiler.
 
 ```sh
 nix develop .#visualizations --command npm run test:tracer
@@ -207,20 +214,24 @@ nix develop --command npm run dev
 ## Browser Clang WASM playground
 
 `player/playground.html` runs the isomorphic tracer (`src/core/`) inside a dedicated Web Worker
-against a trimmed Clang 21 WASM build (`player/clang-trace-frontend.wasm`, ~17 MB raw / ~4.2 MB
-brotli). The worker downloads the module once, stores it in the browser Cache API
-(`clang-trace-frontend-v1`), and reuses cached bytes across reloads without re-fetching.
+against the Clang 21 WASM frontend at `player/clang-trace-frontend.wasm`. The worker downloads
+the checked-in module and stores it in the browser Cache API
+(`clang-trace-frontend-v<WASM_VERSION>`), deleting the caches of earlier versions.
 
-`*.wasm` binaries are git-ignored; rebuild `player/clang-trace-frontend.wasm` from LLVM 21.1.8
-sources with:
+Rebuild the module with LLVM 21.1.8 sources, host TableGen tools and WASI clang. When using a
+pristine LLVM source tarball, apply the WASI executable-path patch in the source tree first.
 
 ```sh
-./wasm/build.sh
+patch -d /path/to/llvm-project-21.1.8.src -p1 < wasm/llvm-wasi.patch
+LLVM_SRC=/path/to/llvm-project-21.1.8.src JOBS=4 ./wasm/build.sh
 ```
 
-The playground traces through the same entry point as `generate.mjs trace`, only without GDB;
-the compiler under it is Clang built to WASM instead of the native one, and both give the same
-AST. Its template buttons and flag toggles are those of `settings.ts`, kept in the URL as
+`wasm/build.sh` accepts paths to the sources and tools through its environment variables.
+Bump `WASM_VERSION` in `src/browser/cache.ts` with every rebuilt binary.
+
+The playground and `generate.mjs trace` share the tracer and use Clang's AST and constant
+evaluator. The playground runs its compiler in WASM with virtual headers for `<iostream>`,
+`<cstdint>`, `<cstddef>` and `<array>`. Template and flag settings are kept in the URL as
 `?template=expression-timeline&types=1`.
 
 Override the compiler binary URL via `?wasm=https://.../clang-trace-frontend.wasm`,

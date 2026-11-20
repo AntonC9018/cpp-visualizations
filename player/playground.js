@@ -18,6 +18,17 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.offset = offset;
     }
   }
+  class NeedsFlag extends IllFormed {
+    constructor(diagnostic, flag, offset = null) {
+      super(`${diagnostic}; with ${flag} on (--${flag}), the trace shows why`, offset);
+      /** Clang's error, without the hint. */
+      __publicField(this, "diagnostic");
+      __publicField(this, "flag");
+      this.name = "NeedsFlag";
+      this.diagnostic = diagnostic;
+      this.flag = flag;
+    }
+  }
   const TEMPLATES = {
     "expression-timeline": {
       label: { en: "Execution trace", ru: "Трассировка выполнения" }
@@ -49,6 +60,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   const FLAG_NAMES = Object.keys(FLAGS);
   function isTemplate(name) {
     return Object.hasOwn(TEMPLATES, name);
+  }
+  function isFlag(name) {
+    return Object.hasOwn(FLAGS, name);
   }
   function takesFlag(template, flag) {
     return FLAGS[flag].templates.includes(template);
@@ -91,7 +105,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     copyBegin: 0.15,
     copyTravel: 1,
     evaluate: 0.6,
-    clash: 1.6
+    // How long an operator shows lit before the first of its operands' conversions starts.
+    operator: 0.6,
+    clash: 1.6,
+    // Instant playback: how long each settled state shows before the next.
+    instantHold: 0.8
   };
   const KEYWORDS = /* @__PURE__ */ new Set(["int", "std", "cout", "endl", "struct", "auto", "const"]);
   const EASE = 'calcMode="spline" keyTimes="0;1" keySplines="0.4 0 0.2 1"';
@@ -129,6 +147,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       replay: "Replay step",
       reset: "Reset",
       speed: "Playback speed",
+      instant: "Instant",
       byteOrder: "Memory byte order",
       littleEndian: "Little-endian (least significant byte first)",
       bigEndian: "Big-endian (most significant byte first)",
@@ -140,6 +159,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       jump: "Jump to line {line}: {code}",
       copy: "Line {line}: {code}",
       read: "Read {name}: {value}",
+      compound: "Read {name}: {value}; {name} {compound}= … becomes {name} = {value} {compound} …",
       addr: "Take the address of {name}: {value}",
       deref: "Follow the address in {via} to {target}",
       eval: "Evaluate: {value}",
@@ -160,6 +180,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       replay: "Повторить шаг",
       reset: "Сначала",
       speed: "Скорость",
+      instant: "Мгновенно",
       byteOrder: "Порядок байтов в памяти",
       littleEndian: "Little-endian (младший байт первым)",
       bigEndian: "Big-endian (старший байт первым)",
@@ -171,6 +192,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       jump: "Перейти к строке {line}: {code}",
       copy: "Строка {line}: {code}",
       read: "Чтение {name}: {value}",
+      compound: "Чтение {name}: {value}; {name} {compound}= … превращается в {name} = {value} {compound} …",
       addr: "Адрес {name}: {value}",
       deref: "Переход по адресу из {via} к {target}",
       eval: "Вычисление: {value}",
@@ -216,7 +238,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   const glyphs = (value) => String(value).replace(/\n/g, "↵").replace(/\t/g, "⇥").replace(/ /g, "␣");
   const format = (template, values) => template.replace(/\{(\w+)\}/g, (_, key) => String(values[key] ?? ""));
   function text(x, y, value, size, color, anchor = "start") {
-    const str = String(value);
+    const str = Object.is(value, -0) ? "-0" : String(value);
     if (!str.trim()) return "";
     const length = str.length > 1 ? ` textLength="${round(str.length * size * CHAR)}" lengthAdjust="spacing"` : "";
     return `<text x="${round(x)}" y="${round(y)}" font-size="${size}" fill="${color}" text-anchor="${anchor}" xml:space="preserve"${length}>${esc(str)}</text>`;
@@ -822,6 +844,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     };
     const stackedCodeBudget = canvasBudget - 2 * MARGIN - STACK_TETHER_WIDTH;
     const initialCode = stacked ? fitCode(stackedCodeBudget) : unwrapped;
+    const besideCode = stacked || !Number.isFinite(canvasBudget) ? 0 : canvasBudget - unwrapped.width - COLUMN_GAP - 2 * MARGIN;
     const widest = Math.max(minByteWidth, m.leaves.some((leaf) => leaf.size < 4) ? NARROW_BYTE : MAX_BYTE);
     const rise = m.rise;
     const structs = m.groups.length > 0;
@@ -861,7 +884,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         (P.outputLabel.length + 1) * 26 * CHAR + outputChars * paneChar + 48,
         stacked ? initialCode.width : 0
       );
-      const byte = byteFor(Math.max(MEMORY_WIDTH, others - 48));
+      const byte = byteFor(Math.max(MEMORY_WIDTH, others - 48, besideCode - 48));
       const placed2 = placement(m, byte, rowOf2);
       const columnW2 = Math.max(others, placed2.width + 48);
       const codeBudget = stacked ? Math.max(columnW2, stackedCodeBudget) : canvasBudget - (columnW2 + COLUMN_GAP + 2 * MARGIN);
@@ -1085,14 +1108,27 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const parts = name.split(".");
     return parts.map((_, i) => parts.slice(0, i + 1).join("."));
   }
-  function chainDelay(name) {
-    const count = name ? chainOf(name).length : 1;
-    return count > 1 ? (count - 1) * CHAIN_STEP + CHAIN_LEAD : 0;
+  function chainDelay(levels) {
+    return levels.length > 1 ? (levels.length - 1) * CHAIN_STEP + CHAIN_LEAD : 0;
   }
-  function paneLevels(name, spelled) {
-    const levels = chainOf(name).map(codeName);
-    return levels.length > 1 && levels.every((level) => spelled.startsWith(level)) ? levels : null;
+  function paneLevels(walk, pane2, from) {
+    if (walk.length < 2) return null;
+    const tokens = (level) => codeName(level).match(/\w+|\S/g) ?? [];
+    const spelled = tokens(walk.at(-1));
+    const ends = [];
+    let at = pane2[from] === "&" ? from + 1 : from;
+    let k = 0;
+    for (const level of walk) {
+      for (const count = tokens(level).length; k < count; k++) {
+        while (/[\s()]/.test(pane2[at] ?? "")) at++;
+        if (!pane2.startsWith(spelled[k], at)) return null;
+        at += spelled[k].length;
+      }
+      ends.push(at - from);
+    }
+    return /\w/.test(pane2[at] ?? "") ? null : ends;
   }
+  const memoryWalk = (levels, at) => walkWindows(levels.length, at + 0.15, CHAIN_LEAD);
   function walkWindows(count, end, offset = 0) {
     const start = count > 1 ? offset : 0;
     return Array.from({ length: count }, (_, k) => [
@@ -1101,16 +1137,38 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     ]);
   }
   const stores = (op) => op.kind === "write" || op.kind === "bind";
-  const departure = (op) => (stores(op) ? T.writeHold : op.kind === "print" ? 0.2 : T.prepare) + (op.kind === "read" || op.kind === "write" ? chainDelay(op.name) : 0);
+  const walks = (op) => op.kind === "read" || op.kind === "write" || op.kind === "addr";
+  const shortWalks = /* @__PURE__ */ new WeakMap();
+  const walkOf = (op) => shortWalks.get(op) ?? chainOf(op.name);
+  const landing = (op) => memoryWalk(walkOf(op), arrival(op)).at(-1)[0];
+  const opening = /* @__PURE__ */ new WeakSet();
+  const lead = (op) => opening.has(op) ? T.operator : 0;
+  function continuesOperator(steps, i) {
+    var _a, _b;
+    const op = (_a = steps[i]) == null ? void 0 : _a.op;
+    const last = (_b = steps[i - 1]) == null ? void 0 : _b.op;
+    if ((op == null ? void 0 : op.kind) !== "convert" || !op.operator || (last == null ? void 0 : last.kind) !== "convert" || !last.operator || i < 2) return false;
+    const shift = last.operator[0] >= last.span[1] ? steps[i - 1].pane.length - steps[i - 2].pane.length : 0;
+    return op.operator[0] === last.operator[0] + shift;
+  }
+  const departure = (op) => (stores(op) ? T.writeHold : op.kind === "print" ? 0.2 : T.prepare) + (walks(op) ? chainDelay(walkOf(op)) : 0);
   function arrival(op) {
     if (op.kind === "deref") return T.prepare + T.follow;
-    if (op.kind === "eval" || op.kind === "alias" || op.kind === "convert") return T.evaluate;
+    if (op.kind === "eval" || op.kind === "alias" || op.kind === "convert") return lead(op) + T.evaluate;
     if (op.kind === "clash") return T.clash;
     if (op.kind === "print") return 0.9;
     return departure(op) + T.travel;
   }
   const opSeconds = (op) => arrival(op) + T.settle + (stores(op) ? 0.5 : 0);
-  const copies = (steps, i) => !steps[i].op && (i === 0 || steps[i - 1].line !== steps[i].line);
+  const opensStatement = (steps, i) => i === 0 || !steps[i].op || steps[i - 1].line !== steps[i].line;
+  function statementSteps(steps, i) {
+    let start = i;
+    while (!opensStatement(steps, start)) start--;
+    let end = i;
+    while (end + 1 < steps.length && !opensStatement(steps, end + 1)) end++;
+    return Array.from({ length: end - start + 1 }, (_, k) => start + k);
+  }
+  const copies = (steps, i) => !steps[i].op;
   const copyBegin = (_steps, i) => i > 0 ? 0.3 : T.copyBegin;
   function animationSeconds(steps, i) {
     const step = steps[i];
@@ -1159,7 +1217,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
             size: field.size,
             kind: field.kind,
             color: variable.color,
-            fieldColor: field.color
+            fieldColor: field.color,
+            ...field.floating ? { floating: true } : {}
           };
           leaves.push(leaf);
           group.children.push(leaf);
@@ -1184,11 +1243,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
     }
     const top = variables.map((variable) => variable.name);
-    return {
+    const model = {
       trace,
       typeColours: typeColours(trace),
       typed: trace.steps.some((step) => step.types),
-      steps: trace.steps,
+      // Each step's own operation, which its walk is recorded by.
+      steps: trace.steps.map((step) => step.op ? { ...step, op: { ...step.op } } : step),
       source: trace.source,
       spans: trace.spans || [],
       types: trace.types || {},
@@ -1197,8 +1257,37 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       groups,
       tops,
       top,
-      rise: Math.max(0, ...groups.map((group) => group.rise))
+      rise: Math.max(0, ...groups.map((group) => group.rise)),
+      reach: []
     };
+    const continuations = model.steps.map((_, j) => continuation(model, j));
+    recordShortWalks(model, continuations);
+    model.steps.forEach((step, i) => {
+      var _a;
+      if (((_a = step.op) == null ? void 0 : _a.kind) === "convert" && step.op.operator && !continuesOperator(model.steps, i)) opening.add(step.op);
+    });
+    model.reach = model.steps.map((_, j) => reachedIn(model, j, continuations[j]));
+    return model;
+  }
+  function recordShortWalks(m, continuations) {
+    m.steps.forEach((step, j) => {
+      var _a, _b;
+      const op = step.op;
+      if (!op) return;
+      const next = (_a = m.steps[continuations[j]]) == null ? void 0 : _a.op;
+      if ((op.kind === "deref" || op.kind === "alias") && next && walks(next)) {
+        shortWalks.set(next, chainOf(next.name).slice(chainOf(op.target).length - 1));
+      }
+      if (op.kind === "read" && op.compound) {
+        const write = statementSteps(m.steps, j).find((k) => {
+          var _a2;
+          return k > j && ((_a2 = m.steps[k].op) == null ? void 0 : _a2.kind) === "write";
+        });
+        const written = write === void 0 ? null : m.steps[write].op;
+        if ((written == null ? void 0 : written.kind) === "write" && written.name === op.name) shortWalks.set(written, [op.name]);
+      }
+      if (op.kind === "addr" && ((_b = m.steps[j - 1]) == null ? void 0 : _b.pane[op.span[0]]) !== "&") shortWalks.set(op, [op.name]);
+    });
   }
   function typeColours(trace) {
     const types = new Set(
@@ -1219,27 +1308,166 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return colours;
   }
   function activeVariables(m, i) {
-    const line = m.steps[i].line;
-    const active = /* @__PURE__ */ new Set();
-    const refs = m.steps[i].refs || {};
-    for (const token of m.source[line].match(/\b[A-Za-z_]\w*\b/g) || []) {
-      if (m.top.includes(token)) active.add(token);
-      if (Object.prototype.hasOwnProperty.call(refs, token) && refs[token]) {
-        active.add(token);
-        active.add(refs[token].split(".")[0]);
+    const step = m.steps[i];
+    const active = paneVariables(m, step);
+    const op = step.op;
+    for (const name of [op == null ? void 0 : op.name, op == null ? void 0 : op.target, op == null ? void 0 : op.via]) {
+      if (name) active.add(name.split(".")[0]);
+    }
+    return active;
+  }
+  const PANE_NAME = new RegExp(`"(?:\\\\.|[^"\\\\])*"|'(?:\\\\.|[^'\\\\])*'|(?<!\\w)(?<!(?:\\.|->|::)\\s*)[A-Za-z_]\\w*(\\s*\\{)?`, "g");
+  function paneVariables(m, step) {
+    const named = /* @__PURE__ */ new Set();
+    const refs = step.refs || {};
+    const records = new Set(m.groups.map((group) => group.type));
+    for (const [token, brace] of step.pane.matchAll(PANE_NAME)) {
+      const name = brace ? token.slice(0, -brace.length) : token;
+      if (/^["']/.test(name) || brace && records.has(name)) continue;
+      if (m.top.includes(name)) named.add(name);
+      if (Object.hasOwn(refs, name) && refs[name]) {
+        named.add(name);
+        named.add(refs[name].split(".")[0]);
       }
     }
-    for (let j = i; j >= 0 && m.steps[j].line === line; j--) {
-      const op = m.steps[j].op;
-      if (!op) continue;
-      for (const key of ["name", "target", "via"]) {
-        if (key in op) {
-          const val = op[key];
-          if (val) active.add(val.split(".")[0]);
+    return named;
+  }
+  function reached(op) {
+    if (!op) return null;
+    switch (op.kind) {
+      // A read or address lights the cell as its walk lands on the last level, a write as its
+      // value lands.
+      case "read":
+      case "addr":
+        return { name: op.name, at: landing(op) };
+      case "write":
+        return { name: op.name, at: arrival(op) };
+      // A binding highlights its storage from the start.
+      case "bind":
+        return { name: op.target, at: 0 };
+      case "deref":
+      case "alias":
+        return { name: op.target, at: arrival(op) - 0.15 };
+      default:
+        return null;
+    }
+  }
+  const topOf = (leaf) => leaf.group ?? leaf.name;
+  const covers = (name, cell) => cell === name || cell.startsWith(name + ".");
+  const addressOfStruct = (m, op) => (op == null ? void 0 : op.kind) === "addr" && m.groups.some((group) => group.name === op.name);
+  function reachedIn(m, j, next) {
+    var _a;
+    const op = m.steps[j].op;
+    if (addressOfStruct(m, op)) return null;
+    const target = reached(op);
+    if (!target || (op == null ? void 0 : op.kind) !== "deref" && (op == null ? void 0 : op.kind) !== "alias") return target;
+    const after = ((_a = m.steps[next]) == null ? void 0 : _a.op) ?? null;
+    if (addressOfStruct(m, after)) return null;
+    const later = reached(after);
+    return later && later.name !== target.name ? null : target;
+  }
+  function continuation(m, j) {
+    var _a;
+    const op = m.steps[j].op;
+    if ((op == null ? void 0 : op.kind) !== "deref" && (op == null ? void 0 : op.kind) !== "alias") return -1;
+    const name = op.target;
+    let at = op.span[0];
+    for (let k = j + 1; k < m.steps.length && !opensStatement(m.steps, k); k++) {
+      const op2 = m.steps[k].op;
+      if (!op2 || !("span" in op2)) continue;
+      const later = (_a = reached(op2)) == null ? void 0 : _a.name;
+      const [from, to] = op2.kind === "write" ? op2.destination : op2.kind === "read" && op2.compound ? [0, op2.span[0]] : op2.span;
+      if (later && covers(name, later) && from <= at && at < to) return k;
+      if (m.steps[k].pane === m.steps[k - 1].pane) continue;
+      const [s, e] = op2.span;
+      if (at >= e) {
+        at += m.steps[k].pane.length - m.steps[k - 1].pane.length;
+      } else if (at >= s) {
+        const spelled = codeName(name);
+        const pane2 = m.steps[k].pane;
+        if (!pane2.startsWith(spelled, s) || /\w/.test(pane2[s + spelled.length] ?? "")) return -1;
+        at = s;
+      }
+    }
+    return -1;
+  }
+  function litAt(m, i) {
+    var _a;
+    const tops = activeVariables(m, i);
+    const names = [];
+    for (const j of statementSteps(m.steps, i)) {
+      const op2 = m.steps[j].op;
+      const name = (_a = m.reach[j]) == null ? void 0 : _a.name;
+      if (j > i || !name) continue;
+      const handsOn = (op2 == null ? void 0 : op2.kind) === "addr" || (op2 == null ? void 0 : op2.kind) === "read" && !op2.compound;
+      if (j === i || !handsOn) names.push(name);
+    }
+    const op = m.steps[i].op;
+    if ((op == null ? void 0 : op.kind) === "deref") names.push(op.via);
+    const shown = new Set(tops);
+    for (const leaf of m.leaves) {
+      if (!tops.has(topOf(leaf))) continue;
+      if (!leaf.group || names.some((name) => covers(name, leaf.name))) shown.add(leaf.name);
+    }
+    for (const group of m.groups) {
+      const taken = addressOfStruct(m, op) && op.name === group.name;
+      const inner = m.leaves.some((leaf) => shown.has(leaf.name) && covers(group.name, leaf.name));
+      if (group.parent && (taken || inner)) shown.add(group.name);
+    }
+    return shown;
+  }
+  function stepFocus(m, i, animate) {
+    const now = litAt(m, i);
+    const begin = /* @__PURE__ */ new Map();
+    if (!animate || i === 0) return { now, before: now, begin };
+    const before = litAt(m, i - 1);
+    const op = m.steps[i].op;
+    const target = m.reach[i] ?? reached(op);
+    if (target) {
+      for (const name of now) {
+        if (!before.has(name) && (covers(name, target.name) || covers(target.name, name))) {
+          begin.set(name, target.at);
         }
       }
     }
-    return active;
+    if (op && !opensStatement(m.steps, i)) {
+      const named = paneVariables(m, m.steps[i - 1]);
+      const still = paneVariables(m, m.steps[i]);
+      for (const name of before) {
+        const top = name.split(".")[0];
+        if (!now.has(name) && named.has(top) && !still.has(top)) begin.set(name, arrival(op));
+      }
+    }
+    return { now, before, begin };
+  }
+  const SHOWN_DIGITS = 8;
+  const FLOAT_DIGITS = 9;
+  function shortestDecimal(value, size) {
+    if (size === 8 || Math.fround(value) !== value) return String(value);
+    for (let digits = 1; digits <= FLOAT_DIGITS; digits++) {
+      const [mantissa, exponent] = value.toExponential(digits - 1).split("e");
+      const scaled2 = Number(mantissa.replace(".", ""));
+      const scale = Number(exponent) - (digits - 1);
+      const fits = [scaled2, scaled2 - 1, scaled2 + 1].map((candidate) => Number(`${candidate}e${scale}`)).filter((candidate) => Math.fround(candidate) === value).sort((a, b) => Math.abs(a - value) - Math.abs(b - value));
+      if (fits.length) return String(fits[0]);
+    }
+    return String(value);
+  }
+  function compact(text2) {
+    const scientific = Number(text2).toExponential();
+    return scientific.length < text2.length ? scientific : text2;
+  }
+  const significantDigits = (text2) => Number(text2).toExponential().split("e")[0].replace(/[-.]/g, "").length;
+  function displayFloat(value, size) {
+    if (Object.is(value, -0)) return "-0";
+    if (Number.isSafeInteger(value)) return compact(shortestDecimal(value, size));
+    const shortest = shortestDecimal(value, size);
+    if (significantDigits(shortest) <= SHOWN_DIGITS) return compact(shortest);
+    return "≈" + compact(String(Number(value.toPrecision(SHOWN_DIGITS))));
+  }
+  function displayNumber(value, floatSize = null) {
+    if (floatSize) return displayFloat(value, floatSize);
+    return Object.is(value, -0) ? "-0" : String(value);
   }
   function colored(c, x, y, value, size = c.g.paneSize, mute = true, member = false) {
     let out = "";
@@ -1292,9 +1520,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const { focus } = c;
     const on = focus.now.has(name);
     const was = focus.before.has(name);
-    const to = on ? 1 : DIM;
-    if (on === was) return to === 1 ? markup : `<g opacity="${DIM}">${markup}</g>`;
-    return `<g opacity="${was ? 1 : DIM}"><animate attributeName="opacity" from="${was ? 1 : DIM}" to="${to}" dur="0.35s" begin="${round(focus.begin.get(name) ?? 0)}s" ${EASE} fill="freeze"/>${markup}</g>`;
+    const fade2 = (from2, to, begin2) => `<animate attributeName="opacity" from="${from2}" to="${to}" dur="0.35s" begin="${round(begin2)}s" ${EASE} fill="freeze"/>`;
+    const begin = focus.begin.get(name) ?? 0;
+    if (on === was) return on ? markup : `<g opacity="${DIM}">${markup}</g>`;
+    const from = was ? 1 : DIM;
+    return `<g opacity="${from}">${fade2(from, on ? 1 : DIM, begin)}${markup}</g>`;
   }
   const typeColour = (c, type) => c.P.types[c.m.typeColours.get(type) ?? 0];
   function typeLabel(c, cx, top, type, size, color) {
@@ -1430,7 +1660,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const growing = grow !== null ? ` data-grow="${round(grow)}"` : "";
     return dim(
       c,
-      l.from.name.split(".")[0],
+      l.from.name,
       `<g>` + (fadeOut !== null ? fade(1, 0, 0.3, fadeOut) : "") + `<path d="${l.d}" fill="none" stroke="${c.P.bg}" stroke-width="9"${growing}/><path d="${l.d}" fill="none" stroke="${color}" stroke-width="2.5"${growing}/>` + (grow !== null ? `<g opacity="0">${fade(0, 1, 0.15, grow + 0.5)}${head}</g>` : head) + "</g>"
     );
   }
@@ -1454,7 +1684,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     if (op && op.kind === "deref") {
       const l = now.find((link) => link.from.name === op.via);
       if (l) {
-        out += `<path d="${l.d}" fill="none" stroke="${l.from.color}" stroke-width="7" stroke-linecap="round" data-follow="${T.prepare}"/>`;
+        out += dim(
+          c,
+          l.from.name,
+          `<path d="${l.d}" fill="none" stroke="${l.from.color}" stroke-width="7" stroke-linecap="round" data-follow="${T.prepare}"/>`
+        );
       }
     }
     return out;
@@ -1509,12 +1743,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     };
     const pointed = (shown, cell) => Boolean(shown && Object.values(shown.targets).some((t) => startsAt(t, cell)));
     const taking = (i, cell) => {
-      const steps = c.m.steps;
-      for (let j = i; j >= 0 && steps[j].line === steps[Math.max(i, 0)].line; j--) {
-        const o = steps[j].op;
-        if ((o == null ? void 0 : o.kind) === "addr" && startsAt(o.name, cell)) return true;
-      }
-      return false;
+      if (i < 0) return false;
+      return statementSteps(c.m.steps, i).some((j) => {
+        const o = c.m.steps[j].op;
+        return j <= i && (o == null ? void 0 : o.kind) === "addr" && startsAt(o.name, cell);
+      });
     };
     const startsVariable = (cell) => {
       var _a;
@@ -1526,7 +1759,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const now = pointed(step, cell) || taking(c.index, cell);
       const before = c.animate ? pointed(prev, cell) || taking(c.index - 1, cell) : now;
       if (now && before) return label;
-      const appear = (op == null ? void 0 : op.kind) === "addr" ? 0 : at;
+      const appear = (op == null ? void 0 : op.kind) === "addr" ? landing(op) : at;
       if (now) return `<g opacity="0">${fade(0, 1, 0.3, appear)}${label}</g>`;
       if (before) return `<g>${fade(1, 0, 0.3, at)}${label}</g>`;
       return "";
@@ -1538,7 +1771,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const color = on ? arrayGroup ? s.color : s.fieldColor || s.color : null;
       out += dim(
         c,
-        s.top,
+        // A nested struct's frame dims on its own, the outermost with its variable.
+        s.parent ? s.name : s.top,
         rect(f.x, f.y, f.w, f.h, "none", color || P.deadStroke, 6, FRAME.stroke) + (s.parent ? text(
           s.x + s.w / 2,
           f.y + f.h + 24,
@@ -1552,7 +1786,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     if (op && op.kind === "addr") {
       const cell = g.cellsOf(op.name)[0];
       const [lx, ly] = labelCentre(cell);
-      out += `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.2, at + 0.1)}` + rect(lx - labelWidth$1(cell) / 2 - 5, ly - 13, labelWidth$1(cell) + 10, 24, P.readFill, P.read, 5, 2) + "</g>";
+      out += `<g opacity="0">${fade(0, 1, 0.15, landing(op))}${fade(1, 0, 0.2, at + 0.1)}` + rect(lx - labelWidth$1(cell) / 2 - 5, ly - 13, labelWidth$1(cell) + 10, 24, P.readFill, P.read, 5, 2) + "</g>";
     }
     for (const cell of g.leaves) {
       const on = live(cell);
@@ -1581,14 +1815,15 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       );
       if (on) {
         const shown = (value) => {
-          const length = String(value).length;
+          const display = typeof value === "number" ? displayNumber(value, cell.floating ? cell.size : null) : String(value);
+          const length = display.length;
           const size = Math.min(30, (cell.w - Math.min(12, cell.w / 5)) / (length * CHAR));
-          return text(0, size / 3 + 1, value, round(size), value === "?" ? P.grey : P.fg, "middle");
+          return text(0, size / 3 + 1, display, round(size), value === "?" ? P.grey : P.fg, "middle");
         };
         markup += `<g transform="translate(${round(cell.x + cell.w / 2)} ${cell.y + cell.h / 2})"><g>` + (changing ? pulse(at - 0.2) : "");
         const before = prev ? prev.values[cell.name] : null;
         const after = step.values[cell.name];
-        if (changing && before !== after) {
+        if (changing && !Object.is(before, after)) {
           if (before !== null) markup += `<g>${hide(at)}${shown(before)}</g>`;
           markup += `<g opacity="0">${show(at)}${shown(after)}</g>`;
         } else {
@@ -1596,9 +1831,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         }
         markup += "</g></g>";
       }
-      out += dim(c, cell.group || cell.name, markup);
+      out += dim(c, cell.name, markup);
     }
-    if (op && (op.kind === "read" || op.kind === "write")) {
+    if (op && (op.kind === "read" || op.kind === "write" || op.kind === "addr")) {
       out += chainHighlight(c, op, at);
     }
     if (op && op.kind === "deref") {
@@ -1620,8 +1855,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   function chainHighlight(c, op, at) {
     const { g, P } = c;
     const color = op.kind === "write" ? P.write : P.read;
-    const levels = chainOf(op.name);
-    const windows = walkWindows(levels.length, at + 0.15, CHAIN_LEAD);
+    const levels = walkOf(op);
+    const windows = memoryWalk(levels, at);
     return levels.map((level, k) => {
       const box = g.box(level);
       if (!box) return "";
@@ -1633,13 +1868,24 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       return `<g opacity="${hidden ? 0 : 1}">${appear}${fade(1, 0, 0.25, leave)}${wash}${outline(c, box, color)}</g>`;
     }).join("");
   }
-  function walkBoxes(levels, end, box, whole) {
-    if (!levels) return whole;
-    const windows = walkWindows(levels.length, end);
-    return levels.map((level, k) => {
+  function walkBoxes(ends, end, box, whole) {
+    if (!ends) return whole;
+    const windows = walkWindows(ends.length, end);
+    return ends.map((chars, k) => {
       const [begin, leave] = windows[k];
-      return `<g opacity="0">${fade(0, 1, 0.15, begin)}${fade(1, 0, 0.2, leave)}${box(level.length)}</g>`;
+      return `<g opacity="0">${fade(0, 1, 0.15, begin)}${fade(1, 0, 0.2, leave)}${box(chars)}</g>`;
     }).join("");
+  }
+  function operatorMark(c, dx) {
+    const { op, P, g } = c;
+    if ((op == null ? void 0 : op.kind) !== "convert" || !op.operator) return "";
+    const [s, e] = op.operator;
+    const at = arrival(op);
+    const opens = !c.animate || !continuesOperator(c.m.steps, c.index);
+    const lasts = continuesOperator(c.m.steps, c.index + 1);
+    const box = markBox(g.tx + s * g.paneChar, g.ty, (e - s) * g.paneChar, P.fg, P.derefFill);
+    const moved = s >= op.span[1] && dx !== 0 ? glide(box, dx, at + 0.1, 0.3) : box;
+    return `<g opacity="${opens ? 0 : 1}">${opens ? fade(0, 1, 0.25) : ""}${lasts ? "" : fade(1, 0, 0.3, at + 0.3)}${moved}</g>`;
   }
   function valueBox(c, value, color, path, begin, travel, end) {
     const half = Math.max(28, String(value).length * c.g.paneChar / 2 + 12);
@@ -1733,11 +1979,28 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const sy = g.lineY(step.line);
       const begin = copyBegin(c.m.steps, c.index);
       const total = begin + T.copyTravel;
-      if (prev && prev.line !== step.line) {
+      if (prev) {
         out += `<g>${fade(1, 0, 0.3, begin + 0.2)}${settledPane(c, prev, tx, ty)}</g>`;
       }
       const scale = CODE_SIZE / c.g.paneSize;
       out += `<g><animateMotion dur="${round(total)}s" path="M ${round(sx)} ${sy} L ${tx} ${ty}" keyPoints="0;0;1" keyTimes="0;${(begin / total).toFixed(4)};1" calcMode="spline" keySplines="0 0 1 1;0.4 0 0.2 1" fill="freeze"/><g transform="scale(${scale})"><animateTransform attributeName="transform" type="scale" from="${scale}" to="1" begin="${begin}s" dur="${T.copyTravel}s" ${EASE} fill="freeze"/><g opacity="0">${fade(0, 1, 0.15, begin - 0.15)}${fade(1, 0, 0.12, total)}` + rect(-8, -36, step.pane.length * c.g.paneChar + 16, 48, P.highlight, P.read, 7, 2) + "</g>" + settledPane(c, step, 0, 0) + "</g></g>";
+      return out;
+    }
+    if ((op == null ? void 0 : op.kind) === "read" && op.compound && prev) {
+      const [s, e] = op.span;
+      const at = arrival(op);
+      const left = prev.pane.slice(0, s).trimEnd().length + " = ".length;
+      out += exprBackground(c, tx, ty, step.expr, prev.expr, at);
+      const operand = prev.pane.length - prev.pane.trimStart().length;
+      out += walkBoxes(
+        paneLevels(walkOf(op), prev.pane, operand),
+        at - 0.1,
+        (chars) => markBox(tx + operand * c.g.paneChar, ty, chars * c.g.paneChar, P.read, P.readFill),
+        ""
+      );
+      out += `<g opacity="0">${fade(0, 1, 0.15)}${hide(at)}${markBox(tx + s * c.g.paneChar, ty, (e - s) * c.g.paneChar, P.read, P.readFill)}</g><g opacity="0">${show(at)}${fade(1, 0, 0.3, at + 0.3)}${markBox(tx + left * c.g.paneChar, ty, op.value.length * c.g.paneChar, P.read, P.readFill)}</g>`;
+      out += `<g>${hide(at)}${paneText(c, tx, ty, prev.pane, 0, prev.pane.length, prev.expr)}</g>`;
+      out += `<g opacity="0">${show(at)}${paneText(c, tx, ty, step.pane, 0, step.pane.length, step.expr)}</g>`;
       return out;
     }
     if (op && prev && (op.kind === "read" || op.kind === "addr" || op.kind === "deref" || op.kind === "eval" || op.kind === "alias" || op.kind === "convert")) {
@@ -1750,11 +2013,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const [stroke, fill] = op.kind === "read" || op.kind === "addr" ? [P.read, P.readFill] : op.kind === "convert" ? [P.write, P.writeFill] : [P.fg, P.derefFill];
       out += exprBackground(c, tx, ty, step.expr, prev.expr, at + 0.1);
       out += walkBoxes(
-        op.kind === "read" ? paneLevels(op.name, before.slice(s, e)) : null,
+        op.kind === "read" || op.kind === "addr" ? paneLevels(walkOf(op), before, s) : null,
         at - 0.1,
         (chars) => markBox(sx, ty, chars * c.g.paneChar, stroke, fill),
-        `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.2, at - 0.1)}${markBox(sx, ty, (e - s) * c.g.paneChar, stroke, fill)}</g>`
+        `<g opacity="0">${fade(0, 1, 0.15, lead(op))}${fade(1, 0, 0.2, at - 0.1)}${markBox(sx, ty, (e - s) * c.g.paneChar, stroke, fill)}</g>`
       );
+      out += operatorMark(c, dx);
       out += paneText(c, tx, ty, before, 0, s, prev.expr);
       let old = paneText(c, sx, ty, before, s, e, prev.expr);
       let fresh = paneText(c, sx, ty, step.pane, s, s + length, step.expr);
@@ -1790,7 +2054,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       ) + "</g>";
       const destination = (chars) => rect(tx + ns * c.g.paneChar - 3, ty - 32, chars * c.g.paneChar + 6 - tight, 42, "none", P.write, 6, 2);
       out += walkBoxes(
-        paneLevels(op.name, step.pane.slice(ns, ne)),
+        paneLevels(walkOf(op), step.pane, ns),
         at + 0.4,
         destination,
         `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.3, at + 0.4)}${destination(ne - ns)}</g>`
@@ -1861,6 +2125,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         slot: step.pane.slice(...op.destination)
       });
     }
+    if (op.kind === "read" && op.compound) return format(S.compound, { ...op, name: codeName(op.name) });
     return format(S[op.kind], op);
   }
   class Integer {
@@ -1877,13 +2142,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     holds(value) {
       return this.wrap(value) === value;
-    }
-    /** The result of arithmetic in this type: unsigned wraps, signed overflow is undefined. */
-    result(value) {
-      if (this.signed && !this.holds(value)) {
-        throw new Unsupported("signed integer overflow is outside the timeline category");
-      }
-      return this.wrap(value);
     }
   }
   const INTEGERS = Object.freeze({
@@ -1944,10 +2202,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   });
   const bareSpelling = (spelling) => spelling.replace(/^const /, "").replace(/^std::/, "");
   function integerSpelled(spelling, aliases = {}) {
+    const name = integerName(spelling, aliases);
+    return name === null ? null : INTEGERS[name];
+  }
+  function integerName(spelling, aliases = {}) {
     const name = bareSpelling(spelling);
     const known = Object.hasOwn(ALIASES, name) ? ALIASES[name] : name;
     const canonical = Object.hasOwn(INTEGERS, known) || !Object.hasOwn(aliases, name) ? known : aliases[name];
-    return Object.hasOwn(INTEGERS, canonical) ? INTEGERS[canonical] : null;
+    return Object.hasOwn(INTEGERS, canonical) ? canonical : null;
   }
   function integerLiteral(spelling) {
     const match = spelling.trim().match(/^([-+]?)\s*(0[xX][0-9a-fA-F']+|0[bB][01']+|0[0-7']*|[1-9][0-9']*)(?:[uU](?:ll|LL|[lLzZ])?|(?:ll|LL|[lLzZ])[uU]?)?$/);
@@ -1962,7 +2224,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const part = (_a = previous.types) == null ? void 0 : _a.find(
       (t) => !t.slot && t.type === op.from && t.span[0] >= op.span[0] && t.span[1] <= op.span[1]
     );
-    return integerLiteral(previous.pane.slice(...(part == null ? void 0 : part.span) ?? op.span));
+    return integerLiteral(previous.pane.slice(...(part == null ? void 0 : part.span) ?? op.span).replace(/^\((.*)\)$/, "$1"));
   }
   function integerOf(m, spelling) {
     return integerSpelled(spelling ?? "int", m.trace.integers) ?? integerSpelled("int");
@@ -2306,7 +2568,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const ext = act.signBit === 1 ? { stroke: P.write, fill: P.writeFill } : { stroke: P.read, fill: P.readFill };
       const srcX = slotX(fromBytes.length - 1);
       const msbX = bitCx(srcX, 0);
-      const litAt = Math.max(0.2, at - 0.25);
+      const litAt2 = Math.max(0.2, at - 0.25);
       fromBytes.forEach((b, idx) => {
         const lsbPos = fromBytes.length - 1 - idx;
         const bx = slotX(lsbPos);
@@ -2316,7 +2578,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         }
         const lit = signFrame(bx, yBits, ext.stroke, ext.fill) + drawByte(bx, yBits, yHex, b, { bits: P.fg, hex: toCol, msb: ext.stroke });
         const plain = drawByte(bx, yBits, yHex, b, { bits: P.fg, hex: toCol });
-        out += animate ? swap(litAt, plain, scaled(msbX, yBits - 8, lit, litAt)) : lit;
+        out += animate ? swap(litAt2, plain, scaled(msbX, yBits - 8, lit, litAt2)) : lit;
       });
       const extCount = toBytes.length - fromBytes.length;
       const doneAt = at + (extCount - 1) * STAGGER + TRAVEL;
@@ -2396,6 +2658,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       __publicField(this, "elapsed");
       __publicField(this, "duration");
       __publicField(this, "rate");
+      /** Steps jump to their settled state instead of animating. */
+      __publicField(this, "instant");
       /** Memory's byte order, for a view that draws bytes. */
       __publicField(this, "littleEndian");
       __publicField(this, "running");
@@ -2416,6 +2680,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       __publicField(this, "typeBox");
       __publicField(this, "stacked");
       __publicField(this, "layoutWidth");
+      __publicField(this, "syncSpeedMenu", null);
       __publicField(this, "observer", null);
       __publicField(this, "P");
       __publicField(this, "g");
@@ -2428,6 +2693,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.elapsed = 0;
       this.duration = 0;
       this.rate = 1;
+      this.instant = false;
       this.littleEndian = true;
       this.running = false;
       this.continuous = false;
@@ -2452,7 +2718,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const button = (action, label, iconName, extra = "") => `<button type="button" class="cv-button${extra}" data-action="${action}" aria-label="${esc(label)}" title="${esc(label)}">${icon(iconName)}<span class="cv-label">${esc(label)}</span></button>`;
       const order = (side, label, title) => `<button type="button" class="cv-endian-seg" data-endian-side="${side}" aria-pressed="${side === "le" === this.littleEndian}" title="${esc(title)}">${esc(label)}</button>`;
       const endianToggle = this.view.byteOrder ? `<div class="cv-endian" role="group" aria-label="${esc(S.byteOrder)}">` + order("le", S.littleEndianShort, S.littleEndian) + order("be", S.bigEndianShort, S.bigEndian) + "</div>" : "";
-      root.innerHTML = `<div class="cv-view"><svg class="cv-stage" role="group" aria-label="${esc(S.stage)}" xmlns="http://www.w3.org/2000/svg"><g class="cv-scene" aria-hidden="true"></g><g class="cv-lines">${lineTargets(this.m, S)}</g></svg><div class="cv-type" aria-hidden="true" hidden></div></div><div class="cv-controls"><div class="cv-transport">` + button("play", S.play, "play", " cv-primary") + button("back", S.back, "back") + button("next", S.next, "next") + button("replay", S.replay, "replay", " cv-icon-only") + `<select class="cv-speed" aria-label="${esc(S.speed)}" title="${esc(S.speed)}">` + [0.5, 1, 1.5, 2].map((v) => `<option value="${v}"${v === 1 ? " selected" : ""}>${v}×</option>`).join("") + "</select>" + endianToggle + button("reset", S.reset, "reset", " cv-reset") + `</div><div class="cv-progress"><input class="cv-scrub" type="range" min="0" max="${this.m.steps.length - 1}" value="0" step="1" aria-label="${esc(S.scrub)}"><span class="cv-count"></span></div></div><div class="cv-status" aria-live="polite"></div>`;
+      root.innerHTML = `<div class="cv-view"><svg class="cv-stage" role="group" aria-label="${esc(S.stage)}" xmlns="http://www.w3.org/2000/svg"><g class="cv-scene" aria-hidden="true"></g><g class="cv-lines">${lineTargets(this.m, S)}</g></svg><div class="cv-type" aria-hidden="true" hidden></div></div><div class="cv-controls"><div class="cv-transport">` + button("play", S.play, "play", " cv-primary") + button("back", S.back, "back") + button("next", S.next, "next") + button("replay", S.replay, "replay", " cv-icon-only") + `<select class="cv-speed" aria-label="${esc(S.speed)}" title="${esc(S.speed)}">` + [0.5, 1, 1.5, 2].map((v) => `<option value="${v}"${v === 1 ? " selected" : ""}>${v}×</option>`).join("") + `<option value="instant" title="${esc(S.instant)}" aria-label="${esc(S.instant)}">⚡</option></select>` + endianToggle + button("reset", S.reset, "reset", " cv-reset") + `</div><div class="cv-progress"><input class="cv-scrub" type="range" min="0" max="${this.m.steps.length - 1}" value="0" step="1" aria-label="${esc(S.scrub)}"><span class="cv-count"></span></div></div><div class="cv-status" aria-live="polite"></div>`;
       this.host.append(root);
       this.root = root;
       this.svg = root.querySelector(".cv-stage");
@@ -2471,8 +2737,25 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         const side = (_b = event.target) == null ? void 0 : _b.closest("[data-endian-side]");
         if (side) this.byteOrder(side.dataset.endianSide === "le");
       });
-      root.querySelector(".cv-speed").addEventListener("change", (event) => {
-        this.rate = Number(event.target.value);
+      const menu = root.querySelector(".cv-speed");
+      const instant = menu.querySelector("option[value=instant]");
+      const spell = () => {
+        const focused = document.activeElement === menu;
+        instant.textContent = focused && menu.value !== "instant" ? `${S.instant} ⚡` : "⚡";
+      };
+      const syncMenu = () => {
+        const choice = this.instant ? "instant" : String(this.rate);
+        if (menu.value !== choice) menu.value = choice;
+        const label = choice === "instant" ? `${S.speed}: ${S.instant}` : S.speed;
+        menu.title = label;
+        menu.setAttribute("aria-label", label);
+        spell();
+      };
+      this.syncSpeedMenu = syncMenu;
+      menu.addEventListener("focus", spell);
+      menu.addEventListener("blur", spell);
+      menu.addEventListener("change", () => {
+        this.speed(menu.value);
       });
       this.scrub.addEventListener("input", () => {
         this.pristine = false;
@@ -2622,12 +2905,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const step = steps[this.index];
       const prev = this.index ? steps[this.index - 1] : null;
       const g = this.g;
-      const now = activeVariables(this.m, this.index);
-      const before = animate && this.index ? activeVariables(this.m, this.index - 1) : now;
-      const begin = /* @__PURE__ */ new Map();
-      if (animate && step.op && step.op.kind === "deref") {
-        begin.set(step.op.target.split(".")[0], arrival(step.op) - 0.15);
-      }
       const c = {
         m: this.m,
         g,
@@ -2638,7 +2915,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         prev,
         animate,
         op: animate ? step.op : null,
-        focus: { now, before, begin },
+        focus: stepFocus(this.m, this.index, animate),
         littleEndian: this.littleEndian
       };
       this.animated = animate;
@@ -2730,9 +3007,26 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.continuous = autoplay;
       this.index = index;
       this.elapsed = 0;
-      this.duration = this.view.stepSeconds(this.m, index);
-      this.render(true);
+      this.duration = this.instant ? autoplay ? T.instantHold : 0 : this.view.stepSeconds(this.m, index);
+      this.render(!this.instant);
       if (this.duration > 0 || autoplay) this.resume();
+    }
+    /**
+     * A speed menu choice: a playback rate, or `instant`. A step under way at Instant settles: a
+     * running one holds there before the next, a paused one stays paused.
+     */
+    speed(choice) {
+      var _a;
+      this.instant = choice === "instant";
+      if (!this.instant) this.rate = Number(choice);
+      (_a = this.syncSpeedMenu) == null ? void 0 : _a.call(this);
+      if (!this.instant || !this.animated) return;
+      if (this.running) {
+        this.start(this.index, this.continuous);
+      } else if (!this.finished) {
+        this.render(false);
+        this.elapsed = this.duration = 0;
+      }
     }
     resume() {
       this.running = true;
@@ -2758,10 +3052,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     tick(now) {
       this.frame = 0;
       if (!this.running) return;
-      this.elapsed = Math.min(
-        this.duration,
-        this.elapsed + (now - this.last) / 1e3 * this.rate
-      );
+      const rate = this.animated ? this.rate : 1;
+      this.elapsed = Math.min(this.duration, this.elapsed + (now - this.last) / 1e3 * rate);
       this.last = now;
       if (this.animated) this.seek(this.elapsed);
       if (this.elapsed < this.duration) {
@@ -2828,8 +3120,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.update();
     }
   }
-  const DEFAULT_CACHE_NAME = "clang-trace-frontend-v1";
-  const DEFAULT_WASM_URL = "./clang-trace-frontend.wasm";
+  const WASM_VERSION = 6;
+  const CACHE_PREFIX = "clang-trace-frontend-v";
+  const DEFAULT_CACHE_NAME = `${CACHE_PREFIX}${WASM_VERSION}`;
+  const DEFAULT_WASM_URL = `./clang-trace-frontend.wasm?v=${WASM_VERSION}`;
   class ClangWasmClient {
     constructor(options = {}) {
       __publicField(this, "wasmUrl");
@@ -2861,8 +3155,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         }
         this.pending.delete(response.id);
         if (response.type === "error") {
-          const { name, message } = response.error;
-          const err = name === "IllFormed" ? new IllFormed(message) : name === "Unsupported" ? new Unsupported(message) : new Error(message);
+          const { name, message, flag, diagnostic } = response.error;
+          const err = name === "NeedsFlag" && flag ? new NeedsFlag(diagnostic ?? message, flag) : name === "IllFormed" ? new IllFormed(message) : name === "Unsupported" ? new Unsupported(message) : new Error(message);
           err.name = name;
           call.reject(err);
           return;
@@ -3108,7 +3402,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       readyCached: (sizeMb, ms) => ms !== null ? `Clang WASM ready · cached (${sizeMb} MB, ${ms} ms)` : `Clang WASM ready · cached (${sizeMb} MB)`,
       readyDownloaded: (sizeMb, ms) => ms !== null ? `Clang WASM ready · downloaded & cached (${sizeMb} MB, ${ms} ms)` : `Clang WASM ready · downloaded & cached (${sizeMb} MB)`,
       traceTime: (ms) => `Traced in ${ms} ms`,
-      emptyPlaceholder: "Write a C++ snippet on the left and press Visualize."
+      emptyPlaceholder: "Write a C++ snippet on the left and press Visualize.",
+      turnOn: (flag) => `Turn on ${flag}`,
+      needsFlag: (flag) => `; with ${flag} on, the trace shows why`
     },
     ru: {
       title: "Песочница памяти и раскладки C++",
@@ -3130,7 +3426,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       readyCached: (sizeMb, ms) => ms !== null ? `Clang WASM готов · из кэша (${sizeMb} МБ, ${ms} мс)` : `Clang WASM готов · из кэша (${sizeMb} МБ)`,
       readyDownloaded: (sizeMb, ms) => ms !== null ? `Clang WASM готов · загружен и кэширован (${sizeMb} МБ, ${ms} мс)` : `Clang WASM готов · загружен и кэширован (${sizeMb} МБ)`,
       traceTime: (ms) => `Готово за ${ms} мс`,
-      emptyPlaceholder: "Введите фрагмент C++ слева и нажмите «Визуализировать»."
+      emptyPlaceholder: "Введите фрагмент C++ слева и нажмите «Визуализировать».",
+      turnOn: (flag) => `Включить «${flag}»`,
+      needsFlag: (flag) => `; если включить «${flag}», трасса покажет причину`
     }
   };
   function getLang() {
@@ -3244,6 +3542,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     editor.value = state.source;
     let currentView = null;
     let lastTrace = null;
+    let lastError = null;
+    let errorSource = null;
     let lastDurationMs = null;
     let lastLoadMeta = null;
     let isRunning = false;
@@ -3335,6 +3635,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       runBtn.disabled = isRunning;
       clearCacheBtn.textContent = copy.clearCache;
       emptyBox.textContent = copy.emptyPlaceholder;
+      if (!errorBox.hidden) renderError();
       if (lastLoadMeta) {
         const size = formatMb(lastLoadMeta.byteLength);
         wasmStatusBox.dataset.state = "ready";
@@ -3343,6 +3644,31 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         wasmStatusText.textContent = copy.checkingCache;
       }
       traceTimeEl.textContent = lastDurationMs !== null ? copy.traceTime(lastDurationMs) : "";
+    }
+    function renderError() {
+      const err = lastError;
+      const lang = getLang();
+      if (err instanceof NeedsFlag && isFlag(err.flag) && takesFlag(state.template, err.flag)) {
+        const flag = err.flag;
+        const label = FLAGS[flag].label[lang];
+        errorBox.replaceChildren(`IllFormed: ${err.diagnostic}`);
+        if (errorSource !== editor.value) return;
+        errorBox.append(UI_COPY[lang].needsFlag(label));
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "pg-btn pg-error-action";
+        button.textContent = UI_COPY[lang].turnOn(label);
+        button.addEventListener("click", () => {
+          var _a;
+          (_a = flagBtns.get(flag)) == null ? void 0 : _a.focus();
+          setFlag(flag, true);
+        });
+        errorBox.append(button);
+        return;
+      }
+      const prefix = err instanceof Unsupported ? `${err.name}: ` : "";
+      const message = err instanceof Error ? err.message : String(err);
+      errorBox.replaceChildren(`${prefix}${message}`);
     }
     function clearVisualization() {
       if (currentView) {
@@ -3381,9 +3707,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         clearVisualization();
         emptyBox.hidden = true;
         errorBox.hidden = false;
-        const prefix = err instanceof Unsupported ? `${err.name}: ` : "";
-        const message = err instanceof Error ? err.message : String(err);
-        errorBox.textContent = `${prefix}${message}`;
+        lastError = err;
+        errorSource = source;
+        renderError();
         lastTrace = null;
       } finally {
         if (seq === activeRunSeq) {
@@ -3441,10 +3767,16 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       renderStrings();
       syncUrl();
       if (lastTrace) {
-        const stepIndex = currentView instanceof Player ? currentView.index : null;
+        const prior = currentView instanceof Player ? {
+          index: currentView.index,
+          speed: currentView.instant ? "instant" : String(currentView.rate),
+          littleEndian: currentView.littleEndian
+        } : null;
         mountTrace(lastTrace);
-        if (currentView instanceof Player && stepIndex !== null) {
-          currentView.settle(stepIndex);
+        if (currentView instanceof Player && prior) {
+          currentView.speed(prior.speed);
+          currentView.byteOrder(prior.littleEndian);
+          currentView.settle(prior.index);
         }
       }
     });
@@ -3455,6 +3787,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     editor.addEventListener("input", () => {
       populatePresets();
       syncUrl();
+      if (!errorBox.hidden) renderError();
     });
     editor.addEventListener("keydown", (event) => {
       if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
@@ -3470,6 +3803,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         editor.setRangeText("  ", start, end, "end");
         populatePresets();
         syncUrl();
+        if (!errorBox.hidden) renderError();
       }
     });
     async function clearCache() {

@@ -1,6 +1,8 @@
 // Types in the pane: every name, literal and value carries its type, a declaration its slot.
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, test } from 'node:test';
 
 import {
@@ -10,7 +12,7 @@ import {
   type TraceStep,
   validate,
 } from '../src/core/trace_format.ts';
-import { scanDocument } from '../src/node/discover.ts';
+import { discover, scanDocument } from '../src/node/discover.ts';
 import * as tracing from '../src/node/tracing.ts';
 import { Unsupported } from '../src/node/tracing.ts';
 
@@ -26,7 +28,7 @@ function lines(trace: ExecutionTrace, line: number): string[][] {
 }
 
 const traceTyped = (source: string): ExecutionTrace =>
-  tracing.trace(source, { runtime: false, types: true });
+  tracing.trace(source, { types: true });
 
 describe('TypedPaneTests', () => {
   test('names_literals_and_values_carry_their_types', () => {
@@ -134,6 +136,11 @@ describe('MismatchTests', () => {
   test('an_initializer_after_the_equals_sign', () => {
     const [, last] = clash('int a = 5; int* p = a; return 0;');
     assert.deepEqual(typed(last), ['int* p:int*!', 'a:int']);
+  });
+
+  test('a clash can span a preprocessor directive', () => {
+    const [, last] = clash('int a = 5; int* p = a\n#if 1\n;\n#endif');
+    assert.deepEqual(fromTo(last), ['int', 'int*']);
   });
 
   test('an_assignment', () => {
@@ -247,6 +254,52 @@ describe('TypesTagTests', () => {
     for (const opening of ['<visualization types template="a">', '<visualization types="yes">']) {
       const result = scanDocument(document(`<!-- ${opening} -->\n<!-- </visualization> -->`));
       assert.ok(result.errors.length > 0, opening);
+    }
+  });
+});
+
+describe('DiscoverTypesHintTests', () => {
+  test('a_refused_tag_says_why_and_names_the_flag', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'discover-'));
+    try {
+      writeFileSync(join(repo, 'course-publishing.json'), JSON.stringify({ visualizations: { roots: ['labs'] } }));
+      mkdirSync(join(repo, 'labs'));
+      writeFileSync(join(repo, 'labs', 'a.md'), '# A\n\n```cpp\nint a = 5;\nint* p = a;\n```\n');
+      assert.throws(
+        () => discover(repo, { tag: ['labs/a.md:3'] }),
+        (err: unknown) => err instanceof Error && /labs\/a\.md:3 \(.*\(--types\)/.test(err.message)
+      );
+      discover(repo, { tag: ['labs/a.md:3'], flags: { types: true } });
+      assert.throws(
+        () => discover(repo, { tag: ['labs/a.md:3'] }),
+        (err: unknown) => err instanceof Error && /labs\/a\.md:3 \(already has a visualization tag\)/.test(err.message)
+      );
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test('every_refused_tag_says_why', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'discover-'));
+    try {
+      writeFileSync(join(repo, 'course-publishing.json'), JSON.stringify({ visualizations: { roots: ['labs'] } }));
+      mkdirSync(join(repo, 'labs'));
+      writeFileSync(join(repo, 'labs', 'a.md'), '# A\n\n```cpp\nint a = 5;\nint b = a;\n```\n\n```python\na = 5\n```\n');
+      const refusal = (line: number): RegExp => new RegExp(`labs/a\\.md:${line} \\(([^)]*)\\)`);
+      const reason = (line: number): string => {
+        try {
+          discover(repo, { tag: [`labs/a.md:${line}`] });
+        } catch (err) {
+          return (err as Error).message.match(refusal(line))?.[1] ?? (err as Error).message;
+        }
+        return 'accepted';
+      };
+      assert.equal(reason(8), 'not a C++ fence');
+      assert.equal(reason(1), 'no code fence starts on this line');
+      assert.equal(reason(3), 'accepted');
+      assert.equal(reason(3), 'already has a visualization tag');
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
     }
   });
 });

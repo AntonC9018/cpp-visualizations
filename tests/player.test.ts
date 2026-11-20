@@ -90,6 +90,71 @@ test('Enter on a code line keeps focus there and the arrow keys step', async () 
   assert.equal(await index(), firstStep(1) + 2);
 });
 
+test('the instant speed jumps to each settled state, and playing holds each a moment', async () => {
+  const player = (): Promise<{ index: number; animated: boolean; steps: number }> =>
+    page.evaluate(() => {
+      const p = (document.querySelector('.course-visualization') as PlayerElement).cvPlayer as unknown as {
+        index: number;
+        animated: boolean;
+        m: { steps: unknown[] };
+      };
+      return { index: p.index, animated: p.animated, steps: p.m.steps.length };
+    });
+  assert.deepEqual(
+    await page.$$eval('.cv-speed option', options => options.map(o => o.textContent)),
+    ['0.5×', '1×', '1.5×', '2×', '⚡']
+  );
+  assert.equal(await page.getAttribute('.cv-speed option[value=instant]', 'aria-label'), 'Instant');
+  await page.selectOption('.cv-speed', 'instant');
+  await page.click('[data-action=next]');
+  assert.deepEqual(await player(), { ...(await player()), index: 1, animated: false });
+  await page.click('[data-action=play]');
+  await page.clock.runFor(500);
+  assert.equal((await player()).index, 2, 'the next state shows at once');
+  await page.clock.runFor(1000);
+  assert.equal((await player()).index, 3, 'and holds before the one after');
+  const { steps } = await player();
+  await page.clock.runFor(steps * 1000);
+  assert.equal((await player()).index, steps - 1);
+});
+
+test('instant holds in wall-clock time and settles a paused step without playing it', async () => {
+  const player = (): Promise<{ index: number; animated: boolean; running: boolean }> =>
+    page.evaluate(() => {
+      const p = (document.querySelector('.course-visualization') as PlayerElement).cvPlayer as unknown as {
+        index: number;
+        animated: boolean;
+        running: boolean;
+      };
+      return { index: p.index, animated: p.animated, running: p.running };
+    });
+  // A word to find while the menu has focus, a glyph once chosen or left.
+  await page.focus('.cv-speed');
+  assert.equal(await page.textContent('.cv-speed option[value=instant]'), 'Instant ⚡');
+  await page.focus('[data-action=next]');
+  assert.equal(await page.textContent('.cv-speed option[value=instant]'), '⚡');
+
+  await page.selectOption('.cv-speed', '2');
+  await page.selectOption('.cv-speed', 'instant');
+  await page.click('[data-action=play]');
+  await page.clock.runFor(600);
+  assert.equal((await player()).index, 0, 'a hold does not follow the 2× rate');
+  await page.clock.runFor(400);
+  assert.equal((await player()).index, 1);
+  await page.click('[data-action=play]');
+
+  await page.selectOption('.cv-speed', '1');
+  await page.click('[data-action=next]');
+  await page.clock.runFor(300);
+  await page.click('[data-action=play]'); // pauses the step under way
+  assert.deepEqual(await player(), { index: 2, animated: true, running: false });
+  await page.selectOption('.cv-speed', 'instant');
+  assert.deepEqual(await player(), { index: 2, animated: false, running: false }, 'settled, still paused');
+  await page.click('[data-action=play]');
+  await page.clock.runFor(100);
+  assert.equal((await player()).index, 3, 'play goes on from the settled state');
+});
+
 test('a theme change keeps focus', async () => {
   await page.focus('.cv-line[data-line="2"]');
   await page.keyboard.press(' ');
@@ -134,7 +199,7 @@ test('a button disabled under focus hands focus to the player', async () => {
   assert.equal(await index(), 1);
 });
 
-// This fixture is emitted by the compiler/GDB tracer from lesson 05, example 26.
+// This fixture is emitted by the compiler-backed tracer from lesson 05, example 26.
 // Its copied pointer still points into s1, while s2.a keeps the old integer value.
 test('a generated struct trace plays shallow copies in both themes', async () => {
   const generated = JSON.parse(
@@ -224,7 +289,7 @@ test('generated array frames show an element address only when used', async () =
     int* p = &row[2];
     last = 7;
     p = nullptr;
-  `, { runtime: false });
+  `);
   const start = generated.variables.find(v => v.name === 'a')!.address;
   const address = start + 8;
   const errors: string[] = [];
@@ -265,7 +330,7 @@ test('the player wraps a long statement only as its available width shrinks', as
         std::array{1, 2}, {3, 4}, {5, 6},
     };
     arr[2][1] = 8;
-  `, { runtime: false });
+  `);
   await page.setViewportSize({ width: 1500, height: 900 });
   await page.setContent(PAGE.replace(trace, JSON.stringify(generated).replace(/</g, '\\u003c')));
   await page.evaluate(() => window.CourseVisualization!.scan());
@@ -305,8 +370,7 @@ test('the player wraps a long statement only as its available width shrinks', as
 
 test('a pointer to a narrow array element lands on its cell', async () => {
   const generated = traceSource(
-    'std::array<uint8_t, 32> a; a[0] = 1; auto p = &a[1];',
-    { runtime: false }
+    'std::array<uint8_t, 32> a; a[0] = 1; auto p = &a[1];'
   );
   await page.setContent(PAGE.replace(trace, JSON.stringify(generated).replace(/</g, '\\u003c')));
   await page.evaluate(() => window.CourseVisualization!.scan());
@@ -367,7 +431,7 @@ test('long pane type labels neither overlap nor leave the pane', async () => {
     'auto a = 1ull; std::cout << a;',
     'int a{ 5 }; int& r{ a };',
   ]) {
-    const typed = traceSource(source, { runtime: false, types: true });
+    const typed = traceSource(source, { types: true });
     await page.setContent(PAGE.replace(trace, JSON.stringify(typed).replace(/</g, '\\u003c')));
     await page.evaluate(() => window.CourseVisualization!.scan());
     await page.waitForSelector('.cv-player');
@@ -404,7 +468,6 @@ test('long pane type labels neither overlap nor leave the pane', async () => {
 
 test('a bits trace draws bytes in either order and copies the sign bit, in both themes', async () => {
   const bits = traceSource('int8_t a{ -3 }; int b{ static_cast<int>(a) }; uint8_t c{ 253 }; int d{ c };', {
-    runtime: false,
     bits: true,
   });
   const errors: string[] = [];
@@ -445,7 +508,7 @@ test('a bits trace draws bytes in either order and copies the sign bit, in both 
 });
 
 test('a bits trace reads hex literals and fits eight bytes in a narrow player', async () => {
-  const bits = traceSource('int16_t a{ 0x1234 }; int64_t b{ a };', { runtime: false, bits: true });
+  const bits = traceSource('int16_t a{ 0x1234 }; int64_t b{ a };', { bits: true });
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.setViewportSize({ width: 391, height: 900 });
@@ -473,7 +536,7 @@ test('a bits trace reads hex literals and fits eight bytes in a narrow player', 
 });
 
 test('a bits trace keeps the value in the workbench while printing it', async () => {
-  const bits = traceSource('int a{ 7 }; std::cout << a;', { runtime: false, bits: true });
+  const bits = traceSource('int a{ 7 }; std::cout << a;', { bits: true });
   await page.setContent(PAGE.replace(trace, JSON.stringify(bits).replace(/</g, '\\u003c')));
   await page.evaluate(() => window.CourseVisualization!.scan());
   await page.waitForSelector('.cv-player');
@@ -701,4 +764,55 @@ test('static layout fits the tape and field names in a narrow host without clipp
     assert.deepEqual(problems, [], `${name}: clipped, overflowing or overlapping elements`);
     await page.locator('.course-visualization').screenshot({ path: `/tmp/layout-${name}.png` });
   }
+});
+
+// `a += b` opens into `a = 5 + b` as the old value of a arrives at the operator.
+test('a compound assignment reads into its operator in both languages', async () => {
+  const generated = traceSource('struct P { int x; int y; }; P s{1, 2}; s.x += 4;');
+  const read = generated.steps.findIndex(step => step.op?.kind === 'read');
+  assert.equal(generated.steps[read].pane, 's.x = 1 + 4');
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  for (const [lang, theme, status] of [
+    ['en', 'dark', 'Read s.x: 1; s.x += … becomes s.x = 1 + …'],
+    ['ru', 'light', 'Чтение s.x: 1; s.x += … превращается в s.x = 1 + …'],
+  ] as const) {
+    await page.setContent(
+      PAGE.replace(trace, JSON.stringify(generated).replace(/</g, '\\u003c')).replace(
+        'lang="en" data-theme="dark"',
+        `lang="${lang}" data-theme="${theme}"`
+      )
+    );
+    await page.evaluate(() => window.CourseVisualization!.scan());
+    await page.waitForSelector('.cv-player');
+    const texts = await page.evaluate(stepIndex => {
+      const playerEl = (document.querySelector('.course-visualization') as PlayerElement).cvPlayer;
+      const shown: string[][] = [];
+      for (const progress of [0.1, 3]) {
+        playerEl.inspect(stepIndex, progress);
+        if (/NaN|undefined/.test(playerEl.svg.innerHTML)) throw new Error('invalid geometry');
+        shown.push([...playerEl.svg.querySelectorAll('text')].map(element => element.textContent ?? ''));
+      }
+      return shown;
+    }, read);
+    assert.ok(texts[0].join('').includes('s.x += 4'), 'the pane reads as written until the value arrives');
+    assert.ok(texts[1].join('').includes('= 1 +'), 'then the pane reads s.x = 1 + 4');
+    assert.equal(await page.locator('.cv-status').textContent(), status);
+  }
+  assert.deepEqual(errors, []);
+});
+
+// The bundled player shows floats as the tracer does: the shortest decimal that reads back.
+test('memory cells show the short float display', async () => {
+  const generated = traceSource('float f = 0.1f; double d = 1e20;');
+  await page.setContent(PAGE.replace(trace, JSON.stringify(generated).replace(/</g, '\\u003c')));
+  await page.evaluate(() => window.CourseVisualization!.scan());
+  await page.waitForSelector('.cv-player');
+  const texts = await page.evaluate(() => {
+    const playerEl = (document.querySelector('.course-visualization') as PlayerElement).cvPlayer;
+    playerEl.end();
+    return [...playerEl.svg.querySelectorAll('text')].map(element => element.textContent ?? '');
+  });
+  assert.ok(texts.includes('0.1') && texts.includes('1e+20'), texts.join(' | '));
+  assert.ok(!texts.some(text => text.includes('0.100000001')), 'no float noise digits');
 });
