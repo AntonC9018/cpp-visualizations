@@ -1622,7 +1622,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   function storedItems(text, where) {
     const braced = /^(?:[A-Za-z_]\w*)?\{[\s\S]*\}$/.test(text);
     const inner = braced ? text.slice(text.indexOf("{")) : text;
-    const items = braced ? inner.replace(/[{}]/g, "").split(",").map((s) => s.trim()) : [inner];
+    const items = braced ? inner.replace(/[A-Za-z_][\w:]*(?=\{)|[{}]/g, "").split(",").map((s) => s.trim()) : [inner];
     for (const item of items) {
       check(
         item === "nullptr" || item === UNKNOWN || LITERAL.test(item),
@@ -2351,12 +2351,15 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
     return Object.hasOwn(records, name);
   }
   function recordShape(record, records) {
-    return Object.fromEntries(
-      record.fields.map((field2) => {
-        const nested = field2.kind === "struct" && field2.type ? getRecord(records, field2.type) : void 0;
-        return [field2.name, nested ? recordShape(nested, records) : field2.floating ? field2.size : null];
-      })
-    );
+    return {
+      record: arrayType(record.name) ? null : record.name,
+      fields: Object.fromEntries(
+        record.fields.map((field2) => {
+          const nested = field2.kind === "struct" && field2.type ? getRecord(records, field2.type) : void 0;
+          return [field2.name, nested ? recordShape(nested, records) : field2.floating ? field2.size : null];
+        })
+      )
+    };
   }
   function shapeOf(node, records) {
     const float = floatType(node, records);
@@ -3724,10 +3727,12 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
       const address = this.addresses[pointer.target];
       return `0x${address.toString(16).padStart(16, "0")}`;
     }
-    show(value, shape) {
+    /** A value as the pane spells it; `named`, a record and those nested in it carry their names. */
+    show(value, shape, named = false) {
       if (isPlainObject(value)) {
-        const fields = shape !== null && typeof shape === "object" ? shape : {};
-        return `{${Object.entries(value).map(([field2, item]) => this.show(item, fields[field2] ?? null)).join(", ")}}`;
+        const record = shape !== null && typeof shape === "object" ? shape : null;
+        const fields = (record == null ? void 0 : record.fields) ?? {};
+        return `${named && (record == null ? void 0 : record.record) || ""}{${Object.entries(value).map(([field2, item]) => this.show(item, fields[field2] ?? null, named)).join(", ")}}`;
       }
       return displayNumber(this.stored(value), typeof shape === "number" ? shape : null);
     }
@@ -3798,7 +3803,7 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
           continue;
         }
         if (reduction.kind === "read") {
-          text2 = (reduction.record ?? "") + this.show(load(before, reduction.name), reduction.shape);
+          text2 = this.show(load(before, reduction.name), reduction.shape, reduction.record !== null);
           op2 = { kind: "read", name: reduction.name, value: text2 };
         } else if (reduction.kind === "addr") {
           text2 = String(this.addresses[reduction.name]);
@@ -3817,7 +3822,7 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
           text2 = this.show(reduction.value, reduction.shape);
           op2 = { kind: "convert", value: text2, from: reduction.source, to: reduction.type };
         } else {
-          text2 = (reduction.kind === "eval" ? reduction.record ?? "" : "") + this.show(reduction.value, reduction.shape);
+          text2 = this.show(reduction.value, reduction.shape, reduction.kind === "eval" && reduction.record !== null);
           op2 = { kind: "eval", value: text2 };
           if (isPlainObject(reduction.value) && spaceless(pane.read(reduction.span[0], reduction.span[1])) === spaceless(text2)) {
             text2 = pane.read(reduction.span[0], reduction.span[1]);

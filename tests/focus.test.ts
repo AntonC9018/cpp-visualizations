@@ -45,10 +45,11 @@ test('a read into a struct lights only its cell, as the walk reaches it', () => 
   assert.ok(focus.begin.get('s.in.b')! > 1);
 });
 
-test('cells stay as the statement reached them through its later steps', () => {
+test('a variable whose value went into the pane dims as the statement moves on', () => {
   const write = stepOf(m, 'write', 'y');
-  assert.deepEqual(cells(stepFocus(m, write, true).now), ['s.in.b']);
-  assert.deepEqual(changes(m, write), {});
+  assert.deepEqual(cells(stepFocus(m, write, true).now), []);
+  assert.deepEqual(changes(m, write), { 's.in.b': 0 });
+  assert.ok(!stepFocus(m, write, true).now.has('s'));
 });
 
 test('a write into a struct lights its cell only as the value lands', () => {
@@ -74,8 +75,9 @@ test('copying a field lights the source as read and the destination as written',
   const read = stepOf(c, 'read', 's.in');
   assert.deepEqual(cells(stepFocus(c, read, true).now, 'u.'), [], 'the destination waits for its value');
   const write = stepOf(c, 'write', 'u.in');
-  const focus = stepFocus(c, write, true);
-  assert.deepEqual(cells(focus.now), ['s.in.a', 's.in.b']);
+  assert.deepEqual(cells(stepFocus(c, read, true).now), ['s.in.a', 's.in.b']);
+  // The source dims as its value leaves the pane for the destination.
+  assert.deepEqual(cells(stepFocus(c, write, true).now), []);
   assert.deepEqual(changes(c, write, 'u.'), {
     'u.in.a': arrival(c.steps[write].op!),
     'u.in.b': arrival(c.steps[write].op!),
@@ -94,8 +96,8 @@ test('a dereference dims the siblings at once and lights its target as the arrow
   const deref = stepOf(d, 'deref', 's.a');
   const at = arrival(d.steps[deref].op!) - 0.15;
   assert.deepEqual(changes(d, deref), { 's.a': at });
-  // The read of s.b lit it; the next statement dims it straight away.
-  assert.deepEqual(changes(d, statementOf(d, deref)), { 's.b': 0 });
+  // The read of s.b lit it; the write of its value dims it straight away.
+  assert.deepEqual(changes(d, stepOf(d, 'write', 'r')), { 's.b': 0 });
 });
 
 test('an address walks to its cell and lights it as the walk lands', () => {
@@ -105,6 +107,14 @@ test('an address walks to its cell and lights it as the walk lands', () => {
   assert.deepEqual(walkOf(op), ['s', 's.a']);
   assert.ok(departure(op) > T.prepare);
   assert.deepEqual(changes(a, i), { 's.a': memoryWalk(['s', 's.a'], arrival(op)).at(-1)![0] });
+});
+
+test('the address of a struct lights none of its fields', () => {
+  const a = model('struct N { int f; int g; }; struct S { int x; N n; }; S s{ 1, { 2, 3 } }; N* p = &s.n;');
+  const i = stepOf(a, 'addr', 's.n');
+  assert.deepEqual(walkOf(a.steps[i].op as WalkingOperation), ['s', 's.n']);
+  assert.deepEqual(cells(stepFocus(a, i, true).now), []);
+  assert.ok(stepFocus(a, i, true).now.has('s'));
 });
 
 test('a chain a dereference arrived at walks only from where it arrived', () => {

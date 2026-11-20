@@ -1186,25 +1186,19 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return colours;
   }
   function activeVariables(m, i) {
-    const line = m.steps[i].line;
+    const step = m.steps[i];
     const active = /* @__PURE__ */ new Set();
-    const refs = m.steps[i].refs || {};
-    for (const token of m.source[line].match(/\b[A-Za-z_]\w*\b/g) || []) {
+    const refs = step.refs || {};
+    for (const [token] of step.pane.matchAll(new RegExp("(?<![\\w.]|->)[A-Za-z_]\\w*", "g"))) {
       if (m.top.includes(token)) active.add(token);
-      if (Object.prototype.hasOwnProperty.call(refs, token) && refs[token]) {
+      if (Object.hasOwn(refs, token) && refs[token]) {
         active.add(token);
         active.add(refs[token].split(".")[0]);
       }
     }
-    for (let j = i; j >= 0 && m.steps[j].line === line; j--) {
-      const op = m.steps[j].op;
-      if (!op) continue;
-      for (const key of ["name", "target", "via"]) {
-        if (key in op) {
-          const val = op[key];
-          if (val) active.add(val.split(".")[0]);
-        }
-      }
+    const op = step.op;
+    for (const name of [op == null ? void 0 : op.name, op == null ? void 0 : op.target, op == null ? void 0 : op.via]) {
+      if (name) active.add(name.split(".")[0]);
     }
     return active;
   }
@@ -1239,6 +1233,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     var _a;
     const target = reached(m.steps[j].op);
     const op = m.steps[j].op;
+    if ((op == null ? void 0 : op.kind) === "addr" && m.groups.some((group) => group.name === op.name)) return null;
     if (!target || (op == null ? void 0 : op.kind) !== "deref" && (op == null ? void 0 : op.kind) !== "alias") return target;
     const next = reached(((_a = m.steps[continuation(m, j)]) == null ? void 0 : _a.op) ?? null);
     return next && next.name !== target.name ? null : target;
@@ -1516,7 +1511,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const growing = grow !== null ? ` data-grow="${round(grow)}"` : "";
     return dim(
       c,
-      l.from.name.split(".")[0],
+      l.from.name,
       `<g>` + (fadeOut !== null ? fade(1, 0, 0.3, fadeOut) : "") + `<path d="${l.d}" fill="none" stroke="${c.P.bg}" stroke-width="9"${growing}/><path d="${l.d}" fill="none" stroke="${color}" stroke-width="2.5"${growing}/>` + (grow !== null ? `<g opacity="0">${fade(0, 1, 0.15, grow + 0.5)}${head}</g>` : head) + "</g>"
     );
   }

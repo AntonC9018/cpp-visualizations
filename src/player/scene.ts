@@ -352,9 +352,10 @@ function linkMarkup(
   const color = l.from.color;
   const head = `<path d="M -11 -6.5 L 0 0 L -11 6.5 Z" fill="${color}" transform="translate(${round(x)} ${y}) rotate(90)"/>`;
   const growing = grow !== null ? ` data-grow="${round(grow)}"` : '';
+  // An arrow dims with the pointer it leaves.
   return dim(
     c,
-    l.from.name.split('.')[0],
+    l.from.name,
     `<g>` +
       (fadeOut !== null ? fade(1, 0, 0.3, fadeOut) : '') +
       `<path d="${l.d}" fill="none" stroke="${c.P.bg}" stroke-width="9"${growing}/>` +

@@ -239,28 +239,26 @@ function typeColours(trace: ExecutionTrace): Map<string, number> {
   return colours;
 }
 
-// Variables the current statement involves stay bright; the rest dim to half. A pointer's
-// target joins once evaluation reaches it.
+/**
+ * The variables step `i` involves: those its pane still names, a reference's with it, and what
+ * its operation reads, writes, binds or goes through. One whose value went into the pane is no
+ * longer involved once the statement moves on, as `a` in `A b = a` is while `b` is written.
+ */
 export function activeVariables(m: PreparedModel, i: number): Set<string> {
-  const line = m.steps[i].line;
+  const step = m.steps[i];
   const active = new Set<string>();
-  const refs = m.steps[i].refs || {};
-  for (const token of m.source[line].match(/\b[A-Za-z_]\w*\b/g) || []) {
+  const refs = step.refs || {};
+  // A field's name, after `.` or `->`, is not a variable's.
+  for (const [token] of step.pane.matchAll(/(?<![\w.]|->)[A-Za-z_]\w*/g)) {
     if (m.top.includes(token)) active.add(token);
-    if (Object.prototype.hasOwnProperty.call(refs, token) && refs[token]) {
+    if (Object.hasOwn(refs, token) && refs[token]) {
       active.add(token);
       active.add(refs[token].split('.')[0]);
     }
   }
-  for (let j = i; j >= 0 && m.steps[j].line === line; j--) {
-    const op = m.steps[j].op;
-    if (!op) continue;
-    for (const key of ['name', 'target', 'via'] as const) {
-      if (key in op) {
-        const val = (op as unknown as Record<string, string | undefined>)[key];
-        if (val) active.add(val.split('.')[0]);
-      }
-    }
+  const op = step.op as Partial<Record<'name' | 'target' | 'via', string>> | null;
+  for (const name of [op?.name, op?.target, op?.via]) {
+    if (name) active.add(name.split('.')[0]);
   }
   return active;
 }
@@ -304,6 +302,8 @@ function statementStart(m: PreparedModel, i: number): number {
 function reachedIn(m: PreparedModel, j: number): { name: string; at: number } | null {
   const target = reached(m.steps[j].op);
   const op = m.steps[j].op;
+  // The address of a struct lights none of its fields: its walk outlines it whole.
+  if (op?.kind === 'addr' && m.groups.some(group => group.name === op.name)) return null;
   if (!target || (op?.kind !== 'deref' && op?.kind !== 'alias')) return target;
   const next = reached(m.steps[continuation(m, j)]?.op ?? null);
   return next && next.name !== target.name ? null : target;
