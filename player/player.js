@@ -772,6 +772,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     };
     const stackedCodeBudget = canvasBudget - 2 * MARGIN - STACK_TETHER_WIDTH;
     const initialCode = stacked ? fitCode(stackedCodeBudget) : unwrapped;
+    const besideCode = stacked || !Number.isFinite(canvasBudget) ? 0 : canvasBudget - unwrapped.width - COLUMN_GAP - 2 * MARGIN;
     const widest = Math.max(minByteWidth, m.leaves.some((leaf) => leaf.size < 4) ? NARROW_BYTE : MAX_BYTE);
     const rise = m.rise;
     const structs = m.groups.length > 0;
@@ -811,7 +812,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         (P.outputLabel.length + 1) * 26 * CHAR + outputChars * paneChar + 48,
         stacked ? initialCode.width : 0
       );
-      const byte = byteFor(Math.max(MEMORY_WIDTH, others - 48));
+      const byte = byteFor(Math.max(MEMORY_WIDTH, others - 48, besideCode - 48));
       const placed2 = placement(m, byte, rowOf2);
       const columnW2 = Math.max(others, placed2.width + 48);
       const codeBudget = stacked ? Math.max(columnW2, stackedCodeBudget) : canvasBudget - (columnW2 + COLUMN_GAP + 2 * MARGIN);

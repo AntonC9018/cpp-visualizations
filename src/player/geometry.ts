@@ -509,6 +509,8 @@ export function geometry(
   };
   const stackedCodeBudget = canvasBudget - 2 * MARGIN - STACK_TETHER_WIDTH;
   const initialCode = stacked ? fitCode(stackedCodeBudget) : unwrapped;
+  const besideCode =
+    stacked || !Number.isFinite(canvasBudget) ? 0 : canvasBudget - unwrapped.width - COLUMN_GAP - 2 * MARGIN;
 
   const widest = Math.max(minByteWidth, m.leaves.some(leaf => leaf.size < 4) ? NARROW_BYTE : MAX_BYTE);
   const rise = m.rise;
@@ -568,8 +570,9 @@ export function geometry(
       (P.outputLabel.length + 1) * 26 * CHAR + outputChars * paneChar + 48,
       stacked ? initialCode.width : 0
     );
-    // Memory takes the width the rest of the column already has, never less than its budget.
-    const byte = byteFor(Math.max(MEMORY_WIDTH, others - 48));
+    // Memory takes the width the rest of the column already has, or the viewport leaves beside
+    // the code, never less than its budget.
+    const byte = byteFor(Math.max(MEMORY_WIDTH, others - 48, besideCode - 48));
     const placed = placement(m, byte, rowOf);
     const columnW = Math.max(others, placed.width + 48);
     // Fit the source after reserving space for memory and the expression pane.
