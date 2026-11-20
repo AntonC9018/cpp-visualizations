@@ -1109,9 +1109,22 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   function chainDelay(levels) {
     return levels.length > 1 ? (levels.length - 1) * CHAIN_STEP + CHAIN_LEAD : 0;
   }
-  function paneLevels(walk, spelled) {
-    const levels = walk.map(codeName);
-    return levels.length > 1 && levels.every((level) => spelled.startsWith(level)) ? levels : null;
+  function paneLevels(walk, pane2, from) {
+    if (walk.length < 2) return null;
+    const tokens = (level) => codeName(level).match(/\w+|\S/g) ?? [];
+    const spelled = tokens(walk.at(-1));
+    const ends = [];
+    let at = pane2[from] === "&" ? from + 1 : from;
+    let k = 0;
+    for (const level of walk) {
+      for (const count = tokens(level).length; k < count; k++) {
+        while (/[\s()]/.test(pane2[at] ?? "")) at++;
+        if (!pane2.startsWith(spelled[k], at)) return null;
+        at += spelled[k].length;
+      }
+      ends.push(at - from);
+    }
+    return /\w/.test(pane2[at] ?? "") ? null : ends;
   }
   const memoryWalk = (levels, at) => walkWindows(levels.length, at + 0.15, CHAIN_LEAD);
   function walkWindows(count, end, offset = 0) {
@@ -1829,12 +1842,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       return `<g opacity="${hidden ? 0 : 1}">${appear}${fade(1, 0, 0.25, leave)}${wash}${outline(c, box, color)}</g>`;
     }).join("");
   }
-  function walkBoxes(levels, end, box, whole) {
-    if (!levels) return whole;
-    const windows = walkWindows(levels.length, end);
-    return levels.map((level, k) => {
+  function walkBoxes(ends, end, box, whole) {
+    if (!ends) return whole;
+    const windows = walkWindows(ends.length, end);
+    return ends.map((chars, k) => {
       const [begin, leave] = windows[k];
-      return `<g opacity="0">${fade(0, 1, 0.15, begin)}${fade(1, 0, 0.2, leave)}${box(level.length)}</g>`;
+      return `<g opacity="0">${fade(0, 1, 0.15, begin)}${fade(1, 0, 0.2, leave)}${box(chars)}</g>`;
     }).join("");
   }
   function valueBox(c, value, color, path, begin, travel, end) {
@@ -1941,6 +1954,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const at = arrival(op);
       const left = prev.pane.slice(0, s).trimEnd().length + " = ".length;
       out += exprBackground(c, tx, ty, step.expr, prev.expr, at);
+      const operand = prev.pane.length - prev.pane.trimStart().length;
+      out += walkBoxes(
+        paneLevels(walkOf(op), prev.pane, operand),
+        at - 0.1,
+        (chars) => markBox(tx + operand * c.g.paneChar, ty, chars * c.g.paneChar, P.read, P.readFill),
+        ""
+      );
       out += `<g opacity="0">${fade(0, 1, 0.15)}${hide(at)}${markBox(tx + s * c.g.paneChar, ty, (e - s) * c.g.paneChar, P.read, P.readFill)}</g><g opacity="0">${show(at)}${fade(1, 0, 0.3, at + 0.3)}${markBox(tx + left * c.g.paneChar, ty, op.value.length * c.g.paneChar, P.read, P.readFill)}</g>`;
       out += `<g>${hide(at)}${paneText(c, tx, ty, prev.pane, 0, prev.pane.length, prev.expr)}</g>`;
       out += `<g opacity="0">${show(at)}${paneText(c, tx, ty, step.pane, 0, step.pane.length, step.expr)}</g>`;
@@ -1955,11 +1975,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const sx = tx + s * c.g.paneChar;
       const [stroke, fill] = op.kind === "read" || op.kind === "addr" ? [P.read, P.readFill] : op.kind === "convert" ? [P.write, P.writeFill] : [P.fg, P.derefFill];
       out += exprBackground(c, tx, ty, step.expr, prev.expr, at + 0.1);
-      const lead = op.kind === "addr" && before[s] === "&" ? 1 : 0;
       out += walkBoxes(
-        op.kind === "read" || op.kind === "addr" ? paneLevels(walkOf(op), before.slice(s + lead, e)) : null,
+        op.kind === "read" || op.kind === "addr" ? paneLevels(walkOf(op), before, s) : null,
         at - 0.1,
-        (chars) => markBox(sx, ty, (chars + lead) * c.g.paneChar, stroke, fill),
+        (chars) => markBox(sx, ty, chars * c.g.paneChar, stroke, fill),
         `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.2, at - 0.1)}${markBox(sx, ty, (e - s) * c.g.paneChar, stroke, fill)}</g>`
       );
       out += paneText(c, tx, ty, before, 0, s, prev.expr);
@@ -1997,7 +2016,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       ) + "</g>";
       const destination = (chars) => rect(tx + ns * c.g.paneChar - 3, ty - 32, chars * c.g.paneChar + 6 - tight, 42, "none", P.write, 6, 2);
       out += walkBoxes(
-        paneLevels(walkOf(op), step.pane.slice(ns, ne)),
+        paneLevels(walkOf(op), step.pane, ns),
         at + 0.4,
         destination,
         `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.3, at + 0.4)}${destination(ne - ns)}</g>`

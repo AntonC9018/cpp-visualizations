@@ -599,19 +599,19 @@ function chainHighlight(c: SceneContext, op: WalkingOperation, at: number): stri
     .join('');
 }
 
-/** The pane's highlight box grows along the chain, `a` → `a.f` → `a.f[0]`. */
+/** The pane's highlight box grows along the chain, `a` → `a.f` → `a.f[0]`, to each level's end. */
 function walkBoxes(
-  levels: string[] | null,
+  ends: number[] | null,
   end: number,
   box: (chars: number) => string,
   whole: string
 ): string {
-  if (!levels) return whole;
-  const windows = walkWindows(levels.length, end);
-  return levels
-    .map((level, k) => {
+  if (!ends) return whole;
+  const windows = walkWindows(ends.length, end);
+  return ends
+    .map((chars, k) => {
       const [begin, leave] = windows[k];
-      return `<g opacity="0">${fade(0, 1, 0.15, begin)}${fade(1, 0, 0.2, leave)}${box(level.length)}</g>`;
+      return `<g opacity="0">${fade(0, 1, 0.15, begin)}${fade(1, 0, 0.2, leave)}${box(chars)}</g>`;
     })
     .join('');
 }
@@ -755,6 +755,14 @@ function paneBody(c: SceneContext, copying: boolean): string {
     const at = arrival(op);
     const left = prev.pane.slice(0, s).trimEnd().length + ' = '.length;
     out += exprBackground(c, tx, ty, step.expr, prev.expr, at);
+    // The operand it reads, the whole pane before the operator, grows its box along its chain.
+    const operand = prev.pane.length - prev.pane.trimStart().length;
+    out += walkBoxes(
+      paneLevels(walkOf(op), prev.pane, operand),
+      at - 0.1,
+      chars => markBox(tx + operand * c.g.paneChar, ty, chars * c.g.paneChar, P.read, P.readFill),
+      ''
+    );
     out +=
       `<g opacity="0">${fade(0, 1, 0.15)}${hide(at)}` +
       `${markBox(tx + s * c.g.paneChar, ty, (e - s) * c.g.paneChar, P.read, P.readFill)}</g>` +
@@ -788,11 +796,10 @@ function paneBody(c: SceneContext, copying: boolean): string {
           : [P.fg, P.derefFill];
     out += exprBackground(c, tx, ty, step.expr, prev.expr, at + 0.1);
     // `&a.f` grows its box from `&a`.
-    const lead = op.kind === 'addr' && before[s] === '&' ? 1 : 0;
     out += walkBoxes(
-      op.kind === 'read' || op.kind === 'addr' ? paneLevels(walkOf(op), before.slice(s + lead, e)) : null,
+      op.kind === 'read' || op.kind === 'addr' ? paneLevels(walkOf(op), before, s) : null,
       at - 0.1,
-      chars => markBox(sx, ty, (chars + lead) * c.g.paneChar, stroke, fill),
+      chars => markBox(sx, ty, chars * c.g.paneChar, stroke, fill),
       `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.2, at - 0.1)}${markBox(sx, ty, (e - s) * c.g.paneChar, stroke, fill)}</g>`
     );
     out += paneText(c, tx, ty, before, 0, s, prev.expr);
@@ -838,7 +845,7 @@ function paneBody(c: SceneContext, copying: boolean): string {
     const destination = (chars: number): string =>
       rect(tx + ns * c.g.paneChar - 3, ty - 32, chars * c.g.paneChar + 6 - tight, 42, 'none', P.write, 6, 2);
     out += walkBoxes(
-      paneLevels(walkOf(op), step.pane.slice(ns, ne)),
+      paneLevels(walkOf(op), step.pane, ns),
       at + 0.4,
       destination,
       `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.3, at + 0.4)}${destination(ne - ns)}</g>`

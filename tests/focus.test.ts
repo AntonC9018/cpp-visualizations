@@ -13,7 +13,7 @@ import {
   stepFocus,
   walkOf,
 } from '../src/player/model.ts';
-import { memoryWalk } from '../src/player/storage_path.ts';
+import { memoryWalk, paneLevels } from '../src/player/storage_path.ts';
 
 const model = (source: string): PreparedModel => prepare(trace(source));
 const stepOf = (m: PreparedModel, kind: string, name: string): number =>
@@ -228,4 +228,15 @@ test('a field reached through parentheses, spaces or a reference chain lights al
     );
     assert.deepEqual(cells(stepFocus(t, reach, true).now), ['s.a'], statement);
   }
+});
+
+test('the pane box of a walk ends where each level ends, however the chain is spaced', () => {
+  const walk = ['a', 'a.n', 'a.n.g'];
+  assert.deepEqual(paneLevels(walk, 'p = &a.n.g;', 4), [2, 4, 6]);
+  assert.deepEqual(paneLevels(walk, 'p = & a.n.g;', 4), [3, 5, 7]);
+  assert.deepEqual(paneLevels(walk, 'p = &(a).n.g;', 4), [3, 6, 8]);
+  assert.deepEqual(paneLevels(walk, 'a.n. g += 1', 0), [1, 3, 6]);
+  assert.deepEqual(paneLevels(['a', 'a.f', 'a.f.[0]'], 'a.f[ 0 ]', 0), [1, 3, 8]);
+  assert.equal(paneLevels(walk, 'a.n.gx', 0), null);
+  assert.equal(paneLevels(['a'], 'a', 0), null);
 });

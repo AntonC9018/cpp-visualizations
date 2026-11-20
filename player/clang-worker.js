@@ -1619,9 +1619,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     check(candidates.includes(step.pane), where, `${pyRepr(step.pane)} is not ${candidates.map(pyRepr).join(" or ")}`);
   }
   const LITERAL = /^≈?-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i;
-  const withoutNestedNames = (text) => text.replace(new RegExp("(?<=[{,]\\s*)[A-Za-z_][\\w:]*(?=\\{)", "g"), "");
+  const withoutNestedNames = (text) => text.replace(new RegExp("(?<=[{,]\\s*)[A-Za-z_][\\w:]*\\s*(?=\\{)", "g"), "");
   function storedItems(text, where) {
-    const braced = /^(?:[A-Za-z_]\w*)?\{[\s\S]*\}$/.test(text);
+    const braced = /^(?:[A-Za-z_][\w:]*\s*)?\{[\s\S]*\}$/.test(text);
     const inner = braced ? text.slice(text.indexOf("{")) : text;
     const items = braced ? withoutNestedNames(inner).replace(/[{}]/g, "").split(",").map((s) => s.trim()) : [inner];
     for (const item of items) {
