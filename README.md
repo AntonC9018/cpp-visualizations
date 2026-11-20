@@ -20,7 +20,7 @@ from a host repository, prefix the paths with `visualizations/`.
   `settings.ts` lists the templates and flags a trace can be asked for, and `snippet.ts`
   traces a snippet with them: the one entry point of the command line and the browser.
 - `src/node/` holds the native Clang adapter and CLI implementations
-  (`toolchain.ts`, `execution.ts`, `records.ts`, `layout.ts`, `tracing.ts`, `generate.ts`,
+  (`toolchain.ts`, `records.ts`, `layout.ts`, `tracing.ts`, `generate.ts`,
   `discover.ts`, `fixtures.ts`, `demo.ts`).
 - `src/player/` holds the modular TypeScript browser player (`constants.ts`, `svg.ts`,
   `model.ts`, `geometry.ts`, `scene.ts`, `player_view.ts`, `layout_view.ts`, `index.ts`), bundled
@@ -82,8 +82,9 @@ Clang checks each binding when it is made.
 Output prints one integer, floating-point or pointer value followed only by whitespace (`' '`, `'\t'`, `'\n'`) or
 `std::endl`. A statement of whitespace alone, such as `std::cout << std::endl;`, prints it as
 spelled; flushing is not shown. A pointer prints its normalized address as 8 bytes of
-hexadecimal (`64` → `0x0000000000000040`), one more step of the pane; the run's real,
-randomized address is checked but never published. A null pointer prints `0`. A string
+hexadecimal (`64` → `0x0000000000000040`), one more step of the pane. Nothing runs the
+program, so no real address exists: Clang's constant evaluation checks which object the
+pointer designates. A null pointer prints `0`. A string
 literal or another character is rejected.
 
 Integers of every width are values: `int`, `short`, `long`, `long long`, their unsigned kinds
@@ -214,7 +215,8 @@ nix develop --command npm run dev
 
 `player/playground.html` runs the isomorphic tracer (`src/core/`) inside a dedicated Web Worker
 against the Clang 21 WASM frontend at `player/clang-trace-frontend.wasm`. The worker downloads
-the checked-in module and stores it in the browser Cache API (`clang-trace-frontend-v2`).
+the checked-in module and stores it in the browser Cache API (`clang-trace-frontend-v<WASM_VERSION>`), deleting the
+caches of earlier versions.
 
 Rebuild the module with LLVM 21.1.8 sources, host TableGen tools and WASI clang. When using a
 pristine LLVM source tarball, apply the WASI executable-path patch in the source tree first.
@@ -225,7 +227,7 @@ JOBS=4 ./wasm/build.sh
 ```
 
 `wasm/build.sh` accepts paths to the sources and tools through its environment variables.
-Update the browser cache name when changing the frontend protocol.
+Bump `WASM_VERSION` in `src/browser/cache.ts` with every rebuilt binary.
 
 The playground and `generate.mjs trace` share the tracer and use Clang's AST and constant
 evaluator. The playground runs its compiler in WASM with virtual headers for `<iostream>`,

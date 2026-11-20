@@ -4,9 +4,11 @@ import { accessSync, constants, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 
-import { Unsupported, illFormed, type AstNode, type CompilerFrontend } from '../core/errors.ts';
+import {
+  STANDARD_FLAGS, Unsupported, illFormed, type AstNode, type CompilerFrontend, type Standard,
+} from '../core/errors.ts';
 import { extractEnumConstantSizes } from '../core/records.ts';
-import { parseAstDump, readTokens, requireMain } from '../core/source.ts';
+import { type TokenizedSource, parseAstDump, readTokens } from '../core/source.ts';
 
 export { Unsupported };
 
@@ -71,81 +73,54 @@ function withDirectory<T>(directory: string | undefined, fn: (dir: string) => T)
 }
 
 export function createClangFrontend(directory?: string): CompilerFrontend {
+  /** Run Clang on `program` with the shared language options; the path names it in diagnostics. */
+  const clang = (program: string, args: string[], standard: Standard = 'c++20'): CommandResult & { path: string } =>
+    withDirectory(directory, dir => {
+      const path = join(dir, 'source.cpp');
+      writeFileSync(path, program);
+      const result = run([
+        tool('CLANGXX', 'clang++'), ...STANDARD_FLAGS[standard], '-fsyntax-only', '-fno-color-diagnostics',
+        ...args, path,
+      ]);
+      return { ...result, path };
+    });
+  // A program's tokens are read again for each check on the same snippet.
+  const lexed = new Map<string, TokenizedSource>();
+
   return {
-    tokens(program, options) {
-      return withDirectory(directory, dir => {
-        const path = join(dir, 'source.cpp');
-        writeFileSync(path, program);
-        const result = run([
-          tool('CLANGXX', 'clang++'), '-std=c++20', '-fsyntax-only', '-fno-color-diagnostics',
-          '-Werror=extra-tokens', '-H', '-Xclang', '-dump-tokens', path,
-        ]);
-        if (result.returncode !== 0) {
-          throw illFormed(result.stderr, program);
-        }
-        return readTokens(result.stderr, path, program, options);
-      });
+    tokens(program, { ignoreExpansions = false } = {}) {
+      const key = `${ignoreExpansions}\0${program}`;
+      let tokens = lexed.get(key);
+      if (!tokens) {
+        const result = clang(program, ['-H', '-Xclang', '-dump-tokens']);
+        if (result.returncode !== 0) throw illFormed(result.stderr, program);
+        tokens = readTokens(result.stderr, result.path, program, { ignoreExpansions });
+        lexed.set(key, tokens);
+      }
+      return tokens;
     },
 
     astDump(program, filter, standard = 'c++20') {
-      return withDirectory(directory, dir => {
-        const path = join(dir, 'source.cpp');
-        writeFileSync(path, program);
-        const result = run([
-          tool('CLANGXX', 'clang++'), '-std=' + standard, '-fsyntax-only', '-fno-color-diagnostics',
-          ...(standard === 'c++2c' ? ['-Wno-builtin-macro-redefined', '-D__cplusplus=202002L'] : []),
-          '-Xclang', '-ast-dump=json',
-          '-Xclang', '-ast-dump-filter=' + filter,
-          path,
-        ]);
-        if (result.returncode !== 0) throw illFormed(result.stderr, program);
-        return parseAstDump(result.stdout);
-      });
-    },
-
-    mainAst(program) {
-      return requireMain(this.astDump(program, 'main'));
+      const result = clang(program, ['-Xclang', '-ast-dump=json', '-Xclang', '-ast-dump-filter=' + filter], standard);
+      if (result.returncode !== 0) throw illFormed(result.stderr, program);
+      return parseAstDump(result.stdout);
     },
 
     recordLayoutsDump(program: string): string {
-      return withDirectory(directory, dir => {
-        const path = join(dir, 'source.cpp');
-        if (program) {
-          writeFileSync(path, program);
-        }
-        const result = run([
-          tool('CLANGXX', 'clang++'),
-          '-std=c++20',
-          '-fsyntax-only',
-          '-Xclang',
-          '-fdump-record-layouts-complete',
-          path,
-        ]);
-        if (result.returncode !== 0) {
-          throw new Unsupported('Clang could not compute record layouts');
-        }
-        return result.stdout;
-      });
+      const result = clang(program, ['-Xclang', '-fdump-record-layouts-complete']);
+      if (result.returncode !== 0) {
+        throw new Unsupported('Clang could not compute record layouts');
+      }
+      return result.stdout;
     },
 
     typeSizes(types: string[]): Record<string, number> {
-      return withDirectory(directory, dir => {
-        const path = join(dir, 'sizes.cpp');
-        const probe = types.map((t, i) => `enum { __course_${i} = sizeof(${t}) };\n`).join('');
-        writeFileSync(path, probe);
-        const result = run([
-          tool('CLANGXX', 'clang++'),
-          '-std=c++20',
-          '-fsyntax-only',
-          '-Xclang',
-          '-ast-dump=json',
-          path,
-        ]);
-        if (result.returncode !== 0) {
-          throw new Unsupported('Clang could not obtain field sizes');
-        }
-        return extractEnumConstantSizes(JSON.parse(result.stdout) as AstNode, types);
-      });
+      const probe = types.map((t, i) => `enum { __course_${i} = sizeof(${t}) };\n`).join('');
+      const result = clang(probe, ['-Xclang', '-ast-dump=json']);
+      if (result.returncode !== 0) {
+        throw new Unsupported('Clang could not obtain field sizes');
+      }
+      return extractEnumConstantSizes(JSON.parse(result.stdout) as AstNode, types);
     },
   };
 }

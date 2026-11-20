@@ -88,6 +88,7 @@ export class ClangNumbers {
 
 export interface ReplayStep {
   source: string;
+  /** A definition before main, which the preamble already holds. */
   global: boolean;
   output: boolean;
   checks: string[];
@@ -115,11 +116,7 @@ export function verifyReplay(
   preamble: string,
   steps: ReplayStep[]
 ): void {
-  const chunks = [preamble, CHECKS];
-  for (const step of steps) {
-    if (step.global) chunks.push(step.source, '\n');
-  }
-  chunks.push('constexpr int __course_replay() {\n');
+  const chunks = [preamble, CHECKS, 'constexpr int __course_replay() {\n'];
   // These statements came from the C++20 token stream. Selecting them before replay
   // keeps feature-test macros and conditional directives from choosing another branch.
   for (const [index, step] of steps.entries()) {

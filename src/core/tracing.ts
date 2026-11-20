@@ -1579,9 +1579,10 @@ function cutMismatch(file: SourceFile, error: IllFormed, frontend: CompilerFront
     throw error;
   }
 
+  // A first statement leaves nothing to trace before the mismatch.
   let begin = point - 1;
-  while (begin >= 0 && tokens[begin].kind !== 'semi') begin--;
-  if (begin < 0) throw error;
+  while (begin >= file.bodyStart && tokens[begin].kind !== 'semi') begin--;
+  if (begin < file.bodyStart) throw error;
   const start = tokens[begin + 1].start;
   if (tokens[point].kind === 'equal') {
     point++;
@@ -2126,8 +2127,6 @@ class Renderer {
  * `types` and takes integer variables only.
  */
 export interface TraceOptions extends Flags {
-  /** Legacy option accepted by callers. All traces now use Clang constant evaluation. */
-  runtime?: boolean;
   frontend: CompilerFrontend;
   /** The caller's own checks, which throw: a flag is suggested only for a trace they accept. */
   accept?: (trace: ExecutionTrace) => void;
@@ -2140,7 +2139,7 @@ export interface TraceOptions extends Flags {
 function tracesWithTypes(source: string, options: TraceOptions, error: IllFormed): boolean {
   if (!MISMATCHES.some(pattern => pattern.test(error.message))) return false;
   try {
-    const traced = traceWithFrontend(source, { ...options, types: true, runtime: false });
+    const traced = traceWithFrontend(source, { ...options, types: true });
     options.accept?.(traced);
     return true;
   } catch {

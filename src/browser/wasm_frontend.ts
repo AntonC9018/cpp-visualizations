@@ -1,46 +1,36 @@
 // CompilerFrontend implementation backed by the trimmed Clang WASM binary.
-import { type AstNode, type CompilerFrontend, Unsupported, illFormed } from '../core/errors.ts';
+import {
+  type AstNode, type CompilerFrontend, STANDARD_FLAGS, type Standard, Unsupported, illFormed,
+} from '../core/errors.ts';
 import { extractEnumConstantSizes } from '../core/records.ts';
 import type { Template, TraceSettings } from '../core/settings.ts';
 import { type TraceOf, traceSnippet } from '../core/snippet.ts';
-import { parseAstDump, readTokens, requireMain } from '../core/source.ts';
+import { parseAstDump, readTokens } from '../core/source.ts';
 import { ARRAY_PREAMBLE } from './array_header.ts';
 import { runWasiModule } from './wasi.ts';
 
 
 export function createWasmClangFrontend(module: WebAssembly.Module): CompilerFrontend {
+  /** Run the frontend on `program` with the shared language options. */
+  const clang = (program: string, args: string[], standard: Standard = 'c++20') =>
+    runWasiModule(module, { args: ['clang-trace-frontend', ...STANDARD_FLAGS[standard], ...args, '-'], stdin: program });
+
   return {
     arrayPreamble: ARRAY_PREAMBLE,
     tokens(program, options) {
-      const result = runWasiModule(module, {
-        args: ['clang-trace-frontend', '-Xclang', '-dump-tokens', '-'],
-        stdin: program,
-      });
+      const result = clang(program, ['-Xclang', '-dump-tokens']);
       if (result.returncode !== 0) throw illFormed(result.stderr, program);
       return readTokens(result.stderr, '/virtual/source.cpp', program, options);
     },
 
     astDump(program, filter, standard = 'c++20') {
-      const result = runWasiModule(module, {
-        args: [
-          'clang-trace-frontend', '-std=' + standard,
-          '-Xclang', '-ast-dump=json', '-Xclang', '-ast-dump-filter=' + filter, '-',
-        ],
-        stdin: program,
-      });
+      const result = clang(program, ['-Xclang', '-ast-dump=json', '-Xclang', '-ast-dump-filter=' + filter], standard);
       if (result.returncode !== 0) throw illFormed(result.stderr, program);
       return parseAstDump(result.stdout);
     },
 
-    mainAst(program) {
-      return requireMain(this.astDump(program, 'main'));
-    },
-
     recordLayoutsDump(program: string): string {
-      const result = runWasiModule(module, {
-        args: ['clang-trace-frontend', '-Xclang', '-fdump-record-layouts-complete', '-'],
-        stdin: program,
-      });
+      const result = clang(program, ['-Xclang', '-fdump-record-layouts-complete']);
       if (result.returncode !== 0) {
         throw new Unsupported('Clang could not compute record layouts');
       }
@@ -50,10 +40,7 @@ export function createWasmClangFrontend(module: WebAssembly.Module): CompilerFro
     typeSizes(types: string[]): Record<string, number> {
       if (types.length === 0) return {};
       const probe = types.map((t, i) => `enum { __course_${i} = sizeof(${t}) };\n`).join('');
-      const result = runWasiModule(module, {
-        args: ['clang-trace-frontend', '-Xclang', '-ast-dump=json', '-'],
-        stdin: probe,
-      });
+      const result = clang(probe, ['-Xclang', '-ast-dump=json']);
       if (result.returncode !== 0) {
         throw new Unsupported('Clang could not obtain field sizes');
       }

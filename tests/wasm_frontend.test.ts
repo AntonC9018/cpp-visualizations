@@ -18,6 +18,7 @@ import { createWasmClangFrontend, traceWithWasmModule } from '../src/browser/was
 import { Unsupported } from '../src/core/errors.ts';
 import { dumpsSorted } from '../src/core/json_format.ts';
 import { traceSnippet } from '../src/core/snippet.ts';
+import { mainAst } from '../src/core/source.ts';
 import { validate } from '../src/core/trace_format.ts';
 import { traceWithFrontend } from '../src/core/tracing.ts';
 import { createClangFrontend } from '../src/node/toolchain.ts';
@@ -64,6 +65,10 @@ class MemoryCacheStorage {
 
   async delete(cacheName: string): Promise<boolean> {
     return this.caches.delete(cacheName);
+  }
+
+  async keys(): Promise<string[]> {
+    return [...this.caches.keys()];
   }
 }
 
@@ -144,6 +149,15 @@ describe('WasiAndCacheTests', () => {
     assert.equal(await hasCachedWasm(wasmUrl, { cachesImpl: storage }), false);
   });
 
+  test('loadWasmModule deletes the caches of earlier binaries', async () => {
+    const storage = new MemoryCacheStorage() as unknown as CacheStorage;
+    await storage.open('clang-trace-frontend-v1');
+    await storage.open('another-cache');
+    const fetchImpl = (async () => new Response(TINY_VALID_WASM, { status: 200 })) as unknown as typeof fetch;
+    await loadWasmModule('https://example.test/clang.wasm', { cachesImpl: storage, fetchImpl });
+    assert.deepEqual((await storage.keys()).sort(), ['another-cache', DEFAULT_CACHE_NAME]);
+  });
+
   test('loadWasmModule deduplicates concurrent loads and evicts corrupt cache entries', async () => {
     const storage = new MemoryCacheStorage() as unknown as CacheStorage;
     const wasmUrl = 'https://example.test/assets/clang-concurrent.wasm';
@@ -197,7 +211,6 @@ describe('ClangWasmParityTests', { skip: !existsSync(WASM_PATH) }, () => {
     for (const preset of PRESETS) {
       const wasmOut = traceWithWasmModule(preset.source, wasmModule, preset.settings);
       const nativeOut = traceSnippet(preset.source, preset.settings, {
-        runtime: false,
         frontend: nativeFrontend,
       });
       assert.equal(dumpsSorted(wasmOut), dumpsSorted(nativeOut), `parity for ${preset.id}`);
@@ -215,11 +228,13 @@ describe('ClangWasmParityTests', { skip: !existsSync(WASM_PATH) }, () => {
       'float f = 0.1f; double d = 0.1 + 0.2; float neg = -0.0f;',
       'int n=3; void* p=&n; int* q=static_cast<int*>(p); *q += 2;',
       'struct P { int x; }; P s{ 5 }; P* p{ &s }; p->x -= 2; short c = 1; c += 1; double d = 1; d *= c;',
+      'struct data { int x; };\nint main() {\n    data v{1};\n    v.x = v.x + 2;\n}',
+      '#include <iostream>\n#include <array>\nint n = 1;\nstd::array a{n, 2};\n#include <cstdint>\nn += a[1];',
     ];
     for (const source of moreTraces) {
       assert.equal(
         dumpsSorted(traceWithWasmModule(source, wasmModule, EXECUTION)),
-        dumpsSorted(traceWithFrontend(source, { runtime: false, frontend: nativeFrontend }))
+        dumpsSorted(traceWithFrontend(source, { frontend: nativeFrontend }))
       );
     }
 
@@ -247,6 +262,6 @@ describe('ClangWasmParityTests', { skip: !existsSync(WASM_PATH) }, () => {
     for (const bad of badSnippets) {
       assert.throws(() => traceWithWasmModule(bad, wasmModule, EXECUTION), Unsupported);
     }
-    assert.throws(() => wasmFrontend.mainAst('int main() { unknown_sym; }'), Unsupported);
+    assert.throws(() => mainAst(wasmFrontend, 'int main() { unknown_sym; }'), Unsupported);
   });
 });

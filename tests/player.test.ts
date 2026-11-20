@@ -289,7 +289,7 @@ test('generated array frames show an element address only when used', async () =
     int* p = &row[2];
     last = 7;
     p = nullptr;
-  `, { runtime: false });
+  `);
   const start = generated.variables.find(v => v.name === 'a')!.address;
   const address = start + 8;
   const errors: string[] = [];
@@ -330,7 +330,7 @@ test('the player wraps a long statement only as its available width shrinks', as
         std::array{1, 2}, {3, 4}, {5, 6},
     };
     arr[2][1] = 8;
-  `, { runtime: false });
+  `);
   await page.setViewportSize({ width: 1500, height: 900 });
   await page.setContent(PAGE.replace(trace, JSON.stringify(generated).replace(/</g, '\\u003c')));
   await page.evaluate(() => window.CourseVisualization!.scan());
@@ -370,8 +370,7 @@ test('the player wraps a long statement only as its available width shrinks', as
 
 test('a pointer to a narrow array element lands on its cell', async () => {
   const generated = traceSource(
-    'std::array<uint8_t, 32> a; a[0] = 1; auto p = &a[1];',
-    { runtime: false }
+    'std::array<uint8_t, 32> a; a[0] = 1; auto p = &a[1];'
   );
   await page.setContent(PAGE.replace(trace, JSON.stringify(generated).replace(/</g, '\\u003c')));
   await page.evaluate(() => window.CourseVisualization!.scan());
@@ -432,7 +431,7 @@ test('long pane type labels neither overlap nor leave the pane', async () => {
     'auto a = 1ull; std::cout << a;',
     'int a{ 5 }; int& r{ a };',
   ]) {
-    const typed = traceSource(source, { runtime: false, types: true });
+    const typed = traceSource(source, { types: true });
     await page.setContent(PAGE.replace(trace, JSON.stringify(typed).replace(/</g, '\\u003c')));
     await page.evaluate(() => window.CourseVisualization!.scan());
     await page.waitForSelector('.cv-player');
@@ -469,7 +468,6 @@ test('long pane type labels neither overlap nor leave the pane', async () => {
 
 test('a bits trace draws bytes in either order and copies the sign bit, in both themes', async () => {
   const bits = traceSource('int8_t a{ -3 }; int b{ static_cast<int>(a) }; uint8_t c{ 253 }; int d{ c };', {
-    runtime: false,
     bits: true,
   });
   const errors: string[] = [];
@@ -510,7 +508,7 @@ test('a bits trace draws bytes in either order and copies the sign bit, in both 
 });
 
 test('a bits trace reads hex literals and fits eight bytes in a narrow player', async () => {
-  const bits = traceSource('int16_t a{ 0x1234 }; int64_t b{ a };', { runtime: false, bits: true });
+  const bits = traceSource('int16_t a{ 0x1234 }; int64_t b{ a };', { bits: true });
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.setViewportSize({ width: 391, height: 900 });
@@ -538,7 +536,7 @@ test('a bits trace reads hex literals and fits eight bytes in a narrow player', 
 });
 
 test('a bits trace keeps the value in the workbench while printing it', async () => {
-  const bits = traceSource('int a{ 7 }; std::cout << a;', { runtime: false, bits: true });
+  const bits = traceSource('int a{ 7 }; std::cout << a;', { bits: true });
   await page.setContent(PAGE.replace(trace, JSON.stringify(bits).replace(/</g, '\\u003c')));
   await page.evaluate(() => window.CourseVisualization!.scan());
   await page.waitForSelector('.cv-player');
@@ -770,7 +768,7 @@ test('static layout fits the tape and field names in a narrow host without clipp
 
 // `a += b` opens into `a = 5 + b` as the old value of a arrives at the operator.
 test('a compound assignment reads into its operator in both languages', async () => {
-  const generated = traceSource('struct P { int x; int y; }; P s{1, 2}; s.x += 4;', { runtime: false });
+  const generated = traceSource('struct P { int x; int y; }; P s{1, 2}; s.x += 4;');
   const read = generated.steps.findIndex(step => step.op?.kind === 'read');
   assert.equal(generated.steps[read].pane, 's.x = 1 + 4');
   const errors: string[] = [];
@@ -806,7 +804,7 @@ test('a compound assignment reads into its operator in both languages', async ()
 
 // The bundled player shows floats as the tracer does: the shortest decimal that reads back.
 test('memory cells show the short float display', async () => {
-  const generated = traceSource('float f = 0.1f; double d = 1e20;', { runtime: false });
+  const generated = traceSource('float f = 0.1f; double d = 1e20;');
   await page.setContent(PAGE.replace(trace, JSON.stringify(generated).replace(/</g, '\\u003c')));
   await page.evaluate(() => window.CourseVisualization!.scan());
   await page.waitForSelector('.cv-player');

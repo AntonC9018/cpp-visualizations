@@ -63,8 +63,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return new IllFormed(message, offset);
   }
-  const DEFAULT_CACHE_NAME = "clang-trace-frontend-v2";
-  const DEFAULT_WASM_URL = "./clang-trace-frontend.wasm?v=2";
+  const STANDARD_FLAGS = {
+    "c++20": ["-std=c++20", "-Werror=extra-tokens"],
+    "c++2c": ["-std=c++2c", "-Werror=extra-tokens", "-Wno-builtin-macro-redefined", "-D__cplusplus=202002L"]
+  };
+  const WASM_VERSION = 3;
+  const CACHE_PREFIX = "clang-trace-frontend-v";
+  const DEFAULT_CACHE_NAME = `${CACHE_PREFIX}${WASM_VERSION}`;
+  const DEFAULT_WASM_URL = `./clang-trace-frontend.wasm?v=${WASM_VERSION}`;
   const inFlight = /* @__PURE__ */ new Map();
   function resolveWasmUrl(wasmUrl) {
     var _a;
@@ -88,6 +94,15 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       return await storage.open(cacheName);
     } catch {
       return null;
+    }
+  }
+  async function deleteStaleCaches(storage, cacheName) {
+    if (!storage || !cacheName.startsWith(CACHE_PREFIX)) return;
+    try {
+      for (const name of await storage.keys()) {
+        if (name.startsWith(CACHE_PREFIX) && name !== cacheName) await storage.delete(name);
+      }
+    } catch {
     }
   }
   async function readResponseWithProgress(response, onProgress) {
@@ -169,6 +184,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const fetchFn = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
       const storage = getCacheStorage(options.cachesImpl);
       onProgress == null ? void 0 : onProgress({ phase: "checking-cache" });
+      void deleteStaleCaches(storage, cacheName);
       const cache = await openCacheSafe(storage, cacheName);
       let bytes = null;
       let fromCache = false;
@@ -729,49 +745,118 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   function arrayHeader(source, frontend) {
     return /\barray\b/.test(source) ? (frontend == null ? void 0 : frontend.arrayPreamble) ?? "#include <array>\n" : "";
   }
+  const USING_STD = "using namespace std;\n";
+  const INCLUDE_LINE = /^[ \t]*(?:#|%:)[ \t]*include[ \t]*<([^<>\r\n]+)>[ \t]*(?:\/\/[^\r\n]*)?$/gm;
+  function blank(text) {
+    return text.replace(/[^\r\n]/g, " ");
+  }
+  function lex(source, frontend, ignoreExpansions) {
+    var _a;
+    const array = arrayHeader(source, frontend);
+    const lines = [...source.matchAll(INCLUDE_LINE)];
+    const includeLines = lines.map((line) => [line.index, line.index + line[0].length]);
+    const directives = ((_a = source.match(/#|%:/g)) == null ? void 0 : _a.length) ?? 0;
+    if (directives === 0 || directives === lines.length && !/\/\*|R"/.test(source)) {
+      let text = source;
+      for (const [start, end] of includeLines) text = text.slice(0, start) + blank(text.slice(start, end)) + text.slice(end);
+      return {
+        tokens: frontend.tokens(text, { ignoreExpansions }).tokens,
+        includes: HEADERS + array + lines.map((line) => `#include <${line[1]}>
+`).join(""),
+        includeLines,
+        movable: true
+      };
+    }
+    const context = HEADERS + array + USING_STD;
+    const lexed = frontend.tokens(context + source, { ignoreExpansions });
+    const includes = lexed.includes.map((path) => {
+      if (path.includes(">")) throw new Unsupported("Clang reported an unsupported include path");
+      return `#include <${path}>
+`;
+    }).join("");
+    const tokens = lexed.tokens.filter((token) => token.start >= context.length).map((token) => ({ ...token, start: token.start - context.length, end: token.end - context.length }));
+    return {
+      tokens,
+      // Browser array declarations are supplied as source in the preamble.
+      includes: includes + (frontend.arrayPreamble ? array : ""),
+      // A raw string can hold what looks like an include line.
+      includeLines: includeLines.filter(([start, end]) => !tokens.some((token) => token.start < end && token.end > start)),
+      movable: false
+    };
+  }
+  function mainDefinition(tokens, source) {
+    var _a, _b;
+    for (let i = 0; i < tokens.length; i++) {
+      if (source.slice(tokens[i].start, tokens[i].end) !== "main" || ((_a = tokens[i + 1]) == null ? void 0 : _a.kind) !== "l_paren") continue;
+      const close = tokens.findIndex((next, j) => j > i + 1 && next.kind === "r_paren");
+      if (close !== -1 && ((_b = tokens[close + 1]) == null ? void 0 : _b.kind) === "l_brace") return { name: i, body: close + 1 };
+    }
+    return null;
+  }
+  const GLOBALS_NAMESPACE = "__course_globals";
   class SourceFile {
-    constructor(source, frontend, { ignoreExpansions = false } = {}) {
+    constructor(source, frontend, { ignoreExpansions = false, lexed } = {}) {
       __publicField(this, "program");
       __publicField(this, "replayPreamble");
       __publicField(this, "tokens");
       __publicField(this, "fragment");
+      /** The index of the first token of `main`'s body. */
+      __publicField(this, "bodyStart");
       __publicField(this, "source");
+      __publicField(this, "lexed");
       __publicField(this, "shift");
       var _a;
       if (!source.trim() || source.length > 1e4) throw new Unsupported("empty or oversized snippet");
       if (/\\[ \t\f\v]*(?:\r\n?|\n)/.test(source)) {
         throw new Unsupported("a backslash at the end of a line (a line splice) is not supported");
       }
-      const array = arrayHeader(source, frontend);
-      const headers = HEADERS + array + "using namespace std;\n";
-      const context = /#|%:/.test(source) ? headers : "";
-      const lexed = frontend.tokens(context + source, { ignoreExpansions });
-      const tokens = lexed.tokens.filter((token) => token.start >= context.length).map((token) => ({ ...token, start: token.start - context.length, end: token.end - context.length }));
-      const includes = lexed.includes.map((path) => {
-        if (path.includes(">")) throw new Unsupported("Clang reported an unsupported include path");
-        return `#include <${path}>
-`;
-      }).join("");
-      this.replayPreamble = includes && context ? includes + (frontend.arrayPreamble && array ? array : "") + "using namespace std;\n" : headers;
-      this.fragment = !tokens.some((token, i) => {
-        var _a2, _b;
-        if (source.slice(token.start, token.end) !== "main" || ((_a2 = tokens[i + 1]) == null ? void 0 : _a2.kind) !== "l_paren") return false;
-        const close = tokens.findIndex((next, j) => j > i + 1 && next.kind === "r_paren");
-        return close !== -1 && ((_b = tokens[close + 1]) == null ? void 0 : _b.kind) === "l_brace";
-      });
+      this.lexed = lexed ?? lex(source, frontend, ignoreExpansions);
+      const { tokens } = this.lexed;
+      const spell = (token) => source.slice(token.start, token.end);
+      if (tokens.some((token) => token.kind === "identifier" && !/^[A-Za-z_]\w*$/.test(spell(token)))) {
+        throw new Unsupported("identifiers outside ASCII letters, digits and underscores are not supported");
+      }
+      const main = mainDefinition(tokens, source);
+      this.fragment = main === null;
+      this.bodyStart = main ? main.body + 1 : 0;
+      const headers = HEADERS + arrayHeader(source, frontend);
       const first = ((_a = tokens[0]) == null ? void 0 : _a.start) ?? source.length;
-      const prefix = this.fragment ? headers + source.slice(0, first) + "int main() { " : headers;
-      this.program = prefix + source.slice(this.fragment ? first : 0) + (this.fragment ? "\n}\n" : "\n");
+      let prefix = headers + "\n";
+      let body = source;
+      if (this.fragment) {
+        const late = this.lexed.includeLines.filter(([start]) => start >= first);
+        if (late.length && !this.lexed.movable) {
+          throw new Unsupported("an #include after the first statement needs a snippet without other directives");
+        }
+        body = source.slice(first);
+        for (const [start, end] of late) {
+          body = body.slice(0, start - first) + blank(source.slice(start, end)) + body.slice(end - first);
+        }
+        prefix = headers + USING_STD + source.slice(0, first) + late.map(([start, end]) => source.slice(start, end) + "\n").join("") + "int main() { ";
+      }
+      this.program = prefix + body + (this.fragment ? "\n}\n" : "\n");
       this.source = source;
       this.shift = prefix.length - (this.fragment ? first : 0);
       this.tokens = tokens.map((token) => ({ ...token, start: token.start + this.shift, end: token.end + this.shift }));
+      if (main) {
+        let depth = 0;
+        let globals = 0;
+        for (let i = 0; i < main.name; i++) {
+          depth += tokens[i].kind === "l_brace" ? 1 : tokens[i].kind === "r_brace" ? -1 : 0;
+          if (depth === 0 && tokens[i].kind === "semi") globals = i + 1;
+        }
+        const usesStd = tokens.slice(main.body).some((_, i) => usesNamespaceStd(tokens, main.body + i, spell));
+        this.replayPreamble = this.lexed.includes + tokens.slice(0, globals).map(spell).join(" ") + "\n" + (usesStd ? USING_STD : "");
+      } else {
+        this.replayPreamble = this.lexed.includes + USING_STD;
+      }
     }
     /** Blank a statement while keeping source coordinates and line endings intact. */
     without(start, end, frontend) {
       const first = start - this.shift;
       const last = end - this.shift;
-      const blank = this.blankTokens(start, end);
-      return new SourceFile(this.source.slice(0, first) + blank + this.source.slice(last), frontend);
+      const lexed = { ...this.lexed, tokens: this.lexed.tokens.filter((token) => token.start < first || token.end > last) };
+      return new SourceFile(this.source.slice(0, first) + this.blankTokens(start, end) + this.source.slice(last), frontend, { lexed });
     }
     /** Remove only active tokens, leaving directives, comments and line breaks in place. */
     blankTokens(start, end) {
@@ -829,9 +914,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       return signs;
     }
     ast(frontend) {
-      var _a, _b, _c, _d;
+      var _a;
       const { offsets } = sourceCoordinates(this.program);
-      const main = frontend.mainAst(this.program);
+      const main = mainAst(frontend, this.program);
       useCharacterOffsets(main, offsets);
       const body = (main.inner ?? []).find((node) => node.kind === "CompoundStmt");
       if (!body) throw new Unsupported("main has no supported body");
@@ -850,10 +935,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
       const globals = [];
       const leading = this.tokens.filter((token) => token.end <= start);
+      const spell = (token) => this.program.slice(token.start, token.end);
+      let records = null;
       for (let i = 0; i < leading.length; ) {
         const token = leading[i];
         const next = leading[i + 1];
-        if (token.kind === "using" && (next == null ? void 0 : next.kind) === "namespace" && this.program.slice((_b = leading[i + 2]) == null ? void 0 : _b.start, (_c = leading[i + 2]) == null ? void 0 : _c.end) === "std" && ((_d = leading[i + 3]) == null ? void 0 : _d.kind) === "semi") {
+        if (usesNamespaceStd(leading, i, spell)) {
           i += 4;
           continue;
         }
@@ -861,12 +948,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         if (token.kind !== "struct" || (next == null ? void 0 : next.kind) !== "identifier") {
           throw new Unsupported("only struct definitions may precede main");
         }
-        const name = this.program.slice(next.start, next.end);
-        const record = frontend.astDump(this.program, name).find((node) => {
-          var _a2, _b2;
-          return node.kind === "CXXRecordDecl" && node.completeDefinition && offsets[((_b2 = (_a2 = node.range) == null ? void 0 : _a2.begin) == null ? void 0 : _b2.offset) ?? -1] === token.start;
+        records ?? (records = this.globalRecords(frontend, token.start, start));
+        const record = records.find((node) => {
+          var _a2, _b;
+          return node.kind === "CXXRecordDecl" && node.completeDefinition && ((_b = (_a2 = node.range) == null ? void 0 : _a2.begin) == null ? void 0 : _b.offset) === token.start;
         });
-        if (record) useCharacterOffsets(record, offsets);
         if (!record) throw new Unsupported("only struct definitions may precede main");
         const [, finish] = bounds(record);
         const semi = leading.findIndex((item) => item.start >= finish);
@@ -876,6 +962,32 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
       return [{ ...body, inner: [...globals, ...body.inner ?? []] }, globals.length];
     }
+    /**
+     * The declarations from `from` up to `main` at `to`. Clang's AST filter matches every name
+     * containing its text, the standard library's too, so they are dumped from a namespace
+     * that no other name contains.
+     */
+    globalRecords(frontend, from, to) {
+      const open = `namespace ${GLOBALS_NAMESPACE} {
+`;
+      const probe = this.program.slice(0, from) + open + this.program.slice(from, to) + "\n}\n";
+      let nodes;
+      try {
+        nodes = frontend.astDump(probe, GLOBALS_NAMESPACE);
+      } catch (error) {
+        if (error instanceof IllFormed) throw new Unsupported("only struct definitions may precede main");
+        throw error;
+      }
+      const namespace = nodes.find((node) => node.kind === "NamespaceDecl" && node.name === GLOBALS_NAMESPACE);
+      if (!namespace) return [];
+      const unqualified = JSON.parse(JSON.stringify(namespace).replaceAll(`${GLOBALS_NAMESPACE}::`, ""));
+      useCharacterOffsets(unqualified, sourceCoordinates(probe).offsets.map((offset) => offset - open.length));
+      return unqualified.inner ?? [];
+    }
+  }
+  function usesNamespaceStd(tokens, i, spell) {
+    var _a, _b, _c;
+    return ((_a = tokens[i]) == null ? void 0 : _a.kind) === "using" && ((_b = tokens[i + 1]) == null ? void 0 : _b.kind) === "namespace" && tokens[i + 2] !== void 0 && spell(tokens[i + 2]) === "std" && ((_c = tokens[i + 3]) == null ? void 0 : _c.kind) === "semi";
   }
   function useCharacterOffsets(node, offsets) {
     var _a, _b;
@@ -905,6 +1017,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     } catch {
       throw new Unsupported("Clang returned invalid AST JSON");
     }
+  }
+  function mainAst(frontend, program) {
+    return requireMain(frontend.astDump(program, "main"));
   }
   function requireMain(nodes) {
     const matches = nodes.filter((node) => {
@@ -1992,11 +2107,7 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
 }
 `;
   function verifyReplay(frontend, preamble, steps) {
-    const chunks = [preamble, CHECKS];
-    for (const step of steps) {
-      if (step.global) chunks.push(step.source, "\n");
-    }
-    chunks.push("constexpr int __course_replay() {\n");
+    const chunks = [preamble, CHECKS, "constexpr int __course_replay() {\n"];
     for (const [index, step] of steps.entries()) {
       if (step.global) continue;
       if (!step.output) chunks.push(step.source, "\n");
@@ -3173,8 +3284,8 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
       throw error;
     }
     let begin = point - 1;
-    while (begin >= 0 && tokens[begin].kind !== "semi") begin--;
-    if (begin < 0) throw error;
+    while (begin >= file.bodyStart && tokens[begin].kind !== "semi") begin--;
+    if (begin < file.bodyStart) throw error;
     const start = tokens[begin + 1].start;
     if (tokens[point].kind === "equal") {
       point++;
@@ -3617,7 +3728,7 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
     var _a;
     if (!MISMATCHES.some((pattern) => pattern.test(error.message))) return false;
     try {
-      const traced = traceWithFrontend(source, { ...options, types: true, runtime: false });
+      const traced = traceWithFrontend(source, { ...options, types: true });
       (_a = options.accept) == null ? void 0 : _a.call(options, traced);
       return true;
     } catch {
@@ -4031,40 +4142,21 @@ array(T, U...) -> array<T, 1 + sizeof...(U)>;
     return decoder.decode(out);
   }
   function createWasmClangFrontend(module) {
+    const clang = (program, args, standard = "c++20") => runWasiModule(module, { args: ["clang-trace-frontend", ...STANDARD_FLAGS[standard], ...args, "-"], stdin: program });
     return {
       arrayPreamble: ARRAY_PREAMBLE,
       tokens(program, options) {
-        const result = runWasiModule(module, {
-          args: ["clang-trace-frontend", "-Xclang", "-dump-tokens", "-"],
-          stdin: program
-        });
+        const result = clang(program, ["-Xclang", "-dump-tokens"]);
         if (result.returncode !== 0) throw illFormed(result.stderr, program);
         return readTokens(result.stderr, "/virtual/source.cpp", program, options);
       },
       astDump(program, filter, standard = "c++20") {
-        const result = runWasiModule(module, {
-          args: [
-            "clang-trace-frontend",
-            "-std=" + standard,
-            "-Xclang",
-            "-ast-dump=json",
-            "-Xclang",
-            "-ast-dump-filter=" + filter,
-            "-"
-          ],
-          stdin: program
-        });
+        const result = clang(program, ["-Xclang", "-ast-dump=json", "-Xclang", "-ast-dump-filter=" + filter], standard);
         if (result.returncode !== 0) throw illFormed(result.stderr, program);
         return parseAstDump(result.stdout);
       },
-      mainAst(program) {
-        return requireMain(this.astDump(program, "main"));
-      },
       recordLayoutsDump(program) {
-        const result = runWasiModule(module, {
-          args: ["clang-trace-frontend", "-Xclang", "-fdump-record-layouts-complete", "-"],
-          stdin: program
-        });
+        const result = clang(program, ["-Xclang", "-fdump-record-layouts-complete"]);
         if (result.returncode !== 0) {
           throw new Unsupported("Clang could not compute record layouts");
         }
@@ -4074,10 +4166,7 @@ array(T, U...) -> array<T, 1 + sizeof...(U)>;
         if (types.length === 0) return {};
         const probe = types.map((t, i) => `enum { __course_${i} = sizeof(${t}) };
 `).join("");
-        const result = runWasiModule(module, {
-          args: ["clang-trace-frontend", "-Xclang", "-ast-dump=json", "-"],
-          stdin: probe
-        });
+        const result = clang(probe, ["-Xclang", "-ast-dump=json"]);
         if (result.returncode !== 0) {
           throw new Unsupported("Clang could not obtain field sizes");
         }

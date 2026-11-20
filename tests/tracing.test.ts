@@ -54,7 +54,7 @@ function addresses(trace: ExecutionTrace): Record<string, number> {
 }
 
 describe('StaticIntegerTraceTests', () => {
-  const traceStatic = (source: string): ExecutionTrace => tracing.trace(source, { runtime: false });
+  const traceStatic = (source: string): ExecutionTrace => tracing.trace(source);
 
   test('expression_and_cumulative_output', () => {
     const trace = traceStatic('int a = 5; int b = a + 6; a = 7; std::cout << b << std::endl;');
@@ -207,7 +207,7 @@ int main() {
 });
 
 describe('StaticPointerTraceTests', () => {
-  const traceStatic = (source: string): ExecutionTrace => tracing.trace(source, { runtime: false });
+  const traceStatic = (source: string): ExecutionTrace => tracing.trace(source);
 
   test('double_pointer_reduces_in_lesson_notation', () => {
     const trace = traceStatic(DOUBLE_POINTER);
@@ -456,13 +456,13 @@ describe('StaticPointerTraceTests', () => {
 describe('CompoundAssignmentTests', () => {
   const unsupported = (source: string, reason: RegExp): void => {
     assert.throws(
-      () => tracing.trace(source, { runtime: false }),
+      () => tracing.trace(source),
       (err: unknown) => err instanceof Unsupported && reason.test(err.message)
     );
   };
 
   test('the_read_opens_the_operator_into_a_plain_assignment', () => {
-    const trace = tracing.trace('int a = 5; int b = 2; a += b;', { runtime: false });
+    const trace = tracing.trace('int a = 5; int b = 2; a += b;');
     assert.deepEqual(panes(trace, 2), ['a += b', 'a = 5 + b', 'a = 5 + 2', 'a = 7', 'a = 7']);
     assert.deepEqual(ops(trace, 2)[0], {
       kind: 'read',
@@ -479,19 +479,17 @@ describe('CompoundAssignmentTests', () => {
 
   test('the_target_is_designated_once_before_its_value_is_read', () => {
     const trace = tracing.trace(
-      'struct P { int x; int y; }; P s{1, 2}; P* p = &s; p->x -= 3; s.y%=2; int& r = s.x; r *= 4;',
-      { runtime: false }
+      'struct P { int x; int y; }; P s{1, 2}; P* p = &s; p->x -= 3; s.y%=2; int& r = s.x; r *= 4;'
     );
     assert.deepEqual(panes(trace, 2), ['p->x -= 3', '72->x -= 3', 's.x -= 3', 's.x = 1 - 3', 's.x = -2', 's.x = -2']);
     assert.deepEqual(panes(trace, 3), ['s.y%=2', 's.y = 2 % 2', 's.y = 0', 's.y = 0']);
     assert.deepEqual(panes(trace, 5), ['r *= 4', 's.x *= 4', 's.x = -2 * 4', 's.x = -8', 's.x = -8']);
-    const deref = tracing.trace('int a{5}; int* p{&a}; *p += 1;', { runtime: false });
+    const deref = tracing.trace('int a{5}; int* p{&a}; *p += 1;');
     assert.deepEqual(panes(deref, 2), ['*p += 1', '*76 += 1', 'a += 1', 'a = 5 + 1', 'a = 6', 'a = 6']);
   });
 
   test('the_operation_runs_in_the_type_clang_computes_and_converts_back', () => {
     const trace = tracing.trace('short c = 1; c += 1; int a = 7; a *= 1.5; float f = 1.5f; f /= 2;', {
-      runtime: false,
       types: true,
     });
     const converts = (line: number): string[] =>
@@ -513,7 +511,7 @@ describe('CompoundAssignmentTests', () => {
   });
 
   test('the_validator_checks_the_opened_operator', () => {
-    const trace = tracing.trace('int b = 1; int a = 5; a -= 2;', { runtime: false });
+    const trace = tracing.trace('int b = 1; int a = 5; a -= 2;');
     const index = trace.steps.findIndex(step => step.op?.kind === 'read');
     const rejects = (message: RegExp, change: (op: Record<string, unknown>) => void): void => {
       const broken = structuredClone(trace);
@@ -534,7 +532,7 @@ describe('CompoundAssignmentTests', () => {
   });
 
   test('the_validator_requires_the_following_reductions_to_match_the_opened_pane', () => {
-    const trace = tracing.trace('int a = 5; int b = 2; int c = 3; a *= b + c;', { runtime: false });
+    const trace = tracing.trace('int a = 5; int b = 2; int c = 3; a *= b + c;');
     const index = trace.steps.findIndex(step => step.op?.kind === 'read');
     const broken = structuredClone(trace);
     broken.steps[index].pane = 'a = 5 * b + c';
@@ -552,7 +550,7 @@ describe('CompoundAssignmentTests', () => {
       'a += b<:0:> * b[1];',
       'a *= sizeof(R"(say "two  words")") + 3;',
       'a *= (2 + 3);',
-    ].join('\n'), { runtime: false });
+    ].join('\n'));
     assert.equal(panes(trace, 2)[1], 'a = 1 * b.size()');
     assert.equal(panes(trace, 3)[1], 'a = 2 + b<:0:> * b[1]');
     assert.equal(panes(trace, 4)[1], 'a = 8 * (sizeof(R"(say "two  words")") + 3)');
@@ -560,19 +558,19 @@ describe('CompoundAssignmentTests', () => {
   });
 
   test('a_negative_value_does_not_join_the_sign_before_it', () => {
-    const trace = tracing.trace('int a = 5; int b = 8; int c = -2; a *= b-c; int y = -c;', { runtime: false });
+    const trace = tracing.trace('int a = 5; int b = 8; int c = -2; a *= b-c; int y = -c;');
     assert.equal(panes(trace, 3)[3], 'a = 5 * (8-(-2))');
     assert.deepEqual(panes(trace, 4).slice(0, 2), ['int y = -c', 'int y = -(-2)']);
     assert.deepEqual(final(trace), { a: 50, b: 8, c: -2, y: 2 });
-    const written = tracing.trace('int y = -(-2);', { runtime: false, types: true });
+    const written = tracing.trace('int y = -(-2);', { types: true });
     assert.deepEqual(panes(written, 0), ['int y = -(-2)', 'int y = 2', 'int y = 2']);
-    const bits = tracing.trace('short x = -2; int y = -x;', { runtime: false, bits: true });
+    const bits = tracing.trace('short x = -2; int y = -x;', { bits: true });
     assert.deepEqual(final(bits), { x: -2, y: 2 });
   });
 
   test('signs in the target of a compound assignment stay separate', () => {
     const source = 'std::array a{1,2}; int i=-1; a[0-i] += 3;';
-    const trace = tracing.trace(source, { runtime: false });
+    const trace = tracing.trace(source);
     assert.ok(panes(trace, 2).includes('a[0-(-1)] += 3'));
     assert.deepEqual(final(trace), { 'a.[0]': 1, 'a.[1]': 5, i: -1 });
   });
@@ -588,7 +586,7 @@ describe('CompoundAssignmentTests', () => {
   });
 
   test('the_validator_reads_only_one_arithmetic_cell', () => {
-    const trace = tracing.trace('int a = 5; int* p = &a; a -= 2;', { runtime: false });
+    const trace = tracing.trace('int a = 5; int* p = &a; a -= 2;');
     const index = trace.steps.findIndex(step => step.op?.kind === 'read');
     const broken = structuredClone(trace);
     const op = broken.steps[index].op as unknown as Record<string, unknown>;
@@ -599,8 +597,7 @@ describe('CompoundAssignmentTests', () => {
 
   test('a_right_side_that_binds_looser_keeps_its_parentheses', () => {
     const trace = tracing.trace(
-      'int a = 5; int b = 2; int c = 3; a *= b + c; a -= b - c; a += b * c; a += +b; double d = 1.5; d *= b + 1;',
-      { runtime: false }
+      'int a = 5; int b = 2; int c = 3; a *= b + c; a -= b - c; a += b * c; a += +b; double d = 1.5; d *= b + 1;'
     );
     assert.deepEqual(panes(trace, 3), [
       'a *= b + c',
@@ -621,7 +618,6 @@ describe('CompoundAssignmentTests', () => {
 
   test('a_target_written_otherwise_is_spelled_as_its_name_first', () => {
     const trace = tracing.trace('struct S { int x; }; S s{1}; (s.x) += 2; s . x *= 3; (s.x) = 4;', {
-      runtime: false,
     });
     assert.deepEqual(panes(trace, 1), ['(s.x) += 2', 's.x += 2', 's.x = 1 + 2', 's.x = 3', 's.x = 3']);
     assert.deepEqual(panes(trace, 2), ['s . x *= 3', 's.x *= 3', 's.x = 3 * 3', 's.x = 9', 's.x = 9']);
@@ -645,25 +641,34 @@ describe('CompoundAssignmentTests', () => {
 
   test('raw_strings_and_other_quotes_are_read_whole', () => {
     const raw = 'int n = sizeof(u8R"x(\n#include <iostream>\n)x");';
-    assert.deepEqual(final(tracing.trace(raw, { runtime: false })), { n: 22 });
+    assert.deepEqual(final(tracing.trace(raw)), { n: 22 });
     // A digit separator is no quote, and quotes in a comment or string open nothing.
-    const trace = tracing.trace("int a = 1'000; // it's\nint b = 2'0; /* R\"( */ // R\"(\na += b;", { runtime: false });
+    const trace = tracing.trace("int a = 1'000; // it's\nint b = 2'0; /* R\"( */ // R\"(\na += b;");
     assert.deepEqual(final(trace), { a: 1020, b: 20 });
     // A line comment ends at a carriage return as well.
-    assert.deepEqual(final(tracing.trace('int a = 1; // note\ra += 3;', { runtime: false })), { a: 4 });
+    assert.deepEqual(final(tracing.trace('int a = 1; // note\ra += 3;')), { a: 4 });
   });
 
   test('a_comment_in_a_directive_keeps_it_one_line', () => {
     const include = '#include /* Gives us\nfixed-width integers. */ <cstdint>\nint n = 1;';
-    assert.deepEqual(final(tracing.trace(include, { runtime: false })), { n: 1 });
+    assert.deepEqual(final(tracing.trace(include)), { n: 1 });
     unsupported('int n = 1;\n#include <cstdint> /* already\nincluded */ n += 3;', /extra tokens at end of #include|one variable/);
     // A lone carriage return ends a directive as it ends any line.
-    assert.deepEqual(final(tracing.trace('int n = 1;\r#include <cstdint>\rn += 3;', { runtime: false })), { n: 4 });
+    assert.deepEqual(final(tracing.trace('int n = 1;\r#include <cstdint>\rn += 3;')), { n: 4 });
+  });
+
+  test('an_include_after_the_first_statement_stays_outside_main', () => {
+    assert.deepEqual(final(tracing.trace('int a = 1;\n#include <cmath>\na = a + 1;')), { a: 2 });
+    unsupported('int a = 1;\n#ifdef X\n#endif\n#include <cmath>\na = a + 1;', /#include after the first statement/);
+  });
+
+  test('identifiers_beyond_ascii_are_refused_by_name', () => {
+    unsupported('int переменная = 5;\nint b = переменная + 1;', /identifiers outside ASCII/);
   });
 
   test('compiler headers are in scope when finding the first active token', () => {
     const source = '#ifndef UINT8_MAX\nint skipped=1;\n#endif\nint b=2;';
-    assert.deepEqual(final(tracing.trace(source, { runtime: false })), { b: 2 });
+    assert.deepEqual(final(tracing.trace(source)), { b: 2 });
   });
 
   test('remapped source locations are rejected before building spans', () => {
@@ -672,7 +677,7 @@ describe('CompoundAssignmentTests', () => {
 
   test('tokens inside a raw string cannot be mistaken for diagnostics', () => {
     const source = 'int n = sizeof(R"(abc: error: text)");';
-    assert.deepEqual(final(tracing.trace(source, { runtime: false })), { n: 17 });
+    assert.deepEqual(final(tracing.trace(source)), { n: 17 });
   });
 
   test('the_statement_ends_at_its_own_semicolon_past_comments', () => {
@@ -688,7 +693,7 @@ describe('CompoundAssignmentTests', () => {
     }
   });
 
-  test('runtime_values_agree', () => {
+  test('clang_values_agree', () => {
     const trace = tracing.trace(
       'int a = 5; a += 2; a %= 4; unsigned u = 1; u -= 2; double d = 0.1; d *= 3; long l = 9; l /= -2;'
     );
@@ -780,7 +785,7 @@ describe('CompilerTraceTests', () => {
 
   test('double_pointer_runs_as_predicted', () => {
     const traced = tracing.trace(DOUBLE_POINTER);
-    const predicted = tracing.trace(DOUBLE_POINTER, { runtime: false });
+    const predicted = tracing.trace(DOUBLE_POINTER);
     assert.deepEqual(traced, predicted);
     assert.deepEqual(final(traced, 'targets'), { p: 'b', pp: 'p' });
     assert.ok(Object.values(addresses(traced)).every(address => 64 <= address && address < 128));

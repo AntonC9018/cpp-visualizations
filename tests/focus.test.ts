@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import { trace } from '../src/node/tracing.ts';
 import { type PreparedModel, arrival, prepare, stepFocus } from '../src/player/model.ts';
 
-const model = (source: string): PreparedModel => prepare(trace(source, { runtime: false }));
+const model = (source: string): PreparedModel => prepare(trace(source));
 const stepOf = (m: PreparedModel, kind: string, name: string): number =>
   m.steps.findIndex(
     step => step.op?.kind === kind && ('name' in step.op ? step.op.name : 'target' in step.op ? step.op.target : '') === name

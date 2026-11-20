@@ -116,8 +116,8 @@ test('a matrix has indexed rows that can be copied or written through a pointer'
 
 test('a long array type stays in the source and in the optional pane label', () => {
   const source = 'std::array<std::array<int, 2>, 2> matrix{}; matrix[1][0] = 7;';
-  const untyped = trace(source, { runtime: false });
-  const typed = trace(source, { runtime: false, types: true });
+  const untyped = trace(source);
+  const typed = trace(source, { types: true });
   assert.match(untyped.source[0], /^std::array<std::array<int, 2>, 2> matrix/);
   assert.equal(untyped.steps[0].pane, 'matrix = {}');
   assert.equal(typed.steps[0].pane, 'matrix = {}');
@@ -168,6 +168,6 @@ test('the tracer rejects invalid array operations before execution', () => {
     ['std::array<std::array<int, 9>, 9> a{};', /at most 64 scalar cells/],
     ['std::array<char, 2> a{};', /unsupported std::array element type/],
   ] as const) {
-    assert.throws(() => trace(source, { runtime: false }), { name: Unsupported.name, message: reason });
+    assert.throws(() => trace(source), { name: Unsupported.name, message: reason });
   }
 });

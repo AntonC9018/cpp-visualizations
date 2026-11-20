@@ -129,12 +129,22 @@ export interface AstNode {
   array_filler?: AstNode[];
 }
 
+export type Standard = 'c++20' | 'c++2c';
+
+/**
+ * The language options both frontends give Clang. The replay asks C++26's constant evaluator
+ * while feature-test macros keep the C++20 values the program was read with.
+ */
+export const STANDARD_FLAGS: Record<Standard, readonly string[]> = {
+  'c++20': ['-std=c++20', '-Werror=extra-tokens'],
+  'c++2c': ['-std=c++2c', '-Werror=extra-tokens', '-Wno-builtin-macro-redefined', '-D__cplusplus=202002L'],
+};
+
 export interface CompilerFrontend {
   /** Declaration text for frontends that cannot include the native <array> header. */
   arrayPreamble?: string;
   tokens(program: string, options?: { ignoreExpansions?: boolean }): TokenizedSource;
-  astDump(program: string, filter: string, standard?: 'c++20' | 'c++2c'): AstNode[];
-  mainAst(program: string): AstNode;
+  astDump(program: string, filter: string, standard?: Standard): AstNode[];
   recordLayoutsDump(program: string): string;
   typeSizes(types: string[]): Record<string, number>;
 }

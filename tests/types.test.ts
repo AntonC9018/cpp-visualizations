@@ -28,7 +28,7 @@ function lines(trace: ExecutionTrace, line: number): string[][] {
 }
 
 const traceTyped = (source: string): ExecutionTrace =>
-  tracing.trace(source, { runtime: false, types: true });
+  tracing.trace(source, { types: true });
 
 describe('TypedPaneTests', () => {
   test('names_literals_and_values_carry_their_types', () => {

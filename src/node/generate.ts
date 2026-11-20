@@ -5,6 +5,7 @@
 // `revision` versions every trace. The template and flags come from `../core/settings.ts`.
 import { readFileSync } from 'node:fs';
 
+import type { CompilerFrontend } from '../core/errors.ts';
 import { SourceFile } from '../core/source.ts';
 import { dumpsSorted } from '../core/json_format.ts';
 import { type AnyTrace, type ExecutionTrace, type TraceVariable, contiguous } from '../core/trace_format.ts';
@@ -34,12 +35,13 @@ export function checkContiguousStorage(variables: TraceVariable[]): void {
   }
 }
 
-export function spacingSurvives(snippet: string): boolean {
-  return new SourceFile(snippet, createClangFrontend()).preservesSpacing();
+export function spacingSurvives(snippet: string, frontend: CompilerFrontend = createClangFrontend()): boolean {
+  return new SourceFile(snippet, frontend).preservesSpacing();
 }
 
-export function applicable(traceData: ExecutionTrace, snippet: string): void {
-  if (!spacingSurvives(snippet)) {
+/** Whether a trace is worth showing. Share the trace's `frontend` to reuse its tokens. */
+export function applicable(traceData: ExecutionTrace, snippet: string, frontend?: CompilerFrontend): void {
+  if (!spacingSurvives(snippet, frontend)) {
     throw new Unsupported('the trace would collapse spacing inside a statement');
   }
   const { variables, steps, source } = traceData;
@@ -131,11 +133,13 @@ export function main(
   try {
     settings = parseSettings(template, flags);
     const snippet = readFileSync(sourcePath, 'utf8');
+    const frontend = createClangFrontend();
     result = traceNatively(snippet, settings, {
-      accept: traced => applicable(traced, snippet),
+      frontend,
+      accept: traced => applicable(traced, snippet, frontend),
     });
     if (result.kind !== 'layout') {
-      applicable(result, snippet);
+      applicable(result, snippet, frontend);
     }
   } catch (exc) {
     if (exc instanceof Unsupported) {

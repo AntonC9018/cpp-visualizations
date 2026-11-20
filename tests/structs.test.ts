@@ -214,7 +214,7 @@ c=b.n; b.n={5, 6}; std::cout << c.g;`;
         `${spelling} *p=&s; p->x=2; ` +
         `${spelling} **pp=&p; (*pp)->x=3;`;
       const result = tracing.trace(source);
-      assert.deepEqual(result, tracing.trace(source, { runtime: false }));
+      assert.deepEqual(result, tracing.trace(source));
       const last = result.steps[result.steps.length - 1];
       assert.equal(last.values['s.x'], 3);
       assert.deepEqual(last.targets, { p: 's', pp: 'p' });
@@ -228,7 +228,7 @@ c=b.n; b.n={5, 6}; std::cout << c.g;`;
         'S a{1,nullptr}; S b{2,&a}; b.next->x=9; ' +
         'b.next=&b; b.next->x=7;';
       const result = tracing.trace(source);
-      assert.deepEqual(result, tracing.trace(source, { runtime: false }));
+      assert.deepEqual(result, tracing.trace(source));
       const last = result.steps[result.steps.length - 1];
       assert.equal(last.values['a.x'], 9);
       assert.equal(last.values['b.x'], 7);
@@ -243,10 +243,27 @@ c=b.n; b.n={5, 6}; std::cout << c.g;`;
     assert.equal(result.steps[result.steps.length - 1].stdout, '8');
   });
 
+  test('global_structs_may_share_names_with_the_standard_library', () => {
+    // A filter on `a` would match much of the library, and `data` is ambiguous under a
+    // using-directive the program does not have.
+    for (const name of ['a', 'data', 'pair']) {
+      const source = `#include <iostream>\nstruct ${name} { int x; };\nstruct B { ${name} in; };\n` +
+        `int main() {\n    B v{{1}};\n    v.in.x = v.in.x + 2;\n    std::cout << v.in.x;\n}`;
+      assert.equal(tracing.trace(source).steps.at(-1)!.stdout, '3');
+    }
+  });
+
+  test('a_mismatch_first_in_main_reports_itself', () => {
+    assert.throws(
+      () => tracing.trace('struct A { int x; };\nint main() {\n    int* p = 5;\n}', { types: true }),
+      (err: unknown) => err instanceof tracing.IllFormed && /cannot initialize a variable of type 'int \*'/.test(err.message)
+    );
+  });
+
   test('definitions_are_shown_on_hover_not_stepped', () => {
     const source =
       'struct S\n{\n    int x;\n};\n\nint main()\n{\n    struct T { int y; };\n    S a{ 1 };\n    T b{ 2 };\n}\n';
-    const result = tracing.trace(source, { runtime: false });
+    const result = tracing.trace(source);
     assert.deepEqual(result.source, ['S a{ 1 };', 'T b{ 2 };']);
     assert.deepEqual(result.types, {
       S: 'struct S\n{\n    int x;\n};',
@@ -260,7 +277,7 @@ c=b.n; b.n={5, 6}; std::cout << c.g;`;
 
   test('cold_runs_and_probe_layout', () => {
     const first = tracing.trace(STRUCT_POINTERS);
-    assert.deepEqual(first, tracing.trace(STRUCT_POINTERS, { runtime: false }));
+    assert.deepEqual(first, tracing.trace(STRUCT_POINTERS));
     assert.equal(dumpsSorted(first), dumpsSorted(tracing.trace(STRUCT_POINTERS)));
   });
 

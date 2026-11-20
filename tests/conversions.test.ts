@@ -63,7 +63,7 @@ describe('IntegerTests', () => {
 
 describe('ConversionTests', () => {
   const trace = (source: string): ExecutionTrace =>
-    tracing.trace(source, { runtime: false, types: true });
+    tracing.trace(source, { types: true });
   const sizes = (t: ExecutionTrace): Record<string, number> =>
     Object.fromEntries(t.variables.map(v => [v.name, v.size]));
 
@@ -204,8 +204,7 @@ describe('UntypedConversionTests', () => {
   // Without types a conversion is an evaluation: a step only when the text changes.
   test('only_a_changed_value_is_a_step', () => {
     const t = tracing.trace(
-      'uint32_t a{ 256 }; uint8_t b{ static_cast<uint8_t>(a) }; uint32_t c{ b };',
-      { runtime: false }
+      'uint32_t a{ 256 }; uint8_t b{ static_cast<uint8_t>(a) }; uint32_t c{ b };'
     );
     assert.deepEqual(
       t.steps.filter(step => step.line).map(step => [step.pane, step.op?.kind ?? null]),
@@ -225,13 +224,13 @@ describe('UntypedConversionTests', () => {
 
   test('a_mismatch_is_not_shown_but_suggests_types', () => {
     assert.throws(
-      () => tracing.trace('int a = 5; int* p = a;', { runtime: false }),
+      () => tracing.trace('int a = 5; int* p = a;'),
       (err: unknown) =>
         err instanceof NeedsFlag && err.flag === 'types' && /cannot initialize.*with types on/.test(err.message)
     );
     // An error types cannot show stays a plain compile error.
     assert.throws(
-      () => tracing.trace('int a = b;', { runtime: false }),
+      () => tracing.trace('int a = b;'),
       (err: unknown) => err instanceof IllFormed && !(err instanceof NeedsFlag)
     );
   });
@@ -245,7 +244,7 @@ describe('UntypedConversionTests', () => {
       throw new Unsupported('too many variables');
     };
     assert.throws(
-      () => tracing.trace('int a = 5; int* p = a;', { runtime: false, accept: refuse }),
+      () => tracing.trace('int a = 5; int* p = a;', { accept: refuse }),
       (err: unknown) => err instanceof IllFormed && !(err instanceof NeedsFlag)
     );
   });
@@ -294,7 +293,7 @@ describe('FloatFormatTests', () => {
       [123456789012345680000, 8, '≈1.2345679e+20'],
     ];
     for (const [value, size, shown] of cases) assert.equal(displayFloat(value, size), shown, String(value));
-    const t = tracing.trace('float f = 0.1f; double c = 0.1 + 0.2; float g = f;', { runtime: false });
+    const t = tracing.trace('float f = 0.1f; double c = 0.1 + 0.2; float g = f;');
     const texts = t.steps.flatMap(s => (s.op && 'value' in s.op ? [`${s.op.kind} ${s.op.value}`] : []));
     assert.ok(texts.includes('eval ≈0.3') && texts.includes('read 0.1'), texts.join('; '));
     assert.deepEqual(
@@ -309,7 +308,7 @@ describe('FloatFormatTests', () => {
   });
 
   test('validation_compares_floating_values_exactly', () => {
-    const t = tracing.trace('double d = 1.0000001; double e = d;', { runtime: false });
+    const t = tracing.trace('double d = 1.0000001; double e = d;');
     validate(t);
     const read = (value: string): ExecutionTrace => {
       const copy = structuredClone(t);
@@ -345,7 +344,7 @@ describe('FloatFormatTests', () => {
   }
 
   test('validation_rejects_values_a_cell_cannot_hold', () => {
-    const t = tracing.trace('float f = 0; int i = 1; float g = f;', { runtime: false });
+    const t = tracing.trace('float f = 0; int i = 1; float g = f;');
     validate(t);
     const broken = (change: (copy: ExecutionTrace) => void): ExecutionTrace => {
       const copy = structuredClone(t);
@@ -362,23 +361,23 @@ describe('FloatFormatTests', () => {
       for (const step of copy.steps) if (typeof step.values[name] === 'number') step.values[name] = value;
     };
     rejects(broken(copy => everywhere(copy, 'i', 2 ** 32)), /4294967296 does not fit in 4 bytes/);
-    const bits = tracing.trace('uint8_t a = 255;', { runtime: false, bits: true });
+    const bits = tracing.trace('uint8_t a = 255;', { bits: true });
     validate(bits);
     const wide = structuredClone(bits);
     everywhere(wide, 'a', 256);
     rejects(wide, /256 does not fit in uint8_t/);
-    const typed = tracing.trace('long n = 2147483648L;', { runtime: false, types: true });
+    const typed = tracing.trace('long n = 2147483648L;', { types: true });
     validate(typed);
     const narrowed = structuredClone(typed);
     (narrowed.variables[0] as { type?: string }).type = 'int';
     rejects(narrowed, /int is not 8 bytes/);
-    const declared = tracing.trace('int n;', { runtime: false, types: true });
+    const declared = tracing.trace('int n;', { types: true });
     validate(declared);
     const widened = structuredClone(declared);
     (widened.variables[0] as { type?: string }).type = 'long';
     rejects(widened, /long is not 4 bytes/);
     // Older traces spell a whole float with all its digits; that still reads back exactly.
-    const whole = tracing.trace('float f = 1e15f; float g = f;', { runtime: false });
+    const whole = tracing.trace('float f = 1e15f; float g = f;');
     validate(respelled(whole, '1e+15', '999999986991104'));
     // A floating zero is no null pointer: the read of f may not say nullptr.
     rejects(
@@ -471,7 +470,7 @@ describe('RuntimeConversionTests', () => {
 });
 
 describe('BitsTests', () => {
-  const bits = (source: string): ExecutionTrace => tracing.trace(source, { runtime: false, bits: true });
+  const bits = (source: string): ExecutionTrace => tracing.trace(source, { bits: true });
 
   test('bits_imply_types_and_mark_the_trace', () => {
     const t = bits('int8_t a{ -3 }; int b{ static_cast<int>(a) };');
@@ -551,7 +550,7 @@ describe('BitsTests', () => {
   });
 
   test('a_bits_trace_with_a_pointer_is_invalid', () => {
-    const t = tracing.trace('int a{ 5 }; int* p{ &a };', { runtime: false, types: true });
+    const t = tracing.trace('int a{ 5 }; int* p{ &a };', { types: true });
     assert.throws(() => validate({ ...t, bits: true }), FormatError);
     assert.throws(() => validate({ ...bits('int a{ 5 };'), bits: false }), FormatError);
   });

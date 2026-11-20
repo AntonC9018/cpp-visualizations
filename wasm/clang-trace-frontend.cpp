@@ -79,7 +79,8 @@ int main(int argc, char **argv) {
   bool dumpTokens = false;
   bool dumpRecordLayoutsComplete = false;
   std::string inputPath;
-  std::string standard = "-std=c++20";
+  // The language options come from the caller, shared with the native frontend.
+  std::vector<const char *> languageArgs;
 
   for (int i = 1; i < argc; ++i) {
     llvm::StringRef arg(argv[i]);
@@ -94,8 +95,8 @@ int main(int argc, char **argv) {
       } else if (xarg == "-fdump-record-layouts-complete") {
         dumpRecordLayoutsComplete = true;
       }
-    } else if (arg == "-std=c++2c") {
-      standard = arg.str();
+    } else if (arg.starts_with("-std=") || arg.starts_with("-W") || arg.starts_with("-D")) {
+      languageArgs.push_back(argv[i]);
     } else if (arg == "-" || !arg.starts_with("-")) {
       inputPath = arg.str();
     }
@@ -120,20 +121,17 @@ int main(int argc, char **argv) {
   std::vector<const char *> cc1Args = {
       "-triple",
       "x86_64-unknown-linux-gnu",
-      standard.c_str(),
       "-fsyntax-only",
-      "-Werror=extra-tokens",
       "-nostdsysteminc",
       "-nobuiltininc",
       "-isystem",
       "/virtual/include",
   };
-  if (standard == "-std=c++2c") {
-    cc1Args.push_back("-Wno-builtin-macro-redefined");
-    cc1Args.push_back("-D__cplusplus=202002L");
-  }
+  cc1Args.insert(cc1Args.end(), languageArgs.begin(), languageArgs.end());
   if (dumpTokens) {
+    // As the driver does for -H: the virtual headers are system headers.
     cc1Args.push_back("-H");
+    cc1Args.push_back("-sys-header-deps");
   }
   if (astDump) {
     cc1Args.push_back("-ast-dump=json");

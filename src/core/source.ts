@@ -1,5 +1,7 @@
 // Source coordinates and display text come from Clang's preprocessed token stream.
-import { type AstNode, type AstRangeEndpoint, type CompilerFrontend, Unsupported, sourceCoordinates } from './errors.ts';
+import {
+  type AstNode, type AstRangeEndpoint, type CompilerFrontend, IllFormed, Unsupported, sourceCoordinates,
+} from './errors.ts';
 import type { Span } from './trace_format.ts';
 
 export interface SourceToken {
@@ -69,64 +71,158 @@ export function arrayHeader(source: string, frontend?: CompilerFrontend): string
   return /\barray\b/.test(source) ? (frontend?.arrayPreamble ?? '#include <array>\n') : '';
 }
 
+/** The tokens Clang lexed, in source coordinates, and the headers the replay needs. */
+interface Lexed {
+  tokens: SourceToken[];
+  includes: string;
+  /** Spans of `#include <…>` lines, which a fragment may move before its generated `main`. */
+  includeLines: Span[];
+  /** Whether moving them keeps the source's meaning: no other directive can depend on them. */
+  movable: boolean;
+}
+
+/** Precedes a fragment, which may name the standard library's declarations unqualified. */
+const USING_STD = 'using namespace std;\n';
+
+const INCLUDE_LINE = /^[ \t]*(?:#|%:)[ \t]*include[ \t]*<([^<>\r\n]+)>[ \t]*(?:\/\/[^\r\n]*)?$/gm;
+
+function blank(text: string): string {
+  return text.replace(/[^\r\n]/g, ' ');
+}
+
+/**
+ * Lex `source` with Clang. Include lines alone cannot choose which tokens are active, and the
+ * headers' tokens are nearly all of Clang's dump, so such a source is lexed with them blanked.
+ * Any other directive may test a header's macros: that source is lexed after the convenience
+ * headers, and -H names the headers the C++20 preprocessor selected.
+ */
+function lex(source: string, frontend: CompilerFrontend, ignoreExpansions: boolean): Lexed {
+  const array = arrayHeader(source, frontend);
+  const lines = [...source.matchAll(INCLUDE_LINE)];
+  const includeLines = lines.map((line): Span => [line.index, line.index + line[0].length]);
+  const directives = source.match(/#|%:/g)?.length ?? 0;
+  // A comment or raw string could hide what looks like an include line.
+  if (directives === 0 || (directives === lines.length && !/\/\*|R"/.test(source))) {
+    let text = source;
+    for (const [start, end] of includeLines) text = text.slice(0, start) + blank(text.slice(start, end)) + text.slice(end);
+    return {
+      tokens: frontend.tokens(text, { ignoreExpansions }).tokens,
+      includes: HEADERS + array + lines.map(line => `#include <${line[1]}>\n`).join(''),
+      includeLines,
+      movable: true,
+    };
+  }
+  // The same lines as before the program's own, so `__LINE__` selects the same branches.
+  const context = HEADERS + array + USING_STD;
+  const lexed = frontend.tokens(context + source, { ignoreExpansions });
+  const includes = lexed.includes.map(path => {
+    if (path.includes('>')) throw new Unsupported('Clang reported an unsupported include path');
+    return `#include <${path}>\n`;
+  }).join('');
+  const tokens = lexed.tokens.filter(token => token.start >= context.length)
+    .map(token => ({ ...token, start: token.start - context.length, end: token.end - context.length }));
+  return {
+    tokens,
+    // Browser array declarations are supplied as source in the preamble.
+    includes: includes + (frontend.arrayPreamble ? array : ''),
+    // A raw string can hold what looks like an include line.
+    includeLines: includeLines.filter(([start, end]) => !tokens.some(token => token.start < end && token.end > start)),
+    movable: false,
+  };
+}
+
+/** The token index of `main` and of the `{` opening its body, if `main` is defined. */
+function mainDefinition(tokens: SourceToken[], source: string): { name: number; body: number } | null {
+  // A function declarator followed by a body distinguishes a complete program from a
+  // fragment calling a function. Clang checks the declarator and body after this choice.
+  for (let i = 0; i < tokens.length; i++) {
+    if (source.slice(tokens[i].start, tokens[i].end) !== 'main' || tokens[i + 1]?.kind !== 'l_paren') continue;
+    const close = tokens.findIndex((next, j) => j > i + 1 && next.kind === 'r_paren');
+    if (close !== -1 && tokens[close + 1]?.kind === 'l_brace') return { name: i, body: close + 1 };
+  }
+  return null;
+}
+
+const GLOBALS_NAMESPACE = '__course_globals';
+
 export class SourceFile {
   readonly program: string;
   readonly replayPreamble: string;
   readonly tokens: SourceToken[];
   readonly fragment: boolean;
+  /** The index of the first token of `main`'s body. */
+  readonly bodyStart: number;
   private readonly source: string;
+  private readonly lexed: Lexed;
   private readonly shift: number;
 
   constructor(
     source: string,
     frontend: CompilerFrontend,
-    { ignoreExpansions = false }: { ignoreExpansions?: boolean } = {}
+    { ignoreExpansions = false, lexed }: { ignoreExpansions?: boolean; lexed?: Lexed } = {}
   ) {
     if (!source.trim() || source.length > 10_000) throw new Unsupported('empty or oversized snippet');
     if (/\\[ \t\f\v]*(?:\r\n?|\n)/.test(source)) {
       throw new Unsupported('a backslash at the end of a line (a line splice) is not supported');
     }
+    this.lexed = lexed ?? lex(source, frontend, ignoreExpansions);
+    const { tokens } = this.lexed;
+    const spell = (token: SourceToken): string => source.slice(token.start, token.end);
+    if (tokens.some(token => token.kind === 'identifier' && !/^[A-Za-z_]\w*$/.test(spell(token)))) {
+      throw new Unsupported('identifiers outside ASCII letters, digits and underscores are not supported');
+    }
 
-    const array = arrayHeader(source, frontend);
-    const headers = HEADERS + array + 'using namespace std;\n';
-    // Only a directive can use convenience-header macros to choose which source is active.
-    // Avoid dumping all tokens in those headers for an ordinary statement fragment.
-    const context = /#|%:/.test(source) ? headers : '';
-    const lexed = frontend.tokens(context + source, { ignoreExpansions });
-    const tokens = lexed.tokens.filter(token => token.start >= context.length)
-      .map(token => ({ ...token, start: token.start - context.length, end: token.end - context.length }));
-    const includes = lexed.includes.map(path => {
-      if (path.includes('>')) throw new Unsupported('Clang reported an unsupported include path');
-      return `#include <${path}>\n`;
-    }).join('');
-    // -H records the headers selected by the C++20 preprocessor. Browser array
-    // declarations are supplied as source in the preamble.
-    this.replayPreamble = includes && context
-      ? includes + (frontend.arrayPreamble && array ? array : '') + 'using namespace std;\n'
-      : headers;
-    // A function declarator followed by a body distinguishes a complete program from a
-    // fragment calling a function. Clang checks the declarator and body after this choice.
-    this.fragment = !tokens.some((token, i) => {
-      if (source.slice(token.start, token.end) !== 'main' || tokens[i + 1]?.kind !== 'l_paren') return false;
-      const close = tokens.findIndex((next, j) => j > i + 1 && next.kind === 'r_paren');
-      return close !== -1 && tokens[close + 1]?.kind === 'l_brace';
-    });
+    const main = mainDefinition(tokens, source);
+    this.fragment = main === null;
+    this.bodyStart = main ? main.body + 1 : 0;
+    const headers = HEADERS + arrayHeader(source, frontend);
     const first = tokens[0]?.start ?? source.length;
-    const prefix = this.fragment
-      ? headers + source.slice(0, first) + 'int main() { '
-      : headers;
-    this.program = prefix + source.slice(this.fragment ? first : 0) + (this.fragment ? '\n}\n' : '\n');
+    // A blank line in place of a fragment's using-directive, so lines keep the numbers
+    // the token pass saw.
+    let prefix = headers + '\n';
+    let body = source;
+    if (this.fragment) {
+      // An include inside the generated main would declare the header's names there.
+      const late = this.lexed.includeLines.filter(([start]) => start >= first);
+      if (late.length && !this.lexed.movable) {
+        throw new Unsupported('an #include after the first statement needs a snippet without other directives');
+      }
+      body = source.slice(first);
+      for (const [start, end] of late) {
+        body = body.slice(0, start - first) + blank(source.slice(start, end)) + body.slice(end - first);
+      }
+      prefix = headers + USING_STD + source.slice(0, first) +
+        late.map(([start, end]) => source.slice(start, end) + '\n').join('') + 'int main() { ';
+    }
+    this.program = prefix + body + (this.fragment ? '\n}\n' : '\n');
     this.source = source;
     this.shift = prefix.length - (this.fragment ? first : 0);
     this.tokens = tokens.map(token => ({ ...token, start: token.start + this.shift, end: token.end + this.shift }));
+
+    // A complete program says itself whether it uses namespace std, and a global name such as
+    // `data` is ambiguous under a using-directive the program does not have.
+    if (main) {
+      let depth = 0;
+      let globals = 0;
+      for (let i = 0; i < main.name; i++) {
+        depth += tokens[i].kind === 'l_brace' ? 1 : tokens[i].kind === 'r_brace' ? -1 : 0;
+        if (depth === 0 && tokens[i].kind === 'semi') globals = i + 1;
+      }
+      const usesStd = tokens.slice(main.body).some((_, i) => usesNamespaceStd(tokens, main.body + i, spell));
+      this.replayPreamble = this.lexed.includes + tokens.slice(0, globals).map(spell).join(' ') + '\n' +
+        (usesStd ? USING_STD : '');
+    } else {
+      this.replayPreamble = this.lexed.includes + USING_STD;
+    }
   }
 
   /** Blank a statement while keeping source coordinates and line endings intact. */
   without(start: number, end: number, frontend: CompilerFrontend): SourceFile {
     const first = start - this.shift;
     const last = end - this.shift;
-    const blank = this.blankTokens(start, end);
-    return new SourceFile(this.source.slice(0, first) + blank + this.source.slice(last), frontend);
+    // Blanking active tokens changes neither directives nor the remaining tokens.
+    const lexed = { ...this.lexed, tokens: this.lexed.tokens.filter(token => token.start < first || token.end > last) };
+    return new SourceFile(this.source.slice(0, first) + this.blankTokens(start, end) + this.source.slice(last), frontend, { lexed });
   }
 
   /** Remove only active tokens, leaving directives, comments and line breaks in place. */
@@ -192,7 +288,7 @@ export class SourceFile {
 
   ast(frontend: CompilerFrontend): [AstNode, number] {
     const { offsets } = sourceCoordinates(this.program);
-    const main = frontend.mainAst(this.program);
+    const main = mainAst(frontend, this.program);
     useCharacterOffsets(main, offsets);
     const body = (main.inner ?? []).find(node => node.kind === 'CompoundStmt');
     if (!body) throw new Unsupported('main has no supported body');
@@ -213,12 +309,12 @@ export class SourceFile {
 
     const globals: AstNode[] = [];
     const leading = this.tokens.filter(token => token.end <= start);
+    const spell = (token: SourceToken): string => this.program.slice(token.start, token.end);
+    let records: AstNode[] | null = null;
     for (let i = 0; i < leading.length;) {
       const token = leading[i];
       const next = leading[i + 1];
-      if (token.kind === 'using' && next?.kind === 'namespace' &&
-          this.program.slice(leading[i + 2]?.start, leading[i + 2]?.end) === 'std' &&
-          leading[i + 3]?.kind === 'semi') {
+      if (usesNamespaceStd(leading, i, spell)) {
         i += 4;
         continue;
       }
@@ -226,11 +322,9 @@ export class SourceFile {
       if (token.kind !== 'struct' || next?.kind !== 'identifier') {
         throw new Unsupported('only struct definitions may precede main');
       }
-      const name = this.program.slice(next.start, next.end);
-      const record = frontend.astDump(this.program, name).find(node =>
-        node.kind === 'CXXRecordDecl' && node.completeDefinition &&
-        offsets[node.range?.begin?.offset ?? -1] === token.start);
-      if (record) useCharacterOffsets(record, offsets);
+      records ??= this.globalRecords(frontend, token.start, start);
+      const record = records.find(node =>
+        node.kind === 'CXXRecordDecl' && node.completeDefinition && node.range?.begin?.offset === token.start);
       if (!record) throw new Unsupported('only struct definitions may precede main');
       const [, finish] = bounds(record);
       const semi = leading.findIndex(item => item.start >= finish);
@@ -240,6 +334,36 @@ export class SourceFile {
     }
     return [{ ...body, inner: [...globals, ...(body.inner ?? [])] }, globals.length];
   }
+
+  /**
+   * The declarations from `from` up to `main` at `to`. Clang's AST filter matches every name
+   * containing its text, the standard library's too, so they are dumped from a namespace
+   * that no other name contains.
+   */
+  private globalRecords(frontend: CompilerFrontend, from: number, to: number): AstNode[] {
+    const open = `namespace ${GLOBALS_NAMESPACE} {\n`;
+    const probe = this.program.slice(0, from) + open + this.program.slice(from, to) + '\n}\n';
+    let nodes: AstNode[];
+    try {
+      nodes = frontend.astDump(probe, GLOBALS_NAMESPACE);
+    } catch (error) {
+      // The program itself compiled, so the namespace is what broke it, as around an #include.
+      if (error instanceof IllFormed) throw new Unsupported('only struct definitions may precede main');
+      throw error;
+    }
+    const namespace = nodes.find(node => node.kind === 'NamespaceDecl' && node.name === GLOBALS_NAMESPACE);
+    if (!namespace) return [];
+    // Types name the records as the program does, outside the namespace.
+    const unqualified = JSON.parse(JSON.stringify(namespace).replaceAll(`${GLOBALS_NAMESPACE}::`, '')) as AstNode;
+    useCharacterOffsets(unqualified, sourceCoordinates(probe).offsets.map(offset => offset - open.length));
+    return unqualified.inner ?? [];
+  }
+}
+
+/** Whether the tokens at `i` spell `using namespace std;`. */
+function usesNamespaceStd(tokens: SourceToken[], i: number, spell: (token: SourceToken) => string): boolean {
+  return tokens[i]?.kind === 'using' && tokens[i + 1]?.kind === 'namespace' &&
+    tokens[i + 2] !== undefined && spell(tokens[i + 2]) === 'std' && tokens[i + 3]?.kind === 'semi';
 }
 
 function useCharacterOffsets(node: AstNode, offsets: number[]): void {
@@ -271,6 +395,11 @@ export function parseAstDump(stdout: string): AstNode[] {
   } catch {
     throw new Unsupported('Clang returned invalid AST JSON');
   }
+}
+
+/** The definition of `main` in `program`. */
+export function mainAst(frontend: CompilerFrontend, program: string): AstNode {
+  return requireMain(frontend.astDump(program, 'main'));
 }
 
 export function requireMain(nodes: AstNode[]): AstNode {

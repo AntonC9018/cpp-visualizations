@@ -1,9 +1,12 @@
 // Browser Cache API loader for the Clang WASM compiler module.
-// Caches the ~17 MB WASM binary across reloads with streaming download progress
+// Caches the ~22 MB WASM binary across reloads with streaming download progress
 // and concurrent load deduplication.
 
-export const DEFAULT_CACHE_NAME = 'clang-trace-frontend-v2';
-export const DEFAULT_WASM_URL = './clang-trace-frontend.wasm?v=2';
+/** Bump with every rebuilt binary: it renames the cache and bypasses HTTP caches. */
+export const WASM_VERSION = 3;
+const CACHE_PREFIX = 'clang-trace-frontend-v';
+export const DEFAULT_CACHE_NAME = `${CACHE_PREFIX}${WASM_VERSION}`;
+export const DEFAULT_WASM_URL = `./clang-trace-frontend.wasm?v=${WASM_VERSION}`;
 
 export type WasmLoadPhase = 'checking-cache' | 'downloading' | 'compiling' | 'ready';
 
@@ -65,6 +68,18 @@ async function openCacheSafe(storage: CacheStorage | null, cacheName: string): P
     return await storage.open(cacheName);
   } catch {
     return null;
+  }
+}
+
+/** Delete the caches of earlier binaries, which no load reads again. */
+async function deleteStaleCaches(storage: CacheStorage | null, cacheName: string): Promise<void> {
+  if (!storage || !cacheName.startsWith(CACHE_PREFIX)) return;
+  try {
+    for (const name of await storage.keys()) {
+      if (name.startsWith(CACHE_PREFIX) && name !== cacheName) await storage.delete(name);
+    }
+  } catch {
+    // A cache that cannot be listed or deleted only costs storage.
   }
 }
 
@@ -181,6 +196,7 @@ export function loadWasmModule(
     const storage = getCacheStorage(options.cachesImpl);
 
     onProgress?.({ phase: 'checking-cache' });
+    void deleteStaleCaches(storage, cacheName);
     const cache = await openCacheSafe(storage, cacheName);
 
     let bytes: Uint8Array | null = null;

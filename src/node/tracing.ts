@@ -47,12 +47,15 @@ export {
   type Value,
 };
 
-/** Trace with the pinned native Clang. */
+type NativeContext = Partial<TraceContext>;
+
+/** Trace with the pinned native Clang, or with `frontend` when the caller shares one. */
 export function traceNatively<T extends Template>(
   source: string,
   settings: TraceSettings & { template: T },
-  { accept }: Pick<TraceContext, 'runtime' | 'accept'> = {}
+  { accept, frontend }: NativeContext = {}
 ): TraceOf[T] {
+  if (frontend) return traceSnippet(source, settings, { accept, frontend });
   const directory = mkdtempSync(join(tmpdir(), 'trace-'));
   try {
     return traceSnippet(source, settings, {
@@ -67,7 +70,7 @@ export function traceNatively<T extends Template>(
 /** An execution trace, with flags given as options. */
 export function trace(
   source: string,
-  { runtime = true, accept, ...flags }: Pick<TraceContext, 'runtime' | 'accept'> & Flags = {}
+  { accept, frontend, ...flags }: NativeContext & Flags = {}
 ): ExecutionTrace {
-  return traceNatively(source, { template: 'expression-timeline', flags }, { runtime, accept });
+  return traceNatively(source, { template: 'expression-timeline', flags }, { accept, frontend });
 }

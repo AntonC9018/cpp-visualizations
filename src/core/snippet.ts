@@ -8,8 +8,6 @@ import { traceWithFrontend } from './tracing.ts';
 
 export interface TraceContext {
   frontend: CompilerFrontend;
-  /** Accepted for callers using the previous tracing API. */
-  runtime?: boolean;
   /** The caller's own checks, which throw: a flag is suggested only for a trace they accept. */
   accept?: (trace: ExecutionTrace) => void;
 }

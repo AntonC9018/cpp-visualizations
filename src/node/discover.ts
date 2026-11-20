@@ -22,6 +22,7 @@ import { fileURLToPath } from 'node:url';
 import { type Flag, type Flags, enabledFlags, isFlag, parseSettings } from '../core/settings.ts';
 import type { ExecutionTrace } from '../core/trace_format.ts';
 import { applicable } from './generate.ts';
+import { createClangFrontend } from './toolchain.ts';
 import { Unsupported, trace } from './tracing.ts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -392,8 +393,9 @@ export function discover(
       }
       if (!cache.has(fence.source)) {
         try {
-          const accept = (traced: ExecutionTrace): void => applicable(traced, fence.source);
-          accept(trace(fence.source, { accept, ...flags }));
+          const frontend = createClangFrontend();
+          const accept = (traced: ExecutionTrace): void => applicable(traced, fence.source, frontend);
+          accept(trace(fence.source, { accept, frontend, ...flags }));
           cache.set(fence.source, null);
         } catch (exc) {
           if (exc instanceof Unsupported) {
