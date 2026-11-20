@@ -1082,6 +1082,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return op.operator[0] === last.operator[0] + shift;
   }
   const departure = (op) => (stores(op) ? T.writeHold : op.kind === "print" ? 0.2 : T.prepare) + (walks(op) ? chainDelay(walkOf(op)) : 0);
+  function stepWalkSeconds(steps, i) {
+    var _a;
+    const op = (_a = steps[i]) == null ? void 0 : _a.op;
+    return op && walks(op) ? chainDelay(walkOf(op)) : 0;
+  }
   function arrival(op) {
     if (op.kind === "deref") return T.prepare + T.follow;
     if (op.kind === "eval" || op.kind === "alias" || op.kind === "convert") return lead(op) + T.evaluate;
@@ -3048,6 +3053,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       if (this.animated) this.seek(seconds);
       this.elapsed = seconds;
       this.update();
+    }
+    /** The extra 1× time a multi-level storage walk adds to step `index`'s animation. */
+    walkSeconds(index) {
+      return stepWalkSeconds(this.m.steps, index);
     }
   }
   function setupCourseVisualization() {

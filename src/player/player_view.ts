@@ -15,7 +15,7 @@ import {
   themeName,
 } from './constants.ts';
 import { type Geometry, type TypeTarget, geometry } from './geometry.ts';
-import { type PreparedModel, prepare, stepFocus } from './model.ts';
+import { type PreparedModel, prepare, stepFocus, stepWalkSeconds } from './model.ts';
 import { type SceneContext, describe, lineTargets, placeLineTargets } from './scene.ts';
 import { esc } from './svg.ts';
 import { type TraceView, viewOf } from './views.ts';
@@ -564,5 +564,10 @@ export class Player {
     if (this.animated) this.seek(seconds);
     this.elapsed = seconds;
     this.update();
+  }
+
+  /** The extra 1× time a multi-level storage walk adds to step `index`'s animation. */
+  walkSeconds(index: number): number {
+    return stepWalkSeconds(this.m.steps, index);
   }
 }
