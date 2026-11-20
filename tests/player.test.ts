@@ -29,6 +29,7 @@ interface PlayerElement extends HTMLElement {
     g: Geometry;
     settle(step: number): void;
     inspect(step: number, progress: number): void;
+    walkSeconds(step: number): number;
     end(): void;
   };
 }
@@ -816,3 +817,22 @@ test('memory cells show the short float display', async () => {
   assert.ok(texts.includes('0.1') && texts.includes('1e+20'), texts.join(' | '));
   assert.ok(!texts.some(text => text.includes('0.100000001')), 'no float noise digits');
 });
+
+test('walkSeconds reports multi-level storage walk time per step', async () => {
+  const generated = traceSource('struct Inner { int x; }; struct Outer { Inner i; }; Outer o{{3}}; o.i.x += 2;');
+  await page.setContent(PAGE.replace(trace, JSON.stringify(generated).replace(/</g, '\\u003c')));
+  await page.evaluate(() => window.CourseVisualization!.scan());
+  await page.waitForSelector('.cv-player');
+  const walks = await page.evaluate(() => {
+    const playerEl = (document.querySelector('.course-visualization') as PlayerElement).cvPlayer;
+    return playerEl.m.steps.map((_, i) => playerEl.walkSeconds(i));
+  });
+  const readIndex = generated.steps.findIndex(step => step.op?.kind === 'read');
+  const writeIndex = generated.steps.findIndex(
+    (step, i) => i > readIndex && step.op?.kind === 'write'
+  );
+  assert.equal(walks[0], 0);
+  assert.ok(Math.abs(walks[readIndex] - 1.75) < 1e-12, `3-level walk on read: ${walks[readIndex]}`);
+  assert.equal(walks[writeIndex], 0, 'compound assignment write stays where read arrived');
+});
+
