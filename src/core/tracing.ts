@@ -45,6 +45,7 @@ import {
   structField,
   validate,
   whitespaceOutput,
+  withoutNestedNames,
 } from './trace_format.ts';
 
 export { INTEGERS, Integer } from './integers.ts';
@@ -2037,10 +2038,12 @@ class Renderer {
       } else {
         text = this.show(reduction.value, reduction.shape, reduction.kind === 'eval' && reduction.record !== null);
         op = { kind: 'eval', value: text };
-        // A brace list of plain values is already its value, however it is spaced.
+        // A brace list of plain values is already its value, however it is spaced and whether
+        // or not it names the records nested in it.
+        const unnamed = (spelled: string): string => spaceless(withoutNestedNames(spelled));
         if (
           isPlainObject(reduction.value) &&
-          spaceless(pane.read(reduction.span[0], reduction.span[1])) === spaceless(text)
+          unnamed(pane.read(reduction.span[0], reduction.span[1])) === unnamed(text)
         ) {
           text = pane.read(reduction.span[0], reduction.span[1]);
         }

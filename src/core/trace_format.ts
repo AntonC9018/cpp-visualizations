@@ -692,13 +692,16 @@ function checkCompoundRead(
 
 const LITERAL = /^≈?-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i;
 
+/** A brace list without the names of the records nested in it: `{1, N{2, 3}}` → `{1, {2, 3}}`. */
+export const withoutNestedNames = (text: string): string =>
+  text.replace(/(?<=[{,]\s*)[A-Za-z_][\w:]*(?=\{)/g, '');
+
 /** The items a value text spells: one, or each of a brace list. */
 function storedItems(text: string, where: string): string[] {
   const braced = /^(?:[A-Za-z_]\w*)?\{[\s\S]*\}$/.test(text);
   const inner = braced ? text.slice(text.indexOf('{')) : text;
-  // A nested record may carry its name, as `{1, N{2, 3}}`.
   const items = braced
-    ? inner.replace(/[A-Za-z_][\w:]*(?=\{)|[{}]/g, '').split(',').map(s => s.trim())
+    ? withoutNestedNames(inner).replace(/[{}]/g, '').split(',').map(s => s.trim())
     : [inner];
   for (const item of items) {
     check(

@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 import { dumpsSorted } from '../src/core/json_format.ts';
 import { SourceFile } from '../src/core/source.ts';
-import { type ExecutionTrace, validate } from '../src/core/trace_format.ts';
+import { type ExecutionTrace, validate, withoutNestedNames } from '../src/core/trace_format.ts';
 import * as generate from '../src/node/generate.ts';
 import { createClangFrontend } from '../src/node/toolchain.ts';
 import * as tracing from '../src/node/tracing.ts';
@@ -91,6 +91,18 @@ p->next->x=9; c=*p; (*p).x=7; std::cout << a.x;`;
     const read = result.steps.find(step => step.op?.kind === 'read')!;
     assert.equal(read.pane, 'A b = A{N{1, 2}, 3}');
     validate(result);
+    // A brace list the code spells unnamed is already its value: no step only to name it.
+    const spelled = tracing.trace('struct N { int f; int g; };\nstruct A { N n; int f; };\nA c{};\nc = A{{1, 2}, 3};');
+    const last = spelled.steps.filter(step => step.line === spelled.steps.at(-1)!.line);
+    assert.deepEqual(last.map(step => [step.pane, step.op?.kind ?? null]), [
+      ['c = A{{1, 2}, 3}', null],
+      ['c = A{{1, 2}, 3}', 'write'],
+    ]);
+  });
+
+  test('only a name that opens a nested brace list is stripped', () => {
+    assert.equal(withoutNestedNames('A{1, N{2, 3}}'), 'A{1, {2, 3}}');
+    assert.equal(withoutNestedNames('{1, 1N{2, 3}}'), '{1, 1N{2, 3}}');
   });
 
   test('elided_aggregate_initialization_and_struct_double_pointer', () => {
