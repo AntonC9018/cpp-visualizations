@@ -9,6 +9,7 @@ import {
   type WalkingOperation,
   arrival,
   departure,
+  paneVariables,
   prepare,
   stepFocus,
   walkOf,
@@ -156,6 +157,25 @@ test('a field after -> is not a variable of that name', () => {
   const f = model('struct S { int x; int y; }; S s{ 1, 2 }; int x = 5; S* p = &s; p->x = 3;');
   const read = stepOf(f, 'read', 'p');
   assert.ok(!stepFocus(f, read, true).now.has('x'));
+});
+
+test('a pane names no variable in a field, a literal or a struct type, however spaced', () => {
+  const panes = (source: string): string[] => {
+    const t = model(source);
+    return t.steps.flatMap(step => [...paneVariables(t, step)].map(name => `${step.pane}: ${name}`));
+  };
+  const named = (source: string, name: string): string[] =>
+    panes(source).filter(entry => entry.endsWith(`: ${name}`));
+  assert.deepEqual(named('struct S { int x; int y; }; S s{ 1, 2 }; int x = 5; S* p = &s; p-> x = 3;', 'x')
+    .filter(entry => entry.includes('->')), []);
+  assert.deepEqual(named('#include <iostream>\nint main() { int n = 1; std::cout << \'\\n\'; }', 'n'), [
+    'int n = 1: n',
+    'int n = 1: n',
+  ]);
+  assert.deepEqual(
+    named('struct N { int f; int g; };\nstruct A { N n; int f; };\nint N = 4;\nA a{};\nA b = a;', 'N'),
+    ['int N = 4: N', 'int N = 4: N']
+  );
 });
 
 test('a chain a dereference arrived at walks only from where it arrived', () => {

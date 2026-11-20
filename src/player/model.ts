@@ -278,16 +278,25 @@ export function activeVariables(m: PreparedModel, i: number): Set<string> {
   return active;
 }
 
+/**
+ * A name in a pane, or a literal to skip: a field's name after `.` or `->` and a scope's after
+ * `::`, however spaced, are not a variable's, and nor is anything quoted.
+ */
+const PANE_NAME = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|(?<!\w)(?<!(?:\.|->|::)\s*)[A-Za-z_]\w*(\s*\{)?/g;
+
 /** The variables a pane names, and the variable a reference it names is bound to. */
 export function paneVariables(m: PreparedModel, step: TraceStep): Set<string> {
   const named = new Set<string>();
   const refs = step.refs || {};
-  // A field's name, after `.` or `->`, is not a variable's.
-  for (const [token] of step.pane.matchAll(/(?<![\w.]|->)[A-Za-z_]\w*/g)) {
-    if (m.top.includes(token)) named.add(token);
-    if (Object.hasOwn(refs, token) && refs[token]) {
-      named.add(token);
-      named.add(refs[token].split('.')[0]);
+  // A struct's type that opens a brace list, as the `N` of `A{1, N{2, 3}}`, is not a variable.
+  const records = new Set(m.groups.map(group => group.type));
+  for (const [token, brace] of step.pane.matchAll(PANE_NAME)) {
+    const name = brace ? token.slice(0, -brace.length) : token;
+    if (/^["']/.test(name) || (brace && records.has(name))) continue;
+    if (m.top.includes(name)) named.add(name);
+    if (Object.hasOwn(refs, name) && refs[name]) {
+      named.add(name);
+      named.add(refs[name].split('.')[0]);
     }
   }
   return named;
