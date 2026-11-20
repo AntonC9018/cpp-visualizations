@@ -86,6 +86,13 @@ p->next->x=9; c=*p; (*p).x=7; std::cout << a.x;`;
     validate(result);
   });
 
+  test('a_named_struct_value_names_the_structs_nested_in_it', () => {
+    const result = tracing.trace('struct N { int f; int g; };\nstruct A { N n; int f; };\nA a{ { 1, 2 }, 3 };\nA b = a;');
+    const read = result.steps.find(step => step.op?.kind === 'read')!;
+    assert.equal(read.pane, 'A b = A{N{1, 2}, 3}');
+    validate(result);
+  });
+
   test('elided_aggregate_initialization_and_struct_double_pointer', () => {
     const result = tracing.trace(
       'struct S {int x;}; S a=S{1}; S b{}; S *p=&a; S **pp=&p; b=**pp; p->x=9;'

@@ -137,17 +137,21 @@ function hasRecord(records: unknown, name: string): boolean {
 
 /**
  * How a value of a type is shown: a float's byte size, `null` for an integer or a pointer, or a
- * record's shape for each of its fields.
+ * record's name (none for an array) and the shape of each of its fields.
  */
-export type Shape = number | null | { readonly [field: string]: Shape };
+export type Shape = number | null | RecordShape;
+type RecordShape = { readonly record: string | null; readonly fields: { readonly [field: string]: Shape } };
 
-function recordShape(record: RecordInfo, records: unknown): Shape {
-  return Object.fromEntries(
-    record.fields.map(field => {
-      const nested = field.kind === 'struct' && field.type ? getRecord(records, field.type) : undefined;
-      return [field.name, nested ? recordShape(nested, records) : field.floating ? field.size : null];
-    })
-  );
+function recordShape(record: RecordInfo, records: unknown): RecordShape {
+  return {
+    record: arrayType(record.name) ? null : record.name,
+    fields: Object.fromEntries(
+      record.fields.map(field => {
+        const nested = field.kind === 'struct' && field.type ? getRecord(records, field.type) : undefined;
+        return [field.name, nested ? recordShape(nested, records) : field.floating ? field.size : null];
+      })
+    ),
+  };
 }
 
 function shapeOf(node: AstNode | null | undefined, records: unknown): Shape {
@@ -1912,11 +1916,13 @@ class Renderer {
     return `0x${address.toString(16).padStart(16, '0')}`;
   }
 
-  show(value: Value, shape: Shape): string {
+  /** A value as the pane spells it; `named`, a record and those nested in it carry their names. */
+  show(value: Value, shape: Shape, named = false): string {
     if (isPlainObject(value)) {
-      const fields = shape !== null && typeof shape === 'object' ? shape : {};
-      return `{${Object.entries(value)
-        .map(([field, item]) => this.show(item, fields[field] ?? null))
+      const record = shape !== null && typeof shape === 'object' ? shape : null;
+      const fields = record?.fields ?? {};
+      return `${(named && record?.record) || ''}{${Object.entries(value)
+        .map(([field, item]) => this.show(item, fields[field] ?? null, named))
         .join(', ')}}`;
     }
     return displayNumber(this.stored(value), typeof shape === 'number' ? shape : null);
@@ -2005,9 +2011,7 @@ class Renderer {
         continue;
       }
       if (reduction.kind === 'read') {
-        text =
-          (reduction.record ?? '') +
-          this.show(load(before, reduction.name), reduction.shape);
+        text = this.show(load(before, reduction.name), reduction.shape, reduction.record !== null);
         op = { kind: 'read', name: reduction.name, value: text };
       } else if (reduction.kind === 'addr') {
         text = String(this.addresses[reduction.name]);
@@ -2031,9 +2035,7 @@ class Renderer {
         text = this.show(reduction.value, reduction.shape);
         op = { kind: 'convert', value: text, from: reduction.source, to: reduction.type };
       } else {
-        text =
-          (reduction.kind === 'eval' ? (reduction.record ?? '') : '') +
-          this.show(reduction.value, reduction.shape);
+        text = this.show(reduction.value, reduction.shape, reduction.kind === 'eval' && reduction.record !== null);
         op = { kind: 'eval', value: text };
         // A brace list of plain values is already its value, however it is spaced.
         if (

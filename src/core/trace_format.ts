@@ -696,7 +696,10 @@ const LITERAL = /^≈?-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i;
 function storedItems(text: string, where: string): string[] {
   const braced = /^(?:[A-Za-z_]\w*)?\{[\s\S]*\}$/.test(text);
   const inner = braced ? text.slice(text.indexOf('{')) : text;
-  const items = braced ? inner.replace(/[{}]/g, '').split(',').map(s => s.trim()) : [inner];
+  // A nested record may carry its name, as `{1, N{2, 3}}`.
+  const items = braced
+    ? inner.replace(/[A-Za-z_][\w:]*(?=\{)|[{}]/g, '').split(',').map(s => s.trim())
+    : [inner];
   for (const item of items) {
     check(
       item === 'nullptr' || item === UNKNOWN || LITERAL.test(item),
