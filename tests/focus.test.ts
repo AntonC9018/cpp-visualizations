@@ -8,6 +8,7 @@ import {
   type PreparedModel,
   type WalkingOperation,
   arrival,
+  continuesOperator,
   departure,
   paneVariables,
   prepare,
@@ -283,4 +284,14 @@ test('a walk recorded for one step does not shorten another that shares its oper
   const walk = (i: number): string[] => walkOf(m.steps[i].op as WalkingOperation);
   assert.deepEqual(walk(reads[0]), ['s.in', 's.in.b']);
   assert.deepEqual(walk(reads[1]), ['s', 's.in', 's.in.b']);
+});
+
+test('an operator lights before the first of its operands converts, and stays through the rest', () => {
+  const t = prepare(trace('#include <cstdint>\nuint8_t a = 200;\nint b = a + a;', { types: true }));
+  const converts = t.steps.flatMap((step, i) =>
+    step.line === 1 && step.op?.kind === 'convert' ? [i] : []
+  );
+  assert.equal(converts.length, 2);
+  assert.deepEqual(converts.map(i => continuesOperator(t.steps, i)), [false, true]);
+  assert.deepEqual(converts.map(i => arrival(t.steps[i].op!)), [T.operator + T.evaluate, T.evaluate]);
 });

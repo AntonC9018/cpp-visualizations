@@ -119,13 +119,29 @@ describe('ConversionTests', () => {
   });
 
   test('operands_are_promoted_before_arithmetic', () => {
-    const t = trace('uint8_t a{ 200 }; int b = a + a; unsigned x = 0; x = x - 1;');
+    const t = trace('uint8_t a{ 200 }; int b = a + a; unsigned x = 0; x = x - 1; a += a;');
+    // Both operands are read first: promoting them is the operator's doing, and names it.
     assert.deepEqual(conversions(t, 1), [
-      ['int b = 200 + a', 'int b = 200 + a', 'uint8_t', 'int'],
+      ['int b = 200 + 200', 'int b = 200 + 200', 'uint8_t', 'int'],
       ['int b = 200 + 200', 'int b = 200 + 200', 'uint8_t', 'int'],
     ]);
+    const operators = (line: number): string[] =>
+      t.steps.flatMap((step, i) =>
+        step.line === line && step.op?.kind === 'convert' && step.op.operator
+          ? [t.steps[i - 1].pane.slice(...step.op.operator)]
+          : []
+      );
+    assert.deepEqual(operators(1), ['+', '+']);
+    assert.deepEqual(operators(3), ['-']);
+    // A compound assignment's operands too, before it converts the result back.
+    assert.deepEqual(conversions(t, 4), [
+      ['a = 200 + 200', 'a = 200 + 200', 'uint8_t', 'int'],
+      ['a = 200 + 200', 'a = 200 + 200', 'uint8_t', 'int'],
+      ['a = 400', 'a = 144', 'int', 'uint8_t'],
+    ]);
+    assert.deepEqual(operators(4), ['+', '+']);
     assert.deepEqual(conversions(t, 3), [['x = 0 - 1', 'x = 0 - 1', 'int', 'unsigned int']]);
-    assert.deepEqual(t.steps.at(-1)!.values, { a: 200, b: 400, x: 4294967295 });
+    assert.deepEqual(t.steps.at(-1)!.values, { a: 144, b: 400, x: 4294967295 });
   });
 
   test('a_cast_to_the_same_type_only_goes_away', () => {

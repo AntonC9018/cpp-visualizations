@@ -1773,7 +1773,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       clash: ["span", "destination", "from", "to"]
     };
     const fields = fieldMap[kind];
-    checkKeys(op, where, [...fields, "kind"], kind === "read" ? ["compound", "grouped"] : []);
+    const optional = { read: ["compound", "grouped"], convert: ["operator"] };
+    checkKeys(op, where, [...fields, "kind"], optional[kind] ?? []);
+    if (Object.hasOwn(op, "operator")) checkSpan(op.operator, previous.pane, `${where}.operator`);
     if (Object.hasOwn(op, "grouped")) {
       check(
         Object.hasOwn(op, "compound") && typeof op.grouped === "boolean",
@@ -2460,6 +2462,18 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
   function operandIsPointer(node) {
     return canonicalType(node).endsWith("*");
   }
+  const NUMBER_CASTS = ["IntegralCast", "IntegralToFloating", "FloatingToIntegral", "FloatingCast"];
+  function operandOf(node) {
+    var _a;
+    const casts = [];
+    let inner = node;
+    while (inner.kind === "ImplicitCastExpr" && NUMBER_CASTS.includes(inner.castKind ?? "") && ((_a = inner.inner) == null ? void 0 : _a.length) === 1) {
+      casts.unshift(inner);
+      inner = inner.inner[0];
+    }
+    if (casts.length) rejectPointerOperator(inner);
+    return { inner, casts };
+  }
   function rejectPointerOperator(node) {
     if ((node == null ? void 0 : node.kind) === "BinaryOperator" && (operandIsPointer(node) || (node.inner ?? []).some(operandIsPointer))) {
       throw new Unsupported("pointer arithmetic and comparison are not supported");
@@ -2535,8 +2549,11 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
       this.reduceAt(copy, left, { kind: "read", name: target, record: null, compound: operator, grouped: group !== null });
       const computation = { type: node.computeLHSType };
       const resultType = { type: node.computeResultType };
-      const operand = this.convertedAt(copy, held, computation, left);
-      const other = this.numericOperand(right);
+      const spelled = [copy[1] + 1, copy[1] + 1 + operator.length];
+      const pending = operandOf(right);
+      const read = this.numericOperand(pending.inner);
+      const operand = this.convertedAt(copy, held, computation, left, spelled);
+      const other = this.promoted(pending, read, spelled);
       if (group) this.reduceAt(group, right, { kind: "eval", value: other, record: null });
       const value = this.operate(resultType, operator, operand, other);
       this.reduceAt(result, resultType, { kind: "eval", value, record: null });
@@ -2548,12 +2565,46 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
       const spelled = this.reductions.some((item) => item.span[0] === span[0] && item.span[1] === span[1]);
       if (!spelled && written !== codeName(target)) this.reduce(node, { kind: "select", name: target });
     }
-    /** `value`, of the type of `source`, in the type of `node`; a step at `span` if the type changes. */
-    convertedAt(span, value, node, source) {
+    /**
+     * `value`, of the type of `source`, in the type of `node`; a step at `span` if the type changes,
+     * one of `operator`'s conversions when given.
+     */
+    convertedAt(span, value, node, source, operator) {
       if (displayedType(node) === displayedType(source)) return value;
       const converted = this.convertNumber(value, node, source);
-      this.reduceAt(span, node, { kind: "convert", value: converted, source: displayedType(source) });
+      this.reduceAt(span, node, {
+        kind: "convert",
+        value: converted,
+        source: displayedType(source),
+        ...operator ? { operator } : {}
+      });
       return converted;
+    }
+    /**
+     * The operands of binary `node`, each evaluated before either converts: the conversions are the
+     * operator's, so `a + a` reads both `a`s, then promotes each.
+     */
+    operands(node, nodes) {
+      const operator = this.operatorOf(node);
+      const operands = nodes.map(operandOf);
+      const values = operands.map((operand) => this.numericOperand(operand.inner));
+      return operands.map((operand, k) => this.promoted(operand, values[k], operator));
+    }
+    /** `value`, which `operand` evaluated to, through the conversions `operator` applies to it. */
+    promoted({ inner, casts }, value, operator) {
+      return casts.reduce((held, cast, k) => {
+        const converted = this.convertNumber(held, cast, k ? casts[k - 1] : inner);
+        this.conversion(cast, k ? casts[k - 1] : inner, converted, operator);
+        return converted;
+      }, value);
+    }
+    /** Where the operator of binary `node` stands: the first token after its left operand. */
+    operatorOf(node) {
+      const after = bounds(node.inner[0])[1];
+      const token = this.file.tokens.find((token2) => token2.start >= after);
+      if (!token) throw new Unsupported("macro-expanded statements are not supported");
+      const at = { offset: token.start, tokLen: token.end - token.start };
+      return this.locate({ range: { begin: at, end: at } });
     }
     /** A brace list inside another one is part of its value, not an evaluation of its own. */
     absorb(child, value) {
@@ -2804,7 +2855,8 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
         );
       } else if (kind === "BinaryOperator" && ["+", "-", "*", "/", "%"].includes(node.opcode ?? "") && children.length === 2) {
         rejectPointerOperator(node);
-        value = this.operate(node, node.opcode, this.numericOperand(children[0]), this.numericOperand(children[1]));
+        const [left, right] = this.operands(node, children);
+        value = this.operate(node, node.opcode, left, right);
       } else {
         throw new Unsupported(`unsupported expression: ${kind} ${(node == null ? void 0 : node.opcode) ?? ""}`.trimEnd());
       }
@@ -2861,13 +2913,17 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
       } else {
         value = this.convertNumber(this.numericOperand(operand), node, operand);
       }
+      this.conversion(node, operand, value);
+      return value;
+    }
+    /** The step that turns `operand` into `value` in the type of `node`, one of `operator`'s. */
+    conversion(node, operand, value, operator) {
       const source = displayedType(operand);
       if (source === displayedType(node)) {
         this.reduce(node, { kind: "eval", value, record: null });
       } else {
-        this.reduce(node, { kind: "convert", value, source });
+        this.reduce(node, { kind: "convert", value, source, ...operator ? { operator } : {} });
       }
-      return value;
     }
     convertNumber(value, node, source) {
       const target = this.numericType(node);
@@ -3824,7 +3880,13 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
           op2 = { kind: "deref", target, via: reduction.name };
         } else if (reduction.kind === "convert" && this.types && !pane.insideTyped(reduction.span[0], reduction.span[1])) {
           text2 = this.show(reduction.value, reduction.shape);
-          op2 = { kind: "convert", value: text2, from: reduction.source, to: reduction.type };
+          op2 = {
+            kind: "convert",
+            value: text2,
+            from: reduction.source,
+            to: reduction.type,
+            ...reduction.operator ? { operator: pane.locate(...reduction.operator) } : {}
+          };
         } else {
           text2 = this.show(reduction.value, reduction.shape, reduction.kind === "eval" && reduction.record !== null);
           op2 = { kind: "eval", value: text2 };

@@ -259,7 +259,13 @@ export type Reduction = { readonly span: Span; readonly type: string; readonly s
   | { readonly kind: 'alias'; readonly name: string; readonly target: string }
   | { readonly kind: 'select'; readonly name: string }
   | { readonly kind: 'eval'; readonly value: Value; readonly record: string | null }
-  | { readonly kind: 'convert'; readonly value: number | Pointer; readonly source: string }
+  | {
+      readonly kind: 'convert';
+      readonly value: number | Pointer;
+      readonly source: string;
+      // The operator whose operands' conversions this is one of, as `+` promotes in `a + a`.
+      readonly operator?: Span;
+    }
 );
 
 /** A reduction's own fields, one shape per kind: the evaluator adds where it is and its type. */
@@ -312,6 +318,26 @@ function filled(item: RecordInfo | RecordFieldInfo, records: Record<string, Reco
 
 function operandIsPointer(node: AstNode | null | undefined): boolean {
   return canonicalType(node).endsWith('*');
+}
+
+/** The implicit casts that turn one number into another, as an operator converts its operands. */
+const NUMBER_CASTS = ['IntegralCast', 'IntegralToFloating', 'FloatingToIntegral', 'FloatingCast'];
+
+/** An operand as evaluated, `inner`, and the conversions the operator applies to it, innermost first. */
+interface Operand {
+  inner: AstNode;
+  casts: AstNode[];
+}
+
+function operandOf(node: AstNode): Operand {
+  const casts: AstNode[] = [];
+  let inner = node;
+  while (inner.kind === 'ImplicitCastExpr' && NUMBER_CASTS.includes(inner.castKind ?? '') && inner.inner?.length === 1) {
+    casts.unshift(inner);
+    inner = inner.inner[0];
+  }
+  if (casts.length) rejectPointerOperator(inner);
+  return { inner, casts };
 }
 
 function rejectPointerOperator(node: AstNode | null | undefined): void {
@@ -410,8 +436,12 @@ class Reductions {
     this.reduceAt(copy, left, { kind: 'read', name: target, record: null, compound: operator, grouped: group !== null });
     const computation: AstNode = { type: node.computeLHSType };
     const resultType: AstNode = { type: node.computeResultType };
-    const operand = this.convertedAt(copy, held, computation, left);
-    const other = this.numericOperand(right);
+    // The opened pane reads `a = 5 + b`: the operator stands one space after the copy of `a`.
+    const spelled: Span = [copy[1] + 1, copy[1] + 1 + operator.length];
+    const pending = operandOf(right);
+    const read = this.numericOperand(pending.inner);
+    const operand = this.convertedAt(copy, held, computation, left, spelled);
+    const other = this.promoted(pending, read, spelled);
     if (group) this.reduceAt(group, right, { kind: 'eval', value: other, record: null });
     const value = this.operate(resultType, operator, operand, other);
     this.reduceAt(result, resultType, { kind: 'eval', value, record: null });
@@ -425,12 +455,46 @@ class Reductions {
     if (!spelled && written !== codeName(target)) this.reduce(node, { kind: 'select', name: target });
   }
 
-  /** `value`, of the type of `source`, in the type of `node`; a step at `span` if the type changes. */
-  private convertedAt(span: Span, value: number, node: AstNode, source: AstNode): number {
+  /**
+   * `value`, of the type of `source`, in the type of `node`; a step at `span` if the type changes,
+   * one of `operator`'s conversions when given.
+   */
+  private convertedAt(span: Span, value: number, node: AstNode, source: AstNode, operator?: Span): number {
     if (displayedType(node) === displayedType(source)) return value;
     const converted = this.convertNumber(value, node, source);
-    this.reduceAt(span, node, { kind: 'convert', value: converted, source: displayedType(source) });
+    this.reduceAt(span, node, {
+      kind: 'convert', value: converted, source: displayedType(source), ...(operator ? { operator } : {}),
+    });
     return converted;
+  }
+
+  /**
+   * The operands of binary `node`, each evaluated before either converts: the conversions are the
+   * operator's, so `a + a` reads both `a`s, then promotes each.
+   */
+  private operands(node: AstNode, nodes: AstNode[]): number[] {
+    const operator = this.operatorOf(node);
+    const operands = nodes.map(operandOf);
+    const values = operands.map(operand => this.numericOperand(operand.inner));
+    return operands.map((operand, k) => this.promoted(operand, values[k], operator));
+  }
+
+  /** `value`, which `operand` evaluated to, through the conversions `operator` applies to it. */
+  private promoted({ inner, casts }: Operand, value: number, operator: Span): number {
+    return casts.reduce((held, cast, k) => {
+      const converted = this.convertNumber(held, cast, k ? casts[k - 1] : inner);
+      this.conversion(cast, k ? casts[k - 1] : inner, converted, operator);
+      return converted;
+    }, value);
+  }
+
+  /** Where the operator of binary `node` stands: the first token after its left operand. */
+  private operatorOf(node: AstNode): Span {
+    const after = bounds(node.inner![0])[1];
+    const token = this.file.tokens.find(token => token.start >= after);
+    if (!token) throw new Unsupported('macro-expanded statements are not supported');
+    const at = { offset: token.start, tokLen: token.end - token.start };
+    return this.locate({ range: { begin: at, end: at } });
   }
 
   /** A brace list inside another one is part of its value, not an evaluation of its own. */
@@ -737,7 +801,8 @@ class Reductions {
       children.length === 2
     ) {
       rejectPointerOperator(node);
-      value = this.operate(node, node.opcode!, this.numericOperand(children[0]), this.numericOperand(children[1]));
+      const [left, right] = this.operands(node, children);
+      value = this.operate(node, node.opcode!, left, right);
     } else {
       throw new Unsupported(`unsupported expression: ${kind} ${node?.opcode ?? ''}`.trimEnd());
     }
@@ -800,14 +865,19 @@ class Reductions {
     } else {
       value = this.convertNumber(this.numericOperand(operand), node, operand);
     }
+    this.conversion(node, operand, value);
+    return value;
+  }
+
+  /** The step that turns `operand` into `value` in the type of `node`, one of `operator`'s. */
+  private conversion(node: AstNode, operand: AstNode, value: number | Pointer, operator?: Span): void {
     const source = displayedType(operand);
     if (source === displayedType(node)) {
       // `static_cast<int>` of an int changes nothing: the cast just goes away.
       this.reduce(node, { kind: 'eval', value, record: null });
     } else {
-      this.reduce(node, { kind: 'convert', value, source });
+      this.reduce(node, { kind: 'convert', value, source, ...(operator ? { operator } : {}) });
     }
-    return value;
   }
 
   private convertNumber(value: number, node: AstNode, source: AstNode): number {
@@ -2037,7 +2107,10 @@ class Renderer {
         !pane.insideTyped(reduction.span[0], reduction.span[1])
       ) {
         text = this.show(reduction.value, reduction.shape);
-        op = { kind: 'convert', value: text, from: reduction.source, to: reduction.type };
+        op = {
+          kind: 'convert', value: text, from: reduction.source, to: reduction.type,
+          ...(reduction.operator ? { operator: pane.locate(...reduction.operator) } : {}),
+        };
       } else {
         text = this.show(reduction.value, reduction.shape, reduction.kind === 'eval' && reduction.record !== null);
         op = { kind: 'eval', value: text };

@@ -105,6 +105,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     copyBegin: 0.15,
     copyTravel: 1,
     evaluate: 0.6,
+    // How long an operator shows lit before the first of its operands' conversions starts.
+    operator: 0.6,
     clash: 1.6,
     // Instant playback: how long each settled state shows before the next.
     instantHold: 0.8
@@ -1139,10 +1141,20 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   const shortWalks = /* @__PURE__ */ new WeakMap();
   const walkOf = (op) => shortWalks.get(op) ?? chainOf(op.name);
   const landing = (op) => memoryWalk(walkOf(op), arrival(op)).at(-1)[0];
+  const opening = /* @__PURE__ */ new WeakSet();
+  const lead = (op) => opening.has(op) ? T.operator : 0;
+  function continuesOperator(steps, i) {
+    var _a, _b;
+    const op = (_a = steps[i]) == null ? void 0 : _a.op;
+    const last = (_b = steps[i - 1]) == null ? void 0 : _b.op;
+    if ((op == null ? void 0 : op.kind) !== "convert" || !op.operator || (last == null ? void 0 : last.kind) !== "convert" || !last.operator || i < 2) return false;
+    const shift = last.operator[0] >= last.span[1] ? steps[i - 1].pane.length - steps[i - 2].pane.length : 0;
+    return op.operator[0] === last.operator[0] + shift;
+  }
   const departure = (op) => (stores(op) ? T.writeHold : op.kind === "print" ? 0.2 : T.prepare) + (walks(op) ? chainDelay(walkOf(op)) : 0);
   function arrival(op) {
     if (op.kind === "deref") return T.prepare + T.follow;
-    if (op.kind === "eval" || op.kind === "alias" || op.kind === "convert") return T.evaluate;
+    if (op.kind === "eval" || op.kind === "alias" || op.kind === "convert") return lead(op) + T.evaluate;
     if (op.kind === "clash") return T.clash;
     if (op.kind === "print") return 0.9;
     return departure(op) + T.travel;
@@ -1250,6 +1262,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     };
     const continuations = model.steps.map((_, j) => continuation(model, j));
     recordShortWalks(model, continuations);
+    model.steps.forEach((step, i) => {
+      var _a;
+      if (((_a = step.op) == null ? void 0 : _a.kind) === "convert" && step.op.operator && !continuesOperator(model.steps, i)) opening.add(step.op);
+    });
     model.reach = model.steps.map((_, j) => reachedIn(model, j, continuations[j]));
     return model;
   }
@@ -1859,6 +1875,17 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       return `<g opacity="0">${fade(0, 1, 0.15, begin)}${fade(1, 0, 0.2, leave)}${box(chars)}</g>`;
     }).join("");
   }
+  function operatorMark(c, dx) {
+    const { op, P, g } = c;
+    if ((op == null ? void 0 : op.kind) !== "convert" || !op.operator) return "";
+    const [s, e] = op.operator;
+    const at = arrival(op);
+    const opens = !c.animate || !continuesOperator(c.m.steps, c.index);
+    const lasts = continuesOperator(c.m.steps, c.index + 1);
+    const box = markBox(g.tx + s * g.paneChar, g.ty, (e - s) * g.paneChar, P.fg, P.derefFill);
+    const moved = s >= op.span[1] && dx !== 0 ? glide(box, dx, at + 0.1, 0.3) : box;
+    return `<g opacity="${opens ? 0 : 1}">${opens ? fade(0, 1, 0.25) : ""}${lasts ? "" : fade(1, 0, 0.3, at + 0.3)}${moved}</g>`;
+  }
   function valueBox(c, value, color, path, begin, travel, end) {
     const half = Math.max(28, String(value).length * c.g.paneChar / 2 + 12);
     return `<g opacity="0">${fade(0, 0.55, 0.25, begin)}${fade(0.55, 0, 0.2, end - 0.2)}<path d="${path}" fill="none" stroke="${color}" stroke-width="3"/></g><g opacity="0">${fade(0, 1, 0.12, begin)}${hide(end)}` + rect(-half, -25, 2 * half, 50, c.P.panel, color, 9) + text(0, 11, value, c.g.paneSize, c.P.fg, "middle") + `<animateMotion begin="${round(begin)}s" dur="${travel}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
@@ -1988,8 +2015,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         op.kind === "read" || op.kind === "addr" ? paneLevels(walkOf(op), before, s) : null,
         at - 0.1,
         (chars) => markBox(sx, ty, chars * c.g.paneChar, stroke, fill),
-        `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.2, at - 0.1)}${markBox(sx, ty, (e - s) * c.g.paneChar, stroke, fill)}</g>`
+        `<g opacity="0">${fade(0, 1, 0.15, lead(op))}${fade(1, 0, 0.2, at - 0.1)}${markBox(sx, ty, (e - s) * c.g.paneChar, stroke, fill)}</g>`
       );
+      out += operatorMark(c, dx);
       out += paneText(c, tx, ty, before, 0, s, prev.expr);
       let old = paneText(c, sx, ty, before, s, e, prev.expr);
       let fresh = paneText(c, sx, ty, step.pane, s, s + length, step.expr);

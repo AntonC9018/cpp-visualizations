@@ -36,10 +36,12 @@ import {
   type PreparedModel,
   type WalkingOperation,
   arrival,
+  continuesOperator,
   copies,
   copyBegin,
   departure,
   landing,
+  lead,
   statementSteps,
   stores,
   walkOf,
@@ -621,6 +623,25 @@ function walkBoxes(
     .join('');
 }
 
+/**
+ * The operator whose operands convert, as the `+` of `a + a`: lit before the first conversion
+ * starts, and through the rest, moving with the text after a conversion that changes its length.
+ */
+function operatorMark(c: SceneContext, dx: number): string {
+  const { op, P, g } = c;
+  if (op?.kind !== 'convert' || !op.operator) return '';
+  const [s, e] = op.operator;
+  const at = arrival(op);
+  const opens = !c.animate || !continuesOperator(c.m.steps, c.index);
+  const lasts = continuesOperator(c.m.steps, c.index + 1);
+  const box = markBox(g.tx + s * g.paneChar, g.ty, (e - s) * g.paneChar, P.fg, P.derefFill);
+  const moved = s >= op.span[1] && dx !== 0 ? glide(box, dx, at + 0.1, 0.3) : box;
+  return (
+    `<g opacity="${opens ? 0 : 1}">${opens ? fade(0, 1, 0.25) : ''}` +
+    `${lasts ? '' : fade(1, 0, 0.3, at + 0.3)}${moved}</g>`
+  );
+}
+
 function valueBox(
   c: SceneContext,
   value: string,
@@ -805,8 +826,9 @@ function paneBody(c: SceneContext, copying: boolean): string {
       op.kind === 'read' || op.kind === 'addr' ? paneLevels(walkOf(op), before, s) : null,
       at - 0.1,
       chars => markBox(sx, ty, chars * c.g.paneChar, stroke, fill),
-      `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.2, at - 0.1)}${markBox(sx, ty, (e - s) * c.g.paneChar, stroke, fill)}</g>`
+      `<g opacity="0">${fade(0, 1, 0.15, lead(op))}${fade(1, 0, 0.2, at - 0.1)}${markBox(sx, ty, (e - s) * c.g.paneChar, stroke, fill)}</g>`
     );
+    out += operatorMark(c, dx);
     out += paneText(c, tx, ty, before, 0, s, prev.expr);
     let old = paneText(c, sx, ty, before, s, e, prev.expr);
     let fresh = paneText(c, sx, ty, step.pane, s, s + length, step.expr);

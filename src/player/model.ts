@@ -38,13 +38,32 @@ export const walkOf = (op: WalkingOperation): string[] => shortWalks.get(op) ?? 
 /** When a walk lands on the last level of its chain. */
 export const landing = (op: WalkingOperation): number => memoryWalk(walkOf(op), arrival(op)).at(-1)![0];
 
+/**
+ * The conversions that open their operator's, recorded by `prepare`: the operator lights first,
+ * as the `+` of `a + a` does before either `a` is promoted.
+ */
+const opening = new WeakSet<TraceOperation>();
+
+/** When an operation's own animation starts: after its operator lights, for the first conversion. */
+export const lead = (op: TraceOperation): number => (opening.has(op) ? T.operator : 0);
+
+/** Whether step `i` converts for the operator step `i - 1` converted for, as the second `a` of `a + a`. */
+export function continuesOperator(steps: TraceStep[], i: number): boolean {
+  const op = steps[i]?.op;
+  const last = steps[i - 1]?.op;
+  if (op?.kind !== 'convert' || !op.operator || last?.kind !== 'convert' || !last.operator || i < 2) return false;
+  // The operator moves along when the last conversion, before it, changed the text's length.
+  const shift = last.operator[0] >= last.span[1] ? steps[i - 1].pane.length - steps[i - 2].pane.length : 0;
+  return op.operator[0] === last.operator[0] + shift;
+}
+
 export const departure = (op: TraceOperation): number =>
   (stores(op) ? T.writeHold : op.kind === 'print' ? 0.2 : T.prepare) +
   (walks(op) ? chainDelay(walkOf(op)) : 0);
 
 export function arrival(op: TraceOperation): number {
   if (op.kind === 'deref') return T.prepare + T.follow;
-  if (op.kind === 'eval' || op.kind === 'alias' || op.kind === 'convert') return T.evaluate;
+  if (op.kind === 'eval' || op.kind === 'alias' || op.kind === 'convert') return lead(op) + T.evaluate;
   if (op.kind === 'clash') return T.clash;
   if (op.kind === 'print') return 0.9;
   return departure(op) + T.travel;
@@ -229,6 +248,9 @@ export function prepare(trace: ExecutionTrace): PreparedModel {
   };
   const continuations = model.steps.map((_, j) => continuation(model, j));
   recordShortWalks(model, continuations);
+  model.steps.forEach((step, i) => {
+    if (step.op?.kind === 'convert' && step.op.operator && !continuesOperator(model.steps, i)) opening.add(step.op);
+  });
   model.reach = model.steps.map((_, j) => reachedIn(model, j, continuations[j]));
   return model;
 }

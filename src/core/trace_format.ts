@@ -159,6 +159,8 @@ export type ConvertOperation = {
   span: Span;
   from: string;
   to: string;
+  /** The operator whose operands this converts, as `+` promotes both `a`s of `a + a`. */
+  operator?: Span;
 };
 
 export type ClashOperation = {
@@ -896,7 +898,9 @@ function checkOperation(
     clash: ['span', 'destination', 'from', 'to'],
   };
   const fields = fieldMap[kind];
-  checkKeys(op, where, [...fields, 'kind'], kind === 'read' ? ['compound', 'grouped'] : []);
+  const optional: Partial<Record<OperationKind, string[]>> = { read: ['compound', 'grouped'], convert: ['operator'] };
+  checkKeys(op, where, [...fields, 'kind'], optional[kind] ?? []);
+  if (Object.hasOwn(op, 'operator')) checkSpan(op.operator, previous.pane, `${where}.operator`);
   if (Object.hasOwn(op, 'grouped')) {
     check(Object.hasOwn(op, 'compound') && typeof op.grouped === 'boolean', `${where}.grouped`,
       'expected a boolean on a compound read');

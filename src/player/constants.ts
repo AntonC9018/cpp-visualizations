@@ -49,6 +49,8 @@ export const T = {
   copyBegin: 0.15,
   copyTravel: 1.0,
   evaluate: 0.6,
+  // How long an operator shows lit before the first of its operands' conversions starts.
+  operator: 0.6,
   clash: 1.6,
   // Instant playback: how long each settled state shows before the next.
   instantHold: 0.8,
