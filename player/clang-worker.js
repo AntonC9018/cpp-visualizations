@@ -1619,10 +1619,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     check(candidates.includes(step.pane), where, `${pyRepr(step.pane)} is not ${candidates.map(pyRepr).join(" or ")}`);
   }
   const LITERAL = /^≈?-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i;
+  const withoutNestedNames = (text) => text.replace(new RegExp("(?<=[{,]\\s*)[A-Za-z_][\\w:]*(?=\\{)", "g"), "");
   function storedItems(text, where) {
     const braced = /^(?:[A-Za-z_]\w*)?\{[\s\S]*\}$/.test(text);
     const inner = braced ? text.slice(text.indexOf("{")) : text;
-    const items = braced ? inner.replace(/[A-Za-z_][\w:]*(?=\{)|[{}]/g, "").split(",").map((s) => s.trim()) : [inner];
+    const items = braced ? withoutNestedNames(inner).replace(/[{}]/g, "").split(",").map((s) => s.trim()) : [inner];
     for (const item of items) {
       check(
         item === "nullptr" || item === UNKNOWN || LITERAL.test(item),
@@ -3824,7 +3825,8 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
         } else {
           text2 = this.show(reduction.value, reduction.shape, reduction.kind === "eval" && reduction.record !== null);
           op2 = { kind: "eval", value: text2 };
-          if (isPlainObject(reduction.value) && spaceless(pane.read(reduction.span[0], reduction.span[1])) === spaceless(text2)) {
+          const unnamed = (spelled) => spaceless(withoutNestedNames(spelled));
+          if (isPlainObject(reduction.value) && unnamed(pane.read(reduction.span[0], reduction.span[1])) === unnamed(text2)) {
             text2 = pane.read(reduction.span[0], reduction.span[1]);
           }
         }

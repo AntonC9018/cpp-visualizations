@@ -117,8 +117,45 @@ test('the address of a struct lights none of its fields', () => {
   const a = model('struct N { int f; int g; }; struct S { int x; N n; }; S s{ 1, { 2, 3 } }; N* p = &s.n;');
   const i = stepOf(a, 'addr', 's.n');
   assert.deepEqual(walkOf(a.steps[i].op as WalkingOperation), ['s', 's.n']);
-  assert.deepEqual(cells(stepFocus(a, i, true).now), []);
+  // Its frame lights whole, its cells stay dim.
+  assert.deepEqual(cells(stepFocus(a, i, true).now), ['s.n']);
   assert.ok(stepFocus(a, i, true).now.has('s'));
+  const through = model(
+    'struct N { int f; int g; }; struct S { int x; N n; }; S s{ 1, { 2, 3 } }; S* p = &s; N* q = &p->n;'
+  );
+  for (let k = stepOf(through, 'deref', 's.n'); k <= stepOf(through, 'addr', 's.n'); k++) {
+    assert.deepEqual(cells(stepFocus(through, k, true).now).filter(name => name !== 's.n'), [], `step ${k}`);
+  }
+});
+
+test('what a read reached dims as the statement moves on, what it writes back stays', () => {
+  const r = model('struct S { int a; int b; }; S s{ 1, 2 }; int t = 3; s.b = s.a + t;');
+  assert.deepEqual(changes(r, stepOf(r, 'read', 't')), { 's.a': 0 });
+  const c = model('struct S { int a; int b; }; S s{ 1, 2 }; s.a += 3;');
+  const eval_ = c.steps.findIndex(step => step.op?.kind === 'eval');
+  assert.deepEqual(cells(stepFocus(c, eval_, true).now), ['s.a']);
+  // The write lands where the read already walked.
+  assert.deepEqual(walkOf(c.steps[stepOf(c, 'write', 's.a')].op as WalkingOperation), ['s.a']);
+});
+
+test('a variable the pane names until the step rewrites it dims as the rewrite lands', () => {
+  const z = model('struct S { int a; int b; }; S s{ 1, 2 }; int z = sizeof(s);');
+  const i = z.steps.findIndex(step => step.op?.kind === 'eval');
+  const focus = stepFocus(z, i, true);
+  assert.ok(focus.before.has('s') && !focus.now.has('s'));
+  assert.equal(focus.begin.get('s'), arrival(z.steps[i].op!));
+});
+
+test('an address the pane does not spell with & does not walk', () => {
+  const d = model('#include <array>\nstd::array<int, 3> a{ 1, 2, 3 };\nint* r = a.data();');
+  const addr = d.steps.find(step => step.op?.kind === 'addr')!.op as WalkingOperation;
+  assert.deepEqual(walkOf(addr), [addr.name]);
+});
+
+test('a field after -> is not a variable of that name', () => {
+  const f = model('struct S { int x; int y; }; S s{ 1, 2 }; int x = 5; S* p = &s; p->x = 3;');
+  const read = stepOf(f, 'read', 'p');
+  assert.ok(!stepFocus(f, read, true).now.has('x'));
 });
 
 test('a chain a dereference arrived at walks only from where it arrived', () => {
@@ -131,6 +168,12 @@ test('a chain a dereference arrived at walks only from where it arrived', () => 
   assert.equal(departure(write), T.writeHold);
   const read = d.steps[stepOf(d, 'read', 'b.n.f')].op as WalkingOperation;
   assert.deepEqual(walkOf(read), ['b.n', 'b.n.f']);
+  // So does a compound assignment's write, through a pointer or a reference.
+  for (const statement of ['N* q = &b.n; q->g += 4;', 'int& t = b.n.g; t += 1;']) {
+    const c = model('struct N { int f; int g; }; struct A { N n; int f; }; A b{ { 1, 2 }, 3 }; ' + statement);
+    const write = c.steps.findLast(step => step.op?.kind === 'write')!.op as WalkingOperation;
+    assert.deepEqual(walkOf(write), ['b.n.g'], statement);
+  }
 });
 
 function statementOf(mm: PreparedModel, i: number): number {

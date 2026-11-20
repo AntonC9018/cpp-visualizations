@@ -39,6 +39,7 @@ import {
   copies,
   copyBegin,
   departure,
+  landing,
   stores,
   walkOf,
 } from './model.ts';
@@ -577,9 +578,6 @@ function memory(c: SceneContext): string {
   return out + tags(c, at);
 }
 
-/** When a walk lands on the last level of its chain. */
-const landing = (op: WalkingOperation): number => memoryWalk(walkOf(op), arrival(op)).at(-1)![0];
-
 /** Reading, writing or taking the address of `a.f[0]` outlines `a`, then `a.f`, then `a.f[0]`. */
 function chainHighlight(c: SceneContext, op: WalkingOperation, at: number): string {
   const { g, P } = c;
@@ -790,7 +788,7 @@ function paneBody(c: SceneContext, copying: boolean): string {
           : [P.fg, P.derefFill];
     out += exprBackground(c, tx, ty, step.expr, prev.expr, at + 0.1);
     // `&a.f` grows its box from `&a`.
-    const lead = op.kind === 'addr' ? 1 : 0;
+    const lead = op.kind === 'addr' && before[s] === '&' ? 1 : 0;
     out += walkBoxes(
       op.kind === 'read' || op.kind === 'addr' ? paneLevels(walkOf(op), before.slice(s + lead, e)) : null,
       at - 0.1,

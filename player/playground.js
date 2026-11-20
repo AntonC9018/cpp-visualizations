@@ -1123,8 +1123,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }
   const stores = (op) => op.kind === "write" || op.kind === "bind";
   const walks = (op) => op.kind === "read" || op.kind === "write" || op.kind === "addr";
-  const continued = /* @__PURE__ */ new WeakMap();
-  const walkOf = (op) => continued.get(op) ?? chainOf(op.name);
+  const shortWalks = /* @__PURE__ */ new WeakMap();
+  const walkOf = (op) => shortWalks.get(op) ?? chainOf(op.name);
+  const landing = (op) => memoryWalk(walkOf(op), arrival(op)).at(-1)[0];
   const departure = (op) => (stores(op) ? T.writeHold : op.kind === "print" ? 0.2 : T.prepare) + (walks(op) ? chainDelay(walkOf(op)) : 0);
   function arrival(op) {
     if (op.kind === "deref") return T.prepare + T.follow;
@@ -1222,19 +1223,32 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       groups,
       tops,
       top,
-      rise: Math.max(0, ...groups.map((group) => group.rise))
+      rise: Math.max(0, ...groups.map((group) => group.rise)),
+      reach: []
     };
-    recordContinuations(model);
+    const continuations = model.steps.map((_, j) => continuation(model, j));
+    recordShortWalks(model, continuations);
+    model.reach = model.steps.map((_, j) => reachedIn(model, j, continuations[j]));
     return model;
   }
-  function recordContinuations(m) {
+  function recordShortWalks(m, continuations) {
     m.steps.forEach((step, j) => {
-      var _a, _b, _c;
-      if (((_a = step.op) == null ? void 0 : _a.kind) !== "deref" && ((_b = step.op) == null ? void 0 : _b.kind) !== "alias") return;
-      const next = (_c = m.steps[continuation(m, j)]) == null ? void 0 : _c.op;
-      if (next && walks(next)) {
-        continued.set(next, chainOf(next.name).slice(chainOf(step.op.target).length - 1));
+      var _a, _b;
+      const op = step.op;
+      if (!op) return;
+      const next = (_a = m.steps[continuations[j]]) == null ? void 0 : _a.op;
+      if ((op.kind === "deref" || op.kind === "alias") && next && walks(next)) {
+        shortWalks.set(next, chainOf(next.name).slice(chainOf(op.target).length - 1));
       }
+      if (op.kind === "read" && op.compound) {
+        const write = statementSteps(m, j).find((k) => {
+          var _a2;
+          return k > j && ((_a2 = m.steps[k].op) == null ? void 0 : _a2.kind) === "write";
+        });
+        const written = write === void 0 ? null : m.steps[write].op;
+        if ((written == null ? void 0 : written.kind) === "write" && written.name === op.name) shortWalks.set(written, [op.name]);
+      }
+      if (op.kind === "addr" && ((_b = m.steps[j - 1]) == null ? void 0 : _b.pane[op.span[0]]) !== "&") shortWalks.set(op, [op.name]);
     });
   }
   function typeColours(trace) {
@@ -1257,20 +1271,24 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }
   function activeVariables(m, i) {
     const step = m.steps[i];
-    const active = /* @__PURE__ */ new Set();
-    const refs = step.refs || {};
-    for (const [token] of step.pane.matchAll(new RegExp("(?<![\\w.]|->)[A-Za-z_]\\w*", "g"))) {
-      if (m.top.includes(token)) active.add(token);
-      if (Object.hasOwn(refs, token) && refs[token]) {
-        active.add(token);
-        active.add(refs[token].split(".")[0]);
-      }
-    }
+    const active = paneVariables(m, step);
     const op = step.op;
     for (const name of [op == null ? void 0 : op.name, op == null ? void 0 : op.target, op == null ? void 0 : op.via]) {
       if (name) active.add(name.split(".")[0]);
     }
     return active;
+  }
+  function paneVariables(m, step) {
+    const named = /* @__PURE__ */ new Set();
+    const refs = step.refs || {};
+    for (const [token] of step.pane.matchAll(new RegExp("(?<![\\w.]|->)[A-Za-z_]\\w*", "g"))) {
+      if (m.top.includes(token)) named.add(token);
+      if (Object.hasOwn(refs, token) && refs[token]) {
+        named.add(token);
+        named.add(refs[token].split(".")[0]);
+      }
+    }
+    return named;
   }
   function reached(op) {
     if (!op) return null;
@@ -1279,7 +1297,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       // value lands.
       case "read":
       case "addr":
-        return { name: op.name, at: memoryWalk(walkOf(op), arrival(op)).at(-1)[0] };
+        return { name: op.name, at: landing(op) };
       case "write":
         return { name: op.name, at: arrival(op) };
       // A binding highlights its storage from the start.
@@ -1294,32 +1312,39 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }
   const topOf = (leaf) => leaf.group ?? leaf.name;
   const covers = (name, cell) => cell === name || cell.startsWith(name + ".");
-  function statementStart(m, i) {
+  function statementSteps(m, i) {
     let start = i;
     while (start > 0 && m.steps[start - 1].line === m.steps[i].line) start--;
-    return start;
+    let end = i;
+    while (end + 1 < m.steps.length && m.steps[end + 1].line === m.steps[i].line) end++;
+    return Array.from({ length: end - start + 1 }, (_, k) => start + k);
   }
-  function reachedIn(m, j) {
+  const addressOfStruct = (m, op) => (op == null ? void 0 : op.kind) === "addr" && m.groups.some((group) => group.name === op.name);
+  function reachedIn(m, j, next) {
     var _a;
-    const target = reached(m.steps[j].op);
     const op = m.steps[j].op;
-    if ((op == null ? void 0 : op.kind) === "addr" && m.groups.some((group) => group.name === op.name)) return null;
+    if (addressOfStruct(m, op)) return null;
+    const target = reached(op);
     if (!target || (op == null ? void 0 : op.kind) !== "deref" && (op == null ? void 0 : op.kind) !== "alias") return target;
-    const next = reached(((_a = m.steps[continuation(m, j)]) == null ? void 0 : _a.op) ?? null);
-    return next && next.name !== target.name ? null : target;
+    const after = ((_a = m.steps[next]) == null ? void 0 : _a.op) ?? null;
+    if (addressOfStruct(m, after)) return null;
+    const later = reached(after);
+    return later && later.name !== target.name ? null : target;
   }
   function continuation(m, j) {
     var _a;
-    const name = m.steps[j].op.target;
-    let at = m.steps[j].op.span[0];
+    const op = m.steps[j].op;
+    if ((op == null ? void 0 : op.kind) !== "deref" && (op == null ? void 0 : op.kind) !== "alias") return -1;
+    const name = op.target;
+    let at = op.span[0];
     for (let k = j + 1; k < m.steps.length && m.steps[k].line === m.steps[j].line; k++) {
-      const op = m.steps[k].op;
-      if (!op || !("span" in op)) continue;
-      const later = (_a = reached(op)) == null ? void 0 : _a.name;
-      const [from, to] = op.kind === "write" ? op.destination : op.kind === "read" && op.compound ? [0, op.span[0]] : op.span;
+      const op2 = m.steps[k].op;
+      if (!op2 || !("span" in op2)) continue;
+      const later = (_a = reached(op2)) == null ? void 0 : _a.name;
+      const [from, to] = op2.kind === "write" ? op2.destination : op2.kind === "read" && op2.compound ? [0, op2.span[0]] : op2.span;
       if (later && covers(name, later) && from <= at && at < to) return k;
       if (m.steps[k].pane === m.steps[k - 1].pane) continue;
-      const [s, e] = op.span;
+      const [s, e] = op2.span;
       if (at >= e) {
         at += m.steps[k].pane.length - m.steps[k - 1].pane.length;
       } else if (at >= s) {
@@ -1334,21 +1359,24 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   function litAt(m, i) {
     var _a;
     const tops = activeVariables(m, i);
-    const start = statementStart(m, i);
     const names = [];
-    for (let j = start; j <= i; j++) {
-      const name = (_a = reachedIn(m, j)) == null ? void 0 : _a.name;
-      if (name) names.push(name);
+    for (const j of statementSteps(m, i)) {
+      const op2 = m.steps[j].op;
+      const name = (_a = m.reach[j]) == null ? void 0 : _a.name;
+      if (j > i || !name) continue;
+      const handsOn = (op2 == null ? void 0 : op2.kind) === "addr" || (op2 == null ? void 0 : op2.kind) === "read" && !op2.compound;
+      if (j === i || !handsOn) names.push(name);
     }
     const shown = new Set(tops);
     for (const leaf of m.leaves) {
       if (!tops.has(topOf(leaf))) continue;
       if (!leaf.group || names.some((name) => covers(name, leaf.name))) shown.add(leaf.name);
     }
+    const op = m.steps[i].op;
     for (const group of m.groups) {
-      if (group.parent && m.leaves.some((leaf) => shown.has(leaf.name) && covers(group.name, leaf.name))) {
-        shown.add(group.name);
-      }
+      const taken = addressOfStruct(m, op) && op.name === group.name;
+      const inner = m.leaves.some((leaf) => shown.has(leaf.name) && covers(group.name, leaf.name));
+      if (group.parent && (taken || inner)) shown.add(group.name);
     }
     return shown;
   }
@@ -1357,12 +1385,21 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const begin = /* @__PURE__ */ new Map();
     if (!animate || i === 0) return { now, before: now, begin };
     const before = litAt(m, i - 1);
-    const target = reachedIn(m, i);
+    const op = m.steps[i].op;
+    const target = m.reach[i] ?? reached(op);
     if (target) {
       for (const name of now) {
         if (!before.has(name) && (covers(name, target.name) || covers(target.name, name))) {
           begin.set(name, target.at);
         }
+      }
+    }
+    if (op && m.steps[i - 1].line === m.steps[i].line) {
+      const named = paneVariables(m, m.steps[i - 1]);
+      const still = paneVariables(m, m.steps[i]);
+      for (const name of before) {
+        const top = name.split(".")[0];
+        if (!now.has(name) && named.has(top) && !still.has(top)) begin.set(name, arrival(op));
       }
     }
     return { now, before, begin };
@@ -1776,7 +1813,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return out + tags(c, at);
   }
-  const landing = (op) => memoryWalk(walkOf(op), arrival(op)).at(-1)[0];
   function chainHighlight(c, op, at) {
     const { g, P } = c;
     const color = op.kind === "write" ? P.write : P.read;
@@ -1919,7 +1955,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const sx = tx + s * c.g.paneChar;
       const [stroke, fill] = op.kind === "read" || op.kind === "addr" ? [P.read, P.readFill] : op.kind === "convert" ? [P.write, P.writeFill] : [P.fg, P.derefFill];
       out += exprBackground(c, tx, ty, step.expr, prev.expr, at + 0.1);
-      const lead = op.kind === "addr" ? 1 : 0;
+      const lead = op.kind === "addr" && before[s] === "&" ? 1 : 0;
       out += walkBoxes(
         op.kind === "read" || op.kind === "addr" ? paneLevels(walkOf(op), before.slice(s + lead, e)) : null,
         at - 0.1,
