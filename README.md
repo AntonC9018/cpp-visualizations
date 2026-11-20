@@ -215,8 +215,8 @@ nix develop --command npm run dev
 
 `player/playground.html` runs the isomorphic tracer (`src/core/`) inside a dedicated Web Worker
 against the Clang 21 WASM frontend at `player/clang-trace-frontend.wasm`. The worker downloads
-the checked-in module and stores it in the browser Cache API (`clang-trace-frontend-v<WASM_VERSION>`), deleting the
-caches of earlier versions.
+the checked-in module and stores it in the browser Cache API
+(`clang-trace-frontend-v<WASM_VERSION>`), deleting the caches of earlier versions.
 
 Rebuild the module with LLVM 21.1.8 sources, host TableGen tools and WASI clang. When using a
 pristine LLVM source tarball, apply the WASI executable-path patch in the source tree first.

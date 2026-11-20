@@ -96,11 +96,17 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       return null;
     }
   }
+  function cacheVersion(name) {
+    const version = /^\d+$/.test(name.slice(CACHE_PREFIX.length)) ? Number(name.slice(CACHE_PREFIX.length)) : NaN;
+    return name.startsWith(CACHE_PREFIX) && Number.isSafeInteger(version) ? version : null;
+  }
   async function deleteStaleCaches(storage, cacheName) {
-    if (!storage || !cacheName.startsWith(CACHE_PREFIX)) return;
+    const current = cacheVersion(cacheName);
+    if (!storage || current === null) return;
     try {
       for (const name of await storage.keys()) {
-        if (name.startsWith(CACHE_PREFIX) && name !== cacheName) await storage.delete(name);
+        const version = cacheVersion(name);
+        if (version !== null && version < current) await storage.delete(name);
       }
     } catch {
     }
@@ -746,7 +752,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return /\barray\b/.test(source) ? (frontend == null ? void 0 : frontend.arrayPreamble) ?? "#include <array>\n" : "";
   }
   const USING_STD = "using namespace std;\n";
-  const INCLUDE_LINE = /^[ \t]*(?:#|%:)[ \t]*include[ \t]*<([^<>\r\n]+)>[ \t]*(?:\/\/[^\r\n]*)?$/gm;
+  const INCLUDE_LINE = /^[ \t]*(?:#|%:)[ \t]*include[ \t]*<(\w+)>[ \t]*(?:\/\/[^\r\n]*)?$/gm;
   function blank(text) {
     return text.replace(/[^\r\n]/g, " ");
   }
@@ -763,8 +769,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         tokens: frontend.tokens(text, { ignoreExpansions }).tokens,
         includes: HEADERS + array + lines.map((line) => `#include <${line[1]}>
 `).join(""),
-        includeLines,
-        movable: true
+        includeLines
       };
     }
     const context = HEADERS + array + USING_STD;
@@ -779,9 +784,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       tokens,
       // Browser array declarations are supplied as source in the preamble.
       includes: includes + (frontend.arrayPreamble ? array : ""),
-      // A raw string can hold what looks like an include line.
-      includeLines: includeLines.filter(([start, end]) => !tokens.some((token) => token.start < end && token.end > start)),
-      movable: false
+      includeLines: []
     };
   }
   function mainDefinition(tokens, source) {
@@ -825,9 +828,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       let body = source;
       if (this.fragment) {
         const late = this.lexed.includeLines.filter(([start]) => start >= first);
-        if (late.length && !this.lexed.movable) {
-          throw new Unsupported("an #include after the first statement needs a snippet without other directives");
-        }
         body = source.slice(first);
         for (const [start, end] of late) {
           body = body.slice(0, start - first) + blank(source.slice(start, end)) + body.slice(end - first);
@@ -845,8 +845,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           depth += tokens[i].kind === "l_brace" ? 1 : tokens[i].kind === "r_brace" ? -1 : 0;
           if (depth === 0 && tokens[i].kind === "semi") globals = i + 1;
         }
-        const usesStd = tokens.slice(main.body).some((_, i) => usesNamespaceStd(tokens, main.body + i, spell));
-        this.replayPreamble = this.lexed.includes + tokens.slice(0, globals).map(spell).join(" ") + "\n" + (usesStd ? USING_STD : "");
+        this.replayPreamble = this.lexed.includes + tokens.slice(0, globals).map(spell).join(" ") + "\n";
       } else {
         this.replayPreamble = this.lexed.includes + USING_STD;
       }
@@ -855,8 +854,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     without(start, end, frontend) {
       const first = start - this.shift;
       const last = end - this.shift;
-      const lexed = { ...this.lexed, tokens: this.lexed.tokens.filter((token) => token.start < first || token.end > last) };
-      return new SourceFile(this.source.slice(0, first) + this.blankTokens(start, end) + this.source.slice(last), frontend, { lexed });
+      const source = this.source.slice(0, first) + this.blankTokens(start, end) + this.source.slice(last);
+      const lexed = arrayHeader(source, frontend) === arrayHeader(this.source, frontend) ? { ...this.lexed, tokens: this.lexed.tokens.filter((token) => token.start < first || token.end > last) } : void 0;
+      return new SourceFile(source, frontend, { lexed });
     }
     /** Remove only active tokens, leaving directives, comments and line breaks in place. */
     blankTokens(start, end) {
@@ -965,12 +965,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     /**
      * The declarations from `from` up to `main` at `to`. Clang's AST filter matches every name
      * containing its text, the standard library's too, so they are dumped from a namespace
-     * that no other name contains.
+     * that no other name contains. It opens and closes within lines, so `__LINE__` and
+     * conditionals spanning the program read as in the program.
      */
     globalRecords(frontend, from, to) {
-      const open = `namespace ${GLOBALS_NAMESPACE} {
-`;
-      const probe = this.program.slice(0, from) + open + this.program.slice(from, to) + "\n}\n";
+      const open = `namespace ${GLOBALS_NAMESPACE} { `;
+      const probe = this.program.slice(0, from) + open + this.program.slice(from, to) + `} using namespace ${GLOBALS_NAMESPACE}; ` + this.program.slice(to);
       let nodes;
       try {
         nodes = frontend.astDump(probe, GLOBALS_NAMESPACE);
@@ -1428,10 +1428,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     check(replaced.length > 0, where, "the replacement is empty");
     return replaced;
   }
-  function separated(before, text) {
-    const sign = before.at(-1);
-    return (sign === "-" || sign === "+") && text.startsWith(sign) ? `(${text})` : text;
-  }
   function checkCompoundRead(op, step, previous, storage, where) {
     check(COMPOUND_OPERATORS.includes(op.compound), `${where}.compound`, "is not an arithmetic operator");
     const span = checkSpan(op.span, previous.pane, `${where}.span`);
@@ -1655,8 +1651,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     } else if (["read", "addr", "deref", "eval", "convert"].includes(kind)) {
       const span = checkSpan(op.span, previous.pane, `${where}.span`);
       const replaced = replacement(previous.pane, step.pane, span, where);
-      const expected = kind === "deref" ? codeName(op.target) : separated(previous.pane.slice(0, span[0]), op.value);
-      check(replaced === expected, where, `the replacement ${pyRepr(replaced)} is not ${pyRepr(expected)}`);
+      const expected = kind === "deref" ? [codeName(op.target)] : [op.value, `(${op.value})`];
+      check(
+        expected.includes(replaced),
+        where,
+        `the replacement ${pyRepr(replaced)} is not ${expected.map(pyRepr).join(" or ")}`
+      );
       if (kind === "convert") {
         check(convertedFrom(previous, span) === op.from, `${where}.from`, "is not the type of the converted value");
         check(
@@ -2110,6 +2110,7 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
     const chunks = [preamble, CHECKS, "constexpr int __course_replay() {\n"];
     for (const [index, step] of steps.entries()) {
       if (step.global) continue;
+      if (step.opensStd) chunks.push("using namespace std;\n");
       if (!step.output) chunks.push(step.source, "\n");
       if (step.checks.length) {
         chunks.push(`if (!(${step.checks.join(" && ")})) return ${index + 1};
@@ -2784,6 +2785,8 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
       __publicField(this, "definition");
       __publicField(this, "typeOnly");
       __publicField(this, "global", false);
+      /** Whether `using namespace std;` precedes the statement in main. */
+      __publicField(this, "opensStd", false);
       this.source = source;
       this.span = span;
       this.pane = pane;
@@ -3341,6 +3344,7 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
     const storageTypes = {};
     const numbers = new ClangNumbers(frontend);
     const inner = ast.inner ?? [];
+    let opensStd = false;
     for (let i = 0; i < inner.length; i++) {
       const node = inner[i];
       if (node.kind === "ReturnStmt") {
@@ -3350,9 +3354,14 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
         }
         throw new Unsupported("only a final return 0 is supported");
       }
-      if (node.kind === "DeclStmt" && ((_c = node.inner) == null ? void 0 : _c.length) === 1 && node.inner[0].kind === "UsingDirectiveDecl" && ((_d = node.inner[0].nominatedNamespace) == null ? void 0 : _d.name) === "std") continue;
+      if (node.kind === "DeclStmt" && ((_c = node.inner) == null ? void 0 : _c.length) === 1 && node.inner[0].kind === "UsingDirectiveDecl" && ((_d = node.inner[0].nominatedNamespace) == null ? void 0 : _d.name) === "std") {
+        opensStd = true;
+        continue;
+      }
       const statement = analyzeStatement(node, file, state, records, references, storageTypes, numbers);
       statement.global = i < globalCount;
+      statement.opensStd = opensStd;
+      opensStd = false;
       if (statement.declared && statements.some((earlier) => earlier.temporary)) {
         throw new Unsupported(
           "a declaration after a materialized temporary needs a separate memory-layout visualization"
@@ -3407,7 +3416,13 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
       if (statement.bound && statement.declared) {
         checks.push(`__course_points_to(&${statement.declared}, &${codeName(statement.bound)})`);
       }
-      return { source: statement.source, global: statement.global, output: statement.outputSuffix !== null, checks };
+      return {
+        source: statement.source,
+        global: statement.global,
+        opensStd: statement.opensStd,
+        output: statement.outputSuffix !== null,
+        checks
+      };
     });
   }
   function spaceless(text) {

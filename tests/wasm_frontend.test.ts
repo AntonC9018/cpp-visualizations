@@ -152,10 +152,11 @@ describe('WasiAndCacheTests', () => {
   test('loadWasmModule deletes the caches of earlier binaries', async () => {
     const storage = new MemoryCacheStorage() as unknown as CacheStorage;
     await storage.open('clang-trace-frontend-v1');
+    await storage.open('clang-trace-frontend-v999');
     await storage.open('another-cache');
     const fetchImpl = (async () => new Response(TINY_VALID_WASM, { status: 200 })) as unknown as typeof fetch;
     await loadWasmModule('https://example.test/clang.wasm', { cachesImpl: storage, fetchImpl });
-    assert.deepEqual((await storage.keys()).sort(), ['another-cache', DEFAULT_CACHE_NAME]);
+    assert.deepEqual((await storage.keys()).sort(), ['another-cache', DEFAULT_CACHE_NAME, 'clang-trace-frontend-v999']);
   });
 
   test('loadWasmModule deduplicates concurrent loads and evicts corrupt cache entries', async () => {

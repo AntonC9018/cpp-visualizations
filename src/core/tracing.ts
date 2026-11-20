@@ -891,6 +891,8 @@ export class Statement {
   definition: [string, string] | null;
   typeOnly: boolean;
   global = false;
+  /** Whether `using namespace std;` precedes the statement in main. */
+  opensStd = false;
 
   constructor({
     source,
@@ -1655,6 +1657,7 @@ function analyzeSource(
   const storageTypes: Record<string, string> = {};
   const numbers = new ClangNumbers(frontend);
   const inner = ast.inner ?? [];
+  let opensStd = false;
   for (let i = 0; i < inner.length; i++) {
     const node = inner[i];
     if (node.kind === 'ReturnStmt') {
@@ -1670,9 +1673,14 @@ function analyzeSource(
       throw new Unsupported('only a final return 0 is supported');
     }
     if (node.kind === 'DeclStmt' && node.inner?.length === 1 &&
-        node.inner[0].kind === 'UsingDirectiveDecl' && node.inner[0].nominatedNamespace?.name === 'std') continue;
+        node.inner[0].kind === 'UsingDirectiveDecl' && node.inner[0].nominatedNamespace?.name === 'std') {
+      opensStd = true;
+      continue;
+    }
     const statement = analyzeStatement(node, file, state, records, references, storageTypes, numbers);
     statement.global = i < globalCount;
+    statement.opensStd = opensStd;
+    opensStd = false;
     if (statement.declared && statements.some(earlier => earlier.temporary)) {
       throw new Unsupported(
         'a declaration after a materialized temporary needs a separate memory-layout visualization'
@@ -1738,7 +1746,13 @@ function replaySteps(statements: Statement[], states: State[]): ReplayStep[] {
     if (statement.bound && statement.declared) {
       checks.push(`__course_points_to(&${statement.declared}, &${codeName(statement.bound)})`);
     }
-    return { source: statement.source, global: statement.global, output: statement.outputSuffix !== null, checks };
+    return {
+      source: statement.source,
+      global: statement.global,
+      opensStd: statement.opensStd,
+      output: statement.outputSuffix !== null,
+      checks,
+    };
   });
 }
 

@@ -71,12 +71,23 @@ async function openCacheSafe(storage: CacheStorage | null, cacheName: string): P
   }
 }
 
-/** Delete the caches of earlier binaries, which no load reads again. */
+/** The binary version a cache name holds, if it is one of ours. */
+function cacheVersion(name: string): number | null {
+  const version = /^\d+$/.test(name.slice(CACHE_PREFIX.length)) ? Number(name.slice(CACHE_PREFIX.length)) : NaN;
+  return name.startsWith(CACHE_PREFIX) && Number.isSafeInteger(version) ? version : null;
+}
+
+/**
+ * Delete the caches of earlier binaries, which no load reads again. A newer one stays for the
+ * page that deployed it.
+ */
 async function deleteStaleCaches(storage: CacheStorage | null, cacheName: string): Promise<void> {
-  if (!storage || !cacheName.startsWith(CACHE_PREFIX)) return;
+  const current = cacheVersion(cacheName);
+  if (!storage || current === null) return;
   try {
     for (const name of await storage.keys()) {
-      if (name.startsWith(CACHE_PREFIX) && name !== cacheName) await storage.delete(name);
+      const version = cacheVersion(name);
+      if (version !== null && version < current) await storage.delete(name);
     }
   } catch {
     // A cache that cannot be listed or deleted only costs storage.

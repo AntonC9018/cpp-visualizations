@@ -75,24 +75,28 @@ export function arrayHeader(source: string, frontend?: CompilerFrontend): string
 interface Lexed {
   tokens: SourceToken[];
   includes: string;
-  /** Spans of `#include <…>` lines, which a fragment may move before its generated `main`. */
+  /**
+   * Spans of `#include <…>` lines a fragment moves before its generated `main`. Only a source
+   * without other directives lists them: there, nothing else can depend on where they are.
+   */
   includeLines: Span[];
-  /** Whether moving them keeps the source's meaning: no other directive can depend on them. */
-  movable: boolean;
 }
 
 /** Precedes a fragment, which may name the standard library's declarations unqualified. */
 const USING_STD = 'using namespace std;\n';
 
-const INCLUDE_LINE = /^[ \t]*(?:#|%:)[ \t]*include[ \t]*<([^<>\r\n]+)>[ \t]*(?:\/\/[^\r\n]*)?$/gm;
+// Standard C++ headers only: a header of the snippet's own could define an empty macro,
+// which would leave the trace a token Clang removed.
+const INCLUDE_LINE = /^[ \t]*(?:#|%:)[ \t]*include[ \t]*<(\w+)>[ \t]*(?:\/\/[^\r\n]*)?$/gm;
 
 function blank(text: string): string {
   return text.replace(/[^\r\n]/g, ' ');
 }
 
 /**
- * Lex `source` with Clang. Include lines alone cannot choose which tokens are active, and the
- * headers' tokens are nearly all of Clang's dump, so such a source is lexed with them blanked.
+ * Lex `source` with Clang. Standard include lines alone cannot choose which tokens are active,
+ * and the headers' tokens are nearly all of Clang's dump, so such a source is lexed with them
+ * blanked. A macro they define stays an identifier there, and its AST range is refused later.
  * Any other directive may test a header's macros: that source is lexed after the convenience
  * headers, and -H names the headers the C++20 preprocessor selected.
  */
@@ -109,7 +113,6 @@ function lex(source: string, frontend: CompilerFrontend, ignoreExpansions: boole
       tokens: frontend.tokens(text, { ignoreExpansions }).tokens,
       includes: HEADERS + array + lines.map(line => `#include <${line[1]}>\n`).join(''),
       includeLines,
-      movable: true,
     };
   }
   // The same lines as before the program's own, so `__LINE__` selects the same branches.
@@ -125,9 +128,7 @@ function lex(source: string, frontend: CompilerFrontend, ignoreExpansions: boole
     tokens,
     // Browser array declarations are supplied as source in the preamble.
     includes: includes + (frontend.arrayPreamble ? array : ''),
-    // A raw string can hold what looks like an include line.
-    includeLines: includeLines.filter(([start, end]) => !tokens.some(token => token.start < end && token.end > start)),
-    movable: false,
+    includeLines: [],
   };
 }
 
@@ -184,9 +185,6 @@ export class SourceFile {
     if (this.fragment) {
       // An include inside the generated main would declare the header's names there.
       const late = this.lexed.includeLines.filter(([start]) => start >= first);
-      if (late.length && !this.lexed.movable) {
-        throw new Unsupported('an #include after the first statement needs a snippet without other directives');
-      }
       body = source.slice(first);
       for (const [start, end] of late) {
         body = body.slice(0, start - first) + blank(source.slice(start, end)) + body.slice(end - first);
@@ -200,7 +198,8 @@ export class SourceFile {
     this.tokens = tokens.map(token => ({ ...token, start: token.start + this.shift, end: token.end + this.shift }));
 
     // A complete program says itself whether it uses namespace std, and a global name such as
-    // `data` is ambiguous under a using-directive the program does not have.
+    // `data` is ambiguous under a using-directive the program does not have. One in main
+    // is replayed in place.
     if (main) {
       let depth = 0;
       let globals = 0;
@@ -208,9 +207,7 @@ export class SourceFile {
         depth += tokens[i].kind === 'l_brace' ? 1 : tokens[i].kind === 'r_brace' ? -1 : 0;
         if (depth === 0 && tokens[i].kind === 'semi') globals = i + 1;
       }
-      const usesStd = tokens.slice(main.body).some((_, i) => usesNamespaceStd(tokens, main.body + i, spell));
-      this.replayPreamble = this.lexed.includes + tokens.slice(0, globals).map(spell).join(' ') + '\n' +
-        (usesStd ? USING_STD : '');
+      this.replayPreamble = this.lexed.includes + tokens.slice(0, globals).map(spell).join(' ') + '\n';
     } else {
       this.replayPreamble = this.lexed.includes + USING_STD;
     }
@@ -220,9 +217,13 @@ export class SourceFile {
   without(start: number, end: number, frontend: CompilerFrontend): SourceFile {
     const first = start - this.shift;
     const last = end - this.shift;
-    // Blanking active tokens changes neither directives nor the remaining tokens.
-    const lexed = { ...this.lexed, tokens: this.lexed.tokens.filter(token => token.start < first || token.end > last) };
-    return new SourceFile(this.source.slice(0, first) + this.blankTokens(start, end) + this.source.slice(last), frontend, { lexed });
+    const source = this.source.slice(0, first) + this.blankTokens(start, end) + this.source.slice(last);
+    // Blanking active tokens changes neither directives nor the remaining tokens, unless it
+    // drops the array header and with it the lines before the source.
+    const lexed = arrayHeader(source, frontend) === arrayHeader(this.source, frontend)
+      ? { ...this.lexed, tokens: this.lexed.tokens.filter(token => token.start < first || token.end > last) }
+      : undefined;
+    return new SourceFile(source, frontend, { lexed });
   }
 
   /** Remove only active tokens, leaving directives, comments and line breaks in place. */
@@ -338,11 +339,13 @@ export class SourceFile {
   /**
    * The declarations from `from` up to `main` at `to`. Clang's AST filter matches every name
    * containing its text, the standard library's too, so they are dumped from a namespace
-   * that no other name contains.
+   * that no other name contains. It opens and closes within lines, so `__LINE__` and
+   * conditionals spanning the program read as in the program.
    */
   private globalRecords(frontend: CompilerFrontend, from: number, to: number): AstNode[] {
-    const open = `namespace ${GLOBALS_NAMESPACE} {\n`;
-    const probe = this.program.slice(0, from) + open + this.program.slice(from, to) + '\n}\n';
+    const open = `namespace ${GLOBALS_NAMESPACE} { `;
+    const probe = this.program.slice(0, from) + open + this.program.slice(from, to) +
+      `} using namespace ${GLOBALS_NAMESPACE}; ` + this.program.slice(to);
     let nodes: AstNode[];
     try {
       nodes = frontend.astDump(probe, GLOBALS_NAMESPACE);

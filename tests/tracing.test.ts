@@ -659,7 +659,14 @@ describe('CompoundAssignmentTests', () => {
 
   test('an_include_after_the_first_statement_stays_outside_main', () => {
     assert.deepEqual(final(tracing.trace('int a = 1;\n#include <cmath>\na = a + 1;')), { a: 2 });
-    unsupported('int a = 1;\n#ifdef X\n#endif\n#include <cmath>\na = a + 1;', /#include after the first statement/);
+    // Among other directives, an include stays where it is: here Clang skips it.
+    assert.deepEqual(final(tracing.trace('int n = 1;\n#if 0\n#include <missing>\n#endif\nn += 1;')), { n: 2 });
+  });
+
+  test('cutting_a_mismatch_relexes_when_the_lines_before_the_source_change', () => {
+    // Without its last statement the fragment no longer names `array`, nor gets its header.
+    const source = '#if __LINE__ == 6\nint x=1;\n#else\nint y=2;\n#endif\nint* array = 42;';
+    assert.equal(tracing.trace(source, { types: true }).steps.at(-1)!.op?.kind, 'clash');
   });
 
   test('identifiers_beyond_ascii_are_refused_by_name', () => {

@@ -1208,8 +1208,8 @@ export function validate(trace: unknown): asserts trace is AnyTrace {
 }
 
 /**
- * The player draws a conversion's operand and result as integers. Clang computed the result,
- * so only their presence is checked.
+ * The retained bits in the source and destination must agree for the player to draw them:
+ * it draws the operand's bits and labels them with the result.
  */
 function checkBitsStep(
   step: TraceStep,
@@ -1232,10 +1232,11 @@ function checkBitsStep(
     `${where}.op`,
     'expected an integer value converted between integer types in a bits trace'
   );
+  const operand = previous && convertOperand(previous, op);
   check(
-    previous !== null && convertOperand(previous, op) !== null,
-    `${where}.op.span`,
-    'the converted value must be a typed integer of type `from`'
+    operand !== null && from!.holds(operand) && to!.wrap(operand) === value,
+    `${where}.op.value`,
+    'the conversion must preserve the retained bits'
   );
 }
 

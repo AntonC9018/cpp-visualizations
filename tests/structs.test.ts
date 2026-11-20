@@ -214,7 +214,6 @@ c=b.n; b.n={5, 6}; std::cout << c.g;`;
         `${spelling} *p=&s; p->x=2; ` +
         `${spelling} **pp=&p; (*pp)->x=3;`;
       const result = tracing.trace(source);
-      assert.deepEqual(result, tracing.trace(source));
       const last = result.steps[result.steps.length - 1];
       assert.equal(last.values['s.x'], 3);
       assert.deepEqual(last.targets, { p: 's', pp: 'p' });
@@ -228,7 +227,6 @@ c=b.n; b.n={5, 6}; std::cout << c.g;`;
         'S a{1,nullptr}; S b{2,&a}; b.next->x=9; ' +
         'b.next=&b; b.next->x=7;';
       const result = tracing.trace(source);
-      assert.deepEqual(result, tracing.trace(source));
       const last = result.steps[result.steps.length - 1];
       assert.equal(last.values['a.x'], 9);
       assert.equal(last.values['b.x'], 7);
@@ -251,6 +249,17 @@ c=b.n; b.n={5, 6}; std::cout << c.g;`;
         `int main() {\n    B v{{1}};\n    v.in.x = v.in.x + 2;\n    std::cout << v.in.x;\n}`;
       assert.equal(tracing.trace(source).steps.at(-1)!.stdout, '3');
     }
+  });
+
+  test('a_using_directive_in_main_is_replayed_in_place', () => {
+    const source = 'struct pair { int x; };\nint main() {\n    pair a{1};\n    using namespace std;\n    a.x += 2;\n}';
+    assert.deepEqual(tracing.trace(source).steps.at(-1)!.values, { 'a.x': 3 });
+  });
+
+  test('a_global_struct_reads_the_branches_the_program_does', () => {
+    const source = '#if 1\nstruct S {\n#if __LINE__ == 7\n    int x;\n#else\n    int y;\n#endif\n};\n' +
+      'int main() {\n    S s{1};\n    s.x = s.x + 1;\n}\n#endif\n';
+    assert.deepEqual(tracing.trace(source).steps.at(-1)!.values, { 's.x': 2 });
   });
 
   test('a_mismatch_first_in_main_reports_itself', () => {

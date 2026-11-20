@@ -90,6 +90,8 @@ export interface ReplayStep {
   source: string;
   /** A definition before main, which the preamble already holds. */
   global: boolean;
+  /** Whether `using namespace std;` precedes it in main. */
+  opensStd: boolean;
   output: boolean;
   checks: string[];
 }
@@ -121,6 +123,7 @@ export function verifyReplay(
   // keeps feature-test macros and conditional directives from choosing another branch.
   for (const [index, step] of steps.entries()) {
     if (step.global) continue;
+    if (step.opensStd) chunks.push('using namespace std;\n');
     if (!step.output) chunks.push(step.source, '\n');
     if (step.checks.length) {
       chunks.push(`if (!(${step.checks.join(' && ')})) return ${index + 1};\n`);
