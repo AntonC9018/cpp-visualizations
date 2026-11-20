@@ -5,10 +5,10 @@ import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 
 import {
-  STANDARD_FLAGS, Unsupported, illFormed, type AstNode, type CompilerFrontend, type Standard,
+  STANDARD_FLAGS, Unsupported, illFormed, type AstNode, type CompilerFrontend, type Macros, type Standard,
 } from '../core/errors.ts';
 import { extractEnumConstantSizes } from '../core/records.ts';
-import { type TokenizedSource, macroNames, parseAstDump, readTokens } from '../core/source.ts';
+import { type TokenizedSource, definedMacros, parseAstDump, readTokens } from '../core/source.ts';
 
 export { Unsupported };
 
@@ -90,7 +90,7 @@ export function createClangFrontend(directory?: string): CompilerFrontend {
     });
   // A program's tokens and macros are read again for each check on the same snippet.
   const lexed = new Map<string, TokenizedSource>();
-  const defined = new Map<string, Set<string>>();
+  const defined = new Map<string, Macros>();
 
   return {
     tokens(program, { ignoreExpansions = false } = {}) {
@@ -108,9 +108,9 @@ export function createClangFrontend(directory?: string): CompilerFrontend {
     macros(program) {
       let names = defined.get(program);
       if (!names) {
-        const result = clang(program, ['-E', '-dM']);
+        const result = clang(program, ['-E', '-dD']);
         if (result.returncode !== 0) throw illFormed(result.stderr, program);
-        names = macroNames(result.stdout);
+        names = definedMacros(result.stdout);
         defined.set(program, names);
       }
       return names;

@@ -131,6 +131,12 @@ export interface AstNode {
 
 export type Standard = 'c++20' | 'c++2c';
 
+/** The names of the macros a program defines at any point, by kind. */
+export interface Macros {
+  objects: Set<string>;
+  functions: Set<string>;
+}
+
 /**
  * The language options both frontends give Clang. The replay asks C++26's constant evaluator
  * while feature-test macros keep the C++20 values the program was read with.
@@ -141,11 +147,8 @@ export const STANDARD_FLAGS: Record<Standard, readonly string[]> = {
 };
 
 export interface CompilerFrontend {
-  /** Declaration text for frontends that cannot include the native <array> header. */
-  arrayPreamble?: string;
   tokens(program: string, options?: { ignoreExpansions?: boolean }): TokenizedSource;
-  /** The names of the macros defined at the end of `program`. */
-  macros(program: string): Set<string>;
+  macros(program: string): Macros;
   astDump(program: string, filter: string, standard?: Standard): AstNode[];
   recordLayoutsDump(program: string): string;
   typeSizes(types: string[]): Record<string, number>;

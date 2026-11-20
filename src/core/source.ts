@@ -1,6 +1,6 @@
 // Source coordinates and display text come from Clang's preprocessed token stream.
 import {
-  type AstNode, type AstRangeEndpoint, type CompilerFrontend, IllFormed, Unsupported, sourceCoordinates,
+  type AstNode, type AstRangeEndpoint, type CompilerFrontend, IllFormed, type Macros, Unsupported, sourceCoordinates,
 } from './errors.ts';
 import type { Span } from './trace_format.ts';
 
@@ -65,15 +65,19 @@ export function readTokens(
   return { tokens, includes };
 }
 
-/** The names `-E -dM` output defines. */
-export function macroNames(definitions: string): Set<string> {
-  return new Set([...definitions.matchAll(/^#define (\w+)/gm)].map(match => match[1]));
+/** The macros `-E -dD` output defines anywhere, also those it later undefines. */
+export function definedMacros(preprocessed: string): Macros {
+  const macros: Macros = { objects: new Set(), functions: new Set() };
+  for (const [, name, parameters] of preprocessed.matchAll(/^#define (\w+)(\(?)/gm)) {
+    (parameters ? macros.functions : macros.objects).add(name);
+  }
+  return macros;
 }
 
 export const HEADERS = '#include <iostream>\n#include <cstdint>\n#include <cstddef>\n';
 
-export function arrayHeader(source: string, frontend?: CompilerFrontend): string {
-  return /\barray\b/.test(source) ? (frontend?.arrayPreamble ?? '#include <array>\n') : '';
+export function arrayHeader(source: string): string {
+  return /\barray\b/.test(source) ? '#include <array>\n' : '';
 }
 
 /** The tokens Clang lexed, in source coordinates, and the headers the replay needs. */
@@ -90,7 +94,8 @@ interface Lexed {
 /** Precedes a fragment, which may name the standard library's declarations unqualified. */
 const USING_STD = 'using namespace std;\n';
 
-const INCLUDE_LINE = /^[ \t]*(?:#|%:)[ \t]*include[ \t]*<([^<>\r\n]+)>[ \t]*(?:\/\/[^\r\n]*)?$/gm;
+// Lines end at \r and \n alone, as Clang reads them: U+2028 continues a comment.
+const INCLUDE_LINE = /(?<![^\r\n])[ \t]*(?:#|%:)[ \t]*include[ \t]*<([^<>\r\n]+)>[ \t]*(?:\/\/[^\r\n]*)?(?![^\r\n])/g;
 
 function blank(text: string): string {
   return text.replace(/[^\r\n]/g, ' ');
@@ -101,7 +106,8 @@ function blank(text: string): string {
  * headers' tokens are nearly all of Clang's dump, so such a source is lexed with them blanked,
  * unless it spells a macro they define. Any other directive may test a header's macros:
  * that source is lexed after the convenience headers, and -H names the headers the C++20
- * preprocessor selected.
+ * preprocessor selected. A fragment's late includes move before its `main`, where the
+ * macros they define would apply to the statements before them, so it may not spell those.
  */
 function lex(source: string, frontend: CompilerFrontend, array: string, ignoreExpansions: boolean): Lexed {
   const lines = [...source.matchAll(INCLUDE_LINE)];
@@ -113,7 +119,12 @@ function lex(source: string, frontend: CompilerFrontend, array: string, ignoreEx
     for (const [start, end] of includeLines) text = text.slice(0, start) + blank(text.slice(start, end)) + text.slice(end);
     const includes = HEADERS + array + lines.map(line => `#include <${line[1]}>\n`).join('');
     const { tokens } = frontend.tokens(text, { ignoreExpansions });
-    if (!spellsMacro(tokens, text, frontend, includes)) return { tokens, includes, includeLines };
+    const macros = definedBy(frontend, includes);
+    if (macros && !spellsMacro(tokens, text, macros)) return { tokens, includes, includeLines };
+    const late = includeLines.some(([start]) => start > (tokens[0]?.start ?? source.length));
+    if (macros && late && !mainDefinition(tokens, text)) {
+      throw new Unsupported('a macro from a header included after the first statement is not supported');
+    }
   }
   // The same lines as before the program's own, so `__LINE__` selects the same branches.
   const context = HEADERS + array + USING_STD;
@@ -126,25 +137,30 @@ function lex(source: string, frontend: CompilerFrontend, array: string, ignoreEx
     .map(token => ({ ...token, start: token.start - context.length, end: token.end - context.length }));
   return {
     tokens,
-    // Browser array declarations are supplied as source in the preamble.
-    includes: includes + (frontend.arrayPreamble ? array : ''),
+    includes,
     includeLines: [],
   };
 }
 
-/**
- * Whether a token spells a macro `includes` define, which the blanked lines left unexpanded.
- * Headers Clang cannot read count as defining one: lexing them reports the error.
- */
-function spellsMacro(tokens: SourceToken[], text: string, frontend: CompilerFrontend, includes: string): boolean {
-  let macros: Set<string>;
+/** The macros `includes` define, or null for headers Clang cannot read: lexing them reports it. */
+function definedBy(frontend: CompilerFrontend, includes: string): Macros | null {
   try {
-    macros = frontend.macros(includes);
+    return frontend.macros(includes);
   } catch (error) {
-    if (error instanceof IllFormed) return true;
+    if (error instanceof IllFormed) return null;
     throw error;
   }
-  return tokens.some(token => macros.has(text.slice(token.start, token.end)));
+}
+
+/**
+ * Whether a token would expand a macro, which the blanked lines left unexpanded. A function-like
+ * macro's name expands only before a parenthesis.
+ */
+function spellsMacro(tokens: SourceToken[], text: string, { objects, functions }: Macros): boolean {
+  return tokens.some((token, i) => {
+    const spelling = text.slice(token.start, token.end);
+    return objects.has(spelling) || (functions.has(spelling) && tokens[i + 1]?.kind === 'l_paren');
+  });
 }
 
 /** The token index of `main` and of the `{` opening its body, if `main` is defined. */
@@ -183,7 +199,7 @@ export class SourceFile {
     if (/\\[ \t\f\v]*(?:\r\n?|\n)/.test(source)) {
       throw new Unsupported('a backslash at the end of a line (a line splice) is not supported');
     }
-    this.array = kept?.array ?? arrayHeader(source, frontend);
+    this.array = kept?.array ?? arrayHeader(source);
     this.lexed = kept?.lexed ?? lex(source, frontend, this.array, ignoreExpansions);
     const { tokens } = this.lexed;
     const spell = (token: SourceToken): string => source.slice(token.start, token.end);

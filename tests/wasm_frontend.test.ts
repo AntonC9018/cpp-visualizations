@@ -240,7 +240,9 @@ describe('ClangWasmParityTests', { skip: !existsSync(WASM_PATH) }, () => {
     }
 
     const typed = { template: 'expression-timeline', flags: { types: true } } as const;
-    for (const source of ['float f=0.5f; std::cout << f;', 'short n=7; std::cout << n;']) {
+    // Both frontends include <array> in one line, so `__LINE__` picks the same branch.
+    const lines = '#if __LINE__ == 6\nint x=1;\n#else\nint y=2;\n#endif\nint* array = 42;';
+    for (const source of ['float f=0.5f; std::cout << f;', 'short n=7; std::cout << n;', lines]) {
       assert.deepEqual(
         traceWithWasmModule(source, wasmModule, typed),
         traceSnippet(source, typed, { frontend: nativeFrontend })

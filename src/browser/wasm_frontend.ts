@@ -1,14 +1,16 @@
 // CompilerFrontend implementation backed by the trimmed Clang WASM binary.
 import {
-  type AstNode, type CompilerFrontend, STANDARD_FLAGS, type Standard, Unsupported, illFormed,
+  type AstNode, type CompilerFrontend, type Macros, STANDARD_FLAGS, type Standard, Unsupported, illFormed,
 } from '../core/errors.ts';
 import { extractEnumConstantSizes } from '../core/records.ts';
 import type { Template, TraceSettings } from '../core/settings.ts';
 import { type TraceOf, traceSnippet } from '../core/snippet.ts';
-import { macroNames, parseAstDump, readTokens } from '../core/source.ts';
-import { ARRAY_PREAMBLE } from './array_header.ts';
+import { definedMacros, parseAstDump, readTokens } from '../core/source.ts';
 import { runWasiModule } from './wasi.ts';
 
+/** Each module's macros by header list, which repeats across a page's traces. */
+const macroCache = new WeakMap<WebAssembly.Module, Map<string, Macros>>();
+const MACRO_CACHE_SIZE = 16;
 
 export function createWasmClangFrontend(module: WebAssembly.Module): CompilerFrontend {
   /** Run the frontend on `program` with the shared language options. */
@@ -16,7 +18,6 @@ export function createWasmClangFrontend(module: WebAssembly.Module): CompilerFro
     runWasiModule(module, { args: ['clang-trace-frontend', ...STANDARD_FLAGS[standard], ...args, '-'], stdin: program });
 
   return {
-    arrayPreamble: ARRAY_PREAMBLE,
     tokens(program, options) {
       const result = clang(program, ['-Xclang', '-dump-tokens']);
       if (result.returncode !== 0) throw illFormed(result.stderr, program);
@@ -24,9 +25,17 @@ export function createWasmClangFrontend(module: WebAssembly.Module): CompilerFro
     },
 
     macros(program) {
-      const result = clang(program, ['-E', '-dM']);
-      if (result.returncode !== 0) throw illFormed(result.stderr, program);
-      return macroNames(result.stdout);
+      let cache = macroCache.get(module);
+      if (!cache) macroCache.set(module, cache = new Map());
+      let macros = cache.get(program);
+      if (!macros) {
+        const result = clang(program, ['-E', '-dD']);
+        if (result.returncode !== 0) throw illFormed(result.stderr, program);
+        macros = definedMacros(result.stdout);
+        if (cache.size >= MACRO_CACHE_SIZE) cache.delete(cache.keys().next().value!);
+        cache.set(program, macros);
+      }
+      return macros;
     },
 
     astDump(program, filter, standard = 'c++20') {

@@ -63,6 +63,33 @@ using uintptr_t = std::uintptr_t;
 #endif
 )cpp";
 
+// The layout and signatures the tracer uses. Like the native header, it takes one line to include.
+static const char *kVirtualArrayHeader = R"cpp(
+#ifndef COURSE_VIRTUAL_ARRAY_H
+#define COURSE_VIRTUAL_ARRAY_H
+#include <cstddef>
+namespace std {
+template<class T, size_t N> struct array {
+  using value_type = T;
+  using size_type = size_t;
+  using pointer = T*;
+  using const_pointer = const T*;
+  using reference = T&;
+  using const_reference = const T&;
+  T elements[N];
+  constexpr reference operator[](size_type i) noexcept { return elements[i]; }
+  constexpr const_reference operator[](size_type i) const noexcept { return elements[i]; }
+  constexpr pointer data() noexcept { return elements; }
+  constexpr const_pointer data() const noexcept { return elements; }
+  constexpr size_type size() const noexcept { return N; }
+};
+template<class T> struct array<T, 0> {};
+template<class T, class... U> requires (__is_same(T, U) && ...)
+array(T, U...) -> array<T, 1 + sizeof...(U)>;
+}
+#endif
+)cpp";
+
 int main(int argc, char **argv) {
   auto VFS = llvm::makeIntrusiveRefCnt<llvm::vfs::InMemoryFileSystem>();
   for (const char *header : {"iostream", "cstdint", "cstddef", "stdint.h", "stddef.h"}) {
@@ -70,9 +97,8 @@ int main(int argc, char **argv) {
                  llvm::MemoryBuffer::getMemBuffer(kVirtualStdHeader));
   }
 
-  // The array declarations are supplied in the trace preamble.
   VFS->addFile("/virtual/include/array", 0,
-               llvm::MemoryBuffer::getMemBuffer(""));
+               llvm::MemoryBuffer::getMemBuffer(kVirtualArrayHeader));
 
   bool astDump = false;
   std::string astDumpFilter;
@@ -99,7 +125,7 @@ int main(int argc, char **argv) {
       }
     } else if (arg == "-E") {
       preprocess = true;
-    } else if (arg == "-dM") {
+    } else if (arg == "-dD") {
       dumpMacros = true;
     } else if (arg.starts_with("-std=") || arg.starts_with("-W") || arg.starts_with("-D")) {
       languageArgs.push_back(argv[i]);
@@ -135,7 +161,7 @@ int main(int argc, char **argv) {
   };
   cc1Args.insert(cc1Args.end(), languageArgs.begin(), languageArgs.end());
   if (dumpMacros) {
-    cc1Args.push_back("-dM");
+    cc1Args.push_back("-dD");
   }
   if (dumpTokens) {
     // As the driver does for -H: the virtual headers are system headers.

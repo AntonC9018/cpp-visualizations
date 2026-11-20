@@ -67,7 +67,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     "c++20": ["-std=c++20", "-Werror=extra-tokens"],
     "c++2c": ["-std=c++2c", "-Werror=extra-tokens", "-Wno-builtin-macro-redefined", "-D__cplusplus=202002L"]
   };
-  const WASM_VERSION = 4;
+  const WASM_VERSION = 5;
   const CACHE_PREFIX = "clang-trace-frontend-v";
   const DEFAULT_CACHE_NAME = `${CACHE_PREFIX}${WASM_VERSION}`;
   const DEFAULT_WASM_URL = `./clang-trace-frontend.wasm?v=${WASM_VERSION}`;
@@ -747,15 +747,19 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     if (!physicalEof) throw new Unsupported("Clang did not report physical source locations");
     return { tokens, includes };
   }
-  function macroNames(definitions) {
-    return new Set([...definitions.matchAll(/^#define (\w+)/gm)].map((match) => match[1]));
+  function definedMacros(preprocessed) {
+    const macros = { objects: /* @__PURE__ */ new Set(), functions: /* @__PURE__ */ new Set() };
+    for (const [, name, parameters] of preprocessed.matchAll(/^#define (\w+)(\(?)/gm)) {
+      (parameters ? macros.functions : macros.objects).add(name);
+    }
+    return macros;
   }
   const HEADERS = "#include <iostream>\n#include <cstdint>\n#include <cstddef>\n";
-  function arrayHeader(source, frontend) {
-    return /\barray\b/.test(source) ? (frontend == null ? void 0 : frontend.arrayPreamble) ?? "#include <array>\n" : "";
+  function arrayHeader(source) {
+    return /\barray\b/.test(source) ? "#include <array>\n" : "";
   }
   const USING_STD = "using namespace std;\n";
-  const INCLUDE_LINE = /^[ \t]*(?:#|%:)[ \t]*include[ \t]*<([^<>\r\n]+)>[ \t]*(?:\/\/[^\r\n]*)?$/gm;
+  const INCLUDE_LINE = new RegExp("(?<![^\\r\\n])[ \\t]*(?:#|%:)[ \\t]*include[ \\t]*<([^<>\\r\\n]+)>[ \\t]*(?:\\/\\/[^\\r\\n]*)?(?![^\\r\\n])", "g");
   function blank(text) {
     return text.replace(/[^\r\n]/g, " ");
   }
@@ -770,7 +774,15 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const includes2 = HEADERS + array + lines.map((line) => `#include <${line[1]}>
 `).join("");
       const { tokens: tokens2 } = frontend.tokens(text, { ignoreExpansions });
-      if (!spellsMacro(tokens2, text, frontend, includes2)) return { tokens: tokens2, includes: includes2, includeLines };
+      const macros = definedBy(frontend, includes2);
+      if (macros && !spellsMacro(tokens2, text, macros)) return { tokens: tokens2, includes: includes2, includeLines };
+      const late = includeLines.some(([start]) => {
+        var _a2;
+        return start > (((_a2 = tokens2[0]) == null ? void 0 : _a2.start) ?? source.length);
+      });
+      if (macros && late && !mainDefinition(tokens2, text)) {
+        throw new Unsupported("a macro from a header included after the first statement is not supported");
+      }
     }
     const context = HEADERS + array + USING_STD;
     const lexed = frontend.tokens(context + source, { ignoreExpansions });
@@ -782,20 +794,24 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const tokens = lexed.tokens.filter((token) => token.start >= context.length).map((token) => ({ ...token, start: token.start - context.length, end: token.end - context.length }));
     return {
       tokens,
-      // Browser array declarations are supplied as source in the preamble.
-      includes: includes + (frontend.arrayPreamble ? array : ""),
+      includes,
       includeLines: []
     };
   }
-  function spellsMacro(tokens, text, frontend, includes) {
-    let macros;
+  function definedBy(frontend, includes) {
     try {
-      macros = frontend.macros(includes);
+      return frontend.macros(includes);
     } catch (error) {
-      if (error instanceof IllFormed) return true;
+      if (error instanceof IllFormed) return null;
       throw error;
     }
-    return tokens.some((token) => macros.has(text.slice(token.start, token.end)));
+  }
+  function spellsMacro(tokens, text, { objects, functions }) {
+    return tokens.some((token, i) => {
+      var _a;
+      const spelling = text.slice(token.start, token.end);
+      return objects.has(spelling) || functions.has(spelling) && ((_a = tokens[i + 1]) == null ? void 0 : _a.kind) === "l_paren";
+    });
   }
   function mainDefinition(tokens, source) {
     var _a, _b;
@@ -825,7 +841,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       if (/\\[ \t\f\v]*(?:\r\n?|\n)/.test(source)) {
         throw new Unsupported("a backslash at the end of a line (a line splice) is not supported");
       }
-      this.array = (kept == null ? void 0 : kept.array) ?? arrayHeader(source, frontend);
+      this.array = (kept == null ? void 0 : kept.array) ?? arrayHeader(source);
       this.lexed = (kept == null ? void 0 : kept.lexed) ?? lex(source, frontend, this.array, ignoreExpansions);
       const { tokens } = this.lexed;
       const spell = (token) => source.slice(token.start, token.end);
@@ -3949,27 +3965,6 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
     };
     return traces[template]();
   }
-  const ARRAY_PREAMBLE = `
-namespace std {
-template<class T, size_t N> struct array {
-  using value_type = T;
-  using size_type = size_t;
-  using pointer = T*;
-  using const_pointer = const T*;
-  using reference = T&;
-  using const_reference = const T&;
-  T elements[N];
-  constexpr reference operator[](size_type i) noexcept { return elements[i]; }
-  constexpr const_reference operator[](size_type i) const noexcept { return elements[i]; }
-  constexpr pointer data() noexcept { return elements; }
-  constexpr const_pointer data() const noexcept { return elements; }
-  constexpr size_type size() const noexcept { return N; }
-};
-template<class T> struct array<T, 0> {};
-template<class T, class... U> requires (__is_same(T, U) && ...)
-array(T, U...) -> array<T, 1 + sizeof...(U)>;
-}
-`;
   const EBADF = 8;
   const ENOENT = 44;
   const ENOSYS = 52;
@@ -4188,19 +4183,28 @@ array(T, U...) -> array<T, 1 + sizeof...(U)>;
     }
     return decoder.decode(out);
   }
+  const macroCache = /* @__PURE__ */ new WeakMap();
+  const MACRO_CACHE_SIZE = 16;
   function createWasmClangFrontend(module) {
     const clang = (program, args, standard = "c++20") => runWasiModule(module, { args: ["clang-trace-frontend", ...STANDARD_FLAGS[standard], ...args, "-"], stdin: program });
     return {
-      arrayPreamble: ARRAY_PREAMBLE,
       tokens(program, options) {
         const result = clang(program, ["-Xclang", "-dump-tokens"]);
         if (result.returncode !== 0) throw illFormed(result.stderr, program);
         return readTokens(result.stderr, "/virtual/source.cpp", program, options);
       },
       macros(program) {
-        const result = clang(program, ["-E", "-dM"]);
-        if (result.returncode !== 0) throw illFormed(result.stderr, program);
-        return macroNames(result.stdout);
+        let cache = macroCache.get(module);
+        if (!cache) macroCache.set(module, cache = /* @__PURE__ */ new Map());
+        let macros = cache.get(program);
+        if (!macros) {
+          const result = clang(program, ["-E", "-dD"]);
+          if (result.returncode !== 0) throw illFormed(result.stderr, program);
+          macros = definedMacros(result.stdout);
+          if (cache.size >= MACRO_CACHE_SIZE) cache.delete(cache.keys().next().value);
+          cache.set(program, macros);
+        }
+        return macros;
       },
       astDump(program, filter, standard = "c++20") {
         const result = clang(program, ["-Xclang", "-ast-dump=json", "-Xclang", "-ast-dump-filter=" + filter], standard);
