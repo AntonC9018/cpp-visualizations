@@ -1133,6 +1133,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         if (token.kind === "struct" && ((_a = leading[i + 1]) == null ? void 0 : _a.kind) === "identifier") names.add(spell(leading[i + 1]));
         opensStd || (opensStd = usesNamespaceStd(leading, i, spell));
       });
+      if (leading.some((token, i) => token.kind === "coloncolon" && leading[i + 1] && names.has(spell(leading[i + 1])))) {
+        throw new Unsupported("a declaration before main may not qualify another one with ::");
+      }
       const open = `namespace ${GLOBALS_NAMESPACE} { `;
       const declarations = [...names].map((name) => `using ${GLOBALS_NAMESPACE}::${name}; `).join("") + (opensStd ? "using namespace std; " : "");
       const probe = this.program.slice(0, from) + open + this.program.slice(from, to) + "} " + declarations + this.program.slice(to);

@@ -436,6 +436,10 @@ export class SourceFile {
       if (token.kind === 'struct' && leading[i + 1]?.kind === 'identifier') names.add(spell(leading[i + 1]));
       opensStd ||= usesNamespaceStd(leading, i, spell);
     });
+    // Inside the namespace, `::Name` would look past the record it names in the program.
+    if (leading.some((token, i) => token.kind === 'coloncolon' && leading[i + 1] && names.has(spell(leading[i + 1])))) {
+      throw new Unsupported('a declaration before main may not qualify another one with ::');
+    }
     const open = `namespace ${GLOBALS_NAMESPACE} { `;
     const declarations = [...names].map(name => `using ${GLOBALS_NAMESPACE}::${name}; `).join('') +
       (opensStd ? 'using namespace std; ' : '');

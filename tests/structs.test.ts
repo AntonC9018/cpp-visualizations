@@ -267,6 +267,14 @@ c=b.n; b.n={5, 6}; std::cout << c.g;`;
     assert.throws(() => tracing.trace(source), /may not read its source column/);
   });
 
+  test('a_global_struct_may_not_qualify_another_with_the_global_scope', () => {
+    const source = '#include <exception>\n#include <type_traits>\nusing namespace std;\n' +
+      'struct exception { int x; };\n' +
+      'struct Holder { std::conditional_t<std::is_polymorphic_v<::exception>, int, long> value; };\n' +
+      'int main() {\n    Holder h{1};\n}';
+    assert.throws(() => tracing.trace(source), /may not qualify another one with ::/);
+  });
+
   test('a_global_using_directive_may_follow_a_struct', () => {
     const source = '#include <iostream>\nstruct S { int x; };\nusing namespace std;\n' +
       'int main() {\n    S a{1};\n    a.x += 2;\n    cout << a.x;\n}';
