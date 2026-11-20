@@ -98,11 +98,22 @@ p->next->x=9; c=*p; (*p).x=7; std::cout << a.x;`;
       ['c = A{{1, 2}, 3}', null],
       ['c = A{{1, 2}, 3}', 'write'],
     ]);
+    // However it is spaced around the names.
+    for (const list of ['A {1, N{2, 3}}', 'A{1, N {2, 3}}']) {
+      const spaced = tracing.trace(`struct N { int f; int g; };\nstruct A { int f; N n; };\nA a{1, {2, 3}};\na = ${list};`);
+      const line = spaced.steps.filter(step => step.line === spaced.steps.at(-1)!.line);
+      assert.deepEqual(line.map(step => [step.pane, step.op?.kind ?? null]), [
+        [`a = ${list}`, null],
+        [`a = ${list}`, 'write'],
+      ]);
+      validate(spaced);
+    }
   });
 
   test('only a name that opens a nested brace list is stripped', () => {
     assert.equal(withoutNestedNames('A{1, N{2, 3}}'), 'A{1, {2, 3}}');
     assert.equal(withoutNestedNames('{1, 1N{2, 3}}'), '{1, 1N{2, 3}}');
+    assert.equal(withoutNestedNames('A {1, N {2, 3}}'), 'A {1, {2, 3}}');
   });
 
   test('elided_aggregate_initialization_and_struct_double_pointer', () => {

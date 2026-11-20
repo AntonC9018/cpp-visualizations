@@ -694,11 +694,11 @@ const LITERAL = /^≈?-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i;
 
 /** A brace list without the names of the records nested in it: `{1, N{2, 3}}` → `{1, {2, 3}}`. */
 export const withoutNestedNames = (text: string): string =>
-  text.replace(/(?<=[{,]\s*)[A-Za-z_][\w:]*(?=\{)/g, '');
+  text.replace(/(?<=[{,]\s*)[A-Za-z_][\w:]*\s*(?=\{)/g, '');
 
 /** The items a value text spells: one, or each of a brace list. */
 function storedItems(text: string, where: string): string[] {
-  const braced = /^(?:[A-Za-z_]\w*)?\{[\s\S]*\}$/.test(text);
+  const braced = /^(?:[A-Za-z_][\w:]*\s*)?\{[\s\S]*\}$/.test(text);
   const inner = braced ? text.slice(text.indexOf('{')) : text;
   const items = braced
     ? withoutNestedNames(inner).replace(/[{}]/g, '').split(',').map(s => s.trim())
