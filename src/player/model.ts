@@ -61,6 +61,12 @@ export const departure = (op: TraceOperation): number =>
   (stores(op) ? T.writeHold : op.kind === 'print' ? 0.2 : T.prepare) +
   (walks(op) ? chainDelay(walkOf(op)) : 0);
 
+/** The extra 1× time a multi-level storage walk adds to step `i`'s animation. */
+export function stepWalkSeconds(steps: TraceStep[], i: number): number {
+  const op = steps[i]?.op;
+  return op && walks(op) ? chainDelay(walkOf(op)) : 0;
+}
+
 export function arrival(op: TraceOperation): number {
   if (op.kind === 'deref') return T.prepare + T.follow;
   if (op.kind === 'eval' || op.kind === 'alias' || op.kind === 'convert') return lead(op) + T.evaluate;
