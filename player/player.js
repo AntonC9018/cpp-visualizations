@@ -984,6 +984,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       paneSize: chosen.paneSize,
       paneChar: chosen.paneChar,
       byteWidth: chosen.byte,
+      flush,
       stacked,
       isStruct,
       rise,
@@ -2202,11 +2203,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   function hatchDefs(P) {
     const uid = ++patternSeq;
     const padId = `cv-pad-hatch-${uid}`;
-    const defs = `<defs><pattern id="${padId}" width="10" height="10" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="10" height="10" fill="${P.deadFill}"/><line x1="0" y1="0" x2="0" y2="10" stroke="${P.gapStroke}" stroke-width="3.2"/></pattern></defs>`;
+    const defs = `<defs><pattern id="${padId}" width="10" height="10" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="10" height="10" fill="${P.deadFill}"/><line x1="5" y1="0" x2="5" y2="10" stroke="${P.gapStroke}" stroke-width="2.2"/></pattern></defs>`;
     return { defs, padId };
   }
   function scaledAt(cx, cy, inner, begin) {
-    return `<g transform="translate(${round(cx)} ${round(cy)})"><g>${pulse(begin)}<g transform="translate(${round(-cx)} ${round(-cy)})">${inner}</g></g></g>`;
+    return `<g transform="translate(${round(cx)} ${round(cy)})"><g>${pulse(Math.max(0, begin))}<g transform="translate(${round(-cx)} ${round(-cy)})">${inner}</g></g></g>`;
   }
   function transientWriteHighlight(x, y, w, h, color, at) {
     return `<g opacity="0">${fade(0, 1, 0.15, Math.max(0, at - 0.25))}${fade(1, 0, 0.3, at + 0.35)}<g opacity="0.2">${rect(x + 2, y + 2, w - 4, h - 4, color, "none", 0)}</g>` + rect(x + 2, y + 2, w - 4, h - 4, "none", color, 0, 2.8) + "</g>";
@@ -2224,6 +2225,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }
   function renderByteMemory(c, opts) {
     const { g, P, animate, op } = c;
+    if (!g.flush) {
+      throw new Error("renderByteMemory requires flush geometry");
+    }
     if (g.leaves.length === 0) return "";
     const byteW = g.byteWidth;
     const gridY = g.leaves[0].y;
@@ -2287,14 +2291,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
       markup += rect(vx + 1.5, vy + 1.5, vw - 3, vh - 3, "none", on ? col : P.deadStroke, 0, 2.8);
       const headCx = vx + vw / 2;
-      const renderHeader = (val) => {
-        if (!val) return "";
-        const str = val.text;
-        const decSize = Math.min(25, (vw - 12) / (Math.max(1, str.length) * CHAR));
-        const decCol = str === "?" ? P.grey : P.fg;
-        return text(headCx, vy + 33, str, round(decSize), decCol, "middle");
+      const renderHeader = (str) => {
+        if (str === null) return "";
+        const inset = Math.min(12, vw / 5);
+        const decSize = Math.min(25, (vw - inset) / (Math.max(1, str.length) * CHAR));
+        return text(headCx, vy + 33, str, round(decSize), str === "?" ? P.grey : P.fg, "middle");
       };
-      if (animate && st.headerChanging) {
+      if (animate && st.changing && st.beforeHeader !== st.afterHeader) {
         const swapped = (st.beforeHeader !== null ? `<g>${hide(at)}${renderHeader(st.beforeHeader)}</g>` : "") + `<g opacity="0">${show(at)}${renderHeader(st.afterHeader)}</g>`;
         markup += scaledAt(headCx, vy + 26, swapped, at - 0.15);
       } else {
@@ -2309,11 +2312,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         const renderByte = (bval) => {
           if (bval === null) return "";
           if (bval === "?") return text(bx + byteW / 2, hexY, "??", 13.5, P.grey, "middle");
-          const byteInk = leaf.kind === "ptr" ? P.muted : P.fg;
-          const opAttr = leaf.kind === "ptr" ? ' opacity="0.65"' : "";
-          return `<g${opAttr}>${text(bx + byteW / 2, hexY, hexByte(bval), leaf.kind === "ptr" ? 13 : 15.5, byteInk, "middle")}</g>`;
+          return text(bx + byteW / 2, hexY, hexByte(bval), 15.5, P.fg, "middle");
         };
-        const byteChanged = animate && st.headerChanging && bs.before !== bs.after;
+        const byteChanged = animate && st.changing && bs.before !== bs.after;
         if (byteChanged) {
           const swapped = (bs.before !== null ? `<g>${hide(at)}${renderByte(bs.before)}</g>` : "") + `<g opacity="0">${show(at)}${renderByte(bs.after)}</g>`;
           hexGroup += scaledAt(bx + byteW / 2, vy + 68, swapped, at - 0.15);
@@ -2423,8 +2424,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }
   function headerFor(val) {
     if (val === null || val === void 0) return null;
-    if (typeof val === "number") return { text: String(val), poisoned: false, numeric: val };
-    return { text: String(val), poisoned: false, numeric: null };
+    return String(val);
   }
   function bytesFor(val, size, littleEndian) {
     if (val === null || val === void 0) return Array.from({ length: size }, () => null);
@@ -2449,7 +2449,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           beforeHeader: headerFor(before),
           afterHeader: headerFor(after),
           bytes,
-          headerChanging: writing.has(leaf.name) && before !== after
+          changing: writing.has(leaf.name)
         };
       }
     });
@@ -2666,8 +2666,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         minColumnWidth: Math.max(680, Math.ceil(workbench2)),
         cellHeight: BYTE_CELL_HEIGHT,
         extraPaneHeight: 120 + drop,
-        flush: true,
-        skipWrap: true
+        flush: true
       };
     },
     stackBelow: 900,

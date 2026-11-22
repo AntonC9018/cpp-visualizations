@@ -4,7 +4,7 @@
 // address ruler, hatched `??` alignment padding, variable cells with centered value headers above
 // hex byte cells, per-byte pulse animation, LSB→MSB byte-order arrows, and transient full-height
 // read/write highlights.
-import { type ByteValue, type DecodedBytes, hexByte, paddingRuns } from '../core/bytes.ts';
+import { type ByteValue, hexByte, paddingRuns } from '../core/bytes.ts';
 import { CHAR, LABEL, type Palette } from './constants.ts';
 import type { PlacedLeaf } from './geometry.ts';
 import { arrival } from './model.ts';
@@ -26,7 +26,7 @@ export function hatchDefs(P: Palette): { defs: string; padId: string } {
     '<defs>' +
     `<pattern id="${padId}" width="10" height="10" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">` +
     `<rect width="10" height="10" fill="${P.deadFill}"/>` +
-    `<line x1="0" y1="0" x2="0" y2="10" stroke="${P.gapStroke}" stroke-width="3.2"/>` +
+    `<line x1="5" y1="0" x2="5" y2="10" stroke="${P.gapStroke}" stroke-width="2.2"/>` +
     '</pattern>' +
     '</defs>';
   return { defs, padId };
@@ -35,7 +35,7 @@ export function hatchDefs(P: Palette): { defs: string; padId: string } {
 /** Pulse `inner` about `(cx, cy)` starting at `begin` seconds. */
 export function scaledAt(cx: number, cy: number, inner: string, begin: number): string {
   return (
-    `<g transform="translate(${round(cx)} ${round(cy)})"><g>${pulse(begin)}` +
+    `<g transform="translate(${round(cx)} ${round(cy)})"><g>${pulse(Math.max(0, begin))}` +
     `<g transform="translate(${round(-cx)} ${round(-cy)})">${inner}</g></g></g>`
   );
 }
@@ -104,11 +104,11 @@ export interface ByteCellState {
 }
 
 export interface ByteVariableState {
-  beforeHeader: DecodedBytes | null;
-  afterHeader: DecodedBytes | null;
+  beforeHeader: string | null;
+  afterHeader: string | null;
   bytes: ByteCellState[];
-  /** True when the variable's value is written/changed during this animated step. */
-  headerChanging?: boolean;
+  /** True when this variable is being written/modified during the current animated step. */
+  changing?: boolean;
 }
 
 export interface ByteMemoryOptions {
@@ -123,6 +123,9 @@ export interface ByteMemoryOptions {
  */
 export function renderByteMemory(c: SceneContext, opts: ByteMemoryOptions): string {
   const { g, P, animate, op } = c;
+  if (!g.flush) {
+    throw new Error('renderByteMemory requires flush geometry');
+  }
   if (g.leaves.length === 0) return '';
 
   const byteW = g.byteWidth;
@@ -203,15 +206,14 @@ export function renderByteMemory(c: SceneContext, opts: ByteMemoryOptions): stri
 
     // 3a. Centered header
     const headCx = vx + vw / 2;
-    const renderHeader = (val: DecodedBytes | null): string => {
-      if (!val) return '';
-      const str = val.text;
-      const decSize = Math.min(25, (vw - 12) / (Math.max(1, str.length) * CHAR));
-      const decCol = str === '?' ? P.grey : P.fg;
-      return text(headCx, vy + 33, str, round(decSize), decCol, 'middle');
+    const renderHeader = (str: string | null): string => {
+      if (str === null) return '';
+      const inset = Math.min(12, vw / 5);
+      const decSize = Math.min(25, (vw - inset) / (Math.max(1, str.length) * CHAR));
+      return text(headCx, vy + 33, str, round(decSize), str === '?' ? P.grey : P.fg, 'middle');
     };
 
-    if (animate && st.headerChanging) {
+    if (animate && st.changing && st.beforeHeader !== st.afterHeader) {
       const swapped =
         (st.beforeHeader !== null ? `<g>${hide(at)}${renderHeader(st.beforeHeader)}</g>` : '') +
         `<g opacity="0">${show(at)}${renderHeader(st.afterHeader)}</g>`;
@@ -230,12 +232,10 @@ export function renderByteMemory(c: SceneContext, opts: ByteMemoryOptions): stri
       const renderByte = (bval: ByteValue): string => {
         if (bval === null) return '';
         if (bval === '?') return text(bx + byteW / 2, hexY, '??', 13.5, P.grey, 'middle');
-        const byteInk = leaf.kind === 'ptr' ? P.muted : P.fg;
-        const opAttr = leaf.kind === 'ptr' ? ' opacity="0.65"' : '';
-        return `<g${opAttr}>${text(bx + byteW / 2, hexY, hexByte(bval), leaf.kind === 'ptr' ? 13 : 15.5, byteInk, 'middle')}</g>`;
+        return text(bx + byteW / 2, hexY, hexByte(bval), 15.5, P.fg, 'middle');
       };
 
-      const byteChanged = animate && st.headerChanging && bs.before !== bs.after;
+      const byteChanged = animate && st.changing && bs.before !== bs.after;
       if (byteChanged) {
         const swapped =
           (bs.before !== null ? `<g>${hide(at)}${renderByte(bs.before)}</g>` : '') +

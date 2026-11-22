@@ -5,7 +5,7 @@
 // byte. The pane adds a workbench under the expression: the value's bits above their hex, most
 // significant bit left. Narrowing strikes out the dropped bytes; widening a signed value carries
 // its sign bit along arcs into the new bytes, and widening an unsigned one fades in zeros.
-import { type ByteValue, type DecodedBytes, encodeBytes, hexByte, toBytesMSB } from '../core/bytes.ts';
+import { type ByteValue, encodeBytes, hexByte, toBytesMSB } from '../core/bytes.ts';
 import { type ExecutionTrace, convertOperand } from '../core/trace_format.ts';
 import { type Integer, integerLiteral, integerSpelled } from '../core/integers.ts';
 import {
@@ -149,10 +149,9 @@ function bitStepSeconds(m: PreparedModel, i: number): number {
 // MEMORY: shared byte-accurate hex strip, in the chosen byte order
 // ============================================================================================
 
-function headerFor(val: unknown): DecodedBytes | null {
+function headerFor(val: unknown): string | null {
   if (val === null || val === undefined) return null;
-  if (typeof val === 'number') return { text: String(val), poisoned: false, numeric: val };
-  return { text: String(val), poisoned: false, numeric: null };
+  return String(val);
 }
 
 function bytesFor(val: unknown, size: number, littleEndian: boolean): ByteValue[] {
@@ -179,7 +178,7 @@ function memory(c: SceneContext, padId: string): string {
         beforeHeader: headerFor(before),
         afterHeader: headerFor(after),
         bytes,
-        headerChanging: writing.has(leaf.name) && before !== after,
+        changing: writing.has(leaf.name),
       };
     },
   });
@@ -488,7 +487,6 @@ export const BITS_VIEW: TraceView = {
       cellHeight: BYTE_CELL_HEIGHT,
       extraPaneHeight: 120 + drop,
       flush: true,
-      skipWrap: true,
     };
   },
   stackBelow: 900,

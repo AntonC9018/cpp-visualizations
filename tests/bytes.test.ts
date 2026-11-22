@@ -10,6 +10,10 @@ import {
   paddingRuns,
   toBytesMSB,
 } from '../src/core/bytes.ts';
+import type { ExecutionTrace } from '../src/core/trace_format.ts';
+import type { Palette } from '../src/player/constants.ts';
+import { geometry } from '../src/player/geometry.ts';
+import { prepare } from '../src/player/model.ts';
 
 describe('bytes', () => {
   test('encodes and decodes signed, unsigned, and 64-bit bigint values in both byte orders', () => {
@@ -66,6 +70,11 @@ describe('bytes', () => {
       poisoned: false,
       numeric: 131077,
     });
+    assert.deepEqual(formatByteSlice([0xfd, 0xff, 0xff, 0xff], true, true), {
+      text: '-3',
+      poisoned: false,
+      numeric: -3,
+    });
     // Values beyond Number.MAX_SAFE_INTEGER keep exact decimal text and null numeric (never rounded).
     const unsafe = encodeBytes((1n << 53n) + 1n, 8, true);
     assert.deepEqual(formatByteSlice(unsafe, false, true), {
@@ -81,20 +90,20 @@ describe('bytes', () => {
     });
   });
 
-  test('computes alignment padding runs between and after variables', () => {
+  test('computes alignment padding runs for sorted, unsorted, overlapping, and trailing spans', () => {
     assert.deepEqual(paddingRuns([]), []);
     assert.deepEqual(
       paddingRuns([
+        { address: 72, size: 8 },
         { address: 64, size: 1 },
         { address: 68, size: 4 },
-        { address: 72, size: 8 },
       ]),
       [{ start: 65, size: 3 }]
     );
     assert.deepEqual(
       paddingRuns(
         [
-          { address: 64, size: 1 },
+          { address: 64, size: 2 },
           { address: 65, size: 1 },
           { address: 68, size: 4 },
         ],
@@ -105,5 +114,72 @@ describe('bytes', () => {
         { start: 72, size: 4 },
       ]
     );
+  });
+});
+
+const STUB_PALETTE = {
+  outputLabel: 'Output:',
+  bg: '#000',
+  panel: '#111',
+  pane: '#111',
+  fg: '#fff',
+  muted: '#aaa',
+  grey: '#888',
+  context: '#777',
+  read: '#08f',
+  readFill: '#013',
+  write: '#fa0',
+  writeFill: '#320',
+  derefFill: '#222',
+  highlight: '#222',
+  deadFill: '#111',
+  deadStroke: '#333',
+  gapStroke: '#444',
+  tether: '#555',
+  error: '#f44',
+  typeLabel: 'outline',
+  vars: ['#0a8', '#fa0', '#86f', '#e48', '#6b2'],
+  fields: ['#8a0', '#c4c', '#e44', '#48f'],
+  types: ['#0a8', '#fa0', '#86f', '#e48', '#6b2', '#48f'],
+} as Palette;
+
+describe('flush geometry', () => {
+  test('rejects struct groups and keeps scalar variables on a single flush row without skipWrap', () => {
+    const structTrace: ExecutionTrace = {
+      format: 1,
+      source: ['S s{ 1 };'],
+      variables: [
+        {
+          name: 's',
+          type: 'S',
+          address: 64,
+          size: 4,
+          kind: 'struct',
+          color: 0,
+          fields: [{ name: 'x', offset: 0, size: 4, kind: 'int', color: 0 }],
+        },
+      ],
+      steps: [{ line: 0, pane: 'S s = { 1 }', values: { 's.x': 1 }, targets: {}, stdout: '', hold: 1, op: null }],
+    };
+    assert.throws(() => geometry(prepare(structTrace), STUB_PALETTE, false, 900, { flush: true }), /flush byte layout/);
+
+    const flatTrace: ExecutionTrace = {
+      format: 1,
+      source: ['int a{ 1 };', 'int b{ 2 };', 'int c{ 3 };', 'int d{ 4 };', 'int e{ 5 };'],
+      variables: [
+        { name: 'a', address: 64, size: 4, kind: 'int', color: 0 },
+        { name: 'b', address: 68, size: 4, kind: 'int', color: 1 },
+        { name: 'c', address: 72, size: 4, kind: 'int', color: 2 },
+        { name: 'd', address: 76, size: 4, kind: 'int', color: 3 },
+        { name: 'e', address: 80, size: 4, kind: 'int', color: 4 },
+      ],
+      steps: [
+        { line: 0, pane: 'int a = 1', values: { a: 1, b: 2, c: 3, d: 4, e: 5 }, targets: {}, stdout: '', hold: 1, op: null },
+      ],
+    };
+    const g = geometry(prepare(flatTrace), STUB_PALETTE, false, 900, { flush: true });
+    assert.equal(g.flush, true);
+    assert.ok(g.leaves.every(l => l.y === g.memY));
+    assert.ok(g.leaves.every(l => Math.abs(l.x - (g.memX + (l.address - 64) * g.byteWidth)) < 0.01));
   });
 });

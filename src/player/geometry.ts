@@ -103,6 +103,8 @@ export interface Geometry {
   paneChar: number;
   /** Units per byte on the memory row. */
   byteWidth: number;
+  /** Whether top-level variables sit flush on a single contiguous byte row. */
+  flush: boolean;
   isStruct(c: { fields?: unknown }): c is PlacedGroup;
   rise: number;
   width: number;
@@ -775,6 +777,7 @@ export function geometry(
     paneSize: chosen.paneSize,
     paneChar: chosen.paneChar,
     byteWidth: chosen.byte,
+    flush,
     stacked,
     isStruct,
     rise,
