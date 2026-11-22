@@ -2887,13 +2887,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const ptrLive = stepIndex >= meta.ptrInitStep;
     const windowActive = stepIndex >= meta.derefStep;
     const isPunningWrite = stepIndex === meta.writeAction.stepIndex;
+    const writeDone = stepIndex >= meta.writeAction.stepIndex;
     const wStart = meta.targetAddress;
     const wEnd = meta.targetAddress + meta.pointeeSize;
     const targetVar = meta.vars.find((v) => v.name === meta.targetVar);
     const tStart = targetVar.address;
     const tEnd = targetVar.address + targetVar.size;
     const bytes = [];
-    let hasUb = false;
+    let ubTriggered = false;
     const corruptedVars = /* @__PURE__ */ new Set();
     for (let i = 0; i < meta.totalBytes; i++) {
       const address = meta.baseAddress + i;
@@ -2903,13 +2904,15 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       if (inWindow) {
         if (!owner) {
           status = "padding";
-          hasUb = true;
+          if (writeDone) ubTriggered = true;
         } else if (owner.name === meta.targetVar) {
           status = "owned";
         } else {
           status = "foreign";
-          hasUb = true;
-          if (stepIndex >= meta.writeAction.stepIndex) corruptedVars.add(owner.name);
+          if (writeDone) {
+            ubTriggered = true;
+            corruptedVars.add(owner.name);
+          }
         }
       } else if (ptrLive && address >= tStart && address < tEnd) {
         status = "untouched";
@@ -2931,7 +2934,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       varBefore: decodeVarValues(meta, beforeMem, littleEndian),
       varAfter: decodeVarValues(meta, afterMem, littleEndian),
       corruptedVars,
-      hasUb,
+      ubTriggered,
       ptrLive,
       windowActive,
       isPunningWrite,
@@ -3025,7 +3028,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         values: v3,
         targets: { b: "a" },
         stdout: "",
-        hold: 1.3,
+        hold: 1.2,
         op: { kind: "deref", target: "a", via: "b", span: [0, 3] }
       },
       {
@@ -3049,7 +3052,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const meta = {
       id: "larger-padding",
       title: "1. Larger pointer writes past 1-byte object into padding",
-      subtitle: "What would happen if int* b{ &a }; compiled: *b = 300 writes 4 bytes (64..67), hitting a and 3 padding bytes.",
+      subtitle: "Scope covers 4 bytes (64..67) calmly while pointing; writing *b = 300 spills into padding and triggers UB.",
       direction: "larger",
       baseAddress: 64,
       totalBytes: 16,
@@ -3172,7 +3175,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         values: v4,
         targets: { b: "a" },
         stdout: "",
-        hold: 1.3,
+        hold: 1.2,
         op: { kind: "deref", target: "a", via: "b", span: [0, 3] }
       },
       {
@@ -3196,7 +3199,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const meta = {
       id: "larger-adjacent",
       title: "2. Larger pointer silently corrupts an adjacent variable",
-      subtitle: "a (64) and c (65) sit side by side, then 2 padding bytes (66..67). *b = 0x04030201 overwrites c without naming it.",
+      subtitle: "a (64) and c (65) sit side by side. Writing *b = 0x04030201 overwrites c and padding.",
       direction: "larger",
       baseAddress: 64,
       totalBytes: 16,
@@ -3316,7 +3319,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const meta = {
       id: "smaller-five",
       title: "3. Smaller pointer overwrites only byte 64 of int a (a = 5)",
-      subtitle: "a spans 64..67 (4 B). *b = 2 changes only byte 64. Flip Little-endian / Big-endian to see a become 2 vs 33554437.",
+      subtitle: "*b = 2 changes only byte 64. Flip Little-endian / Big-endian to see a become 2 vs 33554437.",
       direction: "smaller",
       baseAddress: 64,
       totalBytes: 16,
@@ -3434,7 +3437,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const meta = {
       id: "smaller-261",
       title: "4. Smaller pointer leaves upper bytes intact (a = 261, *b = 0)",
-      subtitle: "261 is 05 01 00 00 (LE). *b = 0 zeroes only byte 64, leaving byte 65 (01) -> a becomes 256, not 0.",
+      subtitle: "261 is 05 01 00 00 (LE). *b = 0 clears only byte 64, leaving byte 65 (01) -> a becomes 256.",
       direction: "smaller",
       baseAddress: 64,
       totalBytes: 16,
@@ -3462,7 +3465,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const padId = `cv-pad-hatch-${uid}`;
     const ubId = `cv-ub-hatch-${uid}`;
     const veilId = `cv-veil-hatch-${uid}`;
-    const defs = `<defs><pattern id="${padId}" width="10" height="10" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="10" height="10" fill="${P.deadFill}"/><line x1="0" y1="0" x2="0" y2="10" stroke="${P.gapStroke}" stroke-width="3.2"/></pattern><pattern id="${ubId}" width="10" height="10" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="10" height="10" fill="${P.panel}"/><rect width="10" height="10" fill="${P.error}" fill-opacity="0.13"/><line x1="0" y1="0" x2="0" y2="10" stroke="${P.error}" stroke-opacity="0.34" stroke-width="2.8"/></pattern><pattern id="${veilId}" width="9" height="9" patternUnits="userSpaceOnUse" patternTransform="rotate(-45)"><rect width="9" height="9" fill="${P.deadFill}" fill-opacity="0.65"/><line x1="0" y1="0" x2="0" y2="9" stroke="${P.gapStroke}" stroke-opacity="0.5" stroke-width="1.8"/></pattern></defs>`;
+    const defs = `<defs><pattern id="${padId}" width="10" height="10" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="10" height="10" fill="${P.deadFill}"/><line x1="0" y1="0" x2="0" y2="10" stroke="${P.gapStroke}" stroke-width="3.2"/></pattern><pattern id="${ubId}" width="10" height="10" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="10" height="10" fill="${P.panel}"/><rect width="10" height="10" fill="${P.error}" fill-opacity="0.13"/><line x1="0" y1="0" x2="0" y2="10" stroke="${P.error}" stroke-opacity="0.34" stroke-width="2.8"/></pattern><pattern id="${veilId}" width="9" height="9" patternUnits="userSpaceOnUse" patternTransform="rotate(-45)"><rect width="9" height="9" fill="${P.deadFill}" fill-opacity="0.58"/><line x1="0" y1="0" x2="0" y2="9" stroke="${P.gapStroke}" stroke-opacity="0.45" stroke-width="1.6"/></pattern></defs>`;
     return { defs, padId, ubId, veilId };
   }
   function varColor(P, v) {
@@ -3472,16 +3475,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const w = label.length * size * CHAR + 16;
     const h = size + 10;
     return rect(cx - w / 2, cy - h / 2, w, h, fill, stroke, h / 2, 1.8) + text(cx, cy + size * 0.35, label, size, ink, "middle");
-  }
-  function breachCrack(x, y1, y2, color) {
-    const steps = 6;
-    const dy = (y2 - y1) / steps;
-    let d = `M ${round(x)} ${round(y1)}`;
-    for (let i = 1; i <= steps; i++) {
-      const nx = x + (i === steps ? 0 : i % 2 === 1 ? -4.5 : 4.5);
-      d += ` L ${round(nx)} ${round(y1 + i * dy)}`;
-    }
-    return `<path d="${d}" fill="none" stroke="${color}" stroke-width="3.4" stroke-linejoin="round" stroke-linecap="round"/>`;
   }
   function paddingRuns(meta) {
     const runs = [];
@@ -3500,8 +3493,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }
   function punningStepSeconds(m, index) {
     const meta = META.get(m.trace);
-    if (meta && index === meta.writeAction.stepIndex) return m.steps[index].hold + 2.4;
-    if (meta && index === meta.derefStep) return m.steps[index].hold + 1.8;
+    if (meta && index === meta.writeAction.stepIndex) return m.steps[index].hold + 2.3;
+    if (meta && index === meta.derefStep) return m.steps[index].hold + 1.6;
     return stepSeconds(m.steps, index);
   }
   function gridValueBox(c, value, color, path, begin, travel, end) {
@@ -3569,63 +3562,45 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return "";
   }
-  function targetFootprintBox(c, meta, sim, xOf, byteW, gridY, cellH, pCol, smallerStyle) {
+  function targetScopeBox(c, meta, sim, xOf, byteW, gridY, cellH, pCol) {
     if (!sim.ptrLive) return "";
     const { P, animate, op } = c;
     const at = op ? arrival(op) : 0;
     const wLeft = xOf(meta.targetAddress);
     const wWidth = meta.pointeeSize * byteW;
-    const wRight = wLeft + wWidth;
     const targetVar = meta.vars.find((v) => v.name === meta.targetVar);
     const ownEnd = xOf(targetVar.address + targetVar.size);
-    const pad = 4;
+    const pad = 2.5;
     const bx = wLeft - pad;
-    const by = gridY - pad;
     const bw = wWidth + 2 * pad;
-    const bh = cellH + 2 * pad;
     const isWritingPtr = animate && (op == null ? void 0 : op.kind) === "write" && op.name === meta.ptrName;
     const isDeref = animate && c.index === meta.derefStep;
     const hot = sim.windowActive;
     let box = "";
     if (meta.direction === "larger") {
-      const splitX = ownEnd;
-      box += rect(bx, by, bw, bh, "none", hot ? P.error : pCol, 6, 11).replace(
-        'stroke-width="11"',
-        `stroke-width="11" stroke-opacity="${hot ? 0.26 : 0.18}"`
-      );
-      box += rect(bx, by, bw, bh, "none", P.bg, 6, 7.5);
-      box += `<path d="M ${round(splitX)} ${round(by)} H ${round(bx + 6)} Q ${round(bx)} ${round(by)} ${round(bx)} ${round(by + 6)} V ${round(by + bh - 6)} Q ${round(bx)} ${round(by + bh)} ${round(bx + 6)} ${round(by + bh)} H ${round(splitX)}" fill="none" stroke="${hot ? P.write : pCol}" stroke-width="4.2" stroke-linecap="round"/>`;
-      box += `<path d="M ${round(splitX)} ${round(by)} H ${round(bx + bw - 6)} Q ${round(bx + bw)} ${round(by)} ${round(bx + bw)} ${round(by + 6)} V ${round(by + bh - 6)} Q ${round(bx + bw)} ${round(by + bh)} ${round(bx + bw - 6)} ${round(by + bh)} H ${round(splitX)}" fill="none" stroke="${P.error}" stroke-width="4.4" stroke-linecap="round"/>`;
-      box += breachCrack(splitX, by - 3, by + bh + 3, P.error);
-      const tick = 9;
-      box += `<path d="M ${round(bx - 3)} ${round(by + tick)} V ${round(by - 3)} H ${round(bx + tick)}" fill="none" stroke="${hot ? P.write : pCol}" stroke-width="2.4"/><path d="M ${round(bx + bw - tick)} ${round(by - 3)} H ${round(bx + bw + 3)} V ${round(by + tick)}" fill="none" stroke="${P.error}" stroke-width="2.4"/><path d="M ${round(bx - 3)} ${round(by + bh - tick)} V ${round(by + bh + 3)} H ${round(bx + tick)}" fill="none" stroke="${hot ? P.write : pCol}" stroke-width="2.4"/><path d="M ${round(bx + bw - tick)} ${round(by + bh + 3)} H ${round(bx + bw + 3)} V ${round(by + bh - tick)}" fill="none" stroke="${P.error}" stroke-width="2.4"/>`;
+      const by = gridY - pad;
+      const bh = cellH + 2 * pad;
+      if (!sim.ubTriggered) {
+        box += rect(bx, by, bw, bh, "none", pCol, 5, 3);
+      } else {
+        const splitX = ownEnd;
+        const calm = rect(bx, by, bw, bh, "none", pCol, 5, 3);
+        const breached = `<path d="M ${round(splitX)} ${round(by)} H ${round(bx + 5)} Q ${round(bx)} ${round(by)} ${round(bx)} ${round(by + 5)} V ${round(by + bh - 5)} Q ${round(bx)} ${round(by + bh)} ${round(bx + 5)} ${round(by + bh)} H ${round(splitX)}" fill="none" stroke="${P.write}" stroke-width="3.2" stroke-linecap="round"/><path d="M ${round(splitX)} ${round(by)} H ${round(bx + bw - 5)} Q ${round(bx + bw)} ${round(by)} ${round(bx + bw)} ${round(by + 5)} V ${round(by + bh - 5)} Q ${round(bx + bw)} ${round(by + bh)} ${round(bx + bw - 5)} ${round(by + bh)} H ${round(splitX)}" fill="none" stroke="${P.error}" stroke-width="3.4" stroke-linecap="round"/>`;
+        box += animate && sim.isPunningWrite ? `<g>${hide(at)}${calm}</g><g opacity="0">${show(at)}${breached}</g>` : breached;
+      }
     } else {
-      const col = hot ? P.write : pCol;
-      const accent = smallerStyle === "B" ? P.write : col;
       const splitY = gridY + 48;
-      const sby = splitY - 2;
-      const sbh = gridY + cellH - splitY + pad + 2;
-      box += rect(wLeft + 2, gridY + 2, wWidth - 4, splitY - gridY - 4, accent, "none", 0).replace(
-        "fill=",
-        'fill-opacity="0.12" fill='
-      );
-      box += rect(bx, sby, bw, sbh, "none", accent, 6, 12).replace(
-        'stroke-width="12"',
-        `stroke-width="12" stroke-opacity="${hot ? 0.36 : 0.25}"`
-      );
-      box += rect(bx, sby, bw, sbh, "none", P.bg, 6, 8);
-      box += rect(bx, sby, bw, sbh, "none", accent, 6, 4.4);
-      const tick = 8;
-      box += `<path d="M ${round(bx - 3)} ${round(sby + tick)} V ${round(sby - 3)} H ${round(bx + tick)}" fill="none" stroke="${accent}" stroke-width="2.6"/><path d="M ${round(bx + bw - tick)} ${round(sby - 3)} H ${round(bx + bw + 3)} V ${round(sby + tick)}" fill="none" stroke="${accent}" stroke-width="2.6"/><path d="M ${round(bx - 3)} ${round(sby + sbh - tick)} V ${round(sby + sbh + 3)} H ${round(bx + tick)}" fill="none" stroke="${accent}" stroke-width="2.6"/><path d="M ${round(bx + bw - tick)} ${round(sby + sbh + 3)} H ${round(bx + bw + 3)} V ${round(sby + sbh - tick)}" fill="none" stroke="${accent}" stroke-width="2.6"/>`;
-      const sliceX = wRight + 1;
-      box += `<line x1="${round(sliceX)}" y1="${round(sby - 4)}" x2="${round(sliceX)}" y2="${round(sby + sbh + 8)}" stroke="${accent}" stroke-width="2.2" stroke-dasharray="4 3"/>`;
+      const sby = splitY - 1;
+      const sbh = gridY + cellH - splitY + pad + 1;
+      const col = hot ? P.write : pCol;
+      box += rect(bx, sby, bw, sbh, "none", col, 4, 3);
     }
     if (isWritingPtr) {
       return `<g opacity="0">${fade(0, 1, 0.3, at + 0.55)}${box}</g>`;
     }
     if (isDeref) {
+      const cy = meta.direction === "larger" ? gridY + cellH / 2 : gridY + 68;
       const cx = bx + bw / 2;
-      const cy = by + bh / 2;
       return `<g transform="translate(${round(cx)} ${round(cy)})"><g>${pulse(at - 0.15)}<g transform="translate(${round(-cx)} ${round(-cy)})">${box}</g></g></g>`;
     }
     return box;
@@ -3674,15 +3649,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           mem += `<line x1="${round(bx)}" y1="${gridY + 2}" x2="${round(bx)}" y2="${gridY + cellH - 2}" stroke="${P.gapStroke}" stroke-dasharray="3 3" stroke-width="1"/>`;
         }
         const hexY = gridY + 74;
-        if (slot.status === "padding") {
+        if (slot.status === "padding" && sim.ubTriggered) {
           const hexText = typeof slot.after === "number" ? hex2(slot.after) : "??";
           const badgeBg = rect(bx + byteW / 2 - 15, hexY - 15, 30, 20, P.panel, "none", 3);
-          const hazard = rect(bx + 1.5, gridY + 1.5, byteW - 3, cellH - 3, `url(#${ubId})`, P.error, 0, 1.8) + badgeBg + text(bx + byteW / 2, hexY, hexText, 15.5, P.error, "middle");
+          const hazard = rect(bx + 1.5, gridY + 1.5, byteW - 3, cellH - 3, `url(#${ubId})`, P.error, 0, 1.6) + badgeBg + text(bx + byteW / 2, hexY, hexText, 15.5, P.error, "middle");
           if (animate && sim.isPunningWrite) {
             const revealAt = at + 0.08 * (addr - meta.targetAddress);
-            mem += `<g>${hide(revealAt)}` + rect(bx + 1.5, gridY + 1.5, byteW - 3, cellH - 3, `url(#${ubId})`, P.error, 0, 1.4) + badgeBg + text(bx + byteW / 2, hexY, "??", 14, P.error, "middle") + `</g><g opacity="0">${show(revealAt)}${hazard}</g>`;
-          } else if (animate && (op == null ? void 0 : op.kind) === "write" && op.name === meta.ptrName) {
-            mem += text(bx + byteW / 2, hexY, "??", 13.5, P.grey, "middle") + `<g opacity="0">${fade(0, 1, 0.3, at + 0.55)}${hazard}</g>`;
+            mem += `<g>${hide(revealAt)}${text(bx + byteW / 2, hexY, "??", 13.5, P.grey, "middle")}</g><g opacity="0">${show(revealAt)}${hazard}</g>`;
           } else {
             mem += hazard;
           }
@@ -3710,23 +3683,19 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const valBefore = sim.varBefore.get(v.name) ?? null;
       const on = valAfter !== null;
       const isCorrupted = sim.corruptedVars.has(v.name);
-      const isForeignThreat = sim.ptrLive && v.name !== meta.targetVar && sim.bytes.some((s) => {
-        var _a;
-        return ((_a = s.owner) == null ? void 0 : _a.name) === v.name && s.status === "foreign";
-      });
-      const borderCol = isCorrupted || isForeignThreat ? P.error : on ? col : P.deadStroke;
+      const borderCol = isCorrupted ? P.error : on ? col : P.deadStroke;
       let markup = "";
       markup += rect(vx + 1, gridY + 1, vw - 2, cellH - 2, on ? P.panel : P.deadFill, "none", 0);
       for (let k = 0; k < v.size; k++) {
         const addr = v.address + k;
         const slot = sim.bytes[addr - meta.baseAddress];
         const bx = xOf(addr);
-        if (slot.status === "foreign") {
+        if (slot.status === "foreign" && sim.ubTriggered) {
           const bg = rect(bx + 1.5, gridY + 1.5, byteW - 3, cellH - 3, `url(#${ubId})`, "none", 0);
-          markup += animate && (op == null ? void 0 : op.kind) === "write" && op.name === meta.ptrName ? `<g opacity="0">${fade(0, 1, 0.3, at + 0.55)}${bg}</g>` : bg;
-        } else if (slot.status === "owned" && sim.ptrLive) {
+          markup += animate && sim.isPunningWrite ? `<g opacity="0">${show(at + 0.08 * (addr - meta.targetAddress))}${bg}</g>` : bg;
+        } else if (slot.status === "owned" && sim.windowActive) {
           const bg = rect(bx + 1.5, splitY, byteW - 3, cellH - (splitY - gridY) - 1.5, P.writeFill, "none", 0);
-          markup += animate && (op == null ? void 0 : op.kind) === "write" && op.name === meta.ptrName ? `<g opacity="0">${fade(0, 1, 0.3, at + 0.55)}${bg}</g>` : bg;
+          markup += animate && c.index === meta.derefStep ? `<g opacity="0">${fade(0, 1, 0.25, at - 0.15)}${bg}</g>` : bg;
         } else if (slot.status === "untouched" && meta.direction === "smaller" && smallerStyle === "A") {
           const veil = rect(bx + 1.5, splitY, byteW - 3, cellH - (splitY - gridY) - 1.5, `url(#${veilId})`, "none", 0);
           markup += animate && (op == null ? void 0 : op.kind) === "write" && op.name === meta.ptrName ? `<g opacity="0">${fade(0, 1, 0.3, at + 0.55)}${veil}</g>` : veil;
@@ -3738,7 +3707,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         const lx = xOf(v.address + k);
         markup += `<line x1="${round(lx)}" y1="${splitY}" x2="${round(lx)}" y2="${gridY + cellH - 2}" stroke="${divCol}" stroke-width="1.2"/>`;
       }
-      markup += rect(vx + 1.5, gridY + 1.5, vw - 3, cellH - 3, "none", borderCol, 0, isCorrupted ? 3.2 : 2.8);
+      if (animate && sim.isPunningWrite && isCorrupted) {
+        markup += `<g>${hide(at)}${rect(vx + 1.5, gridY + 1.5, vw - 3, cellH - 3, "none", col, 0, 2.8)}</g><g opacity="0">${show(at)}${rect(vx + 1.5, gridY + 1.5, vw - 3, cellH - 3, "none", P.error, 0, 3.2)}</g>`;
+      } else {
+        markup += rect(vx + 1.5, gridY + 1.5, vw - 3, cellH - 3, "none", borderCol, 0, isCorrupted ? 3.2 : 2.8);
+      }
       const renderBody = (val, useBefore) => {
         if (val === null) return "";
         let body = "";
@@ -3758,18 +3731,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           if (typeof bval !== "number") continue;
           const bx = xOf(addr);
           const isUntouched = slot.status === "untouched";
-          const byteInk = slot.status === "foreign" && !useBefore ? P.error : slot.status === "owned" && c.index >= meta.writeAction.stepIndex && !useBefore ? P.write : v.kind === "ptr" ? P.muted : P.fg;
-          const opAttr = isUntouched && smallerStyle === "A" ? ' opacity="0.35"' : isUntouched && smallerStyle === "B" ? ' opacity="0.55"' : v.kind === "ptr" ? ' opacity="0.65"' : "";
-          if (slot.status === "foreign") {
+          const byteInk = slot.status === "foreign" && sim.ubTriggered && !useBefore ? P.error : slot.status === "owned" && c.index >= meta.writeAction.stepIndex && !useBefore ? P.write : v.kind === "ptr" ? P.muted : P.fg;
+          const opAttr = isUntouched && (smallerStyle === "A" || smallerStyle === "C") ? ' opacity="0.4"' : isUntouched && smallerStyle === "B" ? ' opacity="0.55"' : v.kind === "ptr" ? ' opacity="0.65"' : "";
+          if (slot.status === "foreign" && sim.ubTriggered && !useBefore) {
             body += rect(bx + byteW / 2 - 15, hexY - 15, 30, 20, P.panel, "none", 3);
           }
-          if (!useBefore && meta.direction === "smaller" && smallerStyle === "B" && slot.status === "owned" && c.index >= meta.writeAction.stepIndex && typeof slot.before === "number" && slot.before !== bval) {
-            body += text(bx + byteW / 2, gridY + 62, hex2(slot.before), 11, P.muted, "middle");
-            body += `<line x1="${round(bx + 10)}" y1="${gridY + 58}" x2="${round(bx + byteW - 10)}" y2="${gridY + 58}" stroke="${P.muted}" stroke-width="1.2"/>`;
-            body += text(bx + byteW / 2, gridY + 80, hex2(bval), 15.5, P.write, "middle");
-          } else {
-            body += `<g${opAttr}>${text(bx + byteW / 2, hexY, hex2(bval), v.kind === "ptr" ? 13 : 15.5, byteInk, "middle")}</g>`;
-          }
+          body += `<g${opAttr}>${text(bx + byteW / 2, hexY, hex2(bval), v.kind === "ptr" ? 13 : 15.5, byteInk, "middle")}</g>`;
         }
         return body;
       };
@@ -3794,23 +3761,20 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const pillRow = pillRowOf.get(v.name) ?? 0;
       const labelOffset = meta.direction === "smaller" && smallerStyle === "B" && v.name === meta.targetVar ? 16 : 0;
       const pillTop = gridY + cellH + 34 + labelOffset + pillRow * 24;
-      markup += text(
-        vx + vw / 2,
-        gridY + cellH + 26 + labelOffset,
-        v.name,
-        20,
-        isCorrupted ? P.error : on ? col : P.grey,
-        "middle"
-      );
+      const nameCol = isCorrupted ? P.error : on ? col : P.grey;
+      if (animate && sim.isPunningWrite && isCorrupted) {
+        markup += `<g>${hide(at)}${text(vx + vw / 2, gridY + cellH + 26 + labelOffset, v.name, 20, col, "middle")}</g><g opacity="0">${show(at)}${text(vx + vw / 2, gridY + cellH + 26 + labelOffset, v.name, 20, P.error, "middle")}</g>`;
+      } else {
+        markup += text(vx + vw / 2, gridY + cellH + 26 + labelOffset, v.name, 20, nameCol, "middle");
+      }
       markup += typeLabel(c, vx + vw / 2, pillTop, v.type, 13.5, on ? typeColour(c, v.type) : P.deadStroke);
-      const keepBright = isCorrupted || isForeignThreat || sim.ptrLive && (v.name === meta.targetVar || v.name === meta.ptrName);
+      const keepBright = isCorrupted || sim.ptrLive && (v.name === meta.targetVar || v.name === meta.ptrName);
       mem += keepBright ? markup : dim(c, v.name, markup);
     }
     let arcMarkup = "";
     if (sim.ptrLive) {
       const sx = xOf(ptrVar.address) + ptrVar.size * byteW / 2;
-      const boxCenterX = xOf(meta.targetAddress) + meta.pointeeSize * byteW / 2;
-      const ex = meta.direction === "larger" ? xOf(meta.targetAddress) + byteW * 0.5 : boxCenterX;
+      const ex = xOf(meta.targetAddress) + byteW * 0.5;
       const sy = gridY - 2;
       const ey = gridY - 26;
       const apex = gridY - 92;
@@ -3823,134 +3787,45 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         arcMarkup += `<path d="${d}" fill="none" stroke="${pCol}" stroke-width="7" stroke-linecap="round" data-follow="${T.prepare}"/>`;
       }
     }
-    const targetBox = targetFootprintBox(c, meta, sim, xOf, byteW, gridY, cellH, pCol, smallerStyle);
+    const scopeBox = targetScopeBox(c, meta, sim, xOf, byteW, gridY, cellH, pCol);
     let belowOverlay = "";
-    if (sim.ptrLive && meta.direction === "larger") {
+    if (meta.direction === "larger" && sim.ubTriggered) {
       const wLeft = xOf(meta.targetAddress);
       const wRight = xOf(meta.targetAddress + meta.pointeeSize);
       const ownEnd = xOf(targetVar.address + targetVar.size);
       const brY = gridY + cellH + 38 + pillRowsCount * 24 + 8;
       const tickTop = brY - 10;
-      const cal = `<path d="M ${round(wLeft + 2)} ${tickTop} V ${brY} H ${round(ownEnd)}" fill="none" stroke="${P.write}" stroke-width="2.4"/><path d="M ${round(ownEnd)} ${brY} H ${round(wRight - 2)} V ${tickTop}" fill="none" stroke="${P.error}" stroke-width="3"/>` + pill((ownEnd + wRight) / 2, brY + 18, "⚠ UB", 13.5, P.error, P.error, P.bg);
-      const isWritingPtr = animate && (op == null ? void 0 : op.kind) === "write" && op.name === meta.ptrName;
-      belowOverlay += isWritingPtr ? `<g opacity="0">${fade(0, 1, 0.3, at + 0.55)}${cal}</g>` : cal;
+      const cal = `<path d="M ${round(wLeft + 2)} ${tickTop} V ${brY} H ${round(ownEnd)}" fill="none" stroke="${P.write}" stroke-width="2.2"/><path d="M ${round(ownEnd)} ${brY} H ${round(wRight - 2)} V ${tickTop}" fill="none" stroke="${P.error}" stroke-width="2.8"/>` + pill((ownEnd + wRight) / 2, brY + 18, "⚠ UB", 13.5, P.error, P.error, P.bg);
+      belowOverlay += animate && sim.isPunningWrite ? `<g opacity="0">${fade(0, 1, 0.25, at)}${cal}</g>` : cal;
     }
-    if (sim.ptrLive && meta.direction === "smaller") {
-      const isWritingPtr = animate && (op == null ? void 0 : op.kind) === "write" && op.name === meta.ptrName;
-      const wrap = (inner) => isWritingPtr ? `<g opacity="0">${fade(0, 1, 0.3, at + 0.55)}${inner}</g>` : inner;
-      if (smallerStyle === "A") {
-        const wLeft = xOf(meta.targetAddress);
-        const wRight = xOf(meta.targetAddress + meta.pointeeSize);
-        const ownEnd = xOf(targetVar.address + targetVar.size);
-        const brY = gridY + cellH + 38 + pillRowsCount * 24 + 8;
-        const tickTop = brY - 10;
-        const cal = `<path d="M ${round(wLeft + 2)} ${tickTop} V ${brY} H ${round(wRight - 2)} V ${tickTop}" fill="none" stroke="${P.write}" stroke-width="2.8"/>` + pill((wLeft + wRight) / 2, brY + 18, "1 B", 13, P.writeFill, P.write, P.write) + `<path d="M ${round(wRight + 4)} ${brY} H ${round(ownEnd - 2)} V ${tickTop}" fill="none" stroke="${P.grey}" stroke-dasharray="4 4" stroke-width="1.8"/>` + pill((wRight + ownEnd) / 2, brY + 18, "3 B blind", 12.5, P.deadFill, P.gapStroke, P.muted);
-        belowOverlay += wrap(cal);
-      }
-      if (smallerStyle === "B") {
-        const ay = gridY + cellH + 10;
-        const xLow = xOf(targetVar.address) + (c.littleEndian ? byteW / 2 : targetVar.size * byteW - byteW / 2);
-        const xHigh = xOf(targetVar.address) + (c.littleEndian ? targetVar.size * byteW - byteW / 2 : byteW / 2);
-        const dir = c.littleEndian ? 1 : -1;
-        let bVis = `<g opacity="0.82"><line x1="${round(xLow)}" y1="${ay}" x2="${round(xHigh - 6 * dir)}" y2="${ay}" stroke="${P.muted}" stroke-width="1.6" stroke-linecap="round"/><path d="M -8 -4 L 0 0 L -8 4 Z" fill="${P.muted}" transform="translate(${round(xHigh)} ${ay}) rotate(${c.littleEndian ? 0 : 180})"/>` + text(xLow, ay + 12, "LSB", 9.5, P.muted, "middle") + text(xHigh, ay + 12, "MSB", 9.5, P.muted, "middle") + "</g>";
-        const barY = gridY + cellH + 84;
-        const barH = 12;
-        for (let k = 0; k < targetVar.size; k++) {
-          const bx = xOf(targetVar.address + k) + 3;
-          const bw = byteW - 6;
-          if (k < meta.pointeeSize) {
-            bVis += rect(bx, barY, bw, barH, P.write, P.write, 3, 1.5);
-          } else {
-            bVis += rect(bx, barY, bw, barH, P.deadFill, P.gapStroke, 3, 1.4) + `<line x1="${round(bx + 4)}" y1="${barY + barH - 2}" x2="${round(bx + bw - 4)}" y2="${barY + 2}" stroke="${P.grey}" stroke-width="1.4"/>`;
-          }
-        }
-        bVis += pill(
-          xOf(targetVar.address) + targetVar.size * byteW / 2,
-          barY + 28,
-          "⚠ 1 / 4 bytes",
-          12.5,
-          P.writeFill,
-          P.write,
-          P.write
-        );
-        belowOverlay += wrap(bVis);
-      }
-      if (smallerStyle === "C") {
-        const cardTop = gridY + cellH + 74;
-        const cardH = 82;
-        const slotW = 76;
-        const slotGap = 8;
-        const cardPad = 12;
-        const slotsTotal = targetVar.size * slotW + (targetVar.size - 1) * slotGap;
-        const resW = 132;
-        const cardW = cardPad + slotsTotal + 16 + resW + cardPad;
-        const cardX = gridX;
-        const aLeft = xOf(targetVar.address);
-        const aRight = xOf(targetVar.address + targetVar.size);
-        const zoomTop = gridY + cellH + 58;
-        let zoom = `<path d="M ${round(aLeft)} ${zoomTop} L ${round(cardX + cardPad)} ${cardTop} M ${round(aRight)} ${zoomTop} L ${round(cardX + cardPad + slotsTotal)} ${cardTop}" fill="none" stroke="${P.gapStroke}" stroke-dasharray="4 4" stroke-width="1.5"/>` + rect(cardX, cardTop, cardW, cardH, P.panel, P.gapStroke, 8, 1.6);
-        const weightsLE = ["× 1", "× 256", "× 2¹⁶", "× 2²⁴"];
-        const weights = c.littleEndian ? weightsLE : [...weightsLE].reverse();
-        const postWrite = c.index >= meta.writeAction.stepIndex;
-        for (let k = 0; k < targetVar.size; k++) {
-          const sx = cardX + cardPad + k * (slotW + slotGap);
-          const sy = cardTop + 10;
-          const sh = cardH - 20;
-          const slot = sim.bytes[targetVar.address + k - meta.baseAddress];
-          const hit = k < meta.pointeeSize;
-          const bval = typeof slot.after === "number" ? slot.after : 0;
-          const beforeVal = typeof slot.before === "number" ? slot.before : bval;
-          const nonzeroSurvivor = !hit && bval !== 0;
-          const stroke = hit ? P.write : nonzeroSurvivor ? varColor(P, targetVar) : P.gapStroke;
-          const fill = hit ? P.writeFill : P.deadFill;
-          zoom += rect(sx, sy, slotW, sh, fill, stroke, 6, hit ? 2.4 : nonzeroSurvivor ? 2 : 1.3);
-          zoom += text(sx + slotW / 2, sy + 14, `@${slot.address} · ${weights[k]}`, 10.5, hit ? P.write : P.muted, "middle");
-          if (hit && postWrite && beforeVal !== bval) {
-            zoom += text(sx + slotW / 2, sy + 38, `${hex2(beforeVal)}→${hex2(bval)}`, 14.5, P.write, "middle");
-            zoom += text(sx + slotW / 2, sy + 55, "written", 10.5, P.write, "middle");
-          } else {
-            zoom += text(sx + slotW / 2, sy + 38, hex2(bval), 15.5, nonzeroSurvivor ? P.fg : P.muted, "middle");
-            zoom += text(
-              sx + slotW / 2,
-              sy + 55,
-              hit ? "target" : nonzeroSurvivor ? "kept!" : "kept",
-              10.5,
-              hit ? P.write : nonzeroSurvivor ? varColor(P, targetVar) : P.grey,
-              "middle"
-            );
-          }
-        }
-        const rx = cardX + cardPad + slotsTotal + 16;
-        const aVal = sim.varAfter.get(targetVar.name) ?? 0;
-        const aPrev = sim.varBefore.get(targetVar.name);
-        zoom += text(rx + resW / 2, cardTop + 30, `a (${c.littleEndian ? "LE" : "BE"})`, 12.5, P.muted, "middle");
-        const eq = postWrite && aPrev !== null && aPrev !== aVal ? `${aPrev} → ${aVal}` : `= ${aVal}`;
-        const eqSz = Math.min(20, (resW - 6) / (Math.max(1, eq.length) * CHAR));
-        zoom += text(rx + resW / 2, cardTop + 58, eq, round(eqSz), postWrite ? P.write : P.fg, "middle");
-        belowOverlay += wrap(zoom);
-      }
+    if (meta.direction === "smaller" && smallerStyle === "B" && sim.varAfter.get(targetVar.name) !== null) {
+      const ay = gridY + cellH + 10;
+      const xLow = xOf(targetVar.address) + (c.littleEndian ? byteW / 2 : targetVar.size * byteW - byteW / 2);
+      const xHigh = xOf(targetVar.address) + (c.littleEndian ? targetVar.size * byteW - byteW / 2 : byteW / 2);
+      const dir = c.littleEndian ? 1 : -1;
+      belowOverlay += `<g opacity="0.8"><line x1="${round(xLow)}" y1="${ay}" x2="${round(xHigh - 6 * dir)}" y2="${ay}" stroke="${P.muted}" stroke-width="1.5" stroke-linecap="round"/><path d="M -8 -4 L 0 0 L -8 4 Z" fill="${P.muted}" transform="translate(${round(xHigh)} ${ay}) rotate(${c.littleEndian ? 0 : 180})"/>` + text(xLow, ay + 12, "LSB", 9.5, P.muted, "middle") + text(xHigh, ay + 12, "MSB", 9.5, P.muted, "middle") + "</g>";
     }
     let wb = "";
     let flight = "";
     if (sim.windowActive) {
-      const stripY = g.ty + 34;
+      const stripY = g.ty + 30;
       const tileW = 44;
       const tileH = 30;
       const tileGap = 6;
       const startX = g.tx + 10;
       if (meta.direction === "larger") {
         const bytes = sim.writtenBytes;
-        const labelStr = `${meta.writeAction.valueText} (${meta.pointeeSize} B ${c.littleEndian ? "LE" : "BE"})`;
+        const labelStr = `${meta.writeAction.valueText} (${c.littleEndian ? "LE" : "BE"})`;
         wb += text(startX, stripY + 20, labelStr, 15, P.muted);
-        const tilesX = startX + labelStr.length * 15 * CHAR + 16;
+        const tilesX = startX + labelStr.length * 15 * CHAR + 14;
         for (let k = 0; k < bytes.length; k++) {
           const addr = meta.targetAddress + k;
           const slot = sim.bytes[addr - meta.baseAddress];
-          const bad = slot.status === "padding" || slot.status === "foreign";
+          const bad = sim.ubTriggered && (slot.status === "padding" || slot.status === "foreign");
           const tx = tilesX + k * (tileW + tileGap);
           const stroke = bad ? P.error : P.write;
           const fill = bad ? P.panel : P.writeFill;
-          wb += rect(tx, stripY, tileW, tileH, fill, stroke, 5, 2) + text(tx + tileW / 2, stripY + 20, hex2(bytes[k]), 15.5, stroke, "middle") + text(tx + tileW / 2, stripY + tileH + 14, `@${addr}`, 11.5, bad ? P.error : P.grey, "middle");
+          wb += rect(tx, stripY, tileW, tileH, fill, stroke, 5, 2) + text(tx + tileW / 2, stripY + 20, hex2(bytes[k]), 15.5, stroke, "middle");
           if (animate && sim.isPunningWrite) {
             const sx = tx + tileW / 2;
             const sy = stripY;
@@ -3961,15 +3836,16 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
             const begin = 0.25 + k * 0.1;
             const dur = 0.85;
             const end = begin + dur;
-            flight += `<g opacity="0">${fade(0, 0.5, 0.2, begin)}${fade(0.5, 0, 0.25, end)}<path d="${path}" fill="none" stroke="${stroke}" stroke-width="2.4"/></g><g opacity="0">${fade(0, 1, 0.1, begin)}${hide(end + 0.05)}` + rect(-20, -14, 40, 28, P.panel, stroke, 6, 2) + text(0, 6, hex2(bytes[k]), 15, stroke, "middle") + `<animateMotion begin="${round(begin)}s" dur="${dur}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
+            const flyCol = slot.status === "padding" || slot.status === "foreign" ? P.error : P.write;
+            flight += `<g opacity="0">${fade(0, 0.5, 0.2, begin)}${fade(0.5, 0, 0.25, end)}<path d="${path}" fill="none" stroke="${flyCol}" stroke-width="2.4"/></g><g opacity="0">${fade(0, 1, 0.1, begin)}${hide(end + 0.05)}` + rect(-20, -14, 40, 28, P.panel, flyCol, 6, 2) + text(0, 6, hex2(bytes[k]), 15, flyCol, "middle") + `<animateMotion begin="${round(begin)}s" dur="${dur}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
           }
         }
       } else {
         const writtenByte = sim.writtenBytes[0];
         if (smallerStyle === "A") {
-          const labelStr = `a bytes (${c.littleEndian ? "LE" : "BE"})`;
-          wb += text(startX, stripY + 20, labelStr, 14.5, P.muted);
-          const tilesX = startX + labelStr.length * 14.5 * CHAR + 14;
+          const labelStr = `a (${c.littleEndian ? "LE" : "BE"})`;
+          wb += text(startX, stripY + 20, labelStr, 15, P.muted);
+          const tilesX = startX + labelStr.length * 15 * CHAR + 14;
           for (let k = 0; k < targetVar.size; k++) {
             const addr = targetVar.address + k;
             const slot = sim.bytes[addr - meta.baseAddress];
@@ -3978,19 +3854,19 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
             const bval = typeof slot.after === "number" ? slot.after : 0;
             const stroke = hit ? P.write : P.gapStroke;
             const fill = hit ? P.writeFill : P.deadFill;
-            wb += rect(tx, stripY, tileW, tileH, fill, stroke, 5, hit ? 2.4 : 1.4) + text(tx + tileW / 2, stripY + 20, hex2(bval), 15.5, hit ? P.write : P.muted, "middle") + text(tx + tileW / 2, stripY + tileH + 14, hit ? "new" : "kept", 11, hit ? P.write : P.grey, "middle");
+            wb += rect(tx, stripY, tileW, tileH, fill, stroke, 5, hit ? 2.2 : 1.4) + text(tx + tileW / 2, stripY + 20, hex2(bval), 15.5, hit ? P.write : P.muted, "middle");
           }
           const aVal = sim.varAfter.get(targetVar.name) ?? 0;
           const eqX = tilesX + targetVar.size * (tileW + tileGap) + 12;
-          wb += text(eqX, stripY + 21, `→ a = ${aVal}`, 16.5, P.fg);
+          wb += text(eqX, stripY + 21, `→ a = ${aVal}`, 16, P.fg);
         } else {
-          const labelStr = `${meta.writeAction.valueText} (1 B)`;
+          const labelStr = `${meta.writeAction.valueText}`;
           wb += text(startX, stripY + 20, labelStr, 15, P.muted);
           const tx = startX + labelStr.length * 15 * CHAR + 14;
-          wb += rect(tx, stripY, tileW, tileH, P.writeFill, P.write, 5, 2.2) + text(tx + tileW / 2, stripY + 20, hex2(writtenByte), 15.5, P.write, "middle") + text(tx + tileW / 2, stripY + tileH + 14, `@${meta.targetAddress}`, 11.5, P.write, "middle");
+          wb += rect(tx, stripY, tileW, tileH, P.writeFill, P.write, 5, 2) + text(tx + tileW / 2, stripY + 20, hex2(writtenByte), 15.5, P.write, "middle");
         }
         if (animate && sim.isPunningWrite) {
-          const sx = smallerStyle === "A" ? startX + (`a bytes (${c.littleEndian ? "LE" : "BE"})`.length * 14.5 * CHAR + 14) + tileW / 2 : startX + (`${meta.writeAction.valueText} (1 B)`.length * 15 * CHAR + 14) + tileW / 2;
+          const sx = smallerStyle === "A" ? startX + (`a (${c.littleEndian ? "LE" : "BE"})`.length * 15 * CHAR + 14) + tileW / 2 : startX + (`${meta.writeAction.valueText}`.length * 15 * CHAR + 14) + tileW / 2;
           const sy = stripY;
           const ex = xOf(meta.targetAddress) + byteW / 2;
           const ey = gridY + 70;
@@ -3998,23 +3874,23 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           const path = `M ${round(sx)} ${round(sy)} C ${round(sx)} ${round(midY)}, ${round(ex)} ${round(midY)}, ${round(ex)} ${round(ey)}`;
           const begin = 0.25;
           const dur = 0.85;
-          flight += `<g opacity="0">${fade(0, 0.5, 0.2, begin)}${fade(0.5, 0, 0.25, begin + dur)}<path d="${path}" fill="none" stroke="${P.write}" stroke-width="2.6"/></g><g opacity="0">${fade(0, 1, 0.1, begin)}${hide(begin + dur + 0.05)}` + rect(-20, -14, 40, 28, P.panel, P.write, 6, 2.2) + text(0, 6, hex2(writtenByte), 15, P.write, "middle") + `<animateMotion begin="${round(begin)}s" dur="${dur}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
+          flight += `<g opacity="0">${fade(0, 0.5, 0.2, begin)}${fade(0.5, 0, 0.25, begin + dur)}<path d="${path}" fill="none" stroke="${P.write}" stroke-width="2.4"/></g><g opacity="0">${fade(0, 1, 0.1, begin)}${hide(begin + dur + 0.05)}` + rect(-20, -14, 40, 28, P.panel, P.write, 6, 2) + text(0, 6, hex2(writtenByte), 15, P.write, "middle") + `<animateMotion begin="${round(begin)}s" dur="${dur}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
         }
       }
     }
-    return defs + code(c, oldLine) + tether(c, oldLine) + arcMarkup + mem + targetBox + belowOverlay + pane(c, animate && copies(c.m.steps, c.index)) + wb + output(c) + gridTransfers(c, meta, sim, xOf, byteW, gridY, cellH) + flight;
+    return defs + code(c, oldLine) + tether(c, oldLine) + arcMarkup + mem + scopeBox + belowOverlay + pane(c, animate && copies(c.m.steps, c.index)) + wb + output(c) + gridTransfers(c, meta, sim, xOf, byteW, gridY, cellH) + flight;
   }
   function makeView(smallerStyle) {
     return {
       geometry: (m) => {
         const meta = META.get(m.trace);
-        const extraMemBottom = meta.direction === "smaller" ? smallerStyle === "C" ? 140 : smallerStyle === "B" ? 100 : 86 : 98;
+        const extraMemBottom = meta.direction === "larger" ? 96 : smallerStyle === "B" ? 54 : 38;
         return {
           minByteWidth: 46,
           minColumnWidth: 780,
           cellHeight: 88,
           extraMemBottom,
-          extraPaneHeight: 62,
+          extraPaneHeight: 50,
           skipWrap: true
         };
       },
@@ -4028,34 +3904,30 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   const VARIANTS = [
     {
       key: "A",
-      name: "A · Spotlight veil + reassembly strip",
-      summary: "Folded hex layout and bold target box. For smaller pointers (scenarios 3–4), bytes 65..67 sit under a frosted blind-spot veil, a dashed slice cuts byte 64 off from the rest of a, and the pane shows all 4 bytes of a reassembling (new + 3 kept -> new decimal value).",
+      name: "A · Subtle veil + clean 4-byte pane strip",
+      summary: "Clean scope box on byte 64, subtle diagonal veil on untouched bytes 65..67, and a clean 4-byte reassembly strip in the pane (no tiny sub-labels, nothing extra below memory).",
       bullets: [
-        "Scenarios 1–2 share the folded design: clean arrow, bold target box, red spilled bytes, ⚠ UB.",
-        "Scenarios 3–4 veil the 3 unreachable bytes inside a and show the 4-byte splice in the pane.",
-        "Press Play on any player to watch every step animate from line 1."
+        "Larger pointers keep a calm 4-byte scope until the write step, then show red spilled bytes and ⚠ UB.",
+        "Smaller pointers veil bytes 65..67 and show the four resulting bytes recombining in the pane."
       ],
       view: makeView("A")
     },
     {
       key: "B",
-      name: "B · Inline diff + LSB/MSB + 1/4 coverage bar",
-      summary: "Puts the smaller-pointer mutation right on memory: a’s header shows old -> new, byte 64 shows old hex struck through to new hex, an LSB -> MSB arrow shows which end of the int is being hit, and a 4-slot coverage meter marks ⚠ 1 / 4 bytes.",
+      name: "B · Inline old→new header + LSB→MSB arrow",
+      summary: "Clean scope box on byte 64, old → new decimal mutation right in a’s header, and the bits-view LSB → MSB arrow under a so LE/BE impact is obvious without extra cards.",
       bullets: [
-        "Direct visual symmetry with the larger-pointer UB badge (⚠ 1 / 4 bytes under the coverage meter).",
-        "Flip Little-endian / Big-endian to see the LSB -> MSB arrow reverse and explain 5 -> 33554437.",
-        "All native step animations run from line 1 when you hit Play."
+        "Flip Little-endian / Big-endian to see the LSB → MSB arrow reverse alongside 5 → 33554437.",
+        "Pane shows only the single written byte tile."
       ],
       view: makeView("B")
     },
     {
       key: "C",
-      name: "C · Zoomed byte-slice card with place values",
-      summary: 'Drops a tethered 4-byte microscope card under a showing each byte’s positional weight (× 1, × 256, × 2¹⁶, × 2²⁴). Byte 64 shows written (05 -> 00) while surviving non-zero bytes highlight as "kept!" so a = 256 is self-evident.',
+      name: "C · Minimal (clean scope + dimmed untouched bytes)",
+      summary: "Stripped to the essentials: clean 1-byte scope box on byte 64, untouched bytes 65..67 gently dimmed, and a single written byte tile in the pane.",
       bullets: [
-        "Connects Lab 3 binary/hex place values directly to Lab 4 pointer writes.",
-        "Place values flip automatically when toggling Little-endian / Big-endian.",
-        "Surviving non-zero bytes stand out immediately when *b = 0 leaves a = 256."
+        "Zero extra visual widgets; relies purely on the scope box, flying byte, and updated value of a."
       ],
       view: makeView("C")
     }
