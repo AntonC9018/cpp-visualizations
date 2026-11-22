@@ -3319,7 +3319,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const meta = {
       id: "smaller-five",
       title: "3. Smaller pointer overwrites only byte 64 of int a (a = 5)",
-      subtitle: "Full-height scope locks onto byte 64; short value nudges clear. Flip LE/BE to see 2 vs 33554437.",
+      subtitle: "Full-height scope locks onto byte 64; value stays centered. Flip LE/BE to see 2 vs 33554437.",
       direction: "smaller",
       baseAddress: 64,
       totalBytes: 16,
@@ -3774,43 +3774,23 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       } else {
         markup += rect(vx + 1.5, gridY + 1.5, vw - 3, cellH - 3, "none", borderCol, 0, isCorrupted ? 3.2 : 2.8);
       }
-      const headerCenterX = (val) => {
-        const baseCx = vx + vw / 2;
-        if (val === null || !sim.ptrLive || meta.direction !== "smaller" || v.name !== meta.targetVar) {
-          return baseCx;
-        }
-        const dec = String(val);
-        const decSize = Math.min(25, (vw - 12) / (Math.max(1, dec.length) * CHAR));
-        const textW = dec.length * decSize * CHAR;
-        const scopeRight = xOf(meta.targetAddress + meta.pointeeSize) + 6;
-        const clearW = vx + vw - scopeRight - 8;
-        if (textW <= clearW - 8) {
-          return scopeRight + clearW / 2;
-        }
-        return baseCx;
-      };
-      const renderHeader = (val, useBefore, cx) => {
+      const headCx = vx + vw / 2;
+      const renderHeader = (val, useBefore) => {
         if (val === null) return "";
         const dec = String(val);
         const decSize = Math.min(25, (vw - 12) / (Math.max(1, dec.length) * CHAR));
         const decCol = isCorrupted && !useBefore ? P.error : P.fg;
-        const bg = isCorrupted && !useBefore ? rect(cx - 14, gridY + 12, 28, 26, P.panel, "none", 4) : "";
-        return bg + text(cx, gridY + 33, dec, round(decSize), decCol, "middle");
+        const bg = isCorrupted && !useBefore ? rect(headCx - 14, gridY + 12, 28, 26, P.panel, "none", 4) : "";
+        return bg + text(headCx, gridY + 33, dec, round(decSize), decCol, "middle");
       };
       const normalWrite = animate && (op == null ? void 0 : op.kind) === "write" && op.name === v.name && !sim.isPunningWrite;
       const valueChanged = animate && sim.isPunningWrite && valBefore !== valAfter;
-      const isPtrLockStep = animate && (op == null ? void 0 : op.kind) === "write" && op.name === meta.ptrName && meta.direction === "smaller" && v.name === meta.targetVar;
-      const afterCx = headerCenterX(valAfter);
       if (normalWrite || valueChanged) {
-        const beforeCx = headerCenterX(valBefore);
         const headCy = gridY + 26;
-        const swapped = (valBefore !== null ? `<g>${hide(at)}${renderHeader(valBefore, true, beforeCx)}</g>` : "") + `<g opacity="0">${show(at)}${renderHeader(valAfter, false, afterCx)}</g>`;
-        markup += scaledAt(afterCx, headCy, swapped, at - 0.15);
-      } else if (isPtrLockStep && Math.abs(afterCx - (vx + vw / 2)) > 1) {
-        const dx = afterCx - (vx + vw / 2);
-        markup += `<g><animateTransform attributeName="transform" type="translate" from="0 0" to="${round(dx)} 0" begin="${round(at + 0.52)}s" dur="0.32s" ${EASE} fill="freeze"/>${renderHeader(valAfter, false, vx + vw / 2)}</g>`;
+        const swapped = (valBefore !== null ? `<g>${hide(at)}${renderHeader(valBefore, true)}</g>` : "") + `<g opacity="0">${show(at)}${renderHeader(valAfter, false)}</g>`;
+        markup += scaledAt(headCx, headCy, swapped, at - 0.15);
       } else {
-        markup += renderHeader(valAfter, false, afterCx);
+        markup += renderHeader(valAfter, false);
       }
       const hexY = gridY + 74;
       for (let k = 0; k < v.size; k++) {
@@ -3954,7 +3934,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     {
       key: "A",
       name: "A · HUD corner reticle (zoom-snap lock)",
-      summary: "Full-height open L-corner brackets with inward midpoint crosshair ticks and a faint dashed perimeter. On b = &a, the reticle zooms in and snaps tight (1.28 -> 0.96 -> 1.0) as short values nudge clear.",
+      summary: "Full-height open L-corner brackets with inward midpoint crosshair ticks and a faint dashed perimeter. On b = &a, the reticle zooms in and snaps tight (1.28 -> 0.96 -> 1.0) while the value stays centered.",
       bullets: [
         "Open edges keep cell walls clean underneath while reading unmistakably as a target lock.",
         "Hit Play (or step to line 3 / line 2) to watch the missile lock-on animation."
