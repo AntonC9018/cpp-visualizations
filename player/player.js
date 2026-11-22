@@ -2867,6 +2867,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   function directionOf(pointeeSize, targetSize) {
     return pointeeSize > targetSize ? "larger" : pointeeSize < targetSize ? "smaller" : "same";
   }
+  function valueSpanInPane(pane2, opStart, value) {
+    if (pane2.startsWith(`(${value})`, opStart)) {
+      return [opStart + 1, opStart + 1 + value.length];
+    }
+    return [opStart, opStart + value.length];
+  }
   function simulatePunningTrace(trace, stepIndex, littleEndian) {
     const vars = scalarVars(trace);
     const byName = new Map(vars.map((v) => [v.name, v]));
@@ -2884,14 +2890,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       { length: totalBytes },
       (_, i) => ownerAt(baseAddress + i) ? null : "?"
     );
+    const liveVars = /* @__PURE__ */ new Set();
     const corruptedAddrs = /* @__PURE__ */ new Set();
     const corruptedVars = /* @__PURE__ */ new Set();
     const readForeignVars = /* @__PURE__ */ new Set();
     const ptrUbKind = /* @__PURE__ */ new Map();
     let beforeMem = [...mem];
     let corruptedNow = /* @__PURE__ */ new Set();
-    let stmtPunRead = null;
-    let stmtNormalReadBytes = null;
+    let directRead = null;
     let activePun = null;
     let storeAfterPunRead = null;
     let paneReadReplacement = null;
@@ -2899,6 +2905,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const decodeAll = (buf) => {
       const out = /* @__PURE__ */ new Map();
       for (const v of vars) {
+        if (!liveVars.has(v.name)) {
+          out.set(v.name, null);
+          continue;
+        }
         const slice = buf.slice(v.address - baseAddress, v.address - baseAddress + v.size);
         if (slice.every((b) => b === null)) {
           out.set(v.name, null);
@@ -2911,6 +2921,18 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         }
       }
       return out;
+    };
+    const shiftDirectSpan = (opEnd, paneDelta) => {
+      if (paneDelta === 0) return;
+      if (directRead && opEnd <= directRead.paneSpan[0]) {
+        directRead.paneSpan = [directRead.paneSpan[0] + paneDelta, directRead.paneSpan[1] + paneDelta];
+      }
+      if (paneReadReplacement && opEnd <= paneReadReplacement.span[0]) {
+        paneReadReplacement = {
+          ...paneReadReplacement,
+          span: [paneReadReplacement.span[0] + paneDelta, paneReadReplacement.span[1] + paneDelta]
+        };
+      }
     };
     let varBefore = decodeAll(mem);
     const clampedIndex = Math.max(0, Math.min(stepIndex, trace.steps.length - 1));
@@ -2927,33 +2949,85 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       activePun = null;
       storeAfterPunRead = null;
       if (!op) {
-        stmtPunRead = null;
-        stmtNormalReadBytes = null;
+        directRead = null;
         paneReadReplacement = null;
         for (const v of vars) {
           if (step2.values[v.name] === "?" && (!prev || prev.values[v.name] === null)) {
+            liveVars.add(v.name);
+            corruptedVars.delete(v.name);
             for (let k = 0; k < v.size; k++) {
-              mem[v.address - baseAddress + k] = "?";
+              const addr = v.address + k;
+              mem[addr - baseAddress] = "?";
+              corruptedAddrs.delete(addr);
             }
           }
         }
         continue;
       }
-      if (op.kind === "deref" && op.pun) {
-        const target = byName.get(op.target);
-        if (target) {
-          const dir = directionOf(op.pun.size, target.size);
-          const start = target.address - baseAddress;
-          activePun = {
-            kind: "deref",
-            pun: op.pun,
-            targetName: target.name,
-            targetAddress: target.address,
-            targetSize: target.size,
-            direction: dir,
-            bytes: mem.slice(start, start + op.pun.size),
-            readResult: null
-          };
+      const paneDelta = prev ? step2.pane.length - prev.pane.length : 0;
+      if (op.kind === "deref") {
+        shiftDirectSpan(op.span[1], paneDelta);
+        if (op.pun) {
+          const target = byName.get(op.target);
+          if (target) {
+            const dir = directionOf(op.pun.size, target.size);
+            const start = target.address - baseAddress;
+            activePun = {
+              kind: "deref",
+              pun: op.pun,
+              targetName: target.name,
+              targetAddress: target.address,
+              targetSize: target.size,
+              direction: dir,
+              bytes: mem.slice(start, start + op.pun.size),
+              readResult: null
+            };
+          }
+        }
+        continue;
+      }
+      if (op.kind === "addr") {
+        shiftDirectSpan(op.span[1], paneDelta);
+        continue;
+      }
+      if (op.kind === "convert") {
+        const cur = directRead;
+        if (cur && !cur.readResult.poisoned && cur.readResult.numeric !== null && op.span[0] <= cur.paneSpan[0] && op.span[1] >= cur.paneSpan[1]) {
+          const to = integerSpelled(op.to, aliases);
+          if (to) {
+            const wrapped = to.wrap(BigInt(cur.readResult.numeric));
+            const encoded = encodeBytes(wrapped, to.size, littleEndian);
+            const readResult = formatByteSlice(encoded, to.signed, littleEndian);
+            const span = valueSpanInPane(step2.pane, op.span[0], op.value);
+            directRead = {
+              ...cur,
+              bytes: encoded,
+              readResult,
+              originalValue: op.value,
+              paneSpan: span
+            };
+            paneReadReplacement = readResult.text !== op.value ? { stepIndex: i, span, originalValue: op.value, resolvedValue: readResult.text } : null;
+            continue;
+          }
+        }
+        directRead = null;
+        paneReadReplacement = null;
+        continue;
+      }
+      if (op.kind === "eval") {
+        const cur = directRead;
+        if (cur && op.value === cur.originalValue && op.span[0] <= cur.paneSpan[0] && op.span[1] >= cur.paneSpan[1]) {
+          const span = valueSpanInPane(step2.pane, op.span[0], op.value);
+          directRead = { ...cur, paneSpan: span };
+          paneReadReplacement = cur.readResult.text !== op.value ? {
+            stepIndex: i,
+            span,
+            originalValue: op.value,
+            resolvedValue: cur.readResult.text
+          } : null;
+        } else {
+          directRead = null;
+          paneReadReplacement = null;
         }
         continue;
       }
@@ -2970,7 +3044,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
             for (let k = 0; k < op.pun.size; k++) {
               const addr = target.address + k;
               const owner = ownerAt(addr);
-              if (!owner) {
+              if (!owner || !liveVars.has(owner.name)) {
                 hasOob = true;
               } else if (owner.name !== target.name) {
                 hasOob = true;
@@ -2980,21 +3054,20 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
             if (hasOob && ptrUbKind.get(op.pun.via) !== "write") {
               ptrUbKind.set(op.pun.via, "read");
             }
-            stmtPunRead = {
+            const span = valueSpanInPane(step2.pane, op.span[0], op.value);
+            directRead = {
+              kind: "pun",
               bytes: slice,
               readResult,
               originalValue: op.value,
+              paneSpan: span,
               pun: op.pun,
               targetName: target.name,
               targetAddress: target.address,
               targetSize: target.size,
               direction: dir
             };
-            paneReadReplacement = {
-              stepIndex: i,
-              originalValue: op.value,
-              resolvedValue: readResult.text
-            };
+            paneReadReplacement = readResult.text !== op.value ? { stepIndex: i, span, originalValue: op.value, resolvedValue: readResult.text } : null;
             activePun = {
               kind: "read",
               pun: op.pun,
@@ -3008,16 +3081,25 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           }
         } else {
           const src = byName.get(op.name);
-          if (src) {
+          if ((src == null ? void 0 : src.kind) === "ptr") {
+            shiftDirectSpan(op.span[1], paneDelta);
+          } else if (src) {
             const start = src.address - baseAddress;
-            stmtNormalReadBytes = mem.slice(start, start + src.size);
+            const slice = mem.slice(start, start + src.size);
             const decoded = decodeAll(mem).get(src.name);
-            if (decoded && decoded.text !== op.value) {
-              paneReadReplacement = {
-                stepIndex: i,
+            if (decoded) {
+              const span = valueSpanInPane(step2.pane, op.span[0], op.value);
+              directRead = {
+                kind: "normal",
+                bytes: slice,
+                readResult: decoded,
                 originalValue: op.value,
-                resolvedValue: decoded.text
+                paneSpan: span,
+                targetName: src.name,
+                targetAddress: src.address,
+                targetSize: src.size
               };
+              paneReadReplacement = decoded.text !== op.value ? { stepIndex: i, span, originalValue: op.value, resolvedValue: decoded.text } : null;
             }
           }
         }
@@ -3026,7 +3108,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       if (op.kind === "write") {
         if (op.pun) {
           const target = byName.get(op.name);
-          const val = integerLiteral(op.value);
+          const val = directRead && !directRead.readResult.poisoned && directRead.readResult.numeric !== null ? BigInt(directRead.readResult.numeric) : integerLiteral(op.value);
           if (target && val !== null) {
             const encoded = encodeBytes(val, op.pun.size, littleEndian);
             const dir = directionOf(op.pun.size, target.size);
@@ -3042,9 +3124,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
                 if (i === clampedIndex) corruptedNow.add(addr);
               } else if (owner.name !== target.name) {
                 hasOob = true;
-                corruptedAddrs.add(addr);
-                corruptedVars.add(owner.name);
-                if (i === clampedIndex) corruptedNow.add(addr);
+                if (liveVars.has(owner.name)) {
+                  corruptedAddrs.add(addr);
+                  corruptedVars.add(owner.name);
+                  if (i === clampedIndex) corruptedNow.add(addr);
+                }
               }
             }
             if (hasOob) ptrUbKind.set(op.pun.via, "write");
@@ -3062,23 +3146,31 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         } else {
           const dest = byName.get(op.name);
           if (dest) {
+            liveVars.add(dest.name);
+            corruptedVars.delete(dest.name);
             const dstStart = dest.address - baseAddress;
-            if (stmtPunRead && stmtPunRead.bytes.length === dest.size) {
+            for (let k = 0; k < dest.size; k++) {
+              corruptedAddrs.delete(dest.address + k);
+            }
+            if (directRead && directRead.bytes.length === dest.size) {
               for (let k = 0; k < dest.size; k++) {
-                mem[dstStart + k] = stmtPunRead.bytes[k];
+                mem[dstStart + k] = directRead.bytes[k];
               }
-              storeAfterPunRead = {
-                destVar: dest,
-                bytes: stmtPunRead.bytes,
-                readResult: stmtPunRead.readResult,
-                targetSize: stmtPunRead.targetSize,
-                direction: stmtPunRead.direction,
-                pun: stmtPunRead.pun,
-                targetAddress: stmtPunRead.targetAddress
-              };
-            } else if (stmtNormalReadBytes && stmtNormalReadBytes.length === dest.size && stmtNormalReadBytes.some((b) => b === "?")) {
+              if (directRead.kind === "pun" && directRead.pun && directRead.direction) {
+                storeAfterPunRead = {
+                  destVar: dest,
+                  bytes: directRead.bytes,
+                  readResult: directRead.readResult,
+                  targetSize: directRead.targetSize,
+                  direction: directRead.direction,
+                  pun: directRead.pun,
+                  targetAddress: directRead.targetAddress
+                };
+              }
+            } else if (directRead && !directRead.readResult.poisoned && directRead.readResult.numeric !== null) {
+              const encoded = encodeBytes(BigInt(directRead.readResult.numeric), dest.size, littleEndian);
               for (let k = 0; k < dest.size; k++) {
-                mem[dstStart + k] = stmtNormalReadBytes[k];
+                mem[dstStart + k] = encoded[k];
               }
             } else {
               const numeric = op.value === "nullptr" ? 0n : integerLiteral(op.value);
@@ -3127,6 +3219,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     for (let i = 0; i < totalBytes; i++) {
       const address = baseAddress + i;
       const owner = ownerAt(address);
+      const ownerLive = owner !== null && liveVars.has(owner.name);
       let status = "none";
       if (primary) {
         const wStart = primary.targetAddress;
@@ -3134,7 +3227,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         const tStart = primary.targetAddress;
         const tEnd = tStart + primary.targetSize;
         if (address >= wStart && address < wEnd) {
-          status = !owner ? "padding" : owner.name === primary.targetName ? "owned" : "foreign";
+          status = !owner || !ownerLive ? "padding" : owner.name === primary.targetName ? "owned" : "foreign";
         } else if (address >= tStart && address < tEnd) {
           status = "untouched";
         }
@@ -3184,28 +3277,18 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   function resolveEndianContext(c, sim) {
     const patchStep = (st, idx, rep) => {
       if (!st || !rep || rep.resolvedValue === rep.originalValue) return st;
-      const { originalValue, resolvedValue } = rep;
+      const { originalValue, resolvedValue, span } = rep;
+      const [at, end] = span;
+      if (st.pane.slice(at, end) !== originalValue) return st;
       const delta = resolvedValue.length - originalValue.length;
-      const op = st.op;
-      let at = -1;
-      if (idx === rep.stepIndex && (op == null ? void 0 : op.kind) === "read") {
-        const start = op.span[0];
-        if (st.pane.startsWith(originalValue, start)) at = start;
-        else if (st.pane.startsWith(`(${originalValue})`, start)) at = start + 1;
-      } else if (op && "span" in op && st.pane.slice(op.span[0], op.span[1]) === originalValue) {
-        at = op.span[0];
-      } else if (st.expr) {
-        const found = st.pane.indexOf(originalValue, st.expr[0]);
-        if (found >= 0 && found + originalValue.length <= st.expr[1]) at = found;
-      }
-      if (at < 0) return st;
-      const patchedPane = st.pane.slice(0, at) + resolvedValue + st.pane.slice(at + originalValue.length);
+      const patchedPane = st.pane.slice(0, at) + resolvedValue + st.pane.slice(end);
       const patchedExpr = st.expr ? shiftSpan(st.expr, at, originalValue.length, delta) : st.expr;
       const patchedTypes = patchTypedParts(st.types, at, originalValue.length, delta);
+      const op = st.op;
       let patchedOp = op;
-      if (idx === rep.stepIndex && (op == null ? void 0 : op.kind) === "read") {
+      if (idx === rep.stepIndex && ((op == null ? void 0 : op.kind) === "read" || (op == null ? void 0 : op.kind) === "convert" || (op == null ? void 0 : op.kind) === "eval")) {
         patchedOp = { ...op, value: resolvedValue };
-      } else if ((op == null ? void 0 : op.kind) === "write" && op.span[0] === at && op.span[1] === at + originalValue.length) {
+      } else if ((op == null ? void 0 : op.kind) === "write" && op.span[0] === at && op.span[1] === end) {
         patchedOp = {
           ...op,
           value: resolvedValue,
@@ -3323,6 +3406,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const body = "<g>" + (opts.fadeOut != null ? fade(1, 0, 0.3, opts.fadeOut) : "") + `<path d="${d}" fill="none" stroke="${P.bg}" stroke-width="9"${grow}/><path d="${d}" fill="none" stroke="${col}" stroke-width="2.6"${grow}/>` + (opts.grow != null ? `<g opacity="0">${fade(0, 1, 0.15, opts.grow + 0.47)}${head}</g>` : head) + "</g>";
       return opts.keepBright ? body : dim(c, l.from.name, body);
     };
+    const activeArcPtrs = /* @__PURE__ */ new Set();
+    if (sim.activePun) activeArcPtrs.add(sim.activePun.pun.via);
+    if (sim.storeAfterPunRead) activeArcPtrs.add(sim.storeAfterPunRead.pun.via);
+    if ((op == null ? void 0 : op.kind) === "write" && punNames.has(op.name)) activeArcPtrs.add(op.name);
+    if ((op == null ? void 0 : op.kind) === "deref" && punNames.has(op.via)) activeArcPtrs.add(op.via);
     const now = links(g, step);
     const writesPtr = animate && (op == null ? void 0 : op.kind) === "write" && g.cellsOf(op.name).some((l) => l.kind === "ptr");
     if (writesPtr && prev) {
@@ -3331,17 +3419,17 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       for (const l of links(g, prev)) {
         out2 += arcFor(l, {
           ...changed.has(l.from.name) ? { fadeOut: at } : {},
-          keepBright: punNames.has(l.from.name)
+          keepBright: activeArcPtrs.has(l.from.name)
         });
       }
       for (const l of now) {
         if (changed.has(l.from.name)) {
-          out2 += arcFor(l, { grow: at + 0.08, keepBright: punNames.has(l.from.name) });
+          out2 += arcFor(l, { grow: at + 0.08, keepBright: activeArcPtrs.has(l.from.name) });
         }
       }
       return out2;
     }
-    let out = now.map((l) => arcFor(l, { keepBright: punNames.has(l.from.name) })).join("");
+    let out = now.map((l) => arcFor(l, { keepBright: activeArcPtrs.has(l.from.name) })).join("");
     if (animate && (op == null ? void 0 : op.kind) === "deref") {
       const l = now.find((link) => link.from.name === op.via);
       if (l) {
@@ -3359,7 +3447,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return out;
   }
   function punningScene(rawC) {
-    var _a, _b, _c, _d, _e, _f;
+    var _a, _b, _c, _d, _e, _f, _g;
     const sim = simulatePunningTrace(rawC.m.trace, rawC.index, rawC.littleEndian);
     const c = resolveEndianContext(rawC, sim);
     const { g, P, animate, op, step, prev } = c;
@@ -3375,8 +3463,23 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const isPunWrite = ((_c = sim.activePun) == null ? void 0 : _c.kind) === "write";
     const isPunRead = ((_d = sim.activePun) == null ? void 0 : _d.kind) === "read";
     const byteTileStore = usesByteTileStore(sim);
-    const activePtrNames = new Set(sim.punPointers.map((p) => p.ptrName));
-    const activeTargetNames = new Set(sim.punPointers.map((p) => p.targetName));
+    const involvedNames = /* @__PURE__ */ new Set();
+    if (sim.activePun) {
+      involvedNames.add(sim.activePun.pun.via);
+      involvedNames.add(sim.activePun.targetName);
+    }
+    if (sim.storeAfterPunRead) {
+      involvedNames.add(sim.storeAfterPunRead.destVar.name);
+      involvedNames.add(sim.storeAfterPunRead.pun.via);
+      involvedNames.add(((_e = sim.punPointers.find((p) => p.ptrName === sim.storeAfterPunRead.pun.via)) == null ? void 0 : _e.targetName) ?? "");
+    }
+    if ((op == null ? void 0 : op.kind) === "write") {
+      const ptr = sim.punPointers.find((p) => p.ptrName === op.name);
+      if (ptr) {
+        involvedNames.add(ptr.ptrName);
+        involvedNames.add(ptr.targetName);
+      }
+    }
     const mem = renderByteMemory(c, {
       padId,
       ubId,
@@ -3420,7 +3523,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
             revealAt
           });
         }
-        const keepBright = isCorrupted || sim.readForeignVars.has(leaf.name) || activePtrNames.has(leaf.name) || activeTargetNames.has(leaf.name);
+        const keepBright = isCorrupted || Boolean(isPunRead) && sim.readForeignVars.has(leaf.name) || involvedNames.has(leaf.name);
         return {
           beforeHeader: beforeDec ? { text: beforeDec.text, poisoned: beforeDec.poisoned } : null,
           afterHeader: afterDec ? { text: afterDec.text, poisoned: afterDec.poisoned } : null,
@@ -3474,7 +3577,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const ownEnd = xOf(ptr.targetAddress + ptr.targetSize);
       const ownCol = ptr.ubKind === "read" ? P.read : P.write;
       const cal = `<g class="cv-ub-badge" data-ptr="${ptr.ptrName}"><path d="M ${round(wLeft + 2)} ${tickTop} V ${brY} H ${round(ownEnd)}" fill="none" stroke="${ownCol}" stroke-width="2.2"/><path d="M ${round(ownEnd)} ${brY} H ${round(wRight - 2)} V ${tickTop}" fill="none" stroke="${P.error}" stroke-width="2.8"/>` + pill((ownEnd + wRight) / 2, brY + 18, "⚠ UB", 13.5, P.error, P.error, P.bg) + "</g>";
-      const triggersNow = animate && (isPunRead && ((_e = sim.activePun) == null ? void 0 : _e.pun.via) === ptr.ptrName || isPunWrite && ((_f = sim.activePun) == null ? void 0 : _f.pun.via) === ptr.ptrName);
+      const triggersNow = animate && (isPunRead && ((_f = sim.activePun) == null ? void 0 : _f.pun.via) === ptr.ptrName || isPunWrite && ((_g = sim.activePun) == null ? void 0 : _g.pun.via) === ptr.ptrName);
       const showAt = isPunRead ? dep : at;
       belowOverlay += triggersNow ? `<g opacity="0">${fade(0, 1, 0.25, showAt)}${cal}</g>` : cal;
     }
@@ -3500,9 +3603,17 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const tileW = 44;
       const tileH = 30;
       const tileGap = 6;
+      const slotCount = stripSource.direction === "smaller" ? Math.max(stripSource.bytes.length, stripSource.targetSize) : stripSource.bytes.length;
+      const stripW = slotCount * tileW + Math.max(0, slotCount - 1) * tileGap;
       const rhsStart = op && "span" in op ? op.span[0] : Math.max(0, step.pane.indexOf("= ") + 2);
-      const tilesX = g.tx + rhsStart * g.paneChar;
-      for (let k = 0; k < stripSource.bytes.length; k++) {
+      const tilesX = Math.max(
+        g.pane.x + 12,
+        Math.min(g.tx + rhsStart * g.paneChar, g.pane.x + g.pane.w - 12 - stripW)
+      );
+      const count = stripSource.bytes.length;
+      const readStagger = count > 1 ? Math.min(0.08, 0.3 / (count - 1)) : 0;
+      const readDur = Math.max(0.45, Math.min(0.85, at - dep - readStagger * Math.max(0, count - 1)));
+      for (let k = 0; k < count; k++) {
         const addr = stripSource.targetAddress + k;
         const slot = sim.bytes[addr - sim.baseAddress];
         const bval = stripSource.bytes[k];
@@ -3523,12 +3634,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           const ey = stripY + tileH / 2;
           const midY = (sy + ey) / 2;
           const path = `M ${round(sx)} ${round(sy)} C ${round(sx)} ${round(midY)}, ${round(ex)} ${round(midY)}, ${round(ex)} ${round(ey)}`;
-          const dur = 0.85;
-          const begin = dep + k * 0.08;
-          const end = begin + dur;
+          const begin = dep + k * readStagger;
+          const end = begin + readDur;
           const flyCol = isOobSlot ? P.error : P.read;
           wb += `<g opacity="0">${show(end)}${tileMarkup}</g>`;
-          flight += `<g opacity="0">${fade(0, 0.5, 0.2, begin)}${fade(0.5, 0, 0.25, end)}<path d="${path}" fill="none" stroke="${flyCol}" stroke-width="2.4"/></g><g opacity="0">${fade(0, 1, 0.1, begin)}${hide(end + 0.05)}` + rect(-20, -14, 40, 28, P.panel, flyCol, 6, 2) + text(0, 6, label, 15, flyCol, "middle") + `<animateMotion begin="${round(begin)}s" dur="${dur}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
+          flight += `<g opacity="0">${fade(0, 0.5, 0.2, begin)}${fade(0.5, 0, 0.25, end)}<path d="${path}" fill="none" stroke="${flyCol}" stroke-width="2.4"/></g><g opacity="0">${fade(0, 1, 0.1, begin)}${hide(end + 0.05)}` + rect(-20, -14, 40, 28, P.panel, flyCol, 6, 2) + text(0, 6, label, 15, flyCol, "middle") + `<animateMotion begin="${round(begin)}s" dur="${round(readDur)}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
         } else {
           wb += tileMarkup;
           if (animate && stripSource.mode === "write") {

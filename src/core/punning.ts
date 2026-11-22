@@ -1,11 +1,11 @@
 // Byte-level pointer type punning model and step simulator (isomorphic).
 //
-// Shared by the tracer (`src/core/tracing.ts`) and the player view (`src/player/punning_view.ts`)
-// so a single validated JSON trace renders accurately in both Little-endian and Big-endian modes
-// with zero hardcoded scenario metadata.
+// Shared by the player view (`src/player/punning_view.ts`) and tests so a single validated JSON
+// trace renders accurately in both Little-endian and Big-endian modes with zero hardcoded scenario
+// metadata.
 import { type ByteValue, type DecodedBytes, encodeBytes, formatByteSlice } from './bytes.ts';
 import { type Integer, integerLiteral, integerSpelled } from './integers.ts';
-import type { ExecutionTrace, PunningAccess, ScalarVariable } from './trace_format.ts';
+import type { ExecutionTrace, PunningAccess, ScalarVariable, Span } from './trace_format.ts';
 
 /** A pointer's integer pointee metadata parsed from its declared type (`int*`, `uint8_t*`). */
 export interface PointeeInfo {
@@ -59,6 +59,14 @@ export interface ActivePunPointer {
   ubKind: 'none' | 'write' | 'read';
 }
 
+export interface PaneReadReplacement {
+  stepIndex: number;
+  /** Exact span `[start, end)` of `originalValue` inside that step's pane text. */
+  span: Span;
+  originalValue: string;
+  resolvedValue: string;
+}
+
 export interface PunningSimState {
   baseAddress: number;
   endAddress: number;
@@ -90,17 +98,9 @@ export interface PunningSimState {
     pun: PunningAccess;
     targetAddress: number;
   } | null;
-  /** Endian-resolved text for the current/previous pane when a punning read result is shown. */
-  paneReadReplacement: {
-    stepIndex: number;
-    originalValue: string;
-    resolvedValue: string;
-  } | null;
-  prevPaneReadReplacement: {
-    stepIndex: number;
-    originalValue: string;
-    resolvedValue: string;
-  } | null;
+  /** Endian-resolved replacement for the current/previous pane when a read value differs in BE. */
+  paneReadReplacement: PaneReadReplacement | null;
+  prevPaneReadReplacement: PaneReadReplacement | null;
 }
 
 function scalarVars(trace: ExecutionTrace): ScalarVariable[] {
@@ -163,6 +163,26 @@ function directionOf(pointeeSize: number, targetSize: number): 'larger' | 'small
   return pointeeSize > targetSize ? 'larger' : pointeeSize < targetSize ? 'smaller' : 'same';
 }
 
+function valueSpanInPane(pane: string, opStart: number, value: string): Span {
+  if (pane.startsWith(`(${value})`, opStart)) {
+    return [opStart + 1, opStart + 1 + value.length];
+  }
+  return [opStart, opStart + value.length];
+}
+
+interface DirectReadState {
+  kind: 'pun' | 'normal';
+  bytes: ByteValue[];
+  readResult: DecodedBytes;
+  originalValue: string;
+  paneSpan: Span;
+  pun?: PunningAccess;
+  targetName: string;
+  targetAddress: number;
+  targetSize: number;
+  direction?: 'larger' | 'smaller' | 'same';
+}
+
 /**
  * Simulate byte-level memory across `trace.steps[0..stepIndex]` in `littleEndian` order.
  * Pure and deterministic: every variable value, poisoned byte, corruption state, and
@@ -190,6 +210,7 @@ export function simulatePunningTrace(
   const mem: ByteValue[] = Array.from({ length: totalBytes }, (_, i) =>
     ownerAt(baseAddress + i) ? null : '?'
   );
+  const liveVars = new Set<string>();
   const corruptedAddrs = new Set<number>();
   const corruptedVars = new Set<string>();
   const readForeignVars = new Set<string>();
@@ -198,31 +219,24 @@ export function simulatePunningTrace(
   let beforeMem: ByteValue[] = [...mem];
   let corruptedNow = new Set<number>();
 
-  // Per-statement transient punning read state (reset when a new statement opens with op === null)
-  let stmtPunRead: {
-    bytes: ByteValue[];
-    readResult: DecodedBytes;
-    originalValue: string;
-    pun: PunningAccess;
-    targetName: string;
-    targetAddress: number;
-    targetSize: number;
-    direction: 'larger' | 'smaller' | 'same';
-  } | null = null;
-  let stmtNormalReadBytes: ByteValue[] | null = null;
+  // Per-statement direct-read state (cleared whenever arithmetic/unrelated eval intervenes or a new statement opens)
+  let directRead: DirectReadState | null = null;
   let activePun: PunningSimState['activePun'] = null;
   let storeAfterPunRead: PunningSimState['storeAfterPunRead'] = null;
-  let paneReadReplacement: PunningSimState['paneReadReplacement'] = null;
-  let prevPaneReadReplacement: PunningSimState['prevPaneReadReplacement'] = null;
+  let paneReadReplacement: PaneReadReplacement | null = null;
+  let prevPaneReadReplacement: PaneReadReplacement | null = null;
 
   const decodeAll = (buf: ByteValue[]): Map<string, DecodedBytes | null> => {
     const out = new Map<string, DecodedBytes | null>();
     for (const v of vars) {
+      if (!liveVars.has(v.name)) {
+        out.set(v.name, null);
+        continue;
+      }
       const slice = buf.slice(v.address - baseAddress, v.address - baseAddress + v.size);
       if (slice.every(b => b === null)) {
         out.set(v.name, null);
       } else if (slice.every(b => b === '?')) {
-        // Declared uninitialized variable (all bytes indeterminate before any partial known byte)
         out.set(v.name, { text: '?', poisoned: false, numeric: null });
       } else {
         const info = integerOfVar(v, aliases);
@@ -231,6 +245,19 @@ export function simulatePunningTrace(
       }
     }
     return out;
+  };
+
+  const shiftDirectSpan = (opEnd: number, paneDelta: number): void => {
+    if (paneDelta === 0) return;
+    if (directRead && opEnd <= directRead.paneSpan[0]) {
+      directRead.paneSpan = [directRead.paneSpan[0] + paneDelta, directRead.paneSpan[1] + paneDelta];
+    }
+    if (paneReadReplacement && opEnd <= paneReadReplacement.span[0]) {
+      paneReadReplacement = {
+        ...paneReadReplacement,
+        span: [paneReadReplacement.span[0] + paneDelta, paneReadReplacement.span[1] + paneDelta],
+      };
+    }
   };
 
   let varBefore = decodeAll(mem);
@@ -251,35 +278,109 @@ export function simulatePunningTrace(
     storeAfterPunRead = null;
 
     if (!op) {
-      stmtPunRead = null;
-      stmtNormalReadBytes = null;
+      directRead = null;
       paneReadReplacement = null;
       // Declaration without initializer: null -> '?'
       for (const v of vars) {
         if (step.values[v.name] === '?' && (!prev || prev.values[v.name] === null)) {
+          liveVars.add(v.name);
+          corruptedVars.delete(v.name);
           for (let k = 0; k < v.size; k++) {
-            mem[v.address - baseAddress + k] = '?';
+            const addr = v.address + k;
+            mem[addr - baseAddress] = '?';
+            corruptedAddrs.delete(addr);
           }
         }
       }
       continue;
     }
 
-    if (op.kind === 'deref' && op.pun) {
-      const target = byName.get(op.target);
-      if (target) {
-        const dir = directionOf(op.pun.size, target.size);
-        const start = target.address - baseAddress;
-        activePun = {
-          kind: 'deref',
-          pun: op.pun,
-          targetName: target.name,
-          targetAddress: target.address,
-          targetSize: target.size,
-          direction: dir,
-          bytes: mem.slice(start, start + op.pun.size),
-          readResult: null,
-        };
+    const paneDelta = prev ? step.pane.length - prev.pane.length : 0;
+
+    if (op.kind === 'deref') {
+      shiftDirectSpan(op.span[1], paneDelta);
+      if (op.pun) {
+        const target = byName.get(op.target);
+        if (target) {
+          const dir = directionOf(op.pun.size, target.size);
+          const start = target.address - baseAddress;
+          activePun = {
+            kind: 'deref',
+            pun: op.pun,
+            targetName: target.name,
+            targetAddress: target.address,
+            targetSize: target.size,
+            direction: dir,
+            bytes: mem.slice(start, start + op.pun.size),
+            readResult: null,
+          };
+        }
+      }
+      continue;
+    }
+
+    if (op.kind === 'addr') {
+      shiftDirectSpan(op.span[1], paneDelta);
+      continue;
+    }
+
+    if (op.kind === 'convert') {
+      const cur = directRead as DirectReadState | null;
+      if (
+        cur &&
+        !cur.readResult.poisoned &&
+        cur.readResult.numeric !== null &&
+        op.span[0] <= cur.paneSpan[0] &&
+        op.span[1] >= cur.paneSpan[1]
+      ) {
+        const to = integerSpelled(op.to, aliases);
+        if (to) {
+          const wrapped = to.wrap(BigInt(cur.readResult.numeric));
+          const encoded = encodeBytes(wrapped, to.size, littleEndian);
+          const readResult = formatByteSlice(encoded, to.signed, littleEndian)!;
+          const span = valueSpanInPane(step.pane, op.span[0], op.value);
+          directRead = {
+            ...cur,
+            bytes: encoded,
+            readResult,
+            originalValue: op.value,
+            paneSpan: span,
+          };
+          paneReadReplacement =
+            readResult.text !== op.value
+              ? { stepIndex: i, span, originalValue: op.value, resolvedValue: readResult.text }
+              : null;
+          continue;
+        }
+      }
+      directRead = null;
+      paneReadReplacement = null;
+      continue;
+    }
+
+    if (op.kind === 'eval') {
+      const cur = directRead as DirectReadState | null;
+      // Preserve directRead only for pass-through wrappers like `(...)` or `{...}` around the same value.
+      if (
+        cur &&
+        op.value === cur.originalValue &&
+        op.span[0] <= cur.paneSpan[0] &&
+        op.span[1] >= cur.paneSpan[1]
+      ) {
+        const span = valueSpanInPane(step.pane, op.span[0], op.value);
+        directRead = { ...cur, paneSpan: span };
+        paneReadReplacement =
+          cur.readResult.text !== op.value
+            ? {
+                stepIndex: i,
+                span,
+                originalValue: op.value,
+                resolvedValue: cur.readResult.text,
+              }
+            : null;
+      } else {
+        directRead = null;
+        paneReadReplacement = null;
       }
       continue;
     }
@@ -297,7 +398,7 @@ export function simulatePunningTrace(
           for (let k = 0; k < op.pun.size; k++) {
             const addr = target.address + k;
             const owner = ownerAt(addr);
-            if (!owner) {
+            if (!owner || !liveVars.has(owner.name)) {
               hasOob = true;
             } else if (owner.name !== target.name) {
               hasOob = true;
@@ -307,21 +408,23 @@ export function simulatePunningTrace(
           if (hasOob && ptrUbKind.get(op.pun.via) !== 'write') {
             ptrUbKind.set(op.pun.via, 'read');
           }
-          stmtPunRead = {
+          const span = valueSpanInPane(step.pane, op.span[0], op.value);
+          directRead = {
+            kind: 'pun',
             bytes: slice,
             readResult,
             originalValue: op.value,
+            paneSpan: span,
             pun: op.pun,
             targetName: target.name,
             targetAddress: target.address,
             targetSize: target.size,
             direction: dir,
           };
-          paneReadReplacement = {
-            stepIndex: i,
-            originalValue: op.value,
-            resolvedValue: readResult.text,
-          };
+          paneReadReplacement =
+            readResult.text !== op.value
+              ? { stepIndex: i, span, originalValue: op.value, resolvedValue: readResult.text }
+              : null;
           activePun = {
             kind: 'read',
             pun: op.pun,
@@ -335,16 +438,29 @@ export function simulatePunningTrace(
         }
       } else {
         const src = byName.get(op.name);
-        if (src) {
+        if (src?.kind === 'ptr') {
+          // Reading a pointer (e.g. LHS `q` in `*q = *b`) must not clobber RHS `directRead`.
+          shiftDirectSpan(op.span[1], paneDelta);
+        } else if (src) {
           const start = src.address - baseAddress;
-          stmtNormalReadBytes = mem.slice(start, start + src.size);
+          const slice = mem.slice(start, start + src.size);
           const decoded = decodeAll(mem).get(src.name);
-          if (decoded && decoded.text !== op.value) {
-            paneReadReplacement = {
-              stepIndex: i,
+          if (decoded) {
+            const span = valueSpanInPane(step.pane, op.span[0], op.value);
+            directRead = {
+              kind: 'normal',
+              bytes: slice,
+              readResult: decoded,
               originalValue: op.value,
-              resolvedValue: decoded.text,
+              paneSpan: span,
+              targetName: src.name,
+              targetAddress: src.address,
+              targetSize: src.size,
             };
+            paneReadReplacement =
+              decoded.text !== op.value
+                ? { stepIndex: i, span, originalValue: op.value, resolvedValue: decoded.text }
+                : null;
           }
         }
       }
@@ -354,7 +470,10 @@ export function simulatePunningTrace(
     if (op.kind === 'write') {
       if (op.pun) {
         const target = byName.get(op.name);
-        const val = integerLiteral(op.value);
+        const val =
+          directRead && !directRead.readResult.poisoned && directRead.readResult.numeric !== null
+            ? BigInt(directRead.readResult.numeric)
+            : integerLiteral(op.value);
         if (target && val !== null) {
           const encoded = encodeBytes(val, op.pun.size, littleEndian);
           const dir = directionOf(op.pun.size, target.size);
@@ -370,9 +489,11 @@ export function simulatePunningTrace(
               if (i === clampedIndex) corruptedNow.add(addr);
             } else if (owner.name !== target.name) {
               hasOob = true;
-              corruptedAddrs.add(addr);
-              corruptedVars.add(owner.name);
-              if (i === clampedIndex) corruptedNow.add(addr);
+              if (liveVars.has(owner.name)) {
+                corruptedAddrs.add(addr);
+                corruptedVars.add(owner.name);
+                if (i === clampedIndex) corruptedNow.add(addr);
+              }
             }
           }
           if (hasOob) ptrUbKind.set(op.pun.via, 'write');
@@ -390,27 +511,35 @@ export function simulatePunningTrace(
       } else {
         const dest = byName.get(op.name);
         if (dest) {
+          liveVars.add(dest.name);
+          corruptedVars.delete(dest.name);
           const dstStart = dest.address - baseAddress;
-          if (stmtPunRead && stmtPunRead.bytes.length === dest.size) {
+          for (let k = 0; k < dest.size; k++) {
+            corruptedAddrs.delete(dest.address + k);
+          }
+          if (directRead && directRead.bytes.length === dest.size) {
             for (let k = 0; k < dest.size; k++) {
-              mem[dstStart + k] = stmtPunRead.bytes[k];
+              mem[dstStart + k] = directRead.bytes[k];
             }
-            storeAfterPunRead = {
-              destVar: dest,
-              bytes: stmtPunRead.bytes,
-              readResult: stmtPunRead.readResult,
-              targetSize: stmtPunRead.targetSize,
-              direction: stmtPunRead.direction,
-              pun: stmtPunRead.pun,
-              targetAddress: stmtPunRead.targetAddress,
-            };
+            if (directRead.kind === 'pun' && directRead.pun && directRead.direction) {
+              storeAfterPunRead = {
+                destVar: dest,
+                bytes: directRead.bytes,
+                readResult: directRead.readResult,
+                targetSize: directRead.targetSize,
+                direction: directRead.direction,
+                pun: directRead.pun,
+                targetAddress: directRead.targetAddress,
+              };
+            }
           } else if (
-            stmtNormalReadBytes &&
-            stmtNormalReadBytes.length === dest.size &&
-            stmtNormalReadBytes.some(b => b === '?')
+            directRead &&
+            !directRead.readResult.poisoned &&
+            directRead.readResult.numeric !== null
           ) {
+            const encoded = encodeBytes(BigInt(directRead.readResult.numeric), dest.size, littleEndian);
             for (let k = 0; k < dest.size; k++) {
-              mem[dstStart + k] = stmtNormalReadBytes[k];
+              mem[dstStart + k] = encoded[k];
             }
           } else {
             const numeric = op.value === 'nullptr' ? 0n : integerLiteral(op.value);
@@ -439,7 +568,6 @@ export function simulatePunningTrace(
     if (!ptr || !target || !pointee) continue;
     if (target.kind !== 'int') continue;
     const targetInfo = integerOfVar(target, aliases);
-    // Track any pointer whose pointee type or size differs from its target
     if (targetInfo && targetInfo.size === pointee.size && targetInfo.signed === pointee.signed) {
       continue;
     }
@@ -460,7 +588,6 @@ export function simulatePunningTrace(
     });
   }
 
-  // Build per-byte slot states using the primary active pun pointer (if any)
   const primary =
     punPointers.find(p => p.windowActive) ??
     punPointers.find(p => p.ubKind !== 'none') ??
@@ -471,6 +598,7 @@ export function simulatePunningTrace(
   for (let i = 0; i < totalBytes; i++) {
     const address = baseAddress + i;
     const owner = ownerAt(address);
+    const ownerLive = owner !== null && liveVars.has(owner.name);
     let status: PunningByteStatus = 'none';
     if (primary) {
       const wStart = primary.targetAddress;
@@ -478,7 +606,7 @@ export function simulatePunningTrace(
       const tStart = primary.targetAddress;
       const tEnd = tStart + primary.targetSize;
       if (address >= wStart && address < wEnd) {
-        status = !owner ? 'padding' : owner.name === primary.targetName ? 'owned' : 'foreign';
+        status = !owner || !ownerLive ? 'padding' : owner.name === primary.targetName ? 'owned' : 'foreign';
       } else if (address >= tStart && address < tEnd) {
         status = 'untouched';
       }

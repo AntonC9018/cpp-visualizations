@@ -1216,6 +1216,45 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     if (matches.length !== 1) throw new Unsupported("expected one main function");
     return matches[0];
   }
+  const hexByte = (byte) => (byte & 255).toString(16).toUpperCase().padStart(2, "0");
+  function toBytesMSB(value, size) {
+    const big = typeof value === "bigint" ? value : BigInt(Math.trunc(value));
+    const unsigned = BigInt.asUintN(size * 8, big);
+    const out = [];
+    for (let i = size - 1; i >= 0; i--) {
+      out.push(Number(unsigned >> BigInt(i * 8) & 0xffn));
+    }
+    return out;
+  }
+  function encodeBytes(value, size, littleEndian) {
+    const msb = toBytesMSB(value, size);
+    return msb.reverse();
+  }
+  function decodeBytes(bytes, signed, littleEndian) {
+    const ordered = [...bytes].reverse();
+    let acc = 0n;
+    for (const b of ordered) {
+      acc = acc << 8n | BigInt(b & 255);
+    }
+    if (signed && bytes.length > 0) {
+      const bits = BigInt(bytes.length * 8);
+      const signBit = 1n << bits - 1n;
+      if (acc >= signBit) acc -= 1n << bits;
+    }
+    return acc;
+  }
+  function formatByteSlice(slice, signed, littleEndian) {
+    if (slice.length === 0 || slice.every((b) => b === null)) return null;
+    if (slice.some((b) => typeof b !== "number")) {
+      const ordered = [...slice].reverse();
+      const hex = ordered.map((b) => typeof b === "number" ? hexByte(b) : "??").join("");
+      return { text: `0x${hex}`, poisoned: true, numeric: null };
+    }
+    const value = decodeBytes(slice, signed);
+    const n = Number(value);
+    const numeric = Number.isSafeInteger(n) && BigInt(n) === value ? n : null;
+    return { text: value.toString(10), poisoned: false, numeric };
+  }
   const COMPOUND_OPERATORS = ["+", "-", "*", "/", "%"];
   function openCompound(pane, span, left, operator, grouped) {
     const [start, end] = span;
@@ -1678,6 +1717,20 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   function arraysEqual(a, b) {
     return a.length === b.length && a.every((v, i) => Object.is(v, b[i]));
   }
+  function bytesFromCellValue(value, size) {
+    if (value === null) return null;
+    if (value === UNKNOWN) return Array.from({ length: size }, () => "?");
+    if (typeof value === "number") return encodeBytes(BigInt(value), size);
+    if (typeof value === "string" && POISONED_HEX.test(value) && value.length === 2 + size * 2) {
+      const out = [];
+      for (let k = 0; k < size; k++) {
+        const pair = value.slice(2 + (size - 1 - k) * 2, 2 + (size - k) * 2);
+        out.push(pair === "??" ? "?" : Number.parseInt(pair, 16));
+      }
+      return out;
+    }
+    return null;
+  }
   function checkMemory(op, step, previous, storage, where) {
     const { kind, name } = op;
     if (kind === "addr") {
@@ -1690,8 +1743,54 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       return;
     }
     if (Object.hasOwn(op, "pun")) {
+      check(
+        previous.targets[op.pun.via] === name,
+        `${where}.pun.via`,
+        `${op.pun.via} does not point to ${name}`
+      );
       const items2 = storedItems(op.value, where, true);
       check(items2.length === 1, `${where}.value`, "expected a single scalar value for a punning access");
+      if (POISONED_HEX.test(items2[0])) {
+        check(
+          items2[0].length === 2 + op.pun.size * 2,
+          `${where}.value`,
+          `poisoned hex ${pyRepr(items2[0])} does not match ${op.pun.size} bytes`
+        );
+      }
+      if (kind === "write") {
+        const literal = integerLiteral(items2[0]);
+        check(literal !== null, `${where}.value`, "a punning write requires an integer value");
+        const start = storage.addresses[name];
+        const end = start + op.pun.size;
+        const written = encodeBytes(literal, op.pun.size);
+        for (const v of storage.variables) {
+          if (v.address >= end || v.address + v.size <= start) continue;
+          if (previous.values[v.name] === null) continue;
+          check(
+            v.kind === "int",
+            `${where}.values.${v.name}`,
+            `punning write cannot overwrite non-integer variable ${v.name}`
+          );
+          const beforeBytes = bytesFromCellValue(previous.values[v.name], v.size);
+          const info = v.kind === "int" ? integerSpelled(v.type ?? "", storage.aliases) : null;
+          if (beforeBytes && info) {
+            const afterBytes = [...beforeBytes];
+            for (let k = 0; k < v.size; k++) {
+              const addr = v.address + k;
+              if (addr >= start && addr < end) afterBytes[k] = written[addr - start];
+            }
+            const decoded = formatByteSlice(afterBytes, info.signed);
+            if (decoded) {
+              const expected2 = decoded.poisoned ? decoded.text : decoded.numeric;
+              check(
+                Object.is(step.values[v.name], expected2),
+                `${where}.values.${v.name}`,
+                `expected ${pyRepr(expected2)} after punning write, got ${pyRepr(step.values[v.name])}`
+              );
+            }
+          }
+        }
+      }
       return;
     }
     const cells = storage.cellsOf(name);
@@ -1766,18 +1865,24 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       check(step.pane.slice(start, end) === text, `${where}.${key}`, `does not cover ${pyRepr(text)}`);
     }
   }
+  function matchesDereferencedAddress(text, addr) {
+    return new RegExp(`\\*\\s*(?:\\(\\s*)?${addr}(?!\\d)`).test(text);
+  }
   function checkPunningAccess(pun, storage, where) {
-    var _a;
     check(storage.punning, where, "pun is only allowed in a punning trace");
     checkKeys(pun, where, ["type", "size", "via"]);
     check(typeof pun.type === "string" && pun.type.length > 0, `${where}.type`, "expected type spelling");
     natural(pun.size, `${where}.size`, true);
     const info = integerSpelled(pun.type, storage.aliases);
     check(info !== null && info.size === pun.size, where, `${pun.type} is not a ${pun.size}-byte integer type`);
+    const ptrCell = typeof pun.via === "string" ? storage.cells[pun.via] : void 0;
+    check((ptrCell == null ? void 0 : ptrCell.kind) === "ptr", `${where}.via`, "expected a pointer variable name");
+    const ptrMatch = /^(?:const\s+)?(.+?)\s*\*$/.exec(((ptrCell == null ? void 0 : ptrCell.type) ?? "").trim());
+    const ptrPointee = ptrMatch && !ptrMatch[1].includes("*") ? integerSpelled(ptrMatch[1].trim(), storage.aliases) : null;
     check(
-      typeof pun.via === "string" && ((_a = storage.cells[pun.via]) == null ? void 0 : _a.kind) === "ptr",
-      `${where}.via`,
-      "expected a pointer variable name"
+      ptrPointee !== null && info !== null && ptrPointee.size === info.size && ptrPointee.signed === info.signed,
+      where,
+      `${pun.via} (${ptrCell == null ? void 0 : ptrCell.type}) does not match punning access type ${pun.type}`
     );
   }
   function unchangedPane(op, step, previous, storage, where) {
@@ -1796,7 +1901,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       if (Object.hasOwn(op, "pun")) {
         const addr = String(storage.addresses[op.name]);
         check(
-          destText.includes("*") && destText.includes(addr),
+          matchesDereferencedAddress(destText, addr),
           `${where}.destination`,
           `does not cover dereferenced address ${addr}`
         );
@@ -1890,7 +1995,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         const [s, e] = checkSpan(op.span, previous.pane, `${where}.span`);
         const addr = String(storage.addresses[op.target]);
         const covered = previous.pane.slice(s, e);
-        check(covered.includes("*") && covered.includes(addr), `${where}.span`, `does not cover *${addr}`);
+        check(matchesDereferencedAddress(covered, addr), `${where}.span`, `does not cover *${addr}`);
         return;
       }
     }
@@ -1932,7 +2037,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const start = storage.addresses[op.name];
       const end = start + op.pun.size;
       for (const v of storage.variables) {
-        if (v.address < end && v.address + v.size > start) {
+        if (v.kind === "int" && v.address < end && v.address + v.size > start) {
           for (const cell of storage.cellsOf(v.name)) written.add(cell);
         }
       }
@@ -2299,45 +2404,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   function checkSettings(settings) {
     return parseSettings(settings.template, enabledFlags(settings.flags));
   }
-  const hexByte = (byte) => (byte & 255).toString(16).toUpperCase().padStart(2, "0");
-  function toBytesMSB(value, size) {
-    const big = typeof value === "bigint" ? value : BigInt(Math.trunc(value));
-    const unsigned = BigInt.asUintN(size * 8, big);
-    const out = [];
-    for (let i = size - 1; i >= 0; i--) {
-      out.push(Number(unsigned >> BigInt(i * 8) & 0xffn));
-    }
-    return out;
-  }
-  function encodeBytes(value, size, littleEndian) {
-    const msb = toBytesMSB(value, size);
-    return msb.reverse();
-  }
-  function decodeBytes(bytes, signed, littleEndian) {
-    const ordered = [...bytes].reverse();
-    let acc = 0n;
-    for (const b of ordered) {
-      acc = acc << 8n | BigInt(b & 255);
-    }
-    if (signed && bytes.length > 0) {
-      const bits = BigInt(bytes.length * 8);
-      const signBit = 1n << bits - 1n;
-      if (acc >= signBit) acc -= 1n << bits;
-    }
-    return acc;
-  }
-  function formatByteSlice(slice, signed, littleEndian) {
-    if (slice.length === 0 || slice.every((b) => b === null)) return null;
-    if (slice.some((b) => typeof b !== "number")) {
-      const ordered = [...slice].reverse();
-      const hex = ordered.map((b) => typeof b === "number" ? hexByte(b) : "??").join("");
-      return { text: `0x${hex}`, poisoned: true, numeric: null };
-    }
-    const value = decodeBytes(slice, signed);
-    const n = Number(value);
-    const numeric = Number.isSafeInteger(n) && BigInt(n) === value ? n : null;
-    return { text: value.toString(10), poisoned: false, numeric };
-  }
   function numberSpelling(value, type) {
     if (type === "float" || type === "double") {
       if (Object.is(value, -0)) return "-0.0";
@@ -2493,18 +2559,27 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
       __publicField(this, "specs", /* @__PURE__ */ new Map());
       __publicField(this, "mem", /* @__PURE__ */ new Map());
       __publicField(this, "live", /* @__PURE__ */ new Set());
+      __publicField(this, "endianTainted", /* @__PURE__ */ new Set());
       for (const spec of specs) {
         this.specs.set(spec.name, spec);
         this.addresses[spec.name] = spec.address;
       }
     }
+    isEndianTainted(name) {
+      return this.endianTainted.has(name);
+    }
     byteAt(addr) {
       return this.mem.has(addr) ? this.mem.get(addr) : "?";
     }
-    writeVar(name, value) {
+    writeVar(name, value, tainted = false) {
       const spec = this.specs.get(name);
       if (!spec) return;
       this.live.add(name);
+      if (tainted || value instanceof PoisonedValue) {
+        this.endianTainted.add(name);
+      } else {
+        this.endianTainted.delete(name);
+      }
       if (value === null) {
         for (let k = 0; k < spec.size; k++) this.mem.set(spec.address + k, "?");
         return;
@@ -2552,6 +2627,7 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
         if (spec.pointer) {
           throw new Unsupported(`overwriting pointer ${spec.name} through a punned write is outside this category`);
         }
+        this.endianTainted.add(spec.name);
         const slice = [];
         for (let k = 0; k < spec.size; k++) slice.push(this.byteAt(spec.address + k));
         const decoded = formatByteSlice(slice, spec.signed);
@@ -2731,6 +2807,7 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
       __publicField(this, "file");
       __publicField(this, "punningMem");
       __publicField(this, "pendingPun", null);
+      __publicField(this, "exprTainted", false);
       this.state = state;
       this.numbers = numbers;
       this.file = file;
@@ -2806,11 +2883,15 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
      * `left`.
      */
     compound(node, target, copy, result, group) {
+      var _a;
       const [left, right] = node.inner;
       const operator = node.opcode.slice(0, -1);
       const held = this.load(target);
       if (held instanceof PoisonedValue) {
         throw new Unsupported("arithmetic on an indeterminate byte value is undefined");
+      }
+      if ((_a = this.punningMem) == null ? void 0 : _a.isEndianTainted(target)) {
+        throw new Unsupported("arithmetic on an endian-dependent punned value is not supported");
       }
       if (typeof held !== "number") {
         throw new Unsupported("pointer arithmetic and comparison are not supported");
@@ -2820,7 +2901,13 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
       const resultType = { type: node.computeResultType };
       const spelled = [copy[1] + 1, copy[1] + 1 + operator.length];
       const pending = operandOf(right);
+      const prevTainted = this.exprTainted;
+      this.exprTainted = false;
       const read = this.numericOperand(pending.inner);
+      if (this.exprTainted) {
+        throw new Unsupported("arithmetic on an endian-dependent punned value is not supported");
+      }
+      this.exprTainted = prevTainted;
       const operand = this.convertedAt(copy, held, computation, left, spelled);
       const other = this.promoted(pending, read, spelled);
       if (group) this.reduceAt(group, right, { kind: "eval", value: other, record: null });
@@ -2987,7 +3074,7 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
       throw new Unsupported(`unsupported assignable expression: ${kind}`);
     }
     rvalue(node) {
-      var _a, _b, _c;
+      var _a, _b, _c, _d;
       const kind = node == null ? void 0 : node.kind;
       const children = (node == null ? void 0 : node.inner) ?? [];
       if (kind === "MaterializeTemporaryExpr" && children.length === 1) {
@@ -3006,10 +3093,14 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
           this.pendingPun = null;
           if (pun && this.punningMem) {
             const value3 = this.punningMem.readPun(name, pun.access, pun.signed);
+            this.exprTainted = true;
             this.reduce(node, { kind: "read", name, record: null, pun: pun.access, punValue: value3 });
             return [value3, name];
           }
           const value2 = this.load(name);
+          if ((_a = this.punningMem) == null ? void 0 : _a.isEndianTainted(name)) {
+            this.exprTainted = true;
+          }
           this.reduce(node, { kind: "read", name, record: null });
           return [value2, name];
         }
@@ -3088,7 +3179,7 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
         if (kind === "InitListExpr") {
           const value2 = {};
           const storage = array ? children[0] : null;
-          const elements = array ? ((_a = storage == null ? void 0 : storage.array_filler) == null ? void 0 : _a.slice(1)) ?? (storage == null ? void 0 : storage.inner) ?? [] : children;
+          const elements = array ? ((_b = storage == null ? void 0 : storage.array_filler) == null ? void 0 : _b.slice(1)) ?? (storage == null ? void 0 : storage.inner) ?? [] : children;
           for (const [i, item] of record.fields.entries()) {
             const child = elements[i];
             if (!child || child.kind === "ImplicitValueInitExpr") {
@@ -3135,14 +3226,20 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
       if (kind === "ParenExpr" && children.length === 1) {
         [value] = this.rvalue(children[0]);
       } else if (kind === "UnaryOperator" && node.opcode === "&" && children.length === 1) {
-        if (((_b = children[0]) == null ? void 0 : _b.kind) !== "DeclRefExpr" && ((_c = children[0]) == null ? void 0 : _c.kind) !== "MemberExpr" && !this.arrayAccess(stripParentheses(children[0]))) {
+        if (((_c = children[0]) == null ? void 0 : _c.kind) !== "DeclRefExpr" && ((_d = children[0]) == null ? void 0 : _d.kind) !== "MemberExpr" && !this.arrayAccess(stripParentheses(children[0]))) {
           throw new Unsupported("only the address of a variable is supported");
         }
         const name = this.lvalue(children[0]);
         this.reduce(node, { kind: "addr", name });
         return [new Pointer(name), null];
       } else if (kind === "UnaryOperator" && ["+", "-", "~"].includes(node.opcode ?? "") && children.length === 1 && !depth) {
+        const prevTainted = this.exprTainted;
+        this.exprTainted = false;
         const operand = this.numericOperand(children[0]);
+        if (this.exprTainted) {
+          throw new Unsupported("arithmetic on an endian-dependent punned value is not supported");
+        }
+        this.exprTainted = prevTainted;
         const type = this.numericType(node);
         value = this.numbers.evaluate(
           `${node.opcode}(${numberOperand(operand, type)})`,
@@ -3151,7 +3248,13 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
         );
       } else if (kind === "BinaryOperator" && ["+", "-", "*", "/", "%"].includes(node.opcode ?? "") && children.length === 2) {
         rejectPointerOperator(node);
+        const prevTainted = this.exprTainted;
+        this.exprTainted = false;
         const [left, right] = this.operands(node, children);
+        if (this.exprTainted) {
+          throw new Unsupported("arithmetic on an endian-dependent punned value is not supported");
+        }
+        this.exprTainted = prevTainted;
         value = this.operate(node, node.opcode, left, right);
       } else {
         throw new Unsupported(`unsupported expression: ${kind} ${(node == null ? void 0 : node.opcode) ?? ""}`.trimEnd());
@@ -3228,6 +3331,14 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
       const target = this.numericType(node);
       const from = this.numericType(source);
       if (target === from) return value;
+      if (this.exprTainted) {
+        const targetInt = integerNamed(target, this.records);
+        const fromInt = integerNamed(from, this.records);
+        const lossless = targetInt && fromInt && (targetInt.size > fromInt.size && (!fromInt.signed || targetInt.signed) || targetInt.size === fromInt.size && targetInt.signed === fromInt.signed);
+        if (!lossless) {
+          throw new Unsupported("narrowing or sign-changing conversion on an endian-dependent punned value is not supported");
+        }
+      }
       const diagnostic = floatType(node, this.records) ? "non-finite floating-point value" : "floating-point conversion overflows integer type";
       return this.numbers.evaluate(numberOperand(value, from), target, diagnostic);
     }
@@ -3285,7 +3396,8 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
       signs = /* @__PURE__ */ new Map(),
       definition = null,
       typeOnly = false,
-      pun = null
+      pun = null,
+      tainted = false
     }) {
       __publicField(this, "source");
       __publicField(this, "span");
@@ -3313,6 +3425,7 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
       __publicField(this, "definition");
       __publicField(this, "typeOnly");
       __publicField(this, "pun");
+      __publicField(this, "tainted");
       __publicField(this, "global", false);
       /** Whether `using namespace std;` precedes the statement in main. */
       __publicField(this, "opensStd", false);
@@ -3342,6 +3455,7 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
       this.definition = definition;
       this.typeOnly = typeOnly;
       this.pun = pun;
+      this.tainted = tainted;
     }
   }
   function typedParts(node, locate, names, records, conversions = []) {
@@ -3674,6 +3788,7 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
       evaluator.reductions = evaluator.reductions.slice(0, renamed);
     }
     const [value] = evaluator.rvalue(root);
+    const rhsTainted = evaluator.exprTainted;
     evaluator.reductions.push(...designation);
     const typed = typedFor(
       evaluator.reductions.filter((r) => r.kind === "convert").map((r) => r.span)
@@ -3684,6 +3799,8 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
       slot = [0, destination[1]];
     } else if (left === null && value instanceof PoisonedValue) {
       throw new Unsupported("printing an indeterminate byte value is undefined");
+    } else if (left === null && rhsTainted) {
+      throw new Unsupported("printing an endian-dependent punned value is not supported");
     } else if (left === null && isPlainObject(value)) {
       throw new Unsupported("only integer and pointer output is supported");
     } else if (left === null && ((_g = integerType(root)) == null ? void 0 : _g.size) === 1) {
@@ -3711,7 +3828,8 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
       size,
       shape: shapeOf(declared ? variable : root, records),
       signs: file.signs(start, end, toPane),
-      pun: writePun
+      pun: writePun,
+      tainted: rhsTainted
     });
   }
   function analyzeCompound(node, source, toSource, file, context, numbers, punningMem = null) {
@@ -3806,7 +3924,7 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
         }
         return punningMem.writePun(statement.target, statement.pun, statement.value, state);
       }
-      punningMem.writeVar(statement.target, statement.value);
+      punningMem.writeVar(statement.target, statement.value, statement.tainted);
     }
     const after = { ...state };
     if (statement.target !== null) {

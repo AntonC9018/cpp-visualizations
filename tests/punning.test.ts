@@ -109,6 +109,7 @@ test('punning read through larger pointer produces poisoned hex and flips cleanl
   assert.equal(be.activePun?.readResult?.text, '0x2A??????');
   assert.deepEqual(be.paneReadReplacement, {
     stepIndex: readIdx,
+    span: [8, 18],
     originalValue: '0x??????2A',
     resolvedValue: '0x2A??????',
   });
@@ -269,4 +270,170 @@ test('validate rejects malformed punning traces and colorPoisonHexInSvg skips no
     colored,
     '<text>int x = 0x<tspan fill="#ff0000">??????</tspan>2A</text><text>a ? b : c</text><text>?</text>'
   );
+});
+
+test('punning derives clean copies, widenings, and punned-to-punned writes accurately in LE and BE', () => {
+  // Widening read (uint8_t* -> int): LE gets 4, BE gets 1
+  const widened = traceSource(
+    `
+      int a{ 16909060 };
+      uint8_t* p = reinterpret_cast<uint8_t*>(&a);
+      int x = *p;
+    `,
+    { punning: true }
+  );
+  assert.equal(widened.steps.at(-1)!.values.x, 4);
+  const widBe = simulatePunningTrace(widened, widened.steps.length - 1, false);
+  assert.equal(widBe.varAfter.get('x')?.text, '1');
+
+  // Clean punned read copied to another variable: LE 513 -> 513, BE 258 -> 258
+  const copied = traceSource(
+    `
+      uint8_t a{ 1 };
+      uint8_t c{ 2 };
+      uint16_t* p = reinterpret_cast<uint16_t*>(&a);
+      uint16_t x = *p;
+      uint16_t y = x;
+    `,
+    { punning: true }
+  );
+  assert.equal(copied.steps.at(-1)!.values.y, 513);
+  const copyBe = simulatePunningTrace(copied, copied.steps.length - 1, false);
+  assert.equal(copyBe.varAfter.get('x')?.text, '258');
+  assert.equal(copyBe.varAfter.get('y')?.text, '258');
+
+  // Punned read directly into punned write (*q = *p): LE copies 513, BE copies 258
+  const punToPun = traceSource(
+    `
+      uint8_t a{ 1 };
+      uint8_t c{ 2 };
+      uint8_t d{ 0 };
+      uint8_t e{ 0 };
+      uint16_t* p = reinterpret_cast<uint16_t*>(&a);
+      uint16_t* q = reinterpret_cast<uint16_t*>(&d);
+      *q = *p;
+    `,
+    { punning: true }
+  );
+  const p2pLe = simulatePunningTrace(punToPun, punToPun.steps.length - 1, true);
+  assert.equal(p2pLe.varAfter.get('d')?.text, '1');
+  assert.equal(p2pLe.varAfter.get('e')?.text, '2');
+  const p2pBe = simulatePunningTrace(punToPun, punToPun.steps.length - 1, false);
+  assert.equal(p2pBe.varAfter.get('d')?.text, '1');
+  assert.equal(p2pBe.varAfter.get('e')?.text, '2');
+});
+
+test('punning rejects arithmetic, narrowing conversions, and cout on endian-dependent punned values', () => {
+  assert.throws(
+    () =>
+      traceSource(
+        'uint8_t a{ 1 }; uint8_t c{ 2 }; uint16_t* p = reinterpret_cast<uint16_t*>(&a); uint16_t x = *p + 1;',
+        { punning: true }
+      ),
+    Unsupported
+  );
+  assert.throws(
+    () =>
+      traceSource(
+        'uint8_t a{ 1 }; uint8_t c{ 2 }; uint16_t* p = reinterpret_cast<uint16_t*>(&a); std::cout << *p;',
+        { punning: true }
+      ),
+    Unsupported
+  );
+  assert.throws(
+    () =>
+      traceSource(
+        'int a{ 16909060 }; uint8_t* p = reinterpret_cast<uint8_t*>(&a); int8_t x = *p;',
+        { punning: true }
+      ),
+    Unsupported
+  );
+  assert.throws(
+    () =>
+      traceSource(
+        'uint8_t a{ 5 }; int* b = reinterpret_cast<int*>(&a); *b = 300; int y = a + 1;',
+        { punning: true }
+      ),
+    Unsupported
+  );
+});
+
+test('simulator does not corrupt undeclared variables written before their declaration', () => {
+  const trace = traceSource(
+    `
+      uint8_t a{ 1 };
+      int* b = reinterpret_cast<int*>(&a);
+      uint8_t c{ 2 };
+      b = reinterpret_cast<int*>(&c);
+      *b = 300;
+      uint8_t d{ 3 };
+    `,
+    { punning: true }
+  );
+  const writeIdx = trace.steps.findIndex(s => s.op?.kind === 'write' && s.op.pun);
+  assert.ok(writeIdx > 0);
+  const beforeDecl = simulatePunningTrace(trace, writeIdx, true);
+  assert.equal(beforeDecl.varAfter.get('d'), null);
+  assert.equal(beforeDecl.corruptedVars.has('d'), false);
+
+  const afterDecl = simulatePunningTrace(trace, trace.steps.length - 1, true);
+  assert.equal(afterDecl.varAfter.get('d')?.text, '3');
+  assert.equal(afterDecl.corruptedVars.has('d'), false);
+});
+
+test('validate rejects mutated punning traces (wrong via, target, type, byte values, or address substring)', () => {
+  const writeTrace = traceSource(
+    `
+      uint8_t a{ 5 };
+      uint8_t c{ 26 };
+      int* b = reinterpret_cast<int*>(&a);
+      int* q = reinterpret_cast<int*>(&c);
+      *b = 300;
+    `,
+    { punning: true }
+  );
+  const wIdx = writeTrace.steps.length - 1;
+
+  // Wrong pun.via pointing to a different target
+  const wrongVia = structuredClone(writeTrace);
+  (wrongVia.steps[wIdx].op as { pun: { via: string } }).pun.via = 'q';
+  assert.throws(() => validate(wrongVia), FormatError);
+
+  // Wrong op.name not matching via's target
+  const wrongName = structuredClone(writeTrace);
+  (wrongName.steps[wIdx].op as { name: string }).name = 'c';
+  assert.throws(() => validate(wrongName), FormatError);
+
+  // Mismatched pun.type vs pointer's declared type
+  const wrongType = structuredClone(writeTrace);
+  (wrongType.steps[wIdx].op as { pun: { type: string; size: number } }).pun = {
+    type: 'uint8_t',
+    size: 1,
+    via: 'b',
+  } as unknown as { type: string; size: number };
+  assert.throws(() => validate(wrongType), FormatError);
+
+  // Inconsistent stored value after punning write
+  const wrongValue = structuredClone(writeTrace);
+  wrongValue.steps[wIdx].values.a = 99;
+  assert.throws(() => validate(wrongValue), FormatError);
+
+  // Address substring spoofing (*164 must not pass for address 64)
+  const badAddr = structuredClone(writeTrace);
+  const derefIdx = badAddr.steps.findIndex(s => s.op?.kind === 'deref');
+  badAddr.steps[derefIdx - 1].pane = '*164 = 300';
+  badAddr.steps[derefIdx].pane = '*164 = 300';
+  (badAddr.steps[derefIdx].op as { span: [number, number] }).span = [0, 4];
+  assert.throws(() => validate(badAddr), FormatError);
+
+  // Poisoned hex width mismatch on punning read
+  const readTrace = traceSource(
+    'uint8_t a{ 42 }; int c{ 10 }; int* b = reinterpret_cast<int*>(&a); int x = *b;',
+    { punning: true }
+  );
+  const rIdx = readTrace.steps.findIndex(s => s.op?.kind === 'read' && s.op.pun);
+  const badReadHex = structuredClone(readTrace);
+  (badReadHex.steps[rIdx].op as { value: string }).value = '0x??2A';
+  badReadHex.steps[rIdx].pane = badReadHex.steps[rIdx].pane.replace('0x??????2A', '0x??2A');
+  assert.throws(() => validate(badReadHex), FormatError);
 });

@@ -128,8 +128,12 @@ natural-aligned order on a flush byte strip with hatched `??` alignment padding 
 Little-endian / Big-endian switch. A HUD reticle frames the pointer's dereference window; larger
 out-of-bounds accesses trigger a `⚠ UB` caliper and mark overwritten padding or neighbor variables
 as corrupted, while reading indeterminate padding bytes produces poisoned hex values such as
-`0x??????2A` (LE) or `0x2A??????` (BE). Cannot be combined with `--bits`; structs, arrays, floats
-and references are rejected.
+`0x??????2A` (LE) or `0x2A??????` (BE). Because C++ constant evaluation forbids `reinterpret_cast`
+and type-punning UB, `--punning` traces skip Clang's `constexpr` replay and instead verify
+byte-level transitions in `PunningMemory` and `trace_format.ts`. Arithmetic and `std::cout` on
+endian-dependent punned values are rejected so every valid trace flips accurately between
+Little-endian and Big-endian. Cannot be combined with `--bits`; structs, arrays, floats and
+references are rejected.
 
 A brace list of plain values (`A a { 1, 2 };`) is stored as spelled, with no step that only
 respaces it, and so is a typed one (`A{ 1, 2 }`); a designated list evaluates to its values.

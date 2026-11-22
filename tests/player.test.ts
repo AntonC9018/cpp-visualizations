@@ -889,44 +889,49 @@ test('punning view renders write UB, HUD reticle, and live endian switch in both
     { punning: true }
   );
   const errors: string[] = [];
-  page.on('pageerror', error => errors.push(error.message));
-  for (const theme of ['dark', 'light'] as const) {
-    await page.setContent(
-      PAGE.replace(trace, JSON.stringify(generated).replace(/</g, '\\u003c')).replace(
-        'data-theme="dark"',
-        `data-theme="${theme}"`
-      )
-    );
-    await page.evaluate(() => window.CourseVisualization!.scan());
-    await page.waitForSelector('.cv-player');
-    const le = await page.evaluate(() => {
-      const p = (document.querySelector('.course-visualization') as PlayerElement).cvPlayer;
-      for (let i = 0; i < p.m.steps.length; i++) {
-        p.settle(i);
-        if (/NaN|undefined/.test(p.svg.innerHTML)) throw new Error(`invalid SVG at step ${i}`);
-      }
-      return {
-        reticles: p.svg.querySelectorAll('.cv-pun-reticle').length,
-        ubBadges: p.svg.querySelectorAll('.cv-ub-badge').length,
-        texts: [...p.svg.querySelectorAll('text')].map(el => el.textContent ?? ''),
-      };
-    });
-    assert.equal(le.reticles, 1);
-    assert.equal(le.ubBadges, 1);
-    assert.ok(le.texts.includes('44') && le.texts.includes('1') && le.texts.includes('2C'));
-    assert.ok(le.texts.includes('⚠ UB'));
+  const onError = (error: Error) => errors.push(error.message);
+  page.on('pageerror', onError);
+  try {
+    for (const theme of ['dark', 'light'] as const) {
+      await page.setContent(
+        PAGE.replace(trace, JSON.stringify(generated).replace(/</g, '\\u003c')).replace(
+          'data-theme="dark"',
+          `data-theme="${theme}"`
+        )
+      );
+      await page.evaluate(() => window.CourseVisualization!.scan());
+      await page.waitForSelector('.cv-player');
+      const le = await page.evaluate(() => {
+        const p = (document.querySelector('.course-visualization') as PlayerElement).cvPlayer;
+        for (let i = 0; i < p.m.steps.length; i++) {
+          p.settle(i);
+          if (/NaN|undefined/.test(p.svg.innerHTML)) throw new Error(`invalid SVG at step ${i}`);
+        }
+        return {
+          reticles: p.svg.querySelectorAll('.cv-pun-reticle').length,
+          ubBadges: p.svg.querySelectorAll('.cv-ub-badge').length,
+          texts: [...p.svg.querySelectorAll('text')].map(el => el.textContent ?? ''),
+        };
+      });
+      assert.equal(le.reticles, 1);
+      assert.equal(le.ubBadges, 1);
+      assert.ok(le.texts.includes('44') && le.texts.includes('1') && le.texts.includes('2C'));
+      assert.ok(le.texts.includes('⚠ UB'));
 
-    // Flip to Big-endian live
-    await page.getByRole('button', { name: 'Big-endian' }).click();
-    const beTexts = await page.evaluate(() => {
-      const p = (document.querySelector('.course-visualization') as PlayerElement).cvPlayer;
-      if (/NaN|undefined/.test(p.svg.innerHTML)) throw new Error('invalid BE SVG');
-      return [...p.svg.querySelectorAll('text')].map(el => el.textContent ?? '');
-    });
-    assert.ok(!beTexts.includes('44'), 'LE value 44 disappears in BE');
-    assert.ok(beTexts.includes('0') && beTexts.includes('2C'));
+      // Flip to Big-endian live
+      await page.getByRole('button', { name: 'Big-endian' }).click();
+      const beTexts = await page.evaluate(() => {
+        const p = (document.querySelector('.course-visualization') as PlayerElement).cvPlayer;
+        if (/NaN|undefined/.test(p.svg.innerHTML)) throw new Error('invalid BE SVG');
+        return [...p.svg.querySelectorAll('text')].map(el => el.textContent ?? '');
+      });
+      assert.ok(!beTexts.includes('44'), 'LE value 44 disappears in BE');
+      assert.ok(beTexts.includes('0') && beTexts.includes('2C'));
+    }
+    assert.deepEqual(errors, []);
+  } finally {
+    page.off('pageerror', onError);
   }
-  assert.deepEqual(errors, []);
 });
 
 test('punning view updates poisoned hex reads live across LE and BE and routes 1-byte clean store to number', async () => {
@@ -940,59 +945,64 @@ test('punning view updates poisoned hex reads live across LE and BE and routes 1
     { punning: true }
   );
   const errors: string[] = [];
-  page.on('pageerror', error => errors.push(error.message));
-  await page.setContent(PAGE.replace(trace, JSON.stringify(poisoned).replace(/</g, '\\u003c')));
-  await page.evaluate(() => window.CourseVisualization!.scan());
-  await page.waitForSelector('.cv-player');
-  const readLe = await page.evaluate(() => {
-    const p = (document.querySelector('.course-visualization') as PlayerElement).cvPlayer;
-    p.end();
-    return {
-      texts: [...p.svg.querySelectorAll('text')].map(el => el.textContent ?? ''),
-      tspans: [...p.svg.querySelectorAll('tspan')].map(el => el.textContent ?? ''),
-    };
-  });
-  assert.ok(readLe.texts.includes('0x??????2A'));
-  assert.ok(readLe.tspans.includes('??????'));
+  const onError = (error: Error) => errors.push(error.message);
+  page.on('pageerror', onError);
+  try {
+    await page.setContent(PAGE.replace(trace, JSON.stringify(poisoned).replace(/</g, '\\u003c')));
+    await page.evaluate(() => window.CourseVisualization!.scan());
+    await page.waitForSelector('.cv-player');
+    const readLe = await page.evaluate(() => {
+      const p = (document.querySelector('.course-visualization') as PlayerElement).cvPlayer;
+      p.end();
+      return {
+        texts: [...p.svg.querySelectorAll('text')].map(el => el.textContent ?? ''),
+        tspans: [...p.svg.querySelectorAll('tspan')].map(el => el.textContent ?? ''),
+      };
+    });
+    assert.ok(readLe.texts.includes('0x??????2A'));
+    assert.ok(readLe.tspans.includes('??????'));
 
-  await page.getByRole('button', { name: 'Big-endian' }).click();
-  const readBe = await page.evaluate(() => {
-    const p = (document.querySelector('.course-visualization') as PlayerElement).cvPlayer;
-    return {
-      texts: [...p.svg.querySelectorAll('text')].map(el => el.textContent ?? ''),
-      tspans: [...p.svg.querySelectorAll('tspan')].map(el => el.textContent ?? ''),
-    };
-  });
-  assert.ok(readBe.texts.includes('0x2A??????'));
-  assert.ok(readBe.tspans.includes('??????'));
+    await page.getByRole('button', { name: 'Big-endian' }).click();
+    const readBe = await page.evaluate(() => {
+      const p = (document.querySelector('.course-visualization') as PlayerElement).cvPlayer;
+      return {
+        texts: [...p.svg.querySelectorAll('text')].map(el => el.textContent ?? ''),
+        tspans: [...p.svg.querySelectorAll('tspan')].map(el => el.textContent ?? ''),
+      };
+    });
+    assert.ok(readBe.texts.includes('0x2A??????'));
+    assert.ok(readBe.tspans.includes('??????'));
 
-  // Clean 1-byte store (`uint8_t x = *b;`) uses native scalar transfer into x's number center, not a byte tile at y+70
-  const smaller = traceSource(
-    `
-      int a{ 131077 };
-      uint8_t* b = reinterpret_cast<uint8_t*>(&a);
-      uint8_t x = *b;
-    `,
-    { punning: true }
-  );
-  await page.setContent(PAGE.replace(trace, JSON.stringify(smaller).replace(/</g, '\\u003c')));
-  await page.evaluate(() => window.CourseVisualization!.scan());
-  await page.waitForSelector('.cv-player');
-  const motion = await page.evaluate(() => {
-    const p = (document.querySelector('.course-visualization') as PlayerElement).cvPlayer;
-    const last = p.m.steps.length - 1;
-    p.inspect(last, 0.8);
-    const paths = [...p.svg.querySelectorAll('animateMotion')].map(el => el.getAttribute('path') ?? '');
-    const xBox = p.g.box('x')!;
-    return { paths, targetY: xBox.y + xBox.h / 2, byteRowY: xBox.y + 70 };
-  });
-  assert.equal(motion.paths.length, 1);
-  assert.ok(
-    motion.paths[0].endsWith(` ${motion.targetY}`),
-    `expected flight to number center y=${motion.targetY}, got ${motion.paths[0]}`
-  );
-  assert.ok(!motion.paths[0].endsWith(` ${motion.byteRowY}`));
-  assert.deepEqual(errors, []);
+    // Clean 1-byte store (`uint8_t x = *b;`) uses native scalar transfer into x's number center, not a byte tile at y+70
+    const smaller = traceSource(
+      `
+        int a{ 131077 };
+        uint8_t* b = reinterpret_cast<uint8_t*>(&a);
+        uint8_t x = *b;
+      `,
+      { punning: true }
+    );
+    await page.setContent(PAGE.replace(trace, JSON.stringify(smaller).replace(/</g, '\\u003c')));
+    await page.evaluate(() => window.CourseVisualization!.scan());
+    await page.waitForSelector('.cv-player');
+    const motion = await page.evaluate(() => {
+      const p = (document.querySelector('.course-visualization') as PlayerElement).cvPlayer;
+      const last = p.m.steps.length - 1;
+      p.inspect(last, 0.8);
+      const paths = [...p.svg.querySelectorAll('animateMotion')].map(el => el.getAttribute('path') ?? '');
+      const xBox = p.g.box('x')!;
+      return { paths, targetY: xBox.y + xBox.h / 2, byteRowY: xBox.y + 70 };
+    });
+    assert.equal(motion.paths.length, 1);
+    assert.ok(
+      motion.paths[0].endsWith(` ${motion.targetY}`),
+      `expected flight to number center y=${motion.targetY}, got ${motion.paths[0]}`
+    );
+    assert.ok(!motion.paths[0].endsWith(` ${motion.byteRowY}`));
+    assert.deepEqual(errors, []);
+  } finally {
+    page.off('pageerror', onError);
+  }
 });
 
 

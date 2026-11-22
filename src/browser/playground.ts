@@ -498,7 +498,10 @@ export function initPlayground(root: HTMLElement): PlaygroundController {
 
   function setFlag(flag: Flag, on: boolean): void {
     if (Boolean(state.flags[flag]) === on) return;
-    state.flags = { ...state.flags, [flag]: on };
+    const next = { ...state.flags, [flag]: on };
+    if (on && flag === 'punning') next.bits = false;
+    if (on && flag === 'bits') next.punning = false;
+    state.flags = next;
     renderStrings();
     syncUrl();
     void run();

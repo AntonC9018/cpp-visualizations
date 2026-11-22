@@ -6,6 +6,7 @@
 // `player/README.md` documents every field.
 
 import { arrayType, codeName, elementLabel } from './arrays.ts';
+import { type ByteValue, encodeBytes, formatByteSlice } from './bytes.ts';
 import { COMPOUND_OPERATORS, openCompound } from './compound.ts';
 import { displayFloat } from './floats.ts';
 import { INTEGERS, integerLiteral, integerSpelled } from './integers.ts';
@@ -777,6 +778,22 @@ interface StorageContext {
   cellsOf(name: string): string[];
 }
 
+function bytesFromCellValue(value: unknown, size: number): ByteValue[] | null {
+  if (value === null) return null;
+  if (value === UNKNOWN) return Array.from({ length: size }, () => '?');
+  if (typeof value === 'number') return encodeBytes(BigInt(value), size, true);
+  if (typeof value === 'string' && POISONED_HEX.test(value) && value.length === 2 + size * 2) {
+    const out: ByteValue[] = [];
+    // POISONED_HEX is MSB-first; reverse pairs into little-endian address order.
+    for (let k = 0; k < size; k++) {
+      const pair = value.slice(2 + (size - 1 - k) * 2, 2 + (size - k) * 2);
+      out.push(pair === '??' ? '?' : Number.parseInt(pair, 16));
+    }
+    return out;
+  }
+  return null;
+}
+
 function checkMemory(
   op: Record<string, any>,
   step: Record<string, any>,
@@ -795,9 +812,55 @@ function checkMemory(
     return;
   }
   if (Object.hasOwn(op, 'pun')) {
-    // Punning reads/writes access `op.pun.size` raw bytes at `name`'s address, not `name`'s scalar value.
+    // Punning reads/writes access `op.pun.size` raw bytes at `name`'s address via `op.pun.via`.
+    check(
+      previous.targets[op.pun.via] === name,
+      `${where}.pun.via`,
+      `${op.pun.via} does not point to ${name}`
+    );
     const items = storedItems(op.value, where, true);
     check(items.length === 1, `${where}.value`, 'expected a single scalar value for a punning access');
+    if (POISONED_HEX.test(items[0])) {
+      check(
+        items[0].length === 2 + op.pun.size * 2,
+        `${where}.value`,
+        `poisoned hex ${pyRepr(items[0])} does not match ${op.pun.size} bytes`
+      );
+    }
+    if (kind === 'write') {
+      const literal = integerLiteral(items[0]);
+      check(literal !== null, `${where}.value`, 'a punning write requires an integer value');
+      const start = storage.addresses[name];
+      const end = start + op.pun.size;
+      const written = encodeBytes(literal!, op.pun.size, true);
+      for (const v of storage.variables) {
+        if (v.address >= end || v.address + v.size <= start) continue;
+        if (previous.values[v.name] === null) continue;
+        check(
+          v.kind === 'int',
+          `${where}.values.${v.name}`,
+          `punning write cannot overwrite non-integer variable ${v.name}`
+        );
+        const beforeBytes = bytesFromCellValue(previous.values[v.name], v.size);
+        const info = v.kind === 'int' ? integerSpelled(v.type ?? '', storage.aliases) : null;
+        if (beforeBytes && info) {
+          const afterBytes = [...beforeBytes];
+          for (let k = 0; k < v.size; k++) {
+            const addr = v.address + k;
+            if (addr >= start && addr < end) afterBytes[k] = written[addr - start];
+          }
+          const decoded = formatByteSlice(afterBytes, info.signed, true);
+          if (decoded) {
+            const expected = decoded.poisoned ? decoded.text : decoded.numeric;
+            check(
+              Object.is(step.values[v.name], expected),
+              `${where}.values.${v.name}`,
+              `expected ${pyRepr(expected)} after punning write, got ${pyRepr(step.values[v.name])}`
+            );
+          }
+        }
+      }
+    }
     return;
   }
   const cells = storage.cellsOf(name);
@@ -882,6 +945,10 @@ function checkReferenceOp(
   }
 }
 
+function matchesDereferencedAddress(text: string, addr: string): boolean {
+  return new RegExp(`\\*\\s*(?:\\(\\s*)?${addr}(?!\\d)`).test(text);
+}
+
 function checkPunningAccess(
   pun: unknown,
   storage: StorageContext,
@@ -893,10 +960,14 @@ function checkPunningAccess(
   natural(pun.size, `${where}.size`, true);
   const info = integerSpelled(pun.type, storage.aliases);
   check(info !== null && info.size === pun.size, where, `${pun.type} is not a ${pun.size}-byte integer type`);
+  const ptrCell = typeof pun.via === 'string' ? storage.cells[pun.via] : undefined;
+  check(ptrCell?.kind === 'ptr', `${where}.via`, 'expected a pointer variable name');
+  const ptrMatch = /^(?:const\s+)?(.+?)\s*\*$/.exec((ptrCell?.type ?? '').trim());
+  const ptrPointee = ptrMatch && !ptrMatch[1].includes('*') ? integerSpelled(ptrMatch[1].trim(), storage.aliases) : null;
   check(
-    typeof pun.via === 'string' && storage.cells[pun.via]?.kind === 'ptr',
-    `${where}.via`,
-    'expected a pointer variable name'
+    ptrPointee !== null && info !== null && ptrPointee.size === info.size && ptrPointee.signed === info.signed,
+    where,
+    `${pun.via} (${ptrCell?.type}) does not match punning access type ${pun.type}`
   );
 }
 
@@ -922,7 +993,7 @@ function unchangedPane(
     if (Object.hasOwn(op, 'pun')) {
       const addr = String(storage.addresses[op.name]);
       check(
-        destText.includes('*') && destText.includes(addr),
+        matchesDereferencedAddress(destText, addr),
         `${where}.destination`,
         `does not cover dereferenced address ${addr}`
       );
@@ -1021,7 +1092,7 @@ function checkOperation(
       const [s, e] = checkSpan(op.span, previous.pane, `${where}.span`);
       const addr = String(storage.addresses[op.target]);
       const covered = previous.pane.slice(s, e);
-      check(covered.includes('*') && covered.includes(addr), `${where}.span`, `does not cover *${addr}`);
+      check(matchesDereferencedAddress(covered, addr), `${where}.span`, `does not cover *${addr}`);
       return;
     }
   }
@@ -1071,7 +1142,7 @@ function checkChanges(
     const start = storage.addresses[op.name];
     const end = start + op.pun.size;
     for (const v of storage.variables) {
-      if (v.address < end && v.address + v.size > start) {
+      if (v.kind === 'int' && v.address < end && v.address + v.size > start) {
         for (const cell of storage.cellsOf(v.name)) written.add(cell);
       }
     }

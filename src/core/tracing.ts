@@ -115,6 +115,7 @@ class PunningMemory {
   private readonly specs = new Map<string, PunningVarSpec>();
   private readonly mem = new Map<number, ByteValue>();
   private readonly live = new Set<string>();
+  private readonly endianTainted = new Set<string>();
 
   constructor(specs: readonly PunningVarSpec[]) {
     for (const spec of specs) {
@@ -123,14 +124,23 @@ class PunningMemory {
     }
   }
 
+  isEndianTainted(name: string): boolean {
+    return this.endianTainted.has(name);
+  }
+
   private byteAt(addr: number): ByteValue {
     return this.mem.has(addr) ? this.mem.get(addr)! : '?';
   }
 
-  writeVar(name: string, value: Value): void {
+  writeVar(name: string, value: Value, tainted = false): void {
     const spec = this.specs.get(name);
     if (!spec) return;
     this.live.add(name);
+    if (tainted || value instanceof PoisonedValue) {
+      this.endianTainted.add(name);
+    } else {
+      this.endianTainted.delete(name);
+    }
     if (value === null) {
       for (let k = 0; k < spec.size; k++) this.mem.set(spec.address + k, '?');
       return;
@@ -185,6 +195,7 @@ class PunningMemory {
       if (spec.pointer) {
         throw new Unsupported(`overwriting pointer ${spec.name} through a punned write is outside this category`);
       }
+      this.endianTainted.add(spec.name);
       const slice: ByteValue[] = [];
       for (let k = 0; k < spec.size; k++) slice.push(this.byteAt(spec.address + k));
       const decoded = formatByteSlice(slice, spec.signed, true);
@@ -484,6 +495,7 @@ class Reductions {
   private readonly file: SourceFile;
   private readonly punningMem: PunningMemory | null;
   private pendingPun: { access: PunningAccess; signed: boolean } | null = null;
+  exprTainted = false;
 
   constructor(
     state: State,
@@ -586,6 +598,9 @@ class Reductions {
     if (held instanceof PoisonedValue) {
       throw new Unsupported('arithmetic on an indeterminate byte value is undefined');
     }
+    if (this.punningMem?.isEndianTainted(target)) {
+      throw new Unsupported('arithmetic on an endian-dependent punned value is not supported');
+    }
     if (typeof held !== 'number') {
       throw new Unsupported('pointer arithmetic and comparison are not supported');
     }
@@ -595,7 +610,13 @@ class Reductions {
     // The opened pane reads `a = 5 + b`: the operator stands one space after the copy of `a`.
     const spelled: Span = [copy[1] + 1, copy[1] + 1 + operator.length];
     const pending = operandOf(right);
+    const prevTainted = this.exprTainted;
+    this.exprTainted = false;
     const read = this.numericOperand(pending.inner);
+    if (this.exprTainted) {
+      throw new Unsupported('arithmetic on an endian-dependent punned value is not supported');
+    }
+    this.exprTainted = prevTainted;
     const operand = this.convertedAt(copy, held, computation, left, spelled);
     const other = this.promoted(pending, read, spelled);
     if (group) this.reduceAt(group, right, { kind: 'eval', value: other, record: null });
@@ -800,10 +821,14 @@ class Reductions {
         this.pendingPun = null;
         if (pun && this.punningMem) {
           const value = this.punningMem.readPun(name, pun.access, pun.signed);
+          this.exprTainted = true;
           this.reduce(node, { kind: 'read', name, record: null, pun: pun.access, punValue: value });
           return [value, name];
         }
         const value = this.load(name);
+        if (this.punningMem?.isEndianTainted(name)) {
+          this.exprTainted = true;
+        }
         this.reduce(node, { kind: 'read', name, record: null });
         return [value, name];
       }
@@ -980,7 +1005,13 @@ class Reductions {
       children.length === 1 &&
       !depth
     ) {
+      const prevTainted = this.exprTainted;
+      this.exprTainted = false;
       const operand = this.numericOperand(children[0]);
+      if (this.exprTainted) {
+        throw new Unsupported('arithmetic on an endian-dependent punned value is not supported');
+      }
+      this.exprTainted = prevTainted;
       const type = this.numericType(node);
       value = this.numbers.evaluate(
         `${node.opcode}(${numberOperand(operand, type)})`,
@@ -993,7 +1024,13 @@ class Reductions {
       children.length === 2
     ) {
       rejectPointerOperator(node);
+      const prevTainted = this.exprTainted;
+      this.exprTainted = false;
       const [left, right] = this.operands(node, children);
+      if (this.exprTainted) {
+        throw new Unsupported('arithmetic on an endian-dependent punned value is not supported');
+      }
+      this.exprTainted = prevTainted;
       value = this.operate(node, node.opcode!, left, right);
     } else {
       throw new Unsupported(`unsupported expression: ${kind} ${node?.opcode ?? ''}`.trimEnd());
@@ -1079,6 +1116,18 @@ class Reductions {
     const target = this.numericType(node);
     const from = this.numericType(source);
     if (target === from) return value;
+    if (this.exprTainted) {
+      const targetInt = integerNamed(target, this.records);
+      const fromInt = integerNamed(from, this.records);
+      const lossless =
+        targetInt &&
+        fromInt &&
+        ((targetInt.size > fromInt.size && (!fromInt.signed || targetInt.signed)) ||
+          (targetInt.size === fromInt.size && targetInt.signed === fromInt.signed));
+      if (!lossless) {
+        throw new Unsupported('narrowing or sign-changing conversion on an endian-dependent punned value is not supported');
+      }
+    }
     const diagnostic = floatType(node, this.records)
       ? 'non-finite floating-point value'
       : 'floating-point conversion overflows integer type';
@@ -1161,6 +1210,7 @@ export class Statement {
   definition: [string, string] | null;
   typeOnly: boolean;
   pun: PunningAccess | null;
+  tainted: boolean;
   global = false;
   /** Whether `using namespace std;` precedes the statement in main. */
   opensStd = false;
@@ -1192,6 +1242,7 @@ export class Statement {
     definition = null,
     typeOnly = false,
     pun = null,
+    tainted = false,
   }: {
     source: string;
     span: Span | null;
@@ -1219,6 +1270,7 @@ export class Statement {
     definition?: [string, string] | null;
     typeOnly?: boolean;
     pun?: PunningAccess | null;
+    tainted?: boolean;
   }) {
     this.source = source;
     this.span = span;
@@ -1246,6 +1298,7 @@ export class Statement {
     this.definition = definition;
     this.typeOnly = typeOnly;
     this.pun = pun;
+    this.tainted = tainted;
   }
 }
 
@@ -1672,6 +1725,7 @@ function analyzeStatement(
     evaluator.reductions = evaluator.reductions.slice(0, renamed);
   }
   const [value] = evaluator.rvalue(root);
+  const rhsTainted = evaluator.exprTainted;
   evaluator.reductions.push(...designation);
   const typed = typedFor(
     evaluator.reductions.filter(r => r.kind === 'convert').map(r => r.span)
@@ -1682,6 +1736,8 @@ function analyzeStatement(
     slot = [0, destination[1]];
   } else if (left === null && value instanceof PoisonedValue) {
     throw new Unsupported('printing an indeterminate byte value is undefined');
+  } else if (left === null && rhsTainted) {
+    throw new Unsupported('printing an endian-dependent punned value is not supported');
   } else if (left === null && isPlainObject(value)) {
     throw new Unsupported('only integer and pointer output is supported');
   } else if (left === null && integerType(root)?.size === 1) {
@@ -1710,6 +1766,7 @@ function analyzeStatement(
     shape: shapeOf(declared ? variable : root, records),
     signs: file.signs(start, end, toPane),
     pun: writePun,
+    tainted: rhsTainted,
   });
 }
 
@@ -1832,7 +1889,7 @@ export function storeResult(
       }
       return punningMem.writePun(statement.target, statement.pun, statement.value, state);
     }
-    punningMem.writeVar(statement.target, statement.value);
+    punningMem.writeVar(statement.target, statement.value, statement.tainted);
   }
   const after = { ...state };
   if (statement.target !== null) {

@@ -65,7 +65,8 @@ function patchTypedParts(
 
 /**
  * Patch `step` and `prev` panes when toggling Little-endian / Big-endian changes the value
- * produced by a punning read (or a read of a poisoned variable).
+ * produced by a punning read (or a read of a poisoned/endian-dependent variable).
+ * Uses the exact span recorded by `simulatePunningTrace`, never a substring search.
  */
 function resolveEndianContext(c: SceneContext, sim: PunningSimState): SceneContext {
   const patchStep = (
@@ -74,30 +75,19 @@ function resolveEndianContext(c: SceneContext, sim: PunningSimState): SceneConte
     rep: PunningSimState['paneReadReplacement']
   ): TraceStep | null => {
     if (!st || !rep || rep.resolvedValue === rep.originalValue) return st;
-    const { originalValue, resolvedValue } = rep;
-    const delta = resolvedValue.length - originalValue.length;
-    const op = st.op;
-    let at = -1;
-    if (idx === rep.stepIndex && op?.kind === 'read') {
-      const start = op.span[0];
-      if (st.pane.startsWith(originalValue, start)) at = start;
-      else if (st.pane.startsWith(`(${originalValue})`, start)) at = start + 1;
-    } else if (op && 'span' in op && st.pane.slice(op.span[0], op.span[1]) === originalValue) {
-      at = op.span[0];
-    } else if (st.expr) {
-      const found = st.pane.indexOf(originalValue, st.expr[0]);
-      if (found >= 0 && found + originalValue.length <= st.expr[1]) at = found;
-    }
-    if (at < 0) return st;
+    const { originalValue, resolvedValue, span } = rep;
+    const [at, end] = span;
+    if (st.pane.slice(at, end) !== originalValue) return st;
 
-    const patchedPane =
-      st.pane.slice(0, at) + resolvedValue + st.pane.slice(at + originalValue.length);
+    const delta = resolvedValue.length - originalValue.length;
+    const patchedPane = st.pane.slice(0, at) + resolvedValue + st.pane.slice(end);
     const patchedExpr = st.expr ? shiftSpan(st.expr, at, originalValue.length, delta) : st.expr;
     const patchedTypes = patchTypedParts(st.types, at, originalValue.length, delta);
+    const op = st.op;
     let patchedOp = op;
-    if (idx === rep.stepIndex && op?.kind === 'read') {
+    if (idx === rep.stepIndex && (op?.kind === 'read' || op?.kind === 'convert' || op?.kind === 'eval')) {
       patchedOp = { ...op, value: resolvedValue };
-    } else if (op?.kind === 'write' && op.span[0] === at && op.span[1] === at + originalValue.length) {
+    } else if (op?.kind === 'write' && op.span[0] === at && op.span[1] === end) {
       patchedOp = {
         ...op,
         value: resolvedValue,
@@ -289,6 +279,12 @@ function punningArrows(
     return opts.keepBright ? body : dim(c, l.from.name, body);
   };
 
+  const activeArcPtrs = new Set<string>();
+  if (sim.activePun) activeArcPtrs.add(sim.activePun.pun.via);
+  if (sim.storeAfterPunRead) activeArcPtrs.add(sim.storeAfterPunRead.pun.via);
+  if (op?.kind === 'write' && punNames.has(op.name)) activeArcPtrs.add(op.name);
+  if (op?.kind === 'deref' && punNames.has(op.via)) activeArcPtrs.add(op.via);
+
   const now = links(g, step);
   const writesPtr =
     animate && op?.kind === 'write' && g.cellsOf(op.name).some(l => l.kind === 'ptr');
@@ -298,18 +294,18 @@ function punningArrows(
     for (const l of links(g, prev)) {
       out += arcFor(l, {
         ...(changed.has(l.from.name) ? { fadeOut: at } : {}),
-        keepBright: punNames.has(l.from.name),
+        keepBright: activeArcPtrs.has(l.from.name),
       });
     }
     for (const l of now) {
       if (changed.has(l.from.name)) {
-        out += arcFor(l, { grow: at + 0.08, keepBright: punNames.has(l.from.name) });
+        out += arcFor(l, { grow: at + 0.08, keepBright: activeArcPtrs.has(l.from.name) });
       }
     }
     return out;
   }
 
-  let out = now.map(l => arcFor(l, { keepBright: punNames.has(l.from.name) })).join('');
+  let out = now.map(l => arcFor(l, { keepBright: activeArcPtrs.has(l.from.name) })).join('');
   if (animate && op?.kind === 'deref') {
     const l = now.find(link => link.from.name === op.via);
     if (l) {
@@ -351,8 +347,23 @@ function punningScene(rawC: SceneContext): string {
   const isPunWrite = sim.activePun?.kind === 'write';
   const isPunRead = sim.activePun?.kind === 'read';
   const byteTileStore = usesByteTileStore(sim);
-  const activePtrNames = new Set(sim.punPointers.map(p => p.ptrName));
-  const activeTargetNames = new Set(sim.punPointers.map(p => p.targetName));
+  const involvedNames = new Set<string>();
+  if (sim.activePun) {
+    involvedNames.add(sim.activePun.pun.via);
+    involvedNames.add(sim.activePun.targetName);
+  }
+  if (sim.storeAfterPunRead) {
+    involvedNames.add(sim.storeAfterPunRead.destVar.name);
+    involvedNames.add(sim.storeAfterPunRead.pun.via);
+    involvedNames.add(sim.punPointers.find(p => p.ptrName === sim.storeAfterPunRead!.pun.via)?.targetName ?? '');
+  }
+  if (op?.kind === 'write') {
+    const ptr = sim.punPointers.find(p => p.ptrName === op.name);
+    if (ptr) {
+      involvedNames.add(ptr.ptrName);
+      involvedNames.add(ptr.targetName);
+    }
+  }
 
   // 1. Shared byte-accurate memory strip
   const mem = renderByteMemory(c, {
@@ -411,9 +422,8 @@ function punningScene(rawC: SceneContext): string {
       }
       const keepBright =
         isCorrupted ||
-        sim.readForeignVars.has(leaf.name) ||
-        activePtrNames.has(leaf.name) ||
-        activeTargetNames.has(leaf.name);
+        (Boolean(isPunRead) && sim.readForeignVars.has(leaf.name)) ||
+        involvedNames.has(leaf.name);
       return {
         beforeHeader: beforeDec ? { text: beforeDec.text, poisoned: beforeDec.poisoned } : null,
         afterHeader: afterDec ? { text: afterDec.text, poisoned: afterDec.poisoned } : null,
@@ -519,13 +529,24 @@ function punningScene(rawC: SceneContext): string {
     const tileW = 44;
     const tileH = 30;
     const tileGap = 6;
+    const slotCount =
+      stripSource.direction === 'smaller'
+        ? Math.max(stripSource.bytes.length, stripSource.targetSize)
+        : stripSource.bytes.length;
+    const stripW = slotCount * tileW + Math.max(0, slotCount - 1) * tileGap;
     const rhsStart =
       op && 'span' in op
         ? op.span[0]
         : Math.max(0, step.pane.indexOf('= ') + 2);
-    const tilesX = g.tx + rhsStart * g.paneChar;
+    const tilesX = Math.max(
+      g.pane.x + 12,
+      Math.min(g.tx + rhsStart * g.paneChar, g.pane.x + g.pane.w - 12 - stripW)
+    );
+    const count = stripSource.bytes.length;
+    const readStagger = count > 1 ? Math.min(0.08, 0.3 / (count - 1)) : 0;
+    const readDur = Math.max(0.45, Math.min(0.85, at - dep - readStagger * Math.max(0, count - 1)));
 
-    for (let k = 0; k < stripSource.bytes.length; k++) {
+    for (let k = 0; k < count; k++) {
       const addr = stripSource.targetAddress + k;
       const slot = sim.bytes[addr - sim.baseAddress];
       const bval = stripSource.bytes[k];
@@ -552,9 +573,8 @@ function punningScene(rawC: SceneContext): string {
         const ey = stripY + tileH / 2;
         const midY = (sy + ey) / 2;
         const path = `M ${round(sx)} ${round(sy)} C ${round(sx)} ${round(midY)}, ${round(ex)} ${round(midY)}, ${round(ex)} ${round(ey)}`;
-        const dur = 0.85;
-        const begin = dep + k * 0.08;
-        const end = begin + dur;
+        const begin = dep + k * readStagger;
+        const end = begin + readDur;
         const flyCol = isOobSlot ? P.error : P.read;
         wb += `<g opacity="0">${show(end)}${tileMarkup}</g>`;
         flight +=
@@ -562,7 +582,7 @@ function punningScene(rawC: SceneContext): string {
           `<g opacity="0">${fade(0, 1, 0.1, begin)}${hide(end + 0.05)}` +
           rect(-20, -14, 40, 28, P.panel, flyCol, 6, 2) +
           text(0, 6, label, 15, flyCol, 'middle') +
-          `<animateMotion begin="${round(begin)}s" dur="${dur}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
+          `<animateMotion begin="${round(begin)}s" dur="${round(readDur)}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
       } else {
         wb += tileMarkup;
         if (animate && stripSource.mode === 'write') {
