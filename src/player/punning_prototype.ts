@@ -1,16 +1,16 @@
 // PROTOTYPE, throwaway (pointer type punning with larger and smaller pointee types, #60).
-// Clean folded design:
-//   - Plain Lab 4 C++ (no reinterpret_cast), all native step animations active
-//   - Byte-accurate horizontal hex memory strip (reusing bits_view style, no "pad" text)
-//   - Clean overhead pointer arc (no type pill on arrow) landing on a clean scope box around
-//     the exact bytes the pointer covers
-//   - Larger pointer: calm 4-byte scope before write; red spilled bytes + "⚠ UB" ONLY on write
-//   - Clean byte tiles in pane with no tiny sub-labels
+// Clean unified design:
+//   - Plain Lab 4 syntax (no reinterpret_cast), all native animations active
+//   - Byte-accurate horizontal hex memory strip + bits_view byte-order arrow on multi-byte ints
+//   - Clean overhead pointer arc (no type pill) + clean single-line scope box
+//   - Subtle vertical highlight above byte 64 on smaller pointers; subtle veil on untouched bytes
+//   - Per-element write pulse: decimal header and changed byte(s) pulse; untouched bytes stay still
+//   - UB (red spilled bytes, red hazard fill, red overflow border, "⚠ UB") triggers ONLY on write
+//   - Pane shows ONLY the bytes being written (no "(LE)", no repeated value text, no "-> a = ...")
 //
-// Three clean variations (?variant=A|B|C) for the smaller-pointer case (scenarios 3–4):
-//   A: Subtle veil on untouched bytes + clean 4-byte reassembly strip in pane
-//   B: Inline old->new header on `a` + clean LSB->MSB arrow below `a`
-//   C: Minimalist (clean 1-byte scope + dimmed untouched bytes, nothing extra)
+// Two clean pane-strip variations (?variant=A|B):
+//   A: Exact bytes written by the pointer (4 bytes for int*, 1 byte for uint8_t*)
+//   B: Written bytes plus hollow dashed slots for untouched target bytes on smaller pointers
 import type { ExecutionTrace, ScalarVariable, TraceStep } from '../core/trace_format.ts';
 import {
   CHAR,
@@ -94,7 +94,6 @@ interface SimState {
   varBefore: Map<string, number | null>;
   varAfter: Map<string, number | null>;
   corruptedVars: Set<string>;
-  /** True only once the larger pointer actually writes out of bounds. */
   ubTriggered: boolean;
   ptrLive: boolean;
   windowActive: boolean;
@@ -242,7 +241,7 @@ function simulate(meta: PunningMeta, stepIndex: number, littleEndian: boolean): 
 }
 
 // ============================================================================================
-// SCENARIOS (PLAIN LAB 4 CODE — NO reinterpret_cast)
+// SCENARIOS (PLAIN LAB 4 SYNTAX)
 // ============================================================================================
 
 function makeScenario1(): { trace: ExecutionTrace; meta: PunningMeta } {
@@ -625,7 +624,7 @@ function makeScenario3(): { trace: ExecutionTrace; meta: PunningMeta } {
   const meta: PunningMeta = {
     id: 'smaller-five',
     title: '3. Smaller pointer overwrites only byte 64 of int a (a = 5)',
-    subtitle: '*b = 2 changes only byte 64. Flip Little-endian / Big-endian to see a become 2 vs 33554437.',
+    subtitle: '*b = 2 updates only byte 64; bytes 65..67 stay still. Flip Little-endian / Big-endian to see 2 vs 33554437.',
     direction: 'smaller',
     baseAddress: 64,
     totalBytes: 16,
@@ -744,7 +743,7 @@ function makeScenario4(): { trace: ExecutionTrace; meta: PunningMeta } {
   const meta: PunningMeta = {
     id: 'smaller-261',
     title: '4. Smaller pointer leaves upper bytes intact (a = 261, *b = 0)',
-    subtitle: '261 is 05 01 00 00 (LE). *b = 0 clears only byte 64, leaving byte 65 (01) -> a becomes 256.',
+    subtitle: '261 is 05 01 00 00 (LE). *b = 0 zeroes only byte 64, leaving byte 65 (01) -> a becomes 256.',
     direction: 'smaller',
     baseAddress: 64,
     totalBytes: 16,
@@ -772,7 +771,7 @@ const SCENARIOS = [makeScenario1(), makeScenario2(), makeScenario3(), makeScenar
 // SHARED SVG HELPERS + NATIVE TRANSFERS
 // ============================================================================================
 
-type SmallerStyle = 'A' | 'B' | 'C';
+type PaneStyle = 'A' | 'B';
 
 let patternSeq = 0;
 
@@ -818,6 +817,13 @@ function pill(
   return (
     rect(cx - w / 2, cy - h / 2, w, h, fill, stroke, h / 2, 1.8) +
     text(cx, cy + size * 0.35, label, size, ink, 'middle')
+  );
+}
+
+function scaledAt(cx: number, cy: number, inner: string, begin: number): string {
+  return (
+    `<g transform="translate(${round(cx)} ${round(cy)})"><g>${pulse(begin)}` +
+    `<g transform="translate(${round(-cx)} ${round(-cy)})">${inner}</g></g></g>`
   );
 }
 
@@ -941,7 +947,7 @@ function gridTransfers(
 }
 
 // ============================================================================================
-// CLEAN, TONED-DOWN SCOPE BOX AROUND THE BYTES THE POINTER POINTS AT
+// CLEAN SCOPE BOX AROUND THE BYTES THE POINTER POINTS AT
 // ============================================================================================
 
 function targetScopeBox(
@@ -974,10 +980,8 @@ function targetScopeBox(
     const by = gridY - pad;
     const bh = cellH + 2 * pad;
     if (!sim.ubTriggered) {
-      // Before writing: calm, clean 4-byte scope in pointer's color (no red / no UB yet!)
       box += rect(bx, by, bw, bh, 'none', pCol, 5, 3);
     } else {
-      // On/after write: owned slice in write-gold, spilled slice in red — straight clean seam!
       const splitX = ownEnd;
       const calm = rect(bx, by, bw, bh, 'none', pCol, 5, 3);
       const breached =
@@ -987,16 +991,21 @@ function targetScopeBox(
         `<path d="M ${round(splitX)} ${round(by)} H ${round(bx + bw - 5)} Q ${round(bx + bw)} ${round(by)} ${round(bx + bw)} ${round(by + 5)} ` +
         `V ${round(by + bh - 5)} Q ${round(bx + bw)} ${round(by + bh)} ${round(bx + bw - 5)} ${round(by + bh)} H ${round(splitX)}" ` +
         `fill="none" stroke="${P.error}" stroke-width="3.4" stroke-linecap="round"/>`;
-      box += animate && sim.isPunningWrite
-        ? `<g>${hide(at)}${calm}</g><g opacity="0">${show(at)}${breached}</g>`
-        : breached;
+      box +=
+        animate && sim.isPunningWrite
+          ? `<g>${hide(at)}${calm}</g><g opacity="0">${show(at)}${breached}</g>`
+          : breached;
     }
   } else {
-    // Smaller pointer: one clean rounded rectangle around byte 64's cell (no corner ticks, no glow, no slice line)
+    // Smaller pointer: subtle vertical highlight above byte 64 + clean single rounded box on byte 64!
     const splitY = gridY + 48;
     const sby = splitY - 1;
     const sbh = gridY + cellH - splitY + pad + 1;
     const col = hot ? P.write : pCol;
+    box += rect(wLeft + 2, gridY + 2, wWidth - 4, splitY - gridY - 3, col, 'none', 0).replace(
+      'fill=',
+      'fill-opacity="0.14" fill='
+    );
     box += rect(bx, sby, bw, sbh, 'none', col, 4, 3);
   }
 
@@ -1006,16 +1015,16 @@ function targetScopeBox(
   if (isDeref) {
     const cy = meta.direction === 'larger' ? gridY + cellH / 2 : gridY + 68;
     const cx = bx + bw / 2;
-    return `<g transform="translate(${round(cx)} ${round(cy)})"><g>${pulse(at - 0.15)}<g transform="translate(${round(-cx)} ${round(-cy)})">${box}</g></g></g>`;
+    return scaledAt(cx, cy, box, at - 0.15);
   }
   return box;
 }
 
 // ============================================================================================
-// CLEAN FOLDED SCENE WITH 3 SMALLER-POINTER VARIATIONS (A / B / C)
+// UNIFIED SCENE (SYMMETRICAL PANE VARIANTS A / B)
 // ============================================================================================
 
-function foldedScene(c: SceneContext, smallerStyle: SmallerStyle): string {
+function unifiedScene(c: SceneContext, paneStyle: PaneStyle): string {
   const meta = META.get(c.m.trace)!;
   const sim = simulate(meta, c.index, c.littleEndian);
   const { g, P, animate, op, step, prev } = c;
@@ -1052,7 +1061,7 @@ function foldedScene(c: SceneContext, smallerStyle: SmallerStyle): string {
     );
   }
 
-  // 2. Padding runs (hatched only; red UB fill ONLY when write occurs!)
+  // 2. Padding runs (hatched only; red UB fill ONLY on write)
   for (const run of paddingRuns(meta)) {
     const rx = xOf(run.start);
     const rw = run.size * byteW;
@@ -1076,7 +1085,7 @@ function foldedScene(c: SceneContext, smallerStyle: SmallerStyle): string {
           const revealAt = at + 0.08 * (addr - meta.targetAddress);
           mem +=
             `<g>${hide(revealAt)}${text(bx + byteW / 2, hexY, '??', 13.5, P.grey, 'middle')}</g>` +
-            `<g opacity="0">${show(revealAt)}${hazard}</g>`;
+            `<g opacity="0">${show(revealAt)}${scaledAt(bx + byteW / 2, gridY + 68, hazard, revealAt - 0.1)}</g>`;
         } else {
           mem += hazard;
         }
@@ -1086,7 +1095,7 @@ function foldedScene(c: SceneContext, smallerStyle: SmallerStyle): string {
     }
   }
 
-  // Staggered rows for variable type pills so adjacent 1-byte variables never collide
+  // Staggered rows for variable type pills
   const pillRowEdge: number[] = [];
   const pillRowOf = new Map<string, number>();
   for (const v of meta.vars) {
@@ -1099,7 +1108,7 @@ function foldedScene(c: SceneContext, smallerStyle: SmallerStyle): string {
   }
   const pillRowsCount = Math.max(1, pillRowEdge.length);
 
-  // 3. Variables (flush on the byte grid)
+  // 3. Variables (flush on byte grid; per-element pulse so unaffected bytes stay rock-solid!)
   for (const v of meta.vars) {
     const vx = xOf(v.address);
     const vw = v.size * byteW;
@@ -1130,7 +1139,7 @@ function foldedScene(c: SceneContext, smallerStyle: SmallerStyle): string {
           animate && c.index === meta.derefStep
             ? `<g opacity="0">${fade(0, 1, 0.25, at - 0.15)}${bg}</g>`
             : bg;
-      } else if (slot.status === 'untouched' && meta.direction === 'smaller' && smallerStyle === 'A') {
+      } else if (slot.status === 'untouched' && meta.direction === 'smaller') {
         const veil = rect(bx + 1.5, splitY, byteW - 3, cellH - (splitY - gridY) - 1.5, `url(#${veilId})`, 'none', 0);
         markup +=
           animate && op?.kind === 'write' && op.name === meta.ptrName
@@ -1147,7 +1156,7 @@ function foldedScene(c: SceneContext, smallerStyle: SmallerStyle): string {
       markup += `<line x1="${round(lx)}" y1="${splitY}" x2="${round(lx)}" y2="${gridY + cellH - 2}" stroke="${divCol}" stroke-width="1.2"/>`;
     }
 
-    // Outer variable border (only turns red once corrupted by write!)
+    // Outer variable border
     if (animate && sim.isPunningWrite && isCorrupted) {
       markup +=
         `<g>${hide(at)}${rect(vx + 1.5, gridY + 1.5, vw - 3, cellH - 3, 'none', col, 0, 2.8)}</g>` +
@@ -1156,34 +1165,41 @@ function foldedScene(c: SceneContext, smallerStyle: SmallerStyle): string {
       markup += rect(vx + 1.5, gridY + 1.5, vw - 3, cellH - 3, 'none', borderCol, 0, isCorrupted ? 3.2 : 2.8);
     }
 
-    // Value header + per-byte hex
-    const renderBody = (val: number | null, useBefore: boolean): string => {
+    // 3a. Decimal header (pulses independently whenever the variable's value changes!)
+    const renderHeader = (val: number | null, useBefore: boolean): string => {
       if (val === null) return '';
-      let body = '';
-      const showHeaderDiff =
-        !useBefore &&
-        meta.direction === 'smaller' &&
-        smallerStyle === 'B' &&
-        v.name === meta.targetVar &&
-        c.index >= meta.writeAction.stepIndex &&
-        valBefore !== null &&
-        valBefore !== val;
+      const dec = String(val);
+      const decSize = Math.min(25, (vw - 12) / (Math.max(1, dec.length) * CHAR));
+      const decCol = isCorrupted && !useBefore ? P.error : P.fg;
+      const bg =
+        isCorrupted && !useBefore
+          ? rect(vx + vw / 2 - 14, gridY + 12, 28, 26, P.panel, 'none', 4)
+          : '';
+      return bg + text(vx + vw / 2, gridY + 33, dec, round(decSize), decCol, 'middle');
+    };
 
-      const dec = showHeaderDiff ? `${valBefore} → ${val}` : String(val);
-      const decSize = Math.min(showHeaderDiff ? 21 : 25, (vw - 12) / (Math.max(1, dec.length) * CHAR));
-      const decCol = isCorrupted && !useBefore ? P.error : showHeaderDiff ? P.write : P.fg;
-      if (isCorrupted && !useBefore) {
-        body += rect(vx + vw / 2 - 14, gridY + 12, 28, 26, P.panel, 'none', 4);
-      }
-      body += text(vx + vw / 2, gridY + 33, dec, round(decSize), decCol, 'middle');
+    const normalWrite = animate && op?.kind === 'write' && op.name === v.name && !sim.isPunningWrite;
+    const valueChanged = animate && sim.isPunningWrite && valBefore !== valAfter;
+    if (normalWrite || valueChanged) {
+      const headCx = vx + vw / 2;
+      const headCy = gridY + 26;
+      const swapped =
+        (valBefore !== null ? `<g>${hide(at)}${renderHeader(valBefore, true)}</g>` : '') +
+        `<g opacity="0">${show(at)}${renderHeader(valAfter, false)}</g>`;
+      markup += scaledAt(headCx, headCy, swapped, at - 0.15);
+    } else {
+      markup += renderHeader(valAfter, false);
+    }
 
-      const hexY = gridY + 74;
-      for (let k = 0; k < v.size; k++) {
-        const addr = v.address + k;
-        const slot = sim.bytes[addr - meta.baseAddress];
-        const bval = useBefore ? slot.before : slot.after;
-        if (typeof bval !== 'number') continue;
-        const bx = xOf(addr);
+    // 3b. Individual byte cells — ONLY bytes that actually change pulse! Unaffected bytes stay rock-solid.
+    const hexY = gridY + 74;
+    for (let k = 0; k < v.size; k++) {
+      const addr = v.address + k;
+      const slot = sim.bytes[addr - meta.baseAddress];
+      const bx = xOf(addr);
+
+      const renderByte = (bval: ByteVal, useBefore: boolean): string => {
+        if (typeof bval !== 'number') return '';
         const isUntouched = slot.status === 'untouched';
         const byteInk =
           slot.status === 'foreign' && sim.ubTriggered && !useBefore
@@ -1193,36 +1209,24 @@ function foldedScene(c: SceneContext, smallerStyle: SmallerStyle): string {
               : v.kind === 'ptr'
                 ? P.muted
                 : P.fg;
-        const opAttr =
-          isUntouched && (smallerStyle === 'A' || smallerStyle === 'C')
-            ? ' opacity="0.4"'
-            : isUntouched && smallerStyle === 'B'
-              ? ' opacity="0.55"'
-              : v.kind === 'ptr'
-                ? ' opacity="0.65"'
-                : '';
-        if (slot.status === 'foreign' && sim.ubTriggered && !useBefore) {
-          body += rect(bx + byteW / 2 - 15, hexY - 15, 30, 20, P.panel, 'none', 3);
-        }
-        body += `<g${opAttr}>${text(bx + byteW / 2, hexY, hex2(bval), v.kind === 'ptr' ? 13 : 15.5, byteInk, 'middle')}</g>`;
+        const opAttr = isUntouched ? ' opacity="0.4"' : v.kind === 'ptr' ? ' opacity="0.65"' : '';
+        const bg =
+          slot.status === 'foreign' && sim.ubTriggered && !useBefore
+            ? rect(bx + byteW / 2 - 15, hexY - 15, 30, 20, P.panel, 'none', 3)
+            : '';
+        return bg + `<g${opAttr}>${text(bx + byteW / 2, hexY, hex2(bval), v.kind === 'ptr' ? 13 : 15.5, byteInk, 'middle')}</g>`;
+      };
+
+      const byteChanged = animate && (normalWrite || (sim.isPunningWrite && slot.before !== slot.after));
+      if (byteChanged) {
+        const byteAt = sim.isPunningWrite ? at + 0.08 * (addr - meta.targetAddress) : at;
+        const swapped =
+          (slot.before !== null ? `<g>${hide(byteAt)}${renderByte(slot.before, true)}</g>` : '') +
+          `<g opacity="0">${show(byteAt)}${renderByte(slot.after, false)}</g>`;
+        markup += scaledAt(bx + byteW / 2, gridY + 68, swapped, byteAt - 0.15);
+      } else {
+        markup += renderByte(slot.after, false);
       }
-      return body;
-    };
-
-    const writingThis =
-      animate &&
-      ((op?.kind === 'write' && op.name === v.name && !sim.isPunningWrite) ||
-        (sim.isPunningWrite && valBefore !== valAfter));
-
-    if (writingThis) {
-      const cx = vx + vw / 2;
-      const cy = gridY + cellH / 2;
-      markup += `<g transform="translate(${round(cx)} ${round(cy)})"><g>${pulse(at - 0.15)}<g transform="translate(${round(-cx)} ${round(-cy)})">`;
-      if (valBefore !== null) markup += `<g>${hide(at)}${renderBody(valBefore, true)}</g>`;
-      markup += `<g opacity="0">${show(at)}${renderBody(valAfter, false)}</g>`;
-      markup += '</g></g></g>';
-    } else {
-      markup += renderBody(valAfter, false);
     }
 
     // Read/write highlight outline on normal steps
@@ -1242,18 +1246,31 @@ function foldedScene(c: SceneContext, smallerStyle: SmallerStyle): string {
       }
     }
 
+    // Byte-order arrow from bits_view.ts (least -> most significant byte) on every multi-byte int
+    if (v.kind === 'int' && v.size > 1) {
+      const ay = gridY + cellH + 10;
+      const dir = c.littleEndian ? 1 : -1;
+      const xLow = vx + (c.littleEndian ? byteW / 2 : vw - byteW / 2);
+      const xHigh = vx + (c.littleEndian ? vw - byteW / 2 : byteW / 2);
+      const arrowCol = on ? P.grey : P.deadStroke;
+      markup +=
+        `<g opacity="${on ? '0.75' : '0.45'}">` +
+        `<line x1="${round(xLow)}" y1="${ay}" x2="${round(xHigh - 6 * dir)}" y2="${ay}" stroke="${arrowCol}" stroke-width="1.5" stroke-linecap="round"/>` +
+        `<path d="M -8 -4 L 0 0 L -8 4 Z" fill="${arrowCol}" transform="translate(${round(xHigh)} ${ay}) rotate(${c.littleEndian ? 0 : 180})"/>` +
+        '</g>';
+    }
+
     // Variable name + staggered type pill below cell
     const pillRow = pillRowOf.get(v.name) ?? 0;
-    const labelOffset =
-      meta.direction === 'smaller' && smallerStyle === 'B' && v.name === meta.targetVar ? 16 : 0;
-    const pillTop = gridY + cellH + 34 + labelOffset + pillRow * 24;
+    const nameY = gridY + cellH + 34;
+    const pillTop = nameY + 8 + pillRow * 24;
     const nameCol = isCorrupted ? P.error : on ? col : P.grey;
     if (animate && sim.isPunningWrite && isCorrupted) {
       markup +=
-        `<g>${hide(at)}${text(vx + vw / 2, gridY + cellH + 26 + labelOffset, v.name, 20, col, 'middle')}</g>` +
-        `<g opacity="0">${show(at)}${text(vx + vw / 2, gridY + cellH + 26 + labelOffset, v.name, 20, P.error, 'middle')}</g>`;
+        `<g>${hide(at)}${text(vx + vw / 2, nameY, v.name, 20, col, 'middle')}</g>` +
+        `<g opacity="0">${show(at)}${text(vx + vw / 2, nameY, v.name, 20, P.error, 'middle')}</g>`;
     } else {
-      markup += text(vx + vw / 2, gridY + cellH + 26 + labelOffset, v.name, 20, nameCol, 'middle');
+      markup += text(vx + vw / 2, nameY, v.name, 20, nameCol, 'middle');
     }
     markup += typeLabel(c, vx + vw / 2, pillTop, v.type, 13.5, on ? typeColour(c, v.type) : P.deadStroke);
 
@@ -1286,18 +1303,16 @@ function foldedScene(c: SceneContext, smallerStyle: SmallerStyle): string {
     }
   }
 
-  // 5. Clean scope box around the exact bytes the pointer covers
+  // 5. Clean scope box around pointed-at bytes
   const scopeBox = targetScopeBox(c, meta, sim, xOf, byteW, gridY, cellH, pCol);
 
-  // 6. Below-memory indicator:
-  //    - Larger pointer: ONLY when ubTriggered (i.e. on write!), show clean bracket + "⚠ UB"
-  //    - Smaller pointer: NO extra brackets/pills below! Only Variant B adds the clean bits_view LSB->MSB arrow
+  // 6. UB bracket & badge below memory — ONLY on larger-pointer write!
   let belowOverlay = '';
   if (meta.direction === 'larger' && sim.ubTriggered) {
     const wLeft = xOf(meta.targetAddress);
     const wRight = xOf(meta.targetAddress + meta.pointeeSize);
     const ownEnd = xOf(targetVar.address + targetVar.size);
-    const brY = gridY + cellH + 38 + pillRowsCount * 24 + 8;
+    const brY = gridY + cellH + 46 + pillRowsCount * 24 + 8;
     const tickTop = brY - 10;
     const cal =
       `<path d="M ${round(wLeft + 2)} ${tickTop} V ${brY} H ${round(ownEnd)}" fill="none" stroke="${P.write}" stroke-width="2.2"/>` +
@@ -1308,116 +1323,55 @@ function foldedScene(c: SceneContext, smallerStyle: SmallerStyle): string {
       : cal;
   }
 
-  if (meta.direction === 'smaller' && smallerStyle === 'B' && sim.varAfter.get(targetVar.name) !== null) {
-    // Variant B: clean LSB -> MSB arrow from bits_view.ts directly below `a`
-    const ay = gridY + cellH + 10;
-    const xLow = xOf(targetVar.address) + (c.littleEndian ? byteW / 2 : targetVar.size * byteW - byteW / 2);
-    const xHigh = xOf(targetVar.address) + (c.littleEndian ? targetVar.size * byteW - byteW / 2 : byteW / 2);
-    const dir = c.littleEndian ? 1 : -1;
-    belowOverlay +=
-      `<g opacity="0.8">` +
-      `<line x1="${round(xLow)}" y1="${ay}" x2="${round(xHigh - 6 * dir)}" y2="${ay}" stroke="${P.muted}" stroke-width="1.5" stroke-linecap="round"/>` +
-      `<path d="M -8 -4 L 0 0 L -8 4 Z" fill="${P.muted}" transform="translate(${round(xHigh)} ${ay}) rotate(${c.littleEndian ? 0 : 180})"/>` +
-      text(xLow, ay + 12, 'LSB', 9.5, P.muted, 'middle') +
-      text(xHigh, ay + 12, 'MSB', 9.5, P.muted, 'middle') +
-      '</g>';
-  }
-
-  // 7. Clean pane byte strip + byte-tile flight (NO tiny sub-labels under tiles!)
+  // 7. Standardized pane byte strip: ONLY the bytes being written (aligned under the RHS value; zero extra text!)
   let wb = '';
   let flight = '';
   if (sim.windowActive) {
-    const stripY = g.ty + 30;
+    const stripY = g.ty + 28;
     const tileW = 44;
     const tileH = 30;
     const tileGap = 6;
-    const startX = g.tx + 10;
+    // Align the byte tiles cleanly under the RHS value in `*64 = <val>`
+    const rhsStart = step.pane.indexOf('= ') + 2;
+    const tilesX = g.tx + Math.max(0, rhsStart) * g.paneChar;
+    const bytes = sim.writtenBytes;
 
-    if (meta.direction === 'larger') {
-      const bytes = sim.writtenBytes;
-      const labelStr = `${meta.writeAction.valueText} (${c.littleEndian ? 'LE' : 'BE'})`;
-      wb += text(startX, stripY + 20, labelStr, 15, P.muted);
-      const tilesX = startX + labelStr.length * 15 * CHAR + 14;
-      for (let k = 0; k < bytes.length; k++) {
-        const addr = meta.targetAddress + k;
-        const slot = sim.bytes[addr - meta.baseAddress];
-        const bad = sim.ubTriggered && (slot.status === 'padding' || slot.status === 'foreign');
-        const tx = tilesX + k * (tileW + tileGap);
-        const stroke = bad ? P.error : P.write;
-        const fill = bad ? P.panel : P.writeFill;
-        wb +=
-          rect(tx, stripY, tileW, tileH, fill, stroke, 5, 2) +
-          text(tx + tileW / 2, stripY + 20, hex2(bytes[k]), 15.5, stroke, 'middle');
-
-        if (animate && sim.isPunningWrite) {
-          const sx = tx + tileW / 2;
-          const sy = stripY;
-          const ex = xOf(addr) + byteW / 2;
-          const ey = gridY + 70;
-          const midY = (sy + ey) / 2;
-          const path = `M ${round(sx)} ${round(sy)} C ${round(sx)} ${round(midY)}, ${round(ex)} ${round(midY)}, ${round(ex)} ${round(ey)}`;
-          const begin = 0.25 + k * 0.1;
-          const dur = 0.85;
-          const end = begin + dur;
-          const flyCol = slot.status === 'padding' || slot.status === 'foreign' ? P.error : P.write;
-          flight +=
-            `<g opacity="0">${fade(0, 0.5, 0.2, begin)}${fade(0.5, 0, 0.25, end)}<path d="${path}" fill="none" stroke="${flyCol}" stroke-width="2.4"/></g>` +
-            `<g opacity="0">${fade(0, 1, 0.1, begin)}${hide(end + 0.05)}` +
-            rect(-20, -14, 40, 28, P.panel, flyCol, 6, 2) +
-            text(0, 6, hex2(bytes[k]), 15, flyCol, 'middle') +
-            `<animateMotion begin="${round(begin)}s" dur="${dur}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
-        }
-      }
-    } else {
-      const writtenByte = sim.writtenBytes[0];
-      if (smallerStyle === 'A') {
-        // Variant A: Clean 4-byte reassembly strip — no small sub-labels!
-        const labelStr = `a (${c.littleEndian ? 'LE' : 'BE'})`;
-        wb += text(startX, stripY + 20, labelStr, 15, P.muted);
-        const tilesX = startX + labelStr.length * 15 * CHAR + 14;
-        for (let k = 0; k < targetVar.size; k++) {
-          const addr = targetVar.address + k;
-          const slot = sim.bytes[addr - meta.baseAddress];
-          const hit = k === 0;
-          const tx = tilesX + k * (tileW + tileGap);
-          const bval = typeof slot.after === 'number' ? slot.after : 0;
-          const stroke = hit ? P.write : P.gapStroke;
-          const fill = hit ? P.writeFill : P.deadFill;
-          wb +=
-            rect(tx, stripY, tileW, tileH, fill, stroke, 5, hit ? 2.2 : 1.4) +
-            text(tx + tileW / 2, stripY + 20, hex2(bval), 15.5, hit ? P.write : P.muted, 'middle');
-        }
-        const aVal = sim.varAfter.get(targetVar.name) ?? 0;
-        const eqX = tilesX + targetVar.size * (tileW + tileGap) + 12;
-        wb += text(eqX, stripY + 21, `→ a = ${aVal}`, 16, P.fg);
-      } else {
-        // Variant B & C: Clean single byte tile — no small sub-label!
-        const labelStr = `${meta.writeAction.valueText}`;
-        wb += text(startX, stripY + 20, labelStr, 15, P.muted);
-        const tx = startX + labelStr.length * 15 * CHAR + 14;
-        wb +=
-          rect(tx, stripY, tileW, tileH, P.writeFill, P.write, 5, 2) +
-          text(tx + tileW / 2, stripY + 20, hex2(writtenByte), 15.5, P.write, 'middle');
-      }
+    for (let k = 0; k < bytes.length; k++) {
+      const addr = meta.targetAddress + k;
+      const slot = sim.bytes[addr - meta.baseAddress];
+      const bad = sim.ubTriggered && (slot.status === 'padding' || slot.status === 'foreign');
+      const tx = tilesX + k * (tileW + tileGap);
+      const stroke = bad ? P.error : P.write;
+      const fill = bad ? P.panel : P.writeFill;
+      wb +=
+        rect(tx, stripY, tileW, tileH, fill, stroke, 5, 2) +
+        text(tx + tileW / 2, stripY + 20, hex2(bytes[k]), 15.5, stroke, 'middle');
 
       if (animate && sim.isPunningWrite) {
-        const sx =
-          smallerStyle === 'A'
-            ? startX + (`a (${c.littleEndian ? 'LE' : 'BE'})`.length * 15 * CHAR + 14) + tileW / 2
-            : startX + (`${meta.writeAction.valueText}`.length * 15 * CHAR + 14) + tileW / 2;
+        const sx = tx + tileW / 2;
         const sy = stripY;
-        const ex = xOf(meta.targetAddress) + byteW / 2;
+        const ex = xOf(addr) + byteW / 2;
         const ey = gridY + 70;
         const midY = (sy + ey) / 2;
         const path = `M ${round(sx)} ${round(sy)} C ${round(sx)} ${round(midY)}, ${round(ex)} ${round(midY)}, ${round(ex)} ${round(ey)}`;
-        const begin = 0.25;
+        const begin = 0.25 + k * 0.1;
         const dur = 0.85;
+        const end = begin + dur;
+        const flyCol = slot.status === 'padding' || slot.status === 'foreign' ? P.error : P.write;
         flight +=
-          `<g opacity="0">${fade(0, 0.5, 0.2, begin)}${fade(0.5, 0, 0.25, begin + dur)}<path d="${path}" fill="none" stroke="${P.write}" stroke-width="2.4"/></g>` +
-          `<g opacity="0">${fade(0, 1, 0.1, begin)}${hide(begin + dur + 0.05)}` +
-          rect(-20, -14, 40, 28, P.panel, P.write, 6, 2) +
-          text(0, 6, hex2(writtenByte), 15, P.write, 'middle') +
+          `<g opacity="0">${fade(0, 0.5, 0.2, begin)}${fade(0.5, 0, 0.25, end)}<path d="${path}" fill="none" stroke="${flyCol}" stroke-width="2.4"/></g>` +
+          `<g opacity="0">${fade(0, 1, 0.1, begin)}${hide(end + 0.05)}` +
+          rect(-20, -14, 40, 28, P.panel, flyCol, 6, 2) +
+          text(0, 6, hex2(bytes[k]), 15, flyCol, 'middle') +
           `<animateMotion begin="${round(begin)}s" dur="${dur}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
+      }
+    }
+
+    // Variant B: when writing fewer bytes than targetVar.size, show hollow dashed slots for untouched target bytes
+    if (paneStyle === 'B' && meta.direction === 'smaller') {
+      for (let k = bytes.length; k < targetVar.size; k++) {
+        const tx = tilesX + k * (tileW + tileGap);
+        wb += `<rect x="${round(tx)}" y="${stripY}" width="${tileW}" height="${tileH}" rx="5" fill="none" stroke="${P.grey}" stroke-opacity="0.75" stroke-dasharray="4 3" stroke-width="1.6"/>`;
       }
     }
   }
@@ -1438,35 +1392,33 @@ function foldedScene(c: SceneContext, smallerStyle: SmallerStyle): string {
   );
 }
 
-function makeView(smallerStyle: SmallerStyle): TraceView {
+function makeView(paneStyle: PaneStyle): TraceView {
   return {
     geometry: m => {
       const meta = META.get(m.trace)!;
-      const extraMemBottom =
-        meta.direction === 'larger' ? 96 : smallerStyle === 'B' ? 54 : 38;
       return {
         minByteWidth: 46,
         minColumnWidth: 780,
         cellHeight: 88,
-        extraMemBottom,
-        extraPaneHeight: 50,
+        extraMemBottom: meta.direction === 'larger' ? 104 : 46,
+        extraPaneHeight: 46,
         skipWrap: true,
       };
     },
     stackBelow: 900,
     maxScale: 0.72,
     byteOrder: true,
-    scene: c => foldedScene(c, smallerStyle),
+    scene: c => unifiedScene(c, paneStyle),
     stepSeconds: punningStepSeconds,
   };
 }
 
 // ============================================================================================
-// PROTOTYPE SHELL + FLOATING VARIANT SWITCHER (?variant=A|B|C)
+// PROTOTYPE SHELL + FLOATING VARIANT SWITCHER (?variant=A|B)
 // ============================================================================================
 
 interface VariantDef {
-  key: SmallerStyle;
+  key: PaneStyle;
   name: string;
   summary: string;
   bullets: string[];
@@ -1476,53 +1428,43 @@ interface VariantDef {
 const VARIANTS: VariantDef[] = [
   {
     key: 'A',
-    name: 'A · Subtle veil + clean 4-byte pane strip',
+    name: 'A · Exact bytes written (symmetrical)',
     summary:
-      'Clean scope box on byte 64, subtle diagonal veil on untouched bytes 65..67, and a clean 4-byte reassembly strip in the pane (no tiny sub-labels, nothing extra below memory).',
+      'In every scenario, the pane shows only the exact bytes being written (4 tiles for int*, 1 tile for uint8_t*), aligned right under the written value. No labels, no "(LE)", no repeated numbers.',
     bullets: [
-      'Larger pointers keep a calm 4-byte scope until the write step, then show red spilled bytes and ⚠ UB.',
-      'Smaller pointers veil bytes 65..67 and show the four resulting bytes recombining in the pane.',
+      'Larger pointer: 4 byte tiles (1 gold, 3 red on write). Smaller pointer: 1 gold byte tile.',
+      'Hit Play on scenarios 3–4 to see only byte 64 and the top value pulse while bytes 65..67 stay still.',
     ],
     view: makeView('A'),
   },
   {
     key: 'B',
-    name: 'B · Inline old→new header + LSB→MSB arrow',
+    name: 'B · Written bytes + empty target slots',
     summary:
-      'Clean scope box on byte 64, old → new decimal mutation right in a’s header, and the bits-view LSB → MSB arrow under a so LE/BE impact is obvious without extra cards.',
+      'Same bytes-being-written view, except smaller pointers also show 3 hollow dashed slots beside the 1 written byte so the pane itself mirrors the 1-of-4 coverage without duplicating a’s existing bytes.',
     bullets: [
-      'Flip Little-endian / Big-endian to see the LSB → MSB arrow reverse alongside 5 → 33554437.',
-      'Pane shows only the single written byte tile.',
+      'Larger pointer: 1 gold + 3 red overflow tiles. Smaller pointer: 1 gold + 3 dashed empty slots.',
+      'No labels, no "(LE)", no repeated values.',
     ],
     view: makeView('B'),
-  },
-  {
-    key: 'C',
-    name: 'C · Minimal (clean scope + dimmed untouched bytes)',
-    summary:
-      'Stripped to the essentials: clean 1-byte scope box on byte 64, untouched bytes 65..67 gently dimmed, and a single written byte tile in the pane.',
-    bullets: [
-      'Zero extra visual widgets; relies purely on the scope box, flying byte, and updated value of a.',
-    ],
-    view: makeView('C'),
   },
 ];
 
 let players: Player[] = [];
 
-function currentVariantKey(): SmallerStyle {
+function currentVariantKey(): PaneStyle {
   const param = new URLSearchParams(window.location.search).get('variant')?.toUpperCase();
-  return param === 'B' || param === 'C' ? param : 'A';
+  return param === 'B' ? 'B' : 'A';
 }
 
-function setVariantKey(key: SmallerStyle): void {
+function setVariantKey(key: PaneStyle): void {
   const url = new URL(window.location.href);
   url.searchParams.set('variant', key);
   window.history.replaceState(null, '', url.toString());
   mountVariant(key);
 }
 
-function mountVariant(key: SmallerStyle): void {
+function mountVariant(key: PaneStyle): void {
   for (const p of players) p.disconnect();
   players = [];
 

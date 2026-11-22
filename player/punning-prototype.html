@@ -38,10 +38,9 @@
 <main>
   <h1>PROTOTYPE · Pointer type punning (#60)</h1>
   <p class="note">
-    Clean horizontal hex view with plain Lab 4 syntax, clean pointer arrow, single-line scope box around pointed-at bytes,
-    and red spilled bytes + <code>⚠ UB</code> only on the write step.
-    Variants <kbd>A</kbd> / <kbd>B</kbd> / <kbd>C</kbd> (<kbd>[</kbd> / <kbd>]</kbd>) compare three clean treatments for
-    smaller pointers (scenarios 3–4). Scrub back one step on scenarios 1–2 to see the calm pre-write scope.
+    Unified hex memory view with the <code>bits</code> byte-order arrow, clean scope box, subtle upper highlight on smaller pointers,
+    per-byte write pulse (unaffected bytes stay still), and UB only on write.
+    Variants <kbd>A</kbd> / <kbd>B</kbd> (<kbd>[</kbd> / <kbd>]</kbd>) compare two standardized, label-free byte strips in the pane.
   </p>
   <div id="about"></div>
   <div id="sections"></div>

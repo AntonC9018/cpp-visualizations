@@ -3319,7 +3319,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const meta = {
       id: "smaller-five",
       title: "3. Smaller pointer overwrites only byte 64 of int a (a = 5)",
-      subtitle: "*b = 2 changes only byte 64. Flip Little-endian / Big-endian to see a become 2 vs 33554437.",
+      subtitle: "*b = 2 updates only byte 64; bytes 65..67 stay still. Flip Little-endian / Big-endian to see 2 vs 33554437.",
       direction: "smaller",
       baseAddress: 64,
       totalBytes: 16,
@@ -3437,7 +3437,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const meta = {
       id: "smaller-261",
       title: "4. Smaller pointer leaves upper bytes intact (a = 261, *b = 0)",
-      subtitle: "261 is 05 01 00 00 (LE). *b = 0 clears only byte 64, leaving byte 65 (01) -> a becomes 256.",
+      subtitle: "261 is 05 01 00 00 (LE). *b = 0 zeroes only byte 64, leaving byte 65 (01) -> a becomes 256.",
       direction: "smaller",
       baseAddress: 64,
       totalBytes: 16,
@@ -3475,6 +3475,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const w = label.length * size * CHAR + 16;
     const h = size + 10;
     return rect(cx - w / 2, cy - h / 2, w, h, fill, stroke, h / 2, 1.8) + text(cx, cy + size * 0.35, label, size, ink, "middle");
+  }
+  function scaledAt(cx, cy, inner, begin) {
+    return `<g transform="translate(${round(cx)} ${round(cy)})"><g>${pulse(begin)}<g transform="translate(${round(-cx)} ${round(-cy)})">${inner}</g></g></g>`;
   }
   function paddingRuns(meta) {
     const runs = [];
@@ -3593,6 +3596,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const sby = splitY - 1;
       const sbh = gridY + cellH - splitY + pad + 1;
       const col = hot ? P.write : pCol;
+      box += rect(wLeft + 2, gridY + 2, wWidth - 4, splitY - gridY - 3, col, "none", 0).replace(
+        "fill=",
+        'fill-opacity="0.14" fill='
+      );
       box += rect(bx, sby, bw, sbh, "none", col, 4, 3);
     }
     if (isWritingPtr) {
@@ -3601,11 +3608,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     if (isDeref) {
       const cy = meta.direction === "larger" ? gridY + cellH / 2 : gridY + 68;
       const cx = bx + bw / 2;
-      return `<g transform="translate(${round(cx)} ${round(cy)})"><g>${pulse(at - 0.15)}<g transform="translate(${round(-cx)} ${round(-cy)})">${box}</g></g></g>`;
+      return scaledAt(cx, cy, box, at - 0.15);
     }
     return box;
   }
-  function foldedScene(c, smallerStyle) {
+  function unifiedScene(c, paneStyle) {
     const meta = META.get(c.m.trace);
     const sim = simulate(meta, c.index, c.littleEndian);
     const { g, P, animate, op, step, prev } = c;
@@ -3655,7 +3662,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           const hazard = rect(bx + 1.5, gridY + 1.5, byteW - 3, cellH - 3, `url(#${ubId})`, P.error, 0, 1.6) + badgeBg + text(bx + byteW / 2, hexY, hexText, 15.5, P.error, "middle");
           if (animate && sim.isPunningWrite) {
             const revealAt = at + 0.08 * (addr - meta.targetAddress);
-            mem += `<g>${hide(revealAt)}${text(bx + byteW / 2, hexY, "??", 13.5, P.grey, "middle")}</g><g opacity="0">${show(revealAt)}${hazard}</g>`;
+            mem += `<g>${hide(revealAt)}${text(bx + byteW / 2, hexY, "??", 13.5, P.grey, "middle")}</g><g opacity="0">${show(revealAt)}${scaledAt(bx + byteW / 2, gridY + 68, hazard, revealAt - 0.1)}</g>`;
           } else {
             mem += hazard;
           }
@@ -3696,7 +3703,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         } else if (slot.status === "owned" && sim.windowActive) {
           const bg = rect(bx + 1.5, splitY, byteW - 3, cellH - (splitY - gridY) - 1.5, P.writeFill, "none", 0);
           markup += animate && c.index === meta.derefStep ? `<g opacity="0">${fade(0, 1, 0.25, at - 0.15)}${bg}</g>` : bg;
-        } else if (slot.status === "untouched" && meta.direction === "smaller" && smallerStyle === "A") {
+        } else if (slot.status === "untouched" && meta.direction === "smaller") {
           const veil = rect(bx + 1.5, splitY, byteW - 3, cellH - (splitY - gridY) - 1.5, `url(#${veilId})`, "none", 0);
           markup += animate && (op == null ? void 0 : op.kind) === "write" && op.name === meta.ptrName ? `<g opacity="0">${fade(0, 1, 0.3, at + 0.55)}${veil}</g>` : veil;
         }
@@ -3712,44 +3719,45 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       } else {
         markup += rect(vx + 1.5, gridY + 1.5, vw - 3, cellH - 3, "none", borderCol, 0, isCorrupted ? 3.2 : 2.8);
       }
-      const renderBody = (val, useBefore) => {
+      const renderHeader = (val, useBefore) => {
         if (val === null) return "";
-        let body = "";
-        const showHeaderDiff = !useBefore && meta.direction === "smaller" && smallerStyle === "B" && v.name === meta.targetVar && c.index >= meta.writeAction.stepIndex && valBefore !== null && valBefore !== val;
-        const dec = showHeaderDiff ? `${valBefore} → ${val}` : String(val);
-        const decSize = Math.min(showHeaderDiff ? 21 : 25, (vw - 12) / (Math.max(1, dec.length) * CHAR));
-        const decCol = isCorrupted && !useBefore ? P.error : showHeaderDiff ? P.write : P.fg;
-        if (isCorrupted && !useBefore) {
-          body += rect(vx + vw / 2 - 14, gridY + 12, 28, 26, P.panel, "none", 4);
-        }
-        body += text(vx + vw / 2, gridY + 33, dec, round(decSize), decCol, "middle");
-        const hexY = gridY + 74;
-        for (let k = 0; k < v.size; k++) {
-          const addr = v.address + k;
-          const slot = sim.bytes[addr - meta.baseAddress];
-          const bval = useBefore ? slot.before : slot.after;
-          if (typeof bval !== "number") continue;
-          const bx = xOf(addr);
+        const dec = String(val);
+        const decSize = Math.min(25, (vw - 12) / (Math.max(1, dec.length) * CHAR));
+        const decCol = isCorrupted && !useBefore ? P.error : P.fg;
+        const bg = isCorrupted && !useBefore ? rect(vx + vw / 2 - 14, gridY + 12, 28, 26, P.panel, "none", 4) : "";
+        return bg + text(vx + vw / 2, gridY + 33, dec, round(decSize), decCol, "middle");
+      };
+      const normalWrite = animate && (op == null ? void 0 : op.kind) === "write" && op.name === v.name && !sim.isPunningWrite;
+      const valueChanged = animate && sim.isPunningWrite && valBefore !== valAfter;
+      if (normalWrite || valueChanged) {
+        const headCx = vx + vw / 2;
+        const headCy = gridY + 26;
+        const swapped = (valBefore !== null ? `<g>${hide(at)}${renderHeader(valBefore, true)}</g>` : "") + `<g opacity="0">${show(at)}${renderHeader(valAfter, false)}</g>`;
+        markup += scaledAt(headCx, headCy, swapped, at - 0.15);
+      } else {
+        markup += renderHeader(valAfter, false);
+      }
+      const hexY = gridY + 74;
+      for (let k = 0; k < v.size; k++) {
+        const addr = v.address + k;
+        const slot = sim.bytes[addr - meta.baseAddress];
+        const bx = xOf(addr);
+        const renderByte = (bval, useBefore) => {
+          if (typeof bval !== "number") return "";
           const isUntouched = slot.status === "untouched";
           const byteInk = slot.status === "foreign" && sim.ubTriggered && !useBefore ? P.error : slot.status === "owned" && c.index >= meta.writeAction.stepIndex && !useBefore ? P.write : v.kind === "ptr" ? P.muted : P.fg;
-          const opAttr = isUntouched && (smallerStyle === "A" || smallerStyle === "C") ? ' opacity="0.4"' : isUntouched && smallerStyle === "B" ? ' opacity="0.55"' : v.kind === "ptr" ? ' opacity="0.65"' : "";
-          if (slot.status === "foreign" && sim.ubTriggered && !useBefore) {
-            body += rect(bx + byteW / 2 - 15, hexY - 15, 30, 20, P.panel, "none", 3);
-          }
-          body += `<g${opAttr}>${text(bx + byteW / 2, hexY, hex2(bval), v.kind === "ptr" ? 13 : 15.5, byteInk, "middle")}</g>`;
+          const opAttr = isUntouched ? ' opacity="0.4"' : v.kind === "ptr" ? ' opacity="0.65"' : "";
+          const bg = slot.status === "foreign" && sim.ubTriggered && !useBefore ? rect(bx + byteW / 2 - 15, hexY - 15, 30, 20, P.panel, "none", 3) : "";
+          return bg + `<g${opAttr}>${text(bx + byteW / 2, hexY, hex2(bval), v.kind === "ptr" ? 13 : 15.5, byteInk, "middle")}</g>`;
+        };
+        const byteChanged = animate && (normalWrite || sim.isPunningWrite && slot.before !== slot.after);
+        if (byteChanged) {
+          const byteAt = sim.isPunningWrite ? at + 0.08 * (addr - meta.targetAddress) : at;
+          const swapped = (slot.before !== null ? `<g>${hide(byteAt)}${renderByte(slot.before, true)}</g>` : "") + `<g opacity="0">${show(byteAt)}${renderByte(slot.after, false)}</g>`;
+          markup += scaledAt(bx + byteW / 2, gridY + 68, swapped, byteAt - 0.15);
+        } else {
+          markup += renderByte(slot.after, false);
         }
-        return body;
-      };
-      const writingThis = animate && ((op == null ? void 0 : op.kind) === "write" && op.name === v.name && !sim.isPunningWrite || sim.isPunningWrite && valBefore !== valAfter);
-      if (writingThis) {
-        const cx = vx + vw / 2;
-        const cy = gridY + cellH / 2;
-        markup += `<g transform="translate(${round(cx)} ${round(cy)})"><g>${pulse(at - 0.15)}<g transform="translate(${round(-cx)} ${round(-cy)})">`;
-        if (valBefore !== null) markup += `<g>${hide(at)}${renderBody(valBefore, true)}</g>`;
-        markup += `<g opacity="0">${show(at)}${renderBody(valAfter, false)}</g>`;
-        markup += "</g></g></g>";
-      } else {
-        markup += renderBody(valAfter, false);
       }
       if (animate && op && !sim.isPunningWrite) {
         if (op.kind === "read" && op.name === v.name) {
@@ -3758,14 +3766,22 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           markup += `<g opacity="0">${fade(0, 1, 0.15, at - 0.25)}${fade(1, 0, 0.3, at + 0.3)}` + rect(vx + 3, gridY + 3, vw - 6, cellH - 6, P.write, "none", 0).replace("fill=", 'fill-opacity="0.18" fill=') + rect(vx + 3, gridY + 3, vw - 6, cellH - 6, "none", P.write, 0, 3) + "</g>";
         }
       }
+      if (v.kind === "int" && v.size > 1) {
+        const ay = gridY + cellH + 10;
+        const dir = c.littleEndian ? 1 : -1;
+        const xLow = vx + (c.littleEndian ? byteW / 2 : vw - byteW / 2);
+        const xHigh = vx + (c.littleEndian ? vw - byteW / 2 : byteW / 2);
+        const arrowCol = on ? P.grey : P.deadStroke;
+        markup += `<g opacity="${on ? "0.75" : "0.45"}"><line x1="${round(xLow)}" y1="${ay}" x2="${round(xHigh - 6 * dir)}" y2="${ay}" stroke="${arrowCol}" stroke-width="1.5" stroke-linecap="round"/><path d="M -8 -4 L 0 0 L -8 4 Z" fill="${arrowCol}" transform="translate(${round(xHigh)} ${ay}) rotate(${c.littleEndian ? 0 : 180})"/></g>`;
+      }
       const pillRow = pillRowOf.get(v.name) ?? 0;
-      const labelOffset = meta.direction === "smaller" && smallerStyle === "B" && v.name === meta.targetVar ? 16 : 0;
-      const pillTop = gridY + cellH + 34 + labelOffset + pillRow * 24;
+      const nameY = gridY + cellH + 34;
+      const pillTop = nameY + 8 + pillRow * 24;
       const nameCol = isCorrupted ? P.error : on ? col : P.grey;
       if (animate && sim.isPunningWrite && isCorrupted) {
-        markup += `<g>${hide(at)}${text(vx + vw / 2, gridY + cellH + 26 + labelOffset, v.name, 20, col, "middle")}</g><g opacity="0">${show(at)}${text(vx + vw / 2, gridY + cellH + 26 + labelOffset, v.name, 20, P.error, "middle")}</g>`;
+        markup += `<g>${hide(at)}${text(vx + vw / 2, nameY, v.name, 20, col, "middle")}</g><g opacity="0">${show(at)}${text(vx + vw / 2, nameY, v.name, 20, P.error, "middle")}</g>`;
       } else {
-        markup += text(vx + vw / 2, gridY + cellH + 26 + labelOffset, v.name, 20, nameCol, "middle");
+        markup += text(vx + vw / 2, nameY, v.name, 20, nameCol, "middle");
       }
       markup += typeLabel(c, vx + vw / 2, pillTop, v.type, 13.5, on ? typeColour(c, v.type) : P.deadStroke);
       const keepBright = isCorrupted || sim.ptrLive && (v.name === meta.targetVar || v.name === meta.ptrName);
@@ -3793,150 +3809,99 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const wLeft = xOf(meta.targetAddress);
       const wRight = xOf(meta.targetAddress + meta.pointeeSize);
       const ownEnd = xOf(targetVar.address + targetVar.size);
-      const brY = gridY + cellH + 38 + pillRowsCount * 24 + 8;
+      const brY = gridY + cellH + 46 + pillRowsCount * 24 + 8;
       const tickTop = brY - 10;
       const cal = `<path d="M ${round(wLeft + 2)} ${tickTop} V ${brY} H ${round(ownEnd)}" fill="none" stroke="${P.write}" stroke-width="2.2"/><path d="M ${round(ownEnd)} ${brY} H ${round(wRight - 2)} V ${tickTop}" fill="none" stroke="${P.error}" stroke-width="2.8"/>` + pill((ownEnd + wRight) / 2, brY + 18, "⚠ UB", 13.5, P.error, P.error, P.bg);
       belowOverlay += animate && sim.isPunningWrite ? `<g opacity="0">${fade(0, 1, 0.25, at)}${cal}</g>` : cal;
     }
-    if (meta.direction === "smaller" && smallerStyle === "B" && sim.varAfter.get(targetVar.name) !== null) {
-      const ay = gridY + cellH + 10;
-      const xLow = xOf(targetVar.address) + (c.littleEndian ? byteW / 2 : targetVar.size * byteW - byteW / 2);
-      const xHigh = xOf(targetVar.address) + (c.littleEndian ? targetVar.size * byteW - byteW / 2 : byteW / 2);
-      const dir = c.littleEndian ? 1 : -1;
-      belowOverlay += `<g opacity="0.8"><line x1="${round(xLow)}" y1="${ay}" x2="${round(xHigh - 6 * dir)}" y2="${ay}" stroke="${P.muted}" stroke-width="1.5" stroke-linecap="round"/><path d="M -8 -4 L 0 0 L -8 4 Z" fill="${P.muted}" transform="translate(${round(xHigh)} ${ay}) rotate(${c.littleEndian ? 0 : 180})"/>` + text(xLow, ay + 12, "LSB", 9.5, P.muted, "middle") + text(xHigh, ay + 12, "MSB", 9.5, P.muted, "middle") + "</g>";
-    }
     let wb = "";
     let flight = "";
     if (sim.windowActive) {
-      const stripY = g.ty + 30;
+      const stripY = g.ty + 28;
       const tileW = 44;
       const tileH = 30;
       const tileGap = 6;
-      const startX = g.tx + 10;
-      if (meta.direction === "larger") {
-        const bytes = sim.writtenBytes;
-        const labelStr = `${meta.writeAction.valueText} (${c.littleEndian ? "LE" : "BE"})`;
-        wb += text(startX, stripY + 20, labelStr, 15, P.muted);
-        const tilesX = startX + labelStr.length * 15 * CHAR + 14;
-        for (let k = 0; k < bytes.length; k++) {
-          const addr = meta.targetAddress + k;
-          const slot = sim.bytes[addr - meta.baseAddress];
-          const bad = sim.ubTriggered && (slot.status === "padding" || slot.status === "foreign");
-          const tx = tilesX + k * (tileW + tileGap);
-          const stroke = bad ? P.error : P.write;
-          const fill = bad ? P.panel : P.writeFill;
-          wb += rect(tx, stripY, tileW, tileH, fill, stroke, 5, 2) + text(tx + tileW / 2, stripY + 20, hex2(bytes[k]), 15.5, stroke, "middle");
-          if (animate && sim.isPunningWrite) {
-            const sx = tx + tileW / 2;
-            const sy = stripY;
-            const ex = xOf(addr) + byteW / 2;
-            const ey = gridY + 70;
-            const midY = (sy + ey) / 2;
-            const path = `M ${round(sx)} ${round(sy)} C ${round(sx)} ${round(midY)}, ${round(ex)} ${round(midY)}, ${round(ex)} ${round(ey)}`;
-            const begin = 0.25 + k * 0.1;
-            const dur = 0.85;
-            const end = begin + dur;
-            const flyCol = slot.status === "padding" || slot.status === "foreign" ? P.error : P.write;
-            flight += `<g opacity="0">${fade(0, 0.5, 0.2, begin)}${fade(0.5, 0, 0.25, end)}<path d="${path}" fill="none" stroke="${flyCol}" stroke-width="2.4"/></g><g opacity="0">${fade(0, 1, 0.1, begin)}${hide(end + 0.05)}` + rect(-20, -14, 40, 28, P.panel, flyCol, 6, 2) + text(0, 6, hex2(bytes[k]), 15, flyCol, "middle") + `<animateMotion begin="${round(begin)}s" dur="${dur}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
-          }
-        }
-      } else {
-        const writtenByte = sim.writtenBytes[0];
-        if (smallerStyle === "A") {
-          const labelStr = `a (${c.littleEndian ? "LE" : "BE"})`;
-          wb += text(startX, stripY + 20, labelStr, 15, P.muted);
-          const tilesX = startX + labelStr.length * 15 * CHAR + 14;
-          for (let k = 0; k < targetVar.size; k++) {
-            const addr = targetVar.address + k;
-            const slot = sim.bytes[addr - meta.baseAddress];
-            const hit = k === 0;
-            const tx = tilesX + k * (tileW + tileGap);
-            const bval = typeof slot.after === "number" ? slot.after : 0;
-            const stroke = hit ? P.write : P.gapStroke;
-            const fill = hit ? P.writeFill : P.deadFill;
-            wb += rect(tx, stripY, tileW, tileH, fill, stroke, 5, hit ? 2.2 : 1.4) + text(tx + tileW / 2, stripY + 20, hex2(bval), 15.5, hit ? P.write : P.muted, "middle");
-          }
-          const aVal = sim.varAfter.get(targetVar.name) ?? 0;
-          const eqX = tilesX + targetVar.size * (tileW + tileGap) + 12;
-          wb += text(eqX, stripY + 21, `→ a = ${aVal}`, 16, P.fg);
-        } else {
-          const labelStr = `${meta.writeAction.valueText}`;
-          wb += text(startX, stripY + 20, labelStr, 15, P.muted);
-          const tx = startX + labelStr.length * 15 * CHAR + 14;
-          wb += rect(tx, stripY, tileW, tileH, P.writeFill, P.write, 5, 2) + text(tx + tileW / 2, stripY + 20, hex2(writtenByte), 15.5, P.write, "middle");
-        }
+      const rhsStart = step.pane.indexOf("= ") + 2;
+      const tilesX = g.tx + Math.max(0, rhsStart) * g.paneChar;
+      const bytes = sim.writtenBytes;
+      for (let k = 0; k < bytes.length; k++) {
+        const addr = meta.targetAddress + k;
+        const slot = sim.bytes[addr - meta.baseAddress];
+        const bad = sim.ubTriggered && (slot.status === "padding" || slot.status === "foreign");
+        const tx = tilesX + k * (tileW + tileGap);
+        const stroke = bad ? P.error : P.write;
+        const fill = bad ? P.panel : P.writeFill;
+        wb += rect(tx, stripY, tileW, tileH, fill, stroke, 5, 2) + text(tx + tileW / 2, stripY + 20, hex2(bytes[k]), 15.5, stroke, "middle");
         if (animate && sim.isPunningWrite) {
-          const sx = smallerStyle === "A" ? startX + (`a (${c.littleEndian ? "LE" : "BE"})`.length * 15 * CHAR + 14) + tileW / 2 : startX + (`${meta.writeAction.valueText}`.length * 15 * CHAR + 14) + tileW / 2;
+          const sx = tx + tileW / 2;
           const sy = stripY;
-          const ex = xOf(meta.targetAddress) + byteW / 2;
+          const ex = xOf(addr) + byteW / 2;
           const ey = gridY + 70;
           const midY = (sy + ey) / 2;
           const path = `M ${round(sx)} ${round(sy)} C ${round(sx)} ${round(midY)}, ${round(ex)} ${round(midY)}, ${round(ex)} ${round(ey)}`;
-          const begin = 0.25;
+          const begin = 0.25 + k * 0.1;
           const dur = 0.85;
-          flight += `<g opacity="0">${fade(0, 0.5, 0.2, begin)}${fade(0.5, 0, 0.25, begin + dur)}<path d="${path}" fill="none" stroke="${P.write}" stroke-width="2.4"/></g><g opacity="0">${fade(0, 1, 0.1, begin)}${hide(begin + dur + 0.05)}` + rect(-20, -14, 40, 28, P.panel, P.write, 6, 2) + text(0, 6, hex2(writtenByte), 15, P.write, "middle") + `<animateMotion begin="${round(begin)}s" dur="${dur}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
+          const end = begin + dur;
+          const flyCol = slot.status === "padding" || slot.status === "foreign" ? P.error : P.write;
+          flight += `<g opacity="0">${fade(0, 0.5, 0.2, begin)}${fade(0.5, 0, 0.25, end)}<path d="${path}" fill="none" stroke="${flyCol}" stroke-width="2.4"/></g><g opacity="0">${fade(0, 1, 0.1, begin)}${hide(end + 0.05)}` + rect(-20, -14, 40, 28, P.panel, flyCol, 6, 2) + text(0, 6, hex2(bytes[k]), 15, flyCol, "middle") + `<animateMotion begin="${round(begin)}s" dur="${dur}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
+        }
+      }
+      if (paneStyle === "B" && meta.direction === "smaller") {
+        for (let k = bytes.length; k < targetVar.size; k++) {
+          const tx = tilesX + k * (tileW + tileGap);
+          wb += `<rect x="${round(tx)}" y="${stripY}" width="${tileW}" height="${tileH}" rx="5" fill="none" stroke="${P.grey}" stroke-opacity="0.75" stroke-dasharray="4 3" stroke-width="1.6"/>`;
         }
       }
     }
     return defs + code(c, oldLine) + tether(c, oldLine) + arcMarkup + mem + scopeBox + belowOverlay + pane(c, animate && copies(c.m.steps, c.index)) + wb + output(c) + gridTransfers(c, meta, sim, xOf, byteW, gridY, cellH) + flight;
   }
-  function makeView(smallerStyle) {
+  function makeView(paneStyle) {
     return {
       geometry: (m) => {
         const meta = META.get(m.trace);
-        const extraMemBottom = meta.direction === "larger" ? 96 : smallerStyle === "B" ? 54 : 38;
         return {
           minByteWidth: 46,
           minColumnWidth: 780,
           cellHeight: 88,
-          extraMemBottom,
-          extraPaneHeight: 50,
+          extraMemBottom: meta.direction === "larger" ? 104 : 46,
+          extraPaneHeight: 46,
           skipWrap: true
         };
       },
       stackBelow: 900,
       maxScale: 0.72,
       byteOrder: true,
-      scene: (c) => foldedScene(c, smallerStyle),
+      scene: (c) => unifiedScene(c, paneStyle),
       stepSeconds: punningStepSeconds
     };
   }
   const VARIANTS = [
     {
       key: "A",
-      name: "A · Subtle veil + clean 4-byte pane strip",
-      summary: "Clean scope box on byte 64, subtle diagonal veil on untouched bytes 65..67, and a clean 4-byte reassembly strip in the pane (no tiny sub-labels, nothing extra below memory).",
+      name: "A · Exact bytes written (symmetrical)",
+      summary: 'In every scenario, the pane shows only the exact bytes being written (4 tiles for int*, 1 tile for uint8_t*), aligned right under the written value. No labels, no "(LE)", no repeated numbers.',
       bullets: [
-        "Larger pointers keep a calm 4-byte scope until the write step, then show red spilled bytes and ⚠ UB.",
-        "Smaller pointers veil bytes 65..67 and show the four resulting bytes recombining in the pane."
+        "Larger pointer: 4 byte tiles (1 gold, 3 red on write). Smaller pointer: 1 gold byte tile.",
+        "Hit Play on scenarios 3–4 to see only byte 64 and the top value pulse while bytes 65..67 stay still."
       ],
       view: makeView("A")
     },
     {
       key: "B",
-      name: "B · Inline old→new header + LSB→MSB arrow",
-      summary: "Clean scope box on byte 64, old → new decimal mutation right in a’s header, and the bits-view LSB → MSB arrow under a so LE/BE impact is obvious without extra cards.",
+      name: "B · Written bytes + empty target slots",
+      summary: "Same bytes-being-written view, except smaller pointers also show 3 hollow dashed slots beside the 1 written byte so the pane itself mirrors the 1-of-4 coverage without duplicating a’s existing bytes.",
       bullets: [
-        "Flip Little-endian / Big-endian to see the LSB → MSB arrow reverse alongside 5 → 33554437.",
-        "Pane shows only the single written byte tile."
+        "Larger pointer: 1 gold + 3 red overflow tiles. Smaller pointer: 1 gold + 3 dashed empty slots.",
+        'No labels, no "(LE)", no repeated values.'
       ],
       view: makeView("B")
-    },
-    {
-      key: "C",
-      name: "C · Minimal (clean scope + dimmed untouched bytes)",
-      summary: "Stripped to the essentials: clean 1-byte scope box on byte 64, untouched bytes 65..67 gently dimmed, and a single written byte tile in the pane.",
-      bullets: [
-        "Zero extra visual widgets; relies purely on the scope box, flying byte, and updated value of a."
-      ],
-      view: makeView("C")
     }
   ];
   let players = [];
   function currentVariantKey() {
     var _a;
     const param = (_a = new URLSearchParams(window.location.search).get("variant")) == null ? void 0 : _a.toUpperCase();
-    return param === "B" || param === "C" ? param : "A";
+    return param === "B" ? "B" : "A";
   }
   function setVariantKey(key) {
     const url = new URL(window.location.href);
