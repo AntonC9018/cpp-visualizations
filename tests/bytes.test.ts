@@ -66,6 +66,19 @@ describe('bytes', () => {
       poisoned: false,
       numeric: 131077,
     });
+    // Values beyond Number.MAX_SAFE_INTEGER keep exact decimal text and null numeric (never rounded).
+    const unsafe = encodeBytes((1n << 53n) + 1n, 8, true);
+    assert.deepEqual(formatByteSlice(unsafe, false, true), {
+      text: '9007199254740993',
+      poisoned: false,
+      numeric: null,
+    });
+    const maxSafe = encodeBytes((1n << 53n) - 1n, 8, true);
+    assert.deepEqual(formatByteSlice(maxSafe, false, true), {
+      text: '9007199254740991',
+      poisoned: false,
+      numeric: Number.MAX_SAFE_INTEGER,
+    });
   });
 
   test('computes alignment padding runs between and after variables', () => {

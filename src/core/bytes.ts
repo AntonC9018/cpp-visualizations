@@ -74,7 +74,8 @@ export function formatByteSlice(
     return { text: `0x${hex}`, poisoned: true, numeric: null };
   }
   const value = decodeBytes(slice as number[], signed, littleEndian);
-  const numeric = Number(value);
+  const n = Number(value);
+  const numeric = Number.isSafeInteger(n) && BigInt(n) === value ? n : null;
   return { text: value.toString(10), poisoned: false, numeric };
 }
 

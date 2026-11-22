@@ -2267,6 +2267,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }
   const BYTE_CELL_HEIGHT = 88;
   const BYTE_SPLIT_OFFSET = 48;
+  const MAX_DETAIL_GAP = 16;
   let patternSeq = 0;
   function hatchDefs(P) {
     const uid = ++patternSeq;
@@ -2298,37 +2299,40 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const gridY = g.leaves[0].y;
     const cellH = g.leaves[0].h;
     const baseAddress = Math.min(...g.leaves.map((l) => l.address));
-    const lastEnd = Math.max(...g.leaves.map((l) => l.address + l.size));
-    const totalBytes = Math.max(0, lastEnd - baseAddress);
     const xOf = (addr) => g.memX + (addr - baseAddress) * byteW;
     const at = op ? arrival(op) : 0;
     const readCells = new Set((op == null ? void 0 : op.kind) === "read" ? g.cellsOf(op.name).map((l) => l.name) : []);
     const writeCells = new Set((op == null ? void 0 : op.kind) === "write" ? g.cellsOf(op.name).map((l) => l.name) : []);
-    const ownerStarts = new Set(g.leaves.map((l) => l.address));
     let out = "";
-    for (let i = 0; i < totalBytes; i++) {
-      const addr = baseAddress + i;
-      const isStart = ownerStarts.has(addr);
-      const bx = xOf(addr);
-      out += text(
-        bx + byteW / 2,
-        gridY - 12,
-        addr,
-        isStart ? 15 : 13,
-        isStart ? P.muted : P.grey,
-        "middle"
-      );
+    for (const leaf of g.leaves) {
+      for (let k = 0; k < leaf.size; k++) {
+        const bx = leaf.x + k * byteW;
+        out += text(
+          bx + byteW / 2,
+          leaf.y - 12,
+          leaf.address + k,
+          k === 0 ? 15 : 13,
+          k === 0 ? P.muted : P.grey,
+          "middle"
+        );
+      }
     }
     for (const run of paddingRuns(g.leaves)) {
       const rx = xOf(run.start);
       const rw = run.size * byteW;
       out += `<g class="cv-byte-padding" data-address="${run.start}" data-size="${run.size}">` + rect(rx + 1, gridY + 1, rw - 2, cellH - 2, `url(#${opts.padId})`, P.gapStroke, 0, 1.5);
-      for (let k = 0; k < run.size; k++) {
-        const bx = xOf(run.start + k);
-        if (k > 0) {
-          out += `<line x1="${round(bx)}" y1="${gridY + 2}" x2="${round(bx)}" y2="${gridY + cellH - 2}" stroke="${P.gapStroke}" stroke-dasharray="3 3" stroke-width="1"/>`;
+      if (run.size <= MAX_DETAIL_GAP) {
+        for (let k = 0; k < run.size; k++) {
+          const bx = xOf(run.start + k);
+          out += text(bx + byteW / 2, gridY - 12, run.start + k, 13, P.grey, "middle");
+          if (k > 0) {
+            out += `<line x1="${round(bx)}" y1="${gridY + 2}" x2="${round(bx)}" y2="${gridY + cellH - 2}" stroke="${P.gapStroke}" stroke-dasharray="3 3" stroke-width="1"/>`;
+          }
+          out += text(bx + byteW / 2, gridY + 74, "??", 13.5, P.grey, "middle");
         }
-        out += text(bx + byteW / 2, gridY + 74, "??", 13.5, P.grey, "middle");
+      } else {
+        out += text(rx + rw / 2, gridY - 12, `${run.start}..${run.start + run.size - 1}`, 13, P.grey, "middle");
+        out += text(rx + rw / 2, gridY + 74, "…", 15, P.grey, "middle");
       }
       out += "</g>";
     }
