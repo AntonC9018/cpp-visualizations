@@ -549,6 +549,20 @@ test('a bits trace keeps the value in the workbench while printing it', async ()
   assert.deepEqual(shown, ['00000000', '00000000', '00000000', '00000111']);
 });
 
+test('a bits trace lays variables flush on the byte grid and pulses only changed bytes', async () => {
+  const bits = traceSource('int a{ 5 }; a = 2;', { bits: true });
+  await page.setContent(PAGE.replace(trace, JSON.stringify(bits).replace(/</g, '\\u003c')));
+  await page.evaluate(() => window.CourseVisualization!.scan());
+  await page.waitForSelector('.cv-player');
+  const write2 = bits.steps.findIndex(step => step.op?.kind === 'write' && step.op.value === '2');
+  const pulses = await page.locator('.course-visualization').evaluate((h: PlayerElement, step) => {
+    h.cvPlayer.inspect(step, 1.5);
+    return h.cvPlayer.svg.querySelectorAll('.cv-byte-hex[data-name="a"] animateTransform[type="scale"]').length;
+  }, write2);
+  // Only byte 0 changes (05 -> 02); bytes 1..3 stay 00 and do not pulse.
+  assert.equal(pulses, 1);
+});
+
 test('a trace without bits has no byte order switch', async () => {
   await page.waitForSelector('.cv-player');
   assert.equal(await page.locator('.cv-endian').count(), 0);
