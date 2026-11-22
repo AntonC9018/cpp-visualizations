@@ -32,10 +32,10 @@
 <main>
   <h1>PROTOTYPE · Pointer type punning (#60)</h1>
   <p class="note">
-    Unified candidate: full-height open HUD corner reticle (zoom-snap lock), centered values, transient full-height write
-    highlight over the exact written bytes (4 bytes for <code>int*</code>, 1 misaligned byte for <code>uint8_t*</code>),
-    persistent red corruption + <code>⚠ UB</code> only on write, and standardized pane byte tiles. Hit <strong>Play</strong>
-    or <strong>Replay</strong> on the final step to check the tall write highlight and per-byte pulse.
+    Unified candidate: writes (1–4) and reads (5–8) through larger and smaller pointee types. Full-height open HUD
+    corner reticle (zoom-snap lock), transient full-height read/write highlights over the exact accessed bytes,
+    <code>⚠ UB</code> only on out-of-bounds read/write, and poisoned reads from padding shown in hex with
+    <code>?</code> (<code>0x??????2A</code> in LE, <code>0x2A??????</code> in BE).
   </p>
   <div id="sections"></div>
 </main>

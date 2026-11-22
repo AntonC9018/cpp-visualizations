@@ -47,10 +47,22 @@ interface PunningVar {
 }
 
 interface PunningWriteAction {
+  kind: 'write';
   stepIndex: number;
   value: number;
   valueText: string;
 }
+
+interface PunningReadAction {
+  kind: 'read';
+  readStepIndex: number;
+  storeStepIndex: number;
+  destVar: string;
+  panePrefix: string;
+  paneSuffix: string;
+}
+
+type PunningAction = PunningWriteAction | PunningReadAction;
 
 interface PunningMeta {
   id: string;
@@ -67,7 +79,7 @@ interface PunningMeta {
   targetAddress: number;
   ptrInitStep: number;
   derefStep: number;
-  writeAction: PunningWriteAction;
+  action: PunningAction;
   initSteps: Array<{ stepIndex: number; varName: string; value: number }>;
 }
 
@@ -75,6 +87,12 @@ const META = new WeakMap<ExecutionTrace, PunningMeta>();
 
 type ByteVal = number | '?' | null;
 type AccessStatus = 'none' | 'owned' | 'padding' | 'foreign' | 'untouched';
+
+interface DecodedVar {
+  text: string;
+  poisoned: boolean;
+  numeric: number | null;
+}
 
 interface ByteSlot {
   address: number;
@@ -88,14 +106,21 @@ interface ByteSlot {
 
 interface SimState {
   bytes: ByteSlot[];
-  varBefore: Map<string, number | null>;
-  varAfter: Map<string, number | null>;
+  varBefore: Map<string, DecodedVar | null>;
+  varAfter: Map<string, DecodedVar | null>;
   corruptedVars: Set<string>;
+  readForeignVars: Set<string>;
   ubTriggered: boolean;
+  ubKind: 'none' | 'write' | 'read';
   ptrLive: boolean;
   windowActive: boolean;
   isPunningWrite: boolean;
-  writtenBytes: number[];
+  isPunningRead: boolean;
+  isPoisonStore: boolean;
+  /** Bytes transferred by the punning op (written bytes on write; read bytes on read/store). */
+  paneBytes: ByteVal[];
+  /** Formatted result of a punning read (always hex with `?` if any byte is poisoned). */
+  readResult: DecodedVar | null;
 }
 
 function encodeBytes(value: number, size: number, littleEndian: boolean): number[] {
@@ -123,6 +148,21 @@ function decodeBytes(bytes: number[], signed: boolean, littleEndian: boolean): n
 
 const hex2 = (b: number): string => b.toString(16).toUpperCase().padStart(2, '0');
 
+function formatBytesValue(
+  slice: ByteVal[],
+  signed: boolean,
+  littleEndian: boolean
+): DecodedVar | null {
+  if (slice.every(b => b === null)) return null;
+  if (slice.some(b => b === '?' || b === null)) {
+    const ordered = littleEndian ? [...slice].reverse() : [...slice];
+    const hex = ordered.map(b => (typeof b === 'number' ? hex2(b) : '??')).join('');
+    return { text: `0x${hex}`, poisoned: true, numeric: null };
+  }
+  const num = decodeBytes(slice as number[], signed, littleEndian);
+  return { text: String(num), poisoned: false, numeric: num };
+}
+
 function ownerAt(meta: PunningMeta, addr: number): PunningVar | null {
   for (const v of meta.vars) {
     if (addr >= v.address && addr < v.address + v.size) return v;
@@ -145,11 +185,22 @@ function snapshotAt(meta: PunningMeta, stepIndex: number, littleEndian: boolean)
       }
     }
   }
-  if (meta.writeAction.stepIndex <= stepIndex) {
-    const bs = encodeBytes(meta.writeAction.value, meta.pointeeSize, littleEndian);
+  if (meta.action.kind === 'write' && meta.action.stepIndex <= stepIndex) {
+    const bs = encodeBytes(meta.action.value, meta.pointeeSize, littleEndian);
     for (let k = 0; k < meta.pointeeSize; k++) {
       const idx = meta.targetAddress - meta.baseAddress + k;
       if (idx >= 0 && idx < mem.length) mem[idx] = bs[k];
+    }
+  }
+  if (meta.action.kind === 'read' && meta.action.storeStepIndex <= stepIndex) {
+    const destName = meta.action.destVar;
+    const dest = meta.vars.find(x => x.name === destName)!;
+    const srcStart = meta.targetAddress - meta.baseAddress;
+    const dstStart = dest.address - meta.baseAddress;
+    const count = Math.min(dest.size, meta.pointeeSize);
+    for (let k = 0; k < count; k++) {
+      const raw = mem[srcStart + k];
+      mem[dstStart + k] = raw === null ? '?' : raw;
     }
   }
   return mem;
@@ -159,15 +210,11 @@ function decodeVarValues(
   meta: PunningMeta,
   mem: ByteVal[],
   littleEndian: boolean
-): Map<string, number | null> {
-  const out = new Map<string, number | null>();
+): Map<string, DecodedVar | null> {
+  const out = new Map<string, DecodedVar | null>();
   for (const v of meta.vars) {
     const slice = mem.slice(v.address - meta.baseAddress, v.address - meta.baseAddress + v.size);
-    if (slice.some(b => typeof b !== 'number')) {
-      out.set(v.name, null);
-    } else {
-      out.set(v.name, decodeBytes(slice as number[], v.signed, littleEndian));
-    }
+    out.set(v.name, formatBytesValue(slice, v.signed, littleEndian));
   }
   return out;
 }
@@ -178,8 +225,13 @@ function simulate(meta: PunningMeta, stepIndex: number, littleEndian: boolean): 
   const afterMem = snapshotAt(meta, stepIndex, littleEndian);
   const ptrLive = stepIndex >= meta.ptrInitStep;
   const windowActive = stepIndex >= meta.derefStep;
-  const isPunningWrite = stepIndex === meta.writeAction.stepIndex;
-  const writeDone = stepIndex >= meta.writeAction.stepIndex;
+  const isPunningWrite = meta.action.kind === 'write' && stepIndex === meta.action.stepIndex;
+  const isPunningRead = meta.action.kind === 'read' && stepIndex === meta.action.readStepIndex;
+  const isPoisonStore = meta.action.kind === 'read' && stepIndex === meta.action.storeStepIndex;
+  const actionDone =
+    meta.action.kind === 'write'
+      ? stepIndex >= meta.action.stepIndex
+      : stepIndex >= meta.action.readStepIndex;
   const wStart = meta.targetAddress;
   const wEnd = meta.targetAddress + meta.pointeeSize;
   const targetVar = meta.vars.find(v => v.name === meta.targetVar)!;
@@ -189,6 +241,7 @@ function simulate(meta: PunningMeta, stepIndex: number, littleEndian: boolean): 
   const bytes: ByteSlot[] = [];
   let ubTriggered = false;
   const corruptedVars = new Set<string>();
+  const readForeignVars = new Set<string>();
 
   for (let i = 0; i < meta.totalBytes; i++) {
     const address = meta.baseAddress + i;
@@ -198,14 +251,18 @@ function simulate(meta: PunningMeta, stepIndex: number, littleEndian: boolean): 
     if (inWindow) {
       if (!owner) {
         status = 'padding';
-        if (writeDone) ubTriggered = true;
+        if (actionDone) ubTriggered = true;
       } else if (owner.name === meta.targetVar) {
         status = 'owned';
       } else {
         status = 'foreign';
-        if (writeDone) {
+        if (actionDone) {
           ubTriggered = true;
-          corruptedVars.add(owner.name);
+          if (meta.action.kind === 'write') {
+            corruptedVars.add(owner.name);
+          } else {
+            readForeignVars.add(owner.name);
+          }
         }
       }
     } else if (ptrLive && address >= tStart && address < tEnd) {
@@ -224,16 +281,34 @@ function simulate(meta: PunningMeta, stepIndex: number, littleEndian: boolean): 
     });
   }
 
+  let paneBytes: ByteVal[];
+  let readResult: DecodedVar | null = null;
+  if (meta.action.kind === 'write') {
+    paneBytes = encodeBytes(meta.action.value, meta.pointeeSize, littleEndian);
+  } else {
+    const readMem = snapshotAt(meta, meta.action.readStepIndex, littleEndian);
+    const start = meta.targetAddress - meta.baseAddress;
+    paneBytes = readMem.slice(start, start + meta.pointeeSize).map(b => (b === null ? '?' : b));
+    const destName = meta.action.destVar;
+    const dest = meta.vars.find(v => v.name === destName)!;
+    readResult = formatBytesValue(paneBytes, dest.signed, littleEndian);
+  }
+
   return {
     bytes,
     varBefore: decodeVarValues(meta, beforeMem, littleEndian),
     varAfter: decodeVarValues(meta, afterMem, littleEndian),
     corruptedVars,
+    readForeignVars,
     ubTriggered,
+    ubKind: ubTriggered ? meta.action.kind : 'none',
     ptrLive,
     windowActive,
     isPunningWrite,
-    writtenBytes: encodeBytes(meta.writeAction.value, meta.pointeeSize, littleEndian),
+    isPunningRead,
+    isPoisonStore,
+    paneBytes,
+    readResult,
   };
 }
 
@@ -364,7 +439,7 @@ function makeScenario1(): { trace: ExecutionTrace; meta: PunningMeta } {
     targetAddress: 64,
     ptrInitStep: 6,
     derefStep: 9,
-    writeAction: { stepIndex: 10, value: 300, valueText: '300' },
+    action: { kind: 'write', stepIndex: 10, value: 300, valueText: '300' },
     initSteps: [
       { stepIndex: 1, varName: 'a', value: 5 },
       { stepIndex: 3, varName: 'c', value: 10 },
@@ -512,7 +587,7 @@ function makeScenario2(): { trace: ExecutionTrace; meta: PunningMeta } {
     targetAddress: 64,
     ptrInitStep: 8,
     derefStep: 11,
-    writeAction: { stepIndex: 12, value: 0x04030201, valueText: '0x04030201' },
+    action: { kind: 'write', stepIndex: 12, value: 0x04030201, valueText: '0x04030201' },
     initSteps: [
       { stepIndex: 1, varName: 'a', value: 5 },
       { stepIndex: 3, varName: 'c', value: 9 },
@@ -633,7 +708,7 @@ function makeScenario3(): { trace: ExecutionTrace; meta: PunningMeta } {
     targetAddress: 64,
     ptrInitStep: 4,
     derefStep: 7,
-    writeAction: { stepIndex: 8, value: 2, valueText: '2' },
+    action: { kind: 'write', stepIndex: 8, value: 2, valueText: '2' },
     initSteps: [
       { stepIndex: 1, varName: 'a', value: 5 },
       { stepIndex: 4, varName: 'b', value: 64 },
@@ -752,7 +827,7 @@ function makeScenario4(): { trace: ExecutionTrace; meta: PunningMeta } {
     targetAddress: 64,
     ptrInitStep: 4,
     derefStep: 7,
-    writeAction: { stepIndex: 8, value: 0, valueText: '0' },
+    action: { kind: 'write', stepIndex: 8, value: 0, valueText: '0' },
     initSteps: [
       { stepIndex: 1, varName: 'a', value: 261 },
       { stepIndex: 4, varName: 'b', value: 64 },
@@ -762,7 +837,594 @@ function makeScenario4(): { trace: ExecutionTrace; meta: PunningMeta } {
   return { trace, meta };
 }
 
-const SCENARIOS = [makeScenario1(), makeScenario2(), makeScenario3(), makeScenario4()];
+function makeScenario5(): { trace: ExecutionTrace; meta: PunningMeta } {
+  const vars: PunningVar[] = [
+    { name: 'a', type: 'uint8_t', address: 64, size: 1, kind: 'int', signed: false, color: 0 },
+    { name: 'x', type: 'int', address: 68, size: 4, kind: 'int', signed: true, color: 2 },
+    { name: 'b', type: 'int*', address: 72, size: 8, kind: 'ptr', signed: false, color: 1 },
+  ];
+  const traceVars: ScalarVariable[] = vars.map(v => ({
+    name: v.name,
+    address: v.address,
+    size: v.size,
+    kind: v.kind,
+    color: v.color,
+    type: v.type,
+  }));
+  const source = [
+    'uint8_t a{ 42 };',
+    'int* b{ &a };',
+    'int x{ *b };',
+  ];
+  const v0 = { a: null, x: null, b: null };
+  const v1 = { a: 42, x: null, b: null };
+  const v2 = { a: 42, x: null, b: 64 };
+  const v3 = { a: 42, x: 42, b: 64 };
+  const steps: TraceStep[] = [
+    { line: 0, pane: 'uint8_t a{ 42 }', expr: [11, 13], values: v0, targets: {}, stdout: '', hold: 0.7, op: null },
+    {
+      line: 0,
+      pane: 'uint8_t a{ 42 }',
+      expr: [11, 13],
+      values: v1,
+      targets: {},
+      stdout: '',
+      hold: 0.9,
+      op: { kind: 'write', name: 'a', value: '42', span: [11, 13], destination: [8, 9] },
+    },
+    { line: 1, pane: 'int* b{ &a }', expr: [8, 10], values: v1, targets: {}, stdout: '', hold: 0.7, op: null },
+    {
+      line: 1,
+      pane: 'int* b{ 64 }',
+      expr: [8, 10],
+      values: v1,
+      targets: {},
+      stdout: '',
+      hold: 0.9,
+      op: { kind: 'addr', name: 'a', value: '64', span: [8, 10] },
+    },
+    {
+      line: 1,
+      pane: 'int* b{ 64 }',
+      expr: [8, 10],
+      values: v2,
+      targets: { b: 'a' },
+      stdout: '',
+      hold: 1.2,
+      op: { kind: 'write', name: 'b', value: '64', span: [8, 10], destination: [5, 6] },
+    },
+    { line: 2, pane: 'int x{ *b }', expr: [7, 9], values: v2, targets: { b: 'a' }, stdout: '', hold: 0.7, op: null },
+    {
+      line: 2,
+      pane: 'int x{ *64 }',
+      expr: [7, 10],
+      values: v2,
+      targets: { b: 'a' },
+      stdout: '',
+      hold: 0.9,
+      op: { kind: 'read', name: 'b', value: '64', span: [8, 9] },
+    },
+    {
+      line: 2,
+      pane: 'int x{ *64 }',
+      expr: [7, 10],
+      values: v2,
+      targets: { b: 'a' },
+      stdout: '',
+      hold: 1.1,
+      op: { kind: 'deref', target: 'a', via: 'b', span: [7, 10] },
+    },
+    {
+      line: 2,
+      pane: 'int x{ 0x??????2A }',
+      expr: [7, 17],
+      values: v2,
+      targets: { b: 'a' },
+      stdout: '',
+      hold: 1.5,
+      op: { kind: 'read', name: 'a', value: '0x??????2A', span: [7, 10] },
+    },
+    {
+      line: 2,
+      pane: 'int x{ 0x??????2A }',
+      expr: [7, 17],
+      values: v3,
+      targets: { b: 'a' },
+      stdout: '',
+      hold: 1.8,
+      op: { kind: 'write', name: 'x', value: '0x??????2A', span: [7, 17], destination: [4, 5] },
+    },
+  ];
+  const trace: ExecutionTrace = {
+    format: 1,
+    title: 'Larger pointer reads padding and poisons result',
+    source,
+    variables: traceVars,
+    steps,
+  };
+  const meta: PunningMeta = {
+    id: 'larger-read-padding',
+    title: '5. Larger pointer reads past 1-byte object into padding',
+    subtitle: 'Reading *b pulls byte 64 (2A) plus 3 indeterminate padding bytes -> 0x??????2A (LE) or 0x2A?????? (BE).',
+    direction: 'larger',
+    baseAddress: 64,
+    totalBytes: 16,
+    vars,
+    ptrName: 'b',
+    pointeeType: 'int',
+    pointeeSize: 4,
+    targetVar: 'a',
+    targetAddress: 64,
+    ptrInitStep: 4,
+    derefStep: 7,
+    action: {
+      kind: 'read',
+      readStepIndex: 8,
+      storeStepIndex: 9,
+      destVar: 'x',
+      panePrefix: 'int x{ ',
+      paneSuffix: ' }',
+    },
+    initSteps: [
+      { stepIndex: 1, varName: 'a', value: 42 },
+      { stepIndex: 4, varName: 'b', value: 64 },
+    ],
+  };
+  META.set(trace, meta);
+  return { trace, meta };
+}
+
+function makeScenario6(): { trace: ExecutionTrace; meta: PunningMeta } {
+  const vars: PunningVar[] = [
+    { name: 'a', type: 'uint8_t', address: 64, size: 1, kind: 'int', signed: false, color: 0 },
+    { name: 'c', type: 'uint8_t', address: 65, size: 1, kind: 'int', signed: false, color: 3 },
+    { name: 'x', type: 'int', address: 68, size: 4, kind: 'int', signed: true, color: 2 },
+    { name: 'b', type: 'int*', address: 72, size: 8, kind: 'ptr', signed: false, color: 1 },
+  ];
+  const traceVars: ScalarVariable[] = vars.map(v => ({
+    name: v.name,
+    address: v.address,
+    size: v.size,
+    kind: v.kind,
+    color: v.color,
+    type: v.type,
+  }));
+  const source = [
+    'uint8_t a{ 5 };',
+    'uint8_t c{ 26 };',
+    'int* b{ &a };',
+    'int x{ *b };',
+  ];
+  const v0 = { a: null, c: null, x: null, b: null };
+  const v1 = { a: 5, c: null, x: null, b: null };
+  const v2 = { a: 5, c: 26, x: null, b: null };
+  const v3 = { a: 5, c: 26, x: null, b: 64 };
+  const v4 = { a: 5, c: 26, x: 5, b: 64 };
+  const steps: TraceStep[] = [
+    { line: 0, pane: 'uint8_t a{ 5 }', expr: [11, 12], values: v0, targets: {}, stdout: '', hold: 0.6, op: null },
+    {
+      line: 0,
+      pane: 'uint8_t a{ 5 }',
+      expr: [11, 12],
+      values: v1,
+      targets: {},
+      stdout: '',
+      hold: 0.8,
+      op: { kind: 'write', name: 'a', value: '5', span: [11, 12], destination: [8, 9] },
+    },
+    { line: 1, pane: 'uint8_t c{ 26 }', expr: [11, 13], values: v1, targets: {}, stdout: '', hold: 0.6, op: null },
+    {
+      line: 1,
+      pane: 'uint8_t c{ 26 }',
+      expr: [11, 13],
+      values: v2,
+      targets: {},
+      stdout: '',
+      hold: 0.8,
+      op: { kind: 'write', name: 'c', value: '26', span: [11, 13], destination: [8, 9] },
+    },
+    { line: 2, pane: 'int* b{ &a }', expr: [8, 10], values: v2, targets: {}, stdout: '', hold: 0.7, op: null },
+    {
+      line: 2,
+      pane: 'int* b{ 64 }',
+      expr: [8, 10],
+      values: v2,
+      targets: {},
+      stdout: '',
+      hold: 0.9,
+      op: { kind: 'addr', name: 'a', value: '64', span: [8, 10] },
+    },
+    {
+      line: 2,
+      pane: 'int* b{ 64 }',
+      expr: [8, 10],
+      values: v3,
+      targets: { b: 'a' },
+      stdout: '',
+      hold: 1.2,
+      op: { kind: 'write', name: 'b', value: '64', span: [8, 10], destination: [5, 6] },
+    },
+    { line: 3, pane: 'int x{ *b }', expr: [7, 9], values: v3, targets: { b: 'a' }, stdout: '', hold: 0.7, op: null },
+    {
+      line: 3,
+      pane: 'int x{ *64 }',
+      expr: [7, 10],
+      values: v3,
+      targets: { b: 'a' },
+      stdout: '',
+      hold: 0.9,
+      op: { kind: 'read', name: 'b', value: '64', span: [8, 9] },
+    },
+    {
+      line: 3,
+      pane: 'int x{ *64 }',
+      expr: [7, 10],
+      values: v3,
+      targets: { b: 'a' },
+      stdout: '',
+      hold: 1.1,
+      op: { kind: 'deref', target: 'a', via: 'b', span: [7, 10] },
+    },
+    {
+      line: 3,
+      pane: 'int x{ 0x????1A05 }',
+      expr: [7, 17],
+      values: v3,
+      targets: { b: 'a' },
+      stdout: '',
+      hold: 1.5,
+      op: { kind: 'read', name: 'a', value: '0x????1A05', span: [7, 10] },
+    },
+    {
+      line: 3,
+      pane: 'int x{ 0x????1A05 }',
+      expr: [7, 17],
+      values: v4,
+      targets: { b: 'a' },
+      stdout: '',
+      hold: 1.8,
+      op: { kind: 'write', name: 'x', value: '0x????1A05', span: [7, 17], destination: [4, 5] },
+    },
+  ];
+  const trace: ExecutionTrace = {
+    format: 1,
+    title: 'Larger pointer reads neighbor variable and padding',
+    source,
+    variables: traceVars,
+    steps,
+  };
+  const meta: PunningMeta = {
+    id: 'larger-read-neighbor-padding',
+    title: '6. Larger pointer reads neighbor c (1A) plus padding',
+    subtitle: 'c stays intact (read, not write), but x gets both c’s byte and poisoned padding: 0x????1A05 (LE) / 0x051A???? (BE).',
+    direction: 'larger',
+    baseAddress: 64,
+    totalBytes: 16,
+    vars,
+    ptrName: 'b',
+    pointeeType: 'int',
+    pointeeSize: 4,
+    targetVar: 'a',
+    targetAddress: 64,
+    ptrInitStep: 6,
+    derefStep: 9,
+    action: {
+      kind: 'read',
+      readStepIndex: 10,
+      storeStepIndex: 11,
+      destVar: 'x',
+      panePrefix: 'int x{ ',
+      paneSuffix: ' }',
+    },
+    initSteps: [
+      { stepIndex: 1, varName: 'a', value: 5 },
+      { stepIndex: 3, varName: 'c', value: 26 },
+      { stepIndex: 6, varName: 'b', value: 64 },
+    ],
+  };
+  META.set(trace, meta);
+  return { trace, meta };
+}
+
+function makeScenario7(): { trace: ExecutionTrace; meta: PunningMeta } {
+  const vars: PunningVar[] = [
+    { name: 'a', type: 'uint16_t', address: 64, size: 2, kind: 'int', signed: false, color: 0 },
+    { name: 'c', type: 'uint16_t', address: 66, size: 2, kind: 'int', signed: false, color: 3 },
+    { name: 'x', type: 'int', address: 68, size: 4, kind: 'int', signed: true, color: 2 },
+    { name: 'b', type: 'int*', address: 72, size: 8, kind: 'ptr', signed: false, color: 1 },
+  ];
+  const traceVars: ScalarVariable[] = vars.map(v => ({
+    name: v.name,
+    address: v.address,
+    size: v.size,
+    kind: v.kind,
+    color: v.color,
+    type: v.type,
+  }));
+  const source = [
+    'uint16_t a{ 5 };',
+    'uint16_t c{ 2 };',
+    'int* b{ &a };',
+    'int x{ *b };',
+  ];
+  const v0 = { a: null, c: null, x: null, b: null };
+  const v1 = { a: 5, c: null, x: null, b: null };
+  const v2 = { a: 5, c: 2, x: null, b: null };
+  const v3 = { a: 5, c: 2, x: null, b: 64 };
+  const v4 = { a: 5, c: 2, x: 131077, b: 64 };
+  const steps: TraceStep[] = [
+    { line: 0, pane: 'uint16_t a{ 5 }', expr: [12, 13], values: v0, targets: {}, stdout: '', hold: 0.6, op: null },
+    {
+      line: 0,
+      pane: 'uint16_t a{ 5 }',
+      expr: [12, 13],
+      values: v1,
+      targets: {},
+      stdout: '',
+      hold: 0.8,
+      op: { kind: 'write', name: 'a', value: '5', span: [12, 13], destination: [9, 10] },
+    },
+    { line: 1, pane: 'uint16_t c{ 2 }', expr: [12, 13], values: v1, targets: {}, stdout: '', hold: 0.6, op: null },
+    {
+      line: 1,
+      pane: 'uint16_t c{ 2 }',
+      expr: [12, 13],
+      values: v2,
+      targets: {},
+      stdout: '',
+      hold: 0.8,
+      op: { kind: 'write', name: 'c', value: '2', span: [12, 13], destination: [9, 10] },
+    },
+    { line: 2, pane: 'int* b{ &a }', expr: [8, 10], values: v2, targets: {}, stdout: '', hold: 0.7, op: null },
+    {
+      line: 2,
+      pane: 'int* b{ 64 }',
+      expr: [8, 10],
+      values: v2,
+      targets: {},
+      stdout: '',
+      hold: 0.9,
+      op: { kind: 'addr', name: 'a', value: '64', span: [8, 10] },
+    },
+    {
+      line: 2,
+      pane: 'int* b{ 64 }',
+      expr: [8, 10],
+      values: v3,
+      targets: { b: 'a' },
+      stdout: '',
+      hold: 1.2,
+      op: { kind: 'write', name: 'b', value: '64', span: [8, 10], destination: [5, 6] },
+    },
+    { line: 3, pane: 'int x{ *b }', expr: [7, 9], values: v3, targets: { b: 'a' }, stdout: '', hold: 0.7, op: null },
+    {
+      line: 3,
+      pane: 'int x{ *64 }',
+      expr: [7, 10],
+      values: v3,
+      targets: { b: 'a' },
+      stdout: '',
+      hold: 0.9,
+      op: { kind: 'read', name: 'b', value: '64', span: [8, 9] },
+    },
+    {
+      line: 3,
+      pane: 'int x{ *64 }',
+      expr: [7, 10],
+      values: v3,
+      targets: { b: 'a' },
+      stdout: '',
+      hold: 1.1,
+      op: { kind: 'deref', target: 'a', via: 'b', span: [7, 10] },
+    },
+    {
+      line: 3,
+      pane: 'int x{ 131077 }',
+      expr: [7, 13],
+      values: v3,
+      targets: { b: 'a' },
+      stdout: '',
+      hold: 1.5,
+      op: { kind: 'read', name: 'a', value: '131077', span: [7, 10] },
+    },
+    {
+      line: 3,
+      pane: 'int x{ 131077 }',
+      expr: [7, 13],
+      values: v4,
+      targets: { b: 'a' },
+      stdout: '',
+      hold: 1.8,
+      op: { kind: 'write', name: 'x', value: '131077', span: [7, 13], destination: [4, 5] },
+    },
+  ];
+  const trace: ExecutionTrace = {
+    format: 1,
+    title: 'Larger pointer reads two adjacent variables',
+    source,
+    variables: traceVars,
+    steps,
+  };
+  const meta: PunningMeta = {
+    id: 'larger-read-adjacent',
+    title: '7. Larger pointer reads across two adjacent uint16_t variables',
+    subtitle: 'All 4 bytes are known (no padding), yet reading past a into c is still UB: 131077 (LE) or 327682 (BE).',
+    direction: 'larger',
+    baseAddress: 64,
+    totalBytes: 16,
+    vars,
+    ptrName: 'b',
+    pointeeType: 'int',
+    pointeeSize: 4,
+    targetVar: 'a',
+    targetAddress: 64,
+    ptrInitStep: 6,
+    derefStep: 9,
+    action: {
+      kind: 'read',
+      readStepIndex: 10,
+      storeStepIndex: 11,
+      destVar: 'x',
+      panePrefix: 'int x{ ',
+      paneSuffix: ' }',
+    },
+    initSteps: [
+      { stepIndex: 1, varName: 'a', value: 5 },
+      { stepIndex: 3, varName: 'c', value: 2 },
+      { stepIndex: 6, varName: 'b', value: 64 },
+    ],
+  };
+  META.set(trace, meta);
+  return { trace, meta };
+}
+
+function makeScenario8(): { trace: ExecutionTrace; meta: PunningMeta } {
+  const vars: PunningVar[] = [
+    { name: 'a', type: 'int', address: 64, size: 4, kind: 'int', signed: true, color: 0 },
+    { name: 'x', type: 'uint8_t', address: 68, size: 1, kind: 'int', signed: false, color: 2 },
+    { name: 'b', type: 'uint8_t*', address: 72, size: 8, kind: 'ptr', signed: false, color: 1 },
+  ];
+  const traceVars: ScalarVariable[] = vars.map(v => ({
+    name: v.name,
+    address: v.address,
+    size: v.size,
+    kind: v.kind,
+    color: v.color,
+    type: v.type,
+  }));
+  const source = [
+    'int a = 261;',
+    'uint8_t* b = &a;',
+    'uint8_t x = *b;',
+  ];
+  const v0 = { a: null, x: null, b: null };
+  const v1 = { a: 261, x: null, b: null };
+  const v2 = { a: 261, x: null, b: 64 };
+  const v3 = { a: 261, x: 5, b: 64 };
+  const steps: TraceStep[] = [
+    { line: 0, pane: 'int a = 261', expr: [8, 11], values: v0, targets: {}, stdout: '', hold: 0.7, op: null },
+    {
+      line: 0,
+      pane: 'int a = 261',
+      expr: [8, 11],
+      values: v1,
+      targets: {},
+      stdout: '',
+      hold: 0.9,
+      op: { kind: 'write', name: 'a', value: '261', span: [8, 11], destination: [4, 5] },
+    },
+    { line: 1, pane: 'uint8_t* b = &a', expr: [13, 15], values: v1, targets: {}, stdout: '', hold: 0.7, op: null },
+    {
+      line: 1,
+      pane: 'uint8_t* b = 64',
+      expr: [13, 15],
+      values: v1,
+      targets: {},
+      stdout: '',
+      hold: 0.9,
+      op: { kind: 'addr', name: 'a', value: '64', span: [13, 15] },
+    },
+    {
+      line: 1,
+      pane: 'uint8_t* b = 64',
+      expr: [13, 15],
+      values: v2,
+      targets: { b: 'a' },
+      stdout: '',
+      hold: 1.2,
+      op: { kind: 'write', name: 'b', value: '64', span: [13, 15], destination: [9, 10] },
+    },
+    { line: 2, pane: 'uint8_t x = *b', expr: [12, 14], values: v2, targets: { b: 'a' }, stdout: '', hold: 0.7, op: null },
+    {
+      line: 2,
+      pane: 'uint8_t x = *64',
+      expr: [12, 15],
+      values: v2,
+      targets: { b: 'a' },
+      stdout: '',
+      hold: 0.9,
+      op: { kind: 'read', name: 'b', value: '64', span: [13, 14] },
+    },
+    {
+      line: 2,
+      pane: 'uint8_t x = *64',
+      expr: [12, 15],
+      values: v2,
+      targets: { b: 'a' },
+      stdout: '',
+      hold: 1.1,
+      op: { kind: 'deref', target: 'a', via: 'b', span: [12, 15] },
+    },
+    {
+      line: 2,
+      pane: 'uint8_t x = 5',
+      expr: [12, 13],
+      values: v2,
+      targets: { b: 'a' },
+      stdout: '',
+      hold: 1.5,
+      op: { kind: 'read', name: 'a', value: '5', span: [12, 15] },
+    },
+    {
+      line: 2,
+      pane: 'uint8_t x = 5',
+      expr: [12, 13],
+      values: v3,
+      targets: { b: 'a' },
+      stdout: '',
+      hold: 1.8,
+      op: { kind: 'write', name: 'x', value: '5', span: [12, 13], destination: [8, 9] },
+    },
+  ];
+  const trace: ExecutionTrace = {
+    format: 1,
+    title: 'Smaller pointer reads only byte 64 of an int',
+    source,
+    variables: traceVars,
+    steps,
+  };
+  const meta: PunningMeta = {
+    id: 'smaller-read-261',
+    title: '8. Smaller pointer reads only byte 64 of int a (a = 261)',
+    subtitle: '261 is 05 01 00 00 (LE) or 00 00 01 05 (BE). *b reads only byte 64 -> x = 5 (LE) or x = 0 (BE).',
+    direction: 'smaller',
+    baseAddress: 64,
+    totalBytes: 16,
+    vars,
+    ptrName: 'b',
+    pointeeType: 'uint8_t',
+    pointeeSize: 1,
+    targetVar: 'a',
+    targetAddress: 64,
+    ptrInitStep: 4,
+    derefStep: 7,
+    action: {
+      kind: 'read',
+      readStepIndex: 8,
+      storeStepIndex: 9,
+      destVar: 'x',
+      panePrefix: 'uint8_t x = ',
+      paneSuffix: '',
+    },
+    initSteps: [
+      { stepIndex: 1, varName: 'a', value: 261 },
+      { stepIndex: 4, varName: 'b', value: 64 },
+    ],
+  };
+  META.set(trace, meta);
+  return { trace, meta };
+}
+
+const SCENARIOS = [
+  makeScenario1(),
+  makeScenario2(),
+  makeScenario3(),
+  makeScenario4(),
+  makeScenario5(),
+  makeScenario6(),
+  makeScenario7(),
+  makeScenario8(),
+];
 
 // ============================================================================================
 // SHARED SVG HELPERS + NATIVE TRANSFERS
@@ -833,11 +1495,76 @@ function paddingRuns(meta: PunningMeta): Array<{ start: number; size: number }> 
   return runs;
 }
 
+function poisonText(
+  x: number,
+  y: number,
+  str: string,
+  size: number,
+  color: string,
+  errorColor: string,
+  anchor = 'start'
+): string {
+  if (!str.includes('?')) return text(x, y, str, size, color, anchor);
+  const length =
+    str.length > 1
+      ? ` textLength="${round(str.length * size * CHAR)}" lengthAdjust="spacing"`
+      : '';
+  const inner = str
+    .split(/(\?+)/)
+    .filter(Boolean)
+    .map(part => (part[0] === '?' ? `<tspan fill="${errorColor}">${esc(part)}</tspan>` : esc(part)))
+    .join('');
+  return (
+    `<text x="${round(x)}" y="${round(y)}" font-size="${size}" fill="${color}" ` +
+    `text-anchor="${anchor}" xml:space="preserve"${length}>${inner}</text>`
+  );
+}
+
+function colorPoisonInSvg(markup: string, errorColor: string): string {
+  return markup.replace(/(<text\b[^>]*>)([^<]*\?[^<]*)(<\/text>)/g, (_, open, body, close) => {
+    const colored = String(body).replace(/(\?+)/g, `<tspan fill="${errorColor}">$1</tspan>`);
+    return open + colored + close;
+  });
+}
+
+function resolveReadContext(c: SceneContext, meta: PunningMeta, sim: SimState): SceneContext {
+  if (meta.action.kind !== 'read' || !sim.readResult) return c;
+  const { readStepIndex, storeStepIndex, panePrefix, paneSuffix } = meta.action;
+  const val = sim.readResult.text;
+  const resolvedPane = `${panePrefix}${val}${paneSuffix}`;
+  const valSpan: [number, number] = [panePrefix.length, panePrefix.length + val.length];
+
+  const patch = (st: TraceStep | null, idx: number): TraceStep | null => {
+    if (!st) return null;
+    if (idx === readStepIndex) {
+      const op = st.op?.kind === 'read' ? { ...st.op, value: val } : st.op;
+      return { ...st, pane: resolvedPane, expr: valSpan, op };
+    }
+    if (idx === storeStepIndex) {
+      const op = st.op?.kind === 'write' ? { ...st.op, value: val, span: valSpan } : st.op;
+      return { ...st, pane: resolvedPane, expr: valSpan, op };
+    }
+    return st;
+  };
+
+  const step = patch(c.step, c.index)!;
+  const prev = patch(c.prev, c.index - 1);
+  return { ...c, step, prev, op: step.op };
+}
+
 function punningStepSeconds(m: PreparedModel, index: number): number {
   const meta = META.get(m.trace);
-  if (meta && index === meta.writeAction.stepIndex) return m.steps[index].hold + 2.3;
-  if (meta && index === meta.derefStep) return m.steps[index].hold + 1.6;
-  if (meta && index === meta.ptrInitStep) return m.steps[index].hold + 2.4;
+  if (meta) {
+    if (meta.action.kind === 'write' && index === meta.action.stepIndex) {
+      return m.steps[index].hold + 2.3;
+    }
+    if (meta.action.kind === 'read') {
+      if (index === meta.action.readStepIndex) return m.steps[index].hold + 2.2;
+      if (index === meta.action.storeStepIndex) return m.steps[index].hold + 2.3;
+    }
+    if (index === meta.derefStep) return m.steps[index].hold + 1.6;
+    if (index === meta.ptrInitStep) return m.steps[index].hold + 2.4;
+  }
   return stepSeconds(m.steps, index);
 }
 
@@ -870,7 +1597,7 @@ function gridTransfers(
   cellH: number
 ): string {
   const { g, P, op, animate } = c;
-  if (!animate || !op || sim.isPunningWrite) return '';
+  if (!animate || !op || sim.isPunningWrite || sim.isPunningRead || sim.isPoisonStore) return '';
   const at = arrival(op);
   const begin = departure(op);
   const ty = g.ty - 11;
@@ -992,6 +1719,7 @@ function targetScopeReticle(
   if (!sim.ptrLive) return '';
   const { P, animate, op } = c;
   const at = op ? arrival(op) : 0;
+  const dep = op ? departure(op) : 0;
   const wLeft = xOf(meta.targetAddress);
   const wWidth = meta.pointeeSize * byteW;
   const targetVar = meta.vars.find(v => v.name === meta.targetVar)!;
@@ -1008,17 +1736,19 @@ function targetScopeReticle(
   const isWritingPtr = animate && op?.kind === 'write' && op.name === meta.ptrName;
   const isDeref = animate && c.index === meta.derefStep;
   const hot = sim.windowActive;
+  const opCol = meta.action.kind === 'read' ? P.read : P.write;
 
   let inner = '';
   if (meta.direction === 'larger' && sim.ubTriggered) {
     const calm = drawHudReticle(bx, by, bw, bh, pCol, pCol, null);
-    const breached = drawHudReticle(bx, by, bw, bh, P.write, P.error, ownEnd);
+    const breached = drawHudReticle(bx, by, bw, bh, opCol, P.error, ownEnd);
+    const triggerAt = sim.isPunningRead ? dep : at;
     inner =
-      animate && sim.isPunningWrite
-        ? `<g>${hide(at)}${calm}</g><g opacity="0">${show(at)}${breached}</g>`
+      animate && (sim.isPunningWrite || sim.isPunningRead)
+        ? `<g>${hide(triggerAt)}${calm}</g><g opacity="0">${show(triggerAt)}${breached}</g>`
         : breached;
   } else {
-    const col = hot ? P.write : pCol;
+    const col = hot ? opCol : pCol;
     inner = drawHudReticle(bx, by, bw, bh, col, col, null);
   }
 
@@ -1055,13 +1785,31 @@ function transientWriteHighlight(
   );
 }
 
+/** Transient full-height read highlight over the exact byte span actually being read. */
+function transientReadHighlight(
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  color: string,
+  at: number
+): string {
+  return (
+    `<g opacity="0">${fade(0, 1, 0.15, 0)}${fade(1, 0, 0.25, at)}` +
+    rect(x + 2, y + 2, w - 4, h - 4, color, 'none', 0).replace('fill=', 'fill-opacity="0.18" fill=') +
+    rect(x + 2, y + 2, w - 4, h - 4, 'none', color, 0, 2.8) +
+    '</g>'
+  );
+}
+
 // ============================================================================================
 // UNIFIED SCENE
 // ============================================================================================
 
-function punningScene(c: SceneContext): string {
-  const meta = META.get(c.m.trace)!;
-  const sim = simulate(meta, c.index, c.littleEndian);
+function punningScene(rawC: SceneContext): string {
+  const meta = META.get(rawC.m.trace)!;
+  const sim = simulate(meta, rawC.index, rawC.littleEndian);
+  const c = resolveReadContext(rawC, meta, sim);
   const { g, P, animate, op, step, prev } = c;
   const { defs, padId, ubId } = hatchDefs(P);
   const lineChanged = animate && prev !== null && prev.line !== step.line;
@@ -1074,6 +1822,7 @@ function punningScene(c: SceneContext): string {
   const splitY = gridY + 48;
   const xOf = (addr: number): number => gridX + (addr - meta.baseAddress) * byteW;
   const at = op ? arrival(op) : 0;
+  const dep = op ? departure(op) : 0;
   const ptrVar = meta.vars.find(v => v.name === meta.ptrName)!;
   const targetVar = meta.vars.find(v => v.name === meta.targetVar)!;
   const pCol = varColor(P, ptrVar);
@@ -1096,7 +1845,7 @@ function punningScene(c: SceneContext): string {
     );
   }
 
-  // 2. Padding runs (hatched only; corrupted red hatch ONLY on write)
+  // 2. Padding runs (hatched only; corrupted red hatch ONLY on write UB, not on read)
   for (const run of paddingRuns(meta)) {
     const rx = xOf(run.start);
     const rw = run.size * byteW;
@@ -1109,7 +1858,7 @@ function punningScene(c: SceneContext): string {
         mem += `<line x1="${round(bx)}" y1="${gridY + 2}" x2="${round(bx)}" y2="${gridY + cellH - 2}" stroke="${P.gapStroke}" stroke-dasharray="3 3" stroke-width="1"/>`;
       }
       const hexY = gridY + 74;
-      if (slot.status === 'padding' && sim.ubTriggered) {
+      if (slot.status === 'padding' && sim.ubKind === 'write') {
         const hexText = typeof slot.after === 'number' ? hex2(slot.after) : '??';
         const badgeBg = rect(bx + byteW / 2 - 15, hexY - 15, 30, 20, P.panel, 'none', 3);
         const hazard =
@@ -1143,7 +1892,8 @@ function punningScene(c: SceneContext): string {
   }
   const pillRowsCount = Math.max(1, pillRowEdge.length);
 
-  // 3. Variables (clean panel fill; NO persistent highlight or veil; corrupted foreign bytes stay red)
+  // 3. Variables (clean panel fill; NO persistent highlight or veil; corrupted foreign bytes stay red;
+  //    poisoned `?` bytes stored into a variable show red hazard hatch + red `??`)
   for (const v of meta.vars) {
     const vx = xOf(v.address);
     const vw = v.size * byteW;
@@ -1152,21 +1902,29 @@ function punningScene(c: SceneContext): string {
     const valBefore = sim.varBefore.get(v.name) ?? null;
     const on = valAfter !== null;
     const isCorrupted = sim.corruptedVars.has(v.name);
+    const isDestStore = meta.action.kind === 'read' && sim.isPoisonStore && v.name === meta.action.destVar;
     const borderCol = isCorrupted ? P.error : on ? col : P.deadStroke;
 
     let markup = '';
     markup += rect(vx + 1, gridY + 1, vw - 2, cellH - 2, on ? P.panel : P.deadFill, 'none', 0);
 
-    // Only corrupted foreign bytes keep the red hazard fill after a UB write
+    // Corrupted foreign bytes (on write UB) keep full-height red hazard fill;
+    // Poisoned `?` bytes copied into destVar (on read UB) keep bottom-half red hazard fill.
     for (let k = 0; k < v.size; k++) {
       const addr = v.address + k;
       const slot = sim.bytes[addr - meta.baseAddress];
       const bx = xOf(addr);
-      if (slot.status === 'foreign' && sim.ubTriggered) {
+      if (slot.status === 'foreign' && sim.ubKind === 'write') {
         const bg = rect(bx + 1.5, gridY + 1.5, byteW - 3, cellH - 3, `url(#${ubId})`, 'none', 0);
         markup +=
           animate && sim.isPunningWrite
             ? `<g opacity="0">${show(at + 0.08 * (addr - meta.targetAddress))}${bg}</g>`
+            : bg;
+      } else if (slot.after === '?') {
+        const bg = rect(bx + 1.5, splitY + 0.8, byteW - 3, gridY + cellH - splitY - 2.3, `url(#${ubId})`, 'none', 0);
+        markup +=
+          animate && isDestStore
+            ? `<g opacity="0">${show(at + 0.08 * k)}${bg}</g>`
             : bg;
       }
     }
@@ -1188,22 +1946,24 @@ function punningScene(c: SceneContext): string {
       markup += rect(vx + 1.5, gridY + 1.5, vw - 3, cellH - 3, 'none', borderCol, 0, isCorrupted ? 3.2 : 2.8);
     }
 
-    // 3a. Centered decimal header (pulses independently when the variable's value changes)
+    // 3a. Centered header (decimal when clean, hex with red `?` when poisoned)
     const headCx = vx + vw / 2;
-    const renderHeader = (val: number | null, useBefore: boolean): string => {
-      if (val === null) return '';
-      const dec = String(val);
-      const decSize = Math.min(25, (vw - 12) / (Math.max(1, dec.length) * CHAR));
+    const renderHeader = (val: DecodedVar | null, useBefore: boolean): string => {
+      if (!val) return '';
+      const str = val.text;
+      const decSize = Math.min(25, (vw - 12) / (Math.max(1, str.length) * CHAR));
       const decCol = isCorrupted && !useBefore ? P.error : P.fg;
       const bg =
         isCorrupted && !useBefore
           ? rect(headCx - 14, gridY + 12, 28, 26, P.panel, 'none', 4)
           : '';
-      return bg + text(headCx, gridY + 33, dec, round(decSize), decCol, 'middle');
+      return bg + poisonText(headCx, gridY + 33, str, round(decSize), decCol, P.error, 'middle');
     };
 
-    const normalWrite = animate && op?.kind === 'write' && op.name === v.name && !sim.isPunningWrite;
-    const valueChanged = animate && sim.isPunningWrite && valBefore !== valAfter;
+    const normalWrite = animate && op?.kind === 'write' && op.name === v.name && !sim.isPunningWrite && !isDestStore;
+    const valueChanged =
+      animate &&
+      ((sim.isPunningWrite && valBefore?.text !== valAfter?.text) || isDestStore);
 
     if (normalWrite || valueChanged) {
       const headCy = gridY + 26;
@@ -1223,24 +1983,36 @@ function punningScene(c: SceneContext): string {
       const bx = xOf(addr);
 
       const renderByte = (bval: ByteVal, useBefore: boolean): string => {
-        if (typeof bval !== 'number') return '';
+        if (bval === null) return '';
+        if (bval === '?') {
+          const badgeBg = rect(bx + byteW / 2 - 15, hexY - 15, 30, 20, P.panel, 'none', 3);
+          return badgeBg + text(bx + byteW / 2, hexY, '??', 15.5, P.error, 'middle');
+        }
         const byteInk =
-          slot.status === 'foreign' && sim.ubTriggered && !useBefore
+          slot.status === 'foreign' && sim.ubKind === 'write' && !useBefore
             ? P.error
             : v.kind === 'ptr'
               ? P.muted
               : P.fg;
         const opAttr = v.kind === 'ptr' ? ' opacity="0.65"' : '';
         const bg =
-          slot.status === 'foreign' && sim.ubTriggered && !useBefore
+          slot.status === 'foreign' && sim.ubKind === 'write' && !useBefore
             ? rect(bx + byteW / 2 - 15, hexY - 15, 30, 20, P.panel, 'none', 3)
             : '';
         return bg + `<g${opAttr}>${text(bx + byteW / 2, hexY, hex2(bval), v.kind === 'ptr' ? 13 : 15.5, byteInk, 'middle')}</g>`;
       };
 
-      const byteChanged = animate && (normalWrite || (sim.isPunningWrite && slot.before !== slot.after));
+      const byteChanged =
+        animate &&
+        (normalWrite ||
+          isDestStore ||
+          (sim.isPunningWrite && slot.before !== slot.after));
       if (byteChanged) {
-        const byteAt = sim.isPunningWrite ? at + 0.08 * (addr - meta.targetAddress) : at;
+        const byteAt = sim.isPunningWrite
+          ? at + 0.08 * (addr - meta.targetAddress)
+          : isDestStore
+            ? at + 0.08 * k
+            : at;
         const swapped =
           (slot.before !== null ? `<g>${hide(byteAt)}${renderByte(slot.before, true)}</g>` : '') +
           `<g opacity="0">${show(byteAt)}${renderByte(slot.after, false)}</g>`;
@@ -1250,14 +2022,10 @@ function punningScene(c: SceneContext): string {
       }
     }
 
-    // Transient read / normal write highlight (full height, same as scene.ts)
-    if (animate && op && !sim.isPunningWrite) {
+    // Transient read / write highlight for non-punning steps (plus store into destVar `x`)
+    if (animate && op && !sim.isPunningWrite && !sim.isPunningRead) {
       if (op.kind === 'read' && op.name === v.name) {
-        markup +=
-          `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.25, at)}` +
-          rect(vx + 2, gridY + 2, vw - 4, cellH - 4, P.read, 'none', 0).replace('fill=', 'fill-opacity="0.18" fill=') +
-          rect(vx + 2, gridY + 2, vw - 4, cellH - 4, 'none', P.read, 0, 2.8) +
-          '</g>';
+        markup += transientReadHighlight(vx, gridY, vw, cellH, P.read, at);
       } else if (op.kind === 'write' && op.name === v.name) {
         markup += transientWriteHighlight(vx, gridY, vw, cellH, P.write, at);
       }
@@ -1293,27 +2061,39 @@ function punningScene(c: SceneContext): string {
 
     const keepBright =
       isCorrupted ||
+      sim.readForeignVars.has(v.name) ||
       (sim.ptrLive && (v.name === meta.targetVar || v.name === meta.ptrName));
     mem += keepBright ? markup : dim(c, v.name, markup);
   }
 
-  // 3c. Transient full-height write highlight on the EXACT bytes actually being written by `*b = ...`!
-  //     (4 tall bytes for int*, 1 tall misaligned byte for uint8_t* — consistent with normal writes!)
-  let writeFlash = '';
+  // 3c. Transient full-height write OR read highlight on the EXACT bytes accessed by `*b`!
+  //     (4 tall bytes for int*, 1 tall misaligned byte for uint8_t* — consistent across reads & writes!)
+  let accessFlash = '';
   if (animate && sim.isPunningWrite) {
     const wLeft = xOf(meta.targetAddress);
     const wWidth = meta.pointeeSize * byteW;
     if (meta.direction === 'larger') {
       const ownW = targetVar.size * byteW;
       const spillW = wWidth - ownW;
-      // Full-height gold flash on owned bytes + full-height red flash on out-of-bounds bytes
-      writeFlash += transientWriteHighlight(wLeft, gridY, ownW, cellH, P.write, at);
+      accessFlash += transientWriteHighlight(wLeft, gridY, ownW, cellH, P.write, at);
       if (spillW > 0) {
-        writeFlash += transientWriteHighlight(wLeft + ownW, gridY, spillW, cellH, P.error, at + 0.08);
+        accessFlash += transientWriteHighlight(wLeft + ownW, gridY, spillW, cellH, P.error, at + 0.08);
       }
     } else {
-      // Full-height misaligned 1-byte gold flash across byte 64 inside `int a`!
-      writeFlash += transientWriteHighlight(wLeft, gridY, wWidth, cellH, P.write, at);
+      accessFlash += transientWriteHighlight(wLeft, gridY, wWidth, cellH, P.write, at);
+    }
+  } else if (animate && sim.isPunningRead) {
+    const wLeft = xOf(meta.targetAddress);
+    const wWidth = meta.pointeeSize * byteW;
+    if (meta.direction === 'larger') {
+      const ownW = targetVar.size * byteW;
+      const spillW = wWidth - ownW;
+      accessFlash += transientReadHighlight(wLeft, gridY, ownW, cellH, P.read, at);
+      if (spillW > 0) {
+        accessFlash += transientReadHighlight(wLeft + ownW, gridY, spillW, cellH, P.error, at);
+      }
+    } else {
+      accessFlash += transientReadHighlight(wLeft, gridY, wWidth, cellH, P.read, at);
     }
   }
 
@@ -1343,7 +2123,7 @@ function punningScene(c: SceneContext): string {
   // 5. Full-height open HUD corner reticle
   const scopeReticle = targetScopeReticle(c, meta, sim, xOf, byteW, gridY, cellH, pCol);
 
-  // 6. UB bracket & badge below memory — ONLY on larger-pointer write!
+  // 6. UB bracket & badge below memory — ONLY on larger-pointer read or write!
   let belowOverlay = '';
   if (meta.direction === 'larger' && sim.ubTriggered) {
     const wLeft = xOf(meta.targetAddress);
@@ -1351,64 +2131,131 @@ function punningScene(c: SceneContext): string {
     const ownEnd = xOf(targetVar.address + targetVar.size);
     const brY = gridY + cellH + 46 + pillRowsCount * 24 + 8;
     const tickTop = brY - 10;
+    const ownCol = sim.ubKind === 'read' ? P.read : P.write;
     const cal =
-      `<path d="M ${round(wLeft + 2)} ${tickTop} V ${brY} H ${round(ownEnd)}" fill="none" stroke="${P.write}" stroke-width="2.2"/>` +
+      `<path d="M ${round(wLeft + 2)} ${tickTop} V ${brY} H ${round(ownEnd)}" fill="none" stroke="${ownCol}" stroke-width="2.2"/>` +
       `<path d="M ${round(ownEnd)} ${brY} H ${round(wRight - 2)} V ${tickTop}" fill="none" stroke="${P.error}" stroke-width="2.8"/>` +
       pill((ownEnd + wRight) / 2, brY + 18, '⚠ UB', 13.5, P.error, P.error, P.bg);
+    const showAt = sim.isPunningRead ? dep : at;
     belowOverlay +=
-      animate && sim.isPunningWrite ? `<g opacity="0">${fade(0, 1, 0.25, at)}${cal}</g>` : cal;
+      animate && (sim.isPunningWrite || sim.isPunningRead)
+        ? `<g opacity="0">${fade(0, 1, 0.25, showAt)}${cal}</g>`
+        : cal;
   }
 
-  // 7. Standardized pane byte strip (written bytes + hollow dashed target slots)
+  // 7. Standardized pane byte strip (write: bytes written + hollow slots; read: bytes read + hollow slots)
   let wb = '';
   let flight = '';
-  if (sim.windowActive) {
+  const showPaneStrip =
+    meta.action.kind === 'write'
+      ? sim.windowActive
+      : c.index >= meta.action.readStepIndex;
+  if (showPaneStrip) {
     const stripY = g.ty + 28;
     const tileW = 44;
     const tileH = 30;
     const tileGap = 6;
-    const rhsStart = step.pane.indexOf('= ') + 2;
-    const tilesX = g.tx + Math.max(0, rhsStart) * g.paneChar;
-    const bytes = sim.writtenBytes;
+    const rhsStart =
+      meta.action.kind === 'read'
+        ? meta.action.panePrefix.length
+        : Math.max(0, step.pane.indexOf('= ') + 2);
+    const tilesX = g.tx + rhsStart * g.paneChar;
+    const bytes = sim.paneBytes;
+    const destName = meta.action.kind === 'read' ? meta.action.destVar : null;
+    const destVar = destName ? meta.vars.find(v => v.name === destName)! : null;
 
     for (let k = 0; k < bytes.length; k++) {
       const addr = meta.targetAddress + k;
       const slot = sim.bytes[addr - meta.baseAddress];
-      const bad = sim.ubTriggered && (slot.status === 'padding' || slot.status === 'foreign');
+      const bval = bytes[k];
+      const label = typeof bval === 'number' ? hex2(bval) : '??';
+      const isBad =
+        sim.ubTriggered &&
+        (slot.status === 'padding' || slot.status === 'foreign' || bval === '?');
       const tx = tilesX + k * (tileW + tileGap);
-      const stroke = bad ? P.error : P.write;
-      const fill = bad ? P.panel : P.writeFill;
-      wb +=
+      const isReadPhase = meta.action.kind === 'read' && !sim.isPoisonStore;
+      const baseStroke = isReadPhase ? P.read : P.write;
+      const baseFill = isReadPhase ? P.readFill : P.writeFill;
+      const stroke = isBad ? P.error : baseStroke;
+      const fill = isBad ? P.panel : baseFill;
+      const tileMarkup =
         rect(tx, stripY, tileW, tileH, fill, stroke, 5, 2) +
-        text(tx + tileW / 2, stripY + 20, hex2(bytes[k]), 15.5, stroke, 'middle');
+        text(tx + tileW / 2, stripY + 20, label, 15.5, stroke, 'middle');
 
-      if (animate && sim.isPunningWrite) {
-        const sx = tx + tileW / 2;
-        const sy = stripY;
-        const ex = xOf(addr) + byteW / 2;
-        const ey = gridY + 70;
+      if (animate && sim.isPunningRead) {
+        // Read: byte tile lifts off memory and lands in pane strip
+        const sx = xOf(addr) + byteW / 2;
+        const sy = gridY + 70;
+        const ex = tx + tileW / 2;
+        const ey = stripY + tileH / 2;
         const midY = (sy + ey) / 2;
         const path = `M ${round(sx)} ${round(sy)} C ${round(sx)} ${round(midY)}, ${round(ex)} ${round(midY)}, ${round(ex)} ${round(ey)}`;
         const dur = 0.85;
-        const end = at + k * 0.08;
-        const begin = Math.max(0.2, end - dur);
-        const flyCol = slot.status === 'padding' || slot.status === 'foreign' ? P.error : P.write;
+        const begin = dep + k * 0.08;
+        const end = begin + dur;
+        const flyCol =
+          slot.status === 'padding' || slot.status === 'foreign' ? P.error : P.read;
+        wb += `<g opacity="0">${show(end)}${tileMarkup}</g>`;
         flight +=
           `<g opacity="0">${fade(0, 0.5, 0.2, begin)}${fade(0.5, 0, 0.25, end)}<path d="${path}" fill="none" stroke="${flyCol}" stroke-width="2.4"/></g>` +
           `<g opacity="0">${fade(0, 1, 0.1, begin)}${hide(end + 0.05)}` +
           rect(-20, -14, 40, 28, P.panel, flyCol, 6, 2) +
-          text(0, 6, hex2(bytes[k]), 15, flyCol, 'middle') +
+          text(0, 6, label, 15, flyCol, 'middle') +
           `<animateMotion begin="${round(begin)}s" dur="${dur}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
+      } else {
+        wb += tileMarkup;
+        if (animate && sim.isPunningWrite) {
+          // Write via punned pointer: byte tile flies up from pane into target memory
+          const sx = tx + tileW / 2;
+          const sy = stripY;
+          const ex = xOf(addr) + byteW / 2;
+          const ey = gridY + 70;
+          const midY = (sy + ey) / 2;
+          const path = `M ${round(sx)} ${round(sy)} C ${round(sx)} ${round(midY)}, ${round(ex)} ${round(midY)}, ${round(ex)} ${round(ey)}`;
+          const dur = 0.85;
+          const end = at + k * 0.08;
+          const begin = Math.max(0.2, end - dur);
+          const flyCol =
+            slot.status === 'padding' || slot.status === 'foreign' ? P.error : P.write;
+          flight +=
+            `<g opacity="0">${fade(0, 0.5, 0.2, begin)}${fade(0.5, 0, 0.25, end)}<path d="${path}" fill="none" stroke="${flyCol}" stroke-width="2.4"/></g>` +
+            `<g opacity="0">${fade(0, 1, 0.1, begin)}${hide(end + 0.05)}` +
+            rect(-20, -14, 40, 28, P.panel, flyCol, 6, 2) +
+            text(0, 6, label, 15, flyCol, 'middle') +
+            `<animateMotion begin="${round(begin)}s" dur="${dur}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
+        } else if (animate && sim.isPoisonStore && destVar) {
+          // Store after punning read: byte tiles fly up from pane into destVar (`x`)
+          const sx = tx + tileW / 2;
+          const sy = stripY;
+          const ex = xOf(destVar.address + k) + byteW / 2;
+          const ey = gridY + 70;
+          const midY = (sy + ey) / 2;
+          const path = `M ${round(sx)} ${round(sy)} C ${round(sx)} ${round(midY)}, ${round(ex)} ${round(midY)}, ${round(ex)} ${round(ey)}`;
+          const dur = 0.85;
+          const end = at + k * 0.08;
+          const begin = Math.max(0.2, end - dur);
+          const flyCol = bval === '?' ? P.error : P.write;
+          flight +=
+            `<g opacity="0">${fade(0, 0.5, 0.2, begin)}${fade(0.5, 0, 0.25, end)}<path d="${path}" fill="none" stroke="${flyCol}" stroke-width="2.4"/></g>` +
+            `<g opacity="0">${fade(0, 1, 0.1, begin)}${hide(end + 0.05)}` +
+            rect(-20, -14, 40, 28, P.panel, flyCol, 6, 2) +
+            text(0, 6, label, 15, flyCol, 'middle') +
+            `<animateMotion begin="${round(begin)}s" dur="${dur}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
+        }
       }
     }
 
     if (meta.direction === 'smaller') {
+      let slots = '';
       for (let k = bytes.length; k < targetVar.size; k++) {
         const tx = tilesX + k * (tileW + tileGap);
-        wb += `<rect x="${round(tx)}" y="${stripY}" width="${tileW}" height="${tileH}" rx="5" fill="none" stroke="${P.grey}" stroke-opacity="0.75" stroke-dasharray="4 3" stroke-width="1.6"/>`;
+        slots += `<rect x="${round(tx)}" y="${stripY}" width="${tileW}" height="${tileH}" rx="5" fill="none" stroke="${P.grey}" stroke-opacity="0.75" stroke-dasharray="4 3" stroke-width="1.6"/>`;
       }
+      wb += animate && sim.isPunningRead ? `<g opacity="0">${fade(0, 1, 0.2, dep + 0.65)}${slots}</g>` : slots;
     }
   }
+
+  const paneMarkup = colorPoisonInSvg(pane(c, animate && copies(c.m.steps, c.index)), P.error);
 
   return (
     defs +
@@ -1416,10 +2263,10 @@ function punningScene(c: SceneContext): string {
     tether(c, oldLine) +
     arcMarkup +
     mem +
-    writeFlash +
+    accessFlash +
     scopeReticle +
     belowOverlay +
-    pane(c, animate && copies(c.m.steps, c.index)) +
+    paneMarkup +
     wb +
     output(c) +
     gridTransfers(c, meta, sim, xOf, byteW, gridY, cellH) +
