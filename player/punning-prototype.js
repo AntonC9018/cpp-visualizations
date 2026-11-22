@@ -3007,7 +3007,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         values: v3,
         targets: { b: "a" },
         stdout: "",
-        hold: 1.1,
+        hold: 1.2,
         op: { kind: "write", name: "b", value: "64", span: [8, 10], destination: [5, 6] }
       },
       { line: 3, pane: "*b = 300", expr: [0, 2], values: v3, targets: { b: "a" }, stdout: "", hold: 0.7, op: null },
@@ -3052,7 +3052,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const meta = {
       id: "larger-padding",
       title: "1. Larger pointer writes past 1-byte object into padding",
-      subtitle: "Scope covers 4 bytes (64..67) calmly while pointing; writing *b = 300 spills into padding and triggers UB.",
+      subtitle: "Hit Play to watch the scope lock onto 64..67 on line 3, then trip UB on line 4.",
       direction: "larger",
       baseAddress: 64,
       totalBytes: 16,
@@ -3154,7 +3154,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         values: v4,
         targets: { b: "a" },
         stdout: "",
-        hold: 1.1,
+        hold: 1.2,
         op: { kind: "write", name: "b", value: "64", span: [8, 10], destination: [5, 6] }
       },
       { line: 4, pane: "*b = 0x04030201", expr: [0, 2], values: v4, targets: { b: "a" }, stdout: "", hold: 0.7, op: null },
@@ -3274,7 +3274,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         values: v2,
         targets: { b: "a" },
         stdout: "",
-        hold: 1.1,
+        hold: 1.2,
         op: { kind: "write", name: "b", value: "64", span: [13, 15], destination: [9, 10] }
       },
       { line: 2, pane: "*b = 2", expr: [0, 2], values: v2, targets: { b: "a" }, stdout: "", hold: 0.7, op: null },
@@ -3319,7 +3319,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const meta = {
       id: "smaller-five",
       title: "3. Smaller pointer overwrites only byte 64 of int a (a = 5)",
-      subtitle: "*b = 2 updates only byte 64; bytes 65..67 stay still. Flip Little-endian / Big-endian to see 2 vs 33554437.",
+      subtitle: "Full-height scope locks onto byte 64; short value nudges clear. Flip LE/BE to see 2 vs 33554437.",
       direction: "smaller",
       baseAddress: 64,
       totalBytes: 16,
@@ -3392,7 +3392,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         values: v2,
         targets: { b: "a" },
         stdout: "",
-        hold: 1.1,
+        hold: 1.2,
         op: { kind: "write", name: "b", value: "64", span: [13, 15], destination: [9, 10] }
       },
       { line: 2, pane: "*b = 0", expr: [0, 2], values: v2, targets: { b: "a" }, stdout: "", hold: 0.7, op: null },
@@ -3498,6 +3498,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const meta = META.get(m.trace);
     if (meta && index === meta.writeAction.stepIndex) return m.steps[index].hold + 2.3;
     if (meta && index === meta.derefStep) return m.steps[index].hold + 1.6;
+    if (meta && index === meta.ptrInitStep) return m.steps[index].hold + 2.4;
     return stepSeconds(m.steps, index);
   }
   function gridValueBox(c, value, color, path, begin, travel, end) {
@@ -3565,7 +3566,59 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return "";
   }
-  function targetScopeBox(c, meta, sim, xOf, byteW, gridY, cellH, pCol) {
+  function drawReticleA(bx, by, bw, bh, leftCol, rightCol, splitX) {
+    const arm = Math.min(14, bw * 0.28);
+    const tick = 5;
+    const rx = bx + bw;
+    const ry = by + bh;
+    const mx = bx + bw / 2;
+    const my = by + bh / 2;
+    const rightTopCol = splitX !== null ? rightCol : leftCol;
+    let out = "";
+    if (splitX !== null) {
+      out += `<path d="M ${round(splitX)} ${round(by)} H ${round(bx)} V ${round(ry)} H ${round(splitX)}" fill="none" stroke="${leftCol}" stroke-opacity="0.32" stroke-dasharray="3 3" stroke-width="1.3"/><path d="M ${round(splitX)} ${round(by)} H ${round(rx)} V ${round(ry)} H ${round(splitX)}" fill="none" stroke="${rightCol}" stroke-opacity="0.4" stroke-dasharray="3 3" stroke-width="1.3"/>`;
+    } else {
+      out += `<rect x="${round(bx)}" y="${round(by)}" width="${round(bw)}" height="${round(bh)}" fill="none" stroke="${leftCol}" stroke-opacity="0.32" stroke-dasharray="3 3" stroke-width="1.3"/>`;
+    }
+    out += `<path d="M ${round(bx)} ${round(by + arm)} V ${round(by)} H ${round(bx + arm)}" fill="none" stroke="${leftCol}" stroke-width="3.2" stroke-linecap="square"/><path d="M ${round(bx)} ${round(ry - arm)} V ${round(ry)} H ${round(bx + arm)}" fill="none" stroke="${leftCol}" stroke-width="3.2" stroke-linecap="square"/><path d="M ${round(rx - arm)} ${round(by)} H ${round(rx)} V ${round(by + arm)}" fill="none" stroke="${rightTopCol}" stroke-width="3.2" stroke-linecap="square"/><path d="M ${round(rx - arm)} ${round(ry)} H ${round(rx)} V ${round(ry - arm)}" fill="none" stroke="${rightTopCol}" stroke-width="3.2" stroke-linecap="square"/>`;
+    const topTickCol = splitX !== null && mx >= splitX ? rightCol : leftCol;
+    out += `<line x1="${round(mx)}" y1="${round(by)}" x2="${round(mx)}" y2="${round(by + tick)}" stroke="${topTickCol}" stroke-width="2.2"/><line x1="${round(mx)}" y1="${round(ry)}" x2="${round(mx)}" y2="${round(ry - tick)}" stroke="${topTickCol}" stroke-width="2.2"/><line x1="${round(bx)}" y1="${round(my)}" x2="${round(bx + tick)}" y2="${round(my)}" stroke="${leftCol}" stroke-width="2.2"/><line x1="${round(rx)}" y1="${round(my)}" x2="${round(rx - tick)}" y2="${round(my)}" stroke="${rightTopCol}" stroke-width="2.2"/>`;
+    return out;
+  }
+  function drawReticleB(bx, by, bw, bh, leftCol, rightCol, splitX) {
+    const cut = 6;
+    const rx = bx + bw;
+    const ry = by + bh;
+    const mx = bx + bw / 2;
+    const my = by + bh / 2;
+    const tick = 6;
+    const rightTopCol = splitX !== null ? rightCol : leftCol;
+    const topTickCol = splitX !== null && mx >= splitX ? rightCol : leftCol;
+    let out = "";
+    if (splitX !== null) {
+      out += `<path d="M ${round(splitX)} ${round(by)} H ${round(bx + cut)} L ${round(bx)} ${round(by + cut)} V ${round(ry - cut)} L ${round(bx + cut)} ${round(ry)} H ${round(splitX)}" fill="none" stroke="${leftCol}" stroke-width="2.6" stroke-linejoin="miter"/><path d="M ${round(splitX)} ${round(by)} H ${round(rx - cut)} L ${round(rx)} ${round(by + cut)} V ${round(ry - cut)} L ${round(rx - cut)} ${round(ry)} H ${round(splitX)}" fill="none" stroke="${rightCol}" stroke-width="2.8" stroke-linejoin="miter"/>`;
+    } else {
+      out += `<path d="M ${round(bx + cut)} ${round(by)} H ${round(rx - cut)} L ${round(rx)} ${round(by + cut)} V ${round(ry - cut)} L ${round(rx - cut)} ${round(ry)} H ${round(bx + cut)} L ${round(bx)} ${round(ry - cut)} V ${round(by + cut)} Z" fill="none" stroke="${leftCol}" stroke-width="2.6" stroke-linejoin="miter"/>`;
+    }
+    out += `<line x1="${round(mx)}" y1="${round(by - tick)}" x2="${round(mx)}" y2="${round(by + 2)}" stroke="${topTickCol}" stroke-width="2.2"/><line x1="${round(mx)}" y1="${round(ry - 2)}" x2="${round(mx)}" y2="${round(ry + tick)}" stroke="${topTickCol}" stroke-width="2.2"/><line x1="${round(bx - tick)}" y1="${round(my)}" x2="${round(bx + 2)}" y2="${round(my)}" stroke="${leftCol}" stroke-width="2.2"/><line x1="${round(rx - 2)}" y1="${round(my)}" x2="${round(rx + tick)}" y2="${round(my)}" stroke="${rightTopCol}" stroke-width="2.2"/>`;
+    return out;
+  }
+  function drawReticleC(bx, by, bw, bh, leftCol, rightCol, splitX, animateClamp) {
+    const lip = Math.min(11, bw * 0.24);
+    const rx = bx + bw;
+    const ry = by + bh;
+    const my = by + bh / 2;
+    const rightTopCol = splitX !== null ? rightCol : leftCol;
+    const leftClamp = `<path d="M ${round(bx + lip)} ${round(by)} H ${round(bx)} V ${round(ry)} H ${round(bx + lip)}" fill="none" stroke="${leftCol}" stroke-width="3.2" stroke-linecap="square"/><line x1="${round(bx)}" y1="${round(my)}" x2="${round(bx + 5)}" y2="${round(my)}" stroke="${leftCol}" stroke-width="2.4"/>`;
+    const rightClamp = `<path d="M ${round(rx - lip)} ${round(by)} H ${round(rx)} V ${round(ry)} H ${round(rx - lip)}" fill="none" stroke="${rightTopCol}" stroke-width="3.2" stroke-linecap="square"/><line x1="${round(rx)}" y1="${round(my)}" x2="${round(rx - 5)}" y2="${round(my)}" stroke="${rightTopCol}" stroke-width="2.4"/>`;
+    const rails = splitX !== null ? `<line x1="${round(bx + lip)}" y1="${round(by)}" x2="${round(splitX)}" y2="${round(by)}" stroke="${leftCol}" stroke-opacity="0.35" stroke-width="1.4"/><line x1="${round(splitX)}" y1="${round(by)}" x2="${round(rx - lip)}" y2="${round(by)}" stroke="${rightCol}" stroke-opacity="0.45" stroke-width="1.4"/><line x1="${round(bx + lip)}" y1="${round(ry)}" x2="${round(splitX)}" y2="${round(ry)}" stroke="${leftCol}" stroke-opacity="0.35" stroke-width="1.4"/><line x1="${round(splitX)}" y1="${round(ry)}" x2="${round(rx - lip)}" y2="${round(ry)}" stroke="${rightCol}" stroke-opacity="0.45" stroke-width="1.4"/>` : `<line x1="${round(bx + lip)}" y1="${round(by)}" x2="${round(rx - lip)}" y2="${round(by)}" stroke="${leftCol}" stroke-opacity="0.35" stroke-width="1.4"/><line x1="${round(bx + lip)}" y1="${round(ry)}" x2="${round(rx - lip)}" y2="${round(ry)}" stroke="${leftCol}" stroke-opacity="0.35" stroke-width="1.4"/>`;
+    if (animateClamp) {
+      const b = animateClamp.begin;
+      return `<g opacity="0">${fade(0, 1, 0.18, b + 0.25)}${rails}</g><g opacity="0">${fade(0, 1, 0.14, b)}<animateTransform attributeName="transform" type="translate" values="-22 0;2 0;0 0" keyTimes="0;0.75;1" calcMode="spline" keySplines="0.2 0 0.2 1;0.4 0 0.2 1" begin="${round(b)}s" dur="0.46s" fill="freeze"/>${leftClamp}</g><g opacity="0">${fade(0, 1, 0.14, b)}<animateTransform attributeName="transform" type="translate" values="22 0;-2 0;0 0" keyTimes="0;0.75;1" calcMode="spline" keySplines="0.2 0 0.2 1;0.4 0 0.2 1" begin="${round(b)}s" dur="0.46s" fill="freeze"/>${rightClamp}</g>`;
+    }
+    return rails + leftClamp + rightClamp;
+  }
+  function targetScopeReticle(c, meta, sim, xOf, byteW, gridY, cellH, pCol, style) {
     if (!sim.ptrLive) return "";
     const { P, animate, op } = c;
     const at = op ? arrival(op) : 0;
@@ -3573,46 +3626,48 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const wWidth = meta.pointeeSize * byteW;
     const targetVar = meta.vars.find((v) => v.name === meta.targetVar);
     const ownEnd = xOf(targetVar.address + targetVar.size);
-    const pad = 2.5;
+    const pad = 3.5;
     const bx = wLeft - pad;
+    const by = gridY - pad;
     const bw = wWidth + 2 * pad;
+    const bh = cellH + 2 * pad;
+    const cx = bx + bw / 2;
+    const cy = by + bh / 2;
     const isWritingPtr = animate && (op == null ? void 0 : op.kind) === "write" && op.name === meta.ptrName;
     const isDeref = animate && c.index === meta.derefStep;
     const hot = sim.windowActive;
-    let box = "";
-    if (meta.direction === "larger") {
-      const by = gridY - pad;
-      const bh = cellH + 2 * pad;
-      if (!sim.ubTriggered) {
-        box += rect(bx, by, bw, bh, "none", pCol, 5, 3);
-      } else {
-        const splitX = ownEnd;
-        const calm = rect(bx, by, bw, bh, "none", pCol, 5, 3);
-        const breached = `<path d="M ${round(splitX)} ${round(by)} H ${round(bx + 5)} Q ${round(bx)} ${round(by)} ${round(bx)} ${round(by + 5)} V ${round(by + bh - 5)} Q ${round(bx)} ${round(by + bh)} ${round(bx + 5)} ${round(by + bh)} H ${round(splitX)}" fill="none" stroke="${P.write}" stroke-width="3.2" stroke-linecap="round"/><path d="M ${round(splitX)} ${round(by)} H ${round(bx + bw - 5)} Q ${round(bx + bw)} ${round(by)} ${round(bx + bw)} ${round(by + 5)} V ${round(by + bh - 5)} Q ${round(bx + bw)} ${round(by + bh)} ${round(bx + bw - 5)} ${round(by + bh)} H ${round(splitX)}" fill="none" stroke="${P.error}" stroke-width="3.4" stroke-linecap="round"/>`;
-        box += animate && sim.isPunningWrite ? `<g>${hide(at)}${calm}</g><g opacity="0">${show(at)}${breached}</g>` : breached;
-      }
+    const renderShape = (leftCol, rightCol, splitX, clampAnim) => {
+      if (style === "A") return drawReticleA(bx, by, bw, bh, leftCol, rightCol, splitX);
+      if (style === "B") return drawReticleB(bx, by, bw, bh, leftCol, rightCol, splitX);
+      return drawReticleC(bx, by, bw, bh, leftCol, rightCol, splitX, clampAnim);
+    };
+    let inner = "";
+    if (meta.direction === "larger" && sim.ubTriggered) {
+      const calm = renderShape(pCol, pCol, null, null);
+      const breached = renderShape(P.write, P.error, ownEnd, null);
+      inner = animate && sim.isPunningWrite ? `<g>${hide(at)}${calm}</g><g opacity="0">${show(at)}${breached}</g>` : breached;
     } else {
-      const splitY = gridY + 48;
-      const sby = splitY - 1;
-      const sbh = gridY + cellH - splitY + pad + 1;
       const col = hot ? P.write : pCol;
-      box += rect(wLeft + 2, gridY + 2, wWidth - 4, splitY - gridY - 3, col, "none", 0).replace(
-        "fill=",
-        'fill-opacity="0.14" fill='
-      );
-      box += rect(bx, sby, bw, sbh, "none", col, 4, 3);
+      const clampAnim = isWritingPtr && style === "C" ? { begin: at + 0.52 } : null;
+      inner = renderShape(col, col, null, clampAnim);
     }
     if (isWritingPtr) {
-      return `<g opacity="0">${fade(0, 1, 0.3, at + 0.55)}${box}</g>`;
+      const lockBegin = at + 0.52;
+      if (style === "A") {
+        return `<g opacity="0">${fade(0, 1, 0.14, lockBegin)}<g transform="translate(${round(cx)} ${round(cy)})"><g><animateTransform attributeName="transform" type="scale" values="1.28;0.96;1" keyTimes="0;0.74;1" calcMode="spline" keySplines="0.2 0 0.2 1;0.4 0 0.2 1" begin="${round(lockBegin)}s" dur="0.46s" fill="freeze"/><g transform="translate(${round(-cx)} ${round(-cy)})">${inner}</g></g></g></g>`;
+      }
+      if (style === "B") {
+        return `<g opacity="0">${fade(0, 1, 0.16, lockBegin)}<g transform="translate(${round(cx)} ${round(cy)})"><g><animateTransform attributeName="transform" type="rotate" from="45" to="0" begin="${round(lockBegin)}s" dur="0.48s" ${EASE} fill="freeze"/><g><animateTransform attributeName="transform" type="scale" values="1.32;0.97;1" keyTimes="0;0.78;1" calcMode="spline" keySplines="0.2 0 0.2 1;0.4 0 0.2 1" begin="${round(lockBegin)}s" dur="0.48s" fill="freeze"/><g transform="translate(${round(-cx)} ${round(-cy)})">${inner}</g></g></g></g></g>`;
+      }
+      return inner;
     }
     if (isDeref) {
-      const cy = meta.direction === "larger" ? gridY + cellH / 2 : gridY + 68;
-      const cx = bx + bw / 2;
-      return scaledAt(cx, cy, box, at - 0.15);
+      const blink = style === "B" ? `<animate attributeName="opacity" values="1;0.3;1;0.3;1" keyTimes="0;0.25;0.5;0.75;1" begin="${round(at - 0.18)}s" dur="0.46s" fill="freeze"/>` : "";
+      return `<g>${blink}${scaledAt(cx, cy, inner, at - 0.18)}</g>`;
     }
-    return box;
+    return inner;
   }
-  function unifiedScene(c, paneStyle) {
+  function unifiedScene(c, reticleStyle) {
     const meta = META.get(c.m.trace);
     const sim = simulate(meta, c.index, c.littleEndian);
     const { g, P, animate, op, step, prev } = c;
@@ -3719,23 +3774,43 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       } else {
         markup += rect(vx + 1.5, gridY + 1.5, vw - 3, cellH - 3, "none", borderCol, 0, isCorrupted ? 3.2 : 2.8);
       }
-      const renderHeader = (val, useBefore) => {
+      const headerCenterX = (val) => {
+        const baseCx = vx + vw / 2;
+        if (val === null || !sim.ptrLive || meta.direction !== "smaller" || v.name !== meta.targetVar) {
+          return baseCx;
+        }
+        const dec = String(val);
+        const decSize = Math.min(25, (vw - 12) / (Math.max(1, dec.length) * CHAR));
+        const textW = dec.length * decSize * CHAR;
+        const scopeRight = xOf(meta.targetAddress + meta.pointeeSize) + 6;
+        const clearW = vx + vw - scopeRight - 8;
+        if (textW <= clearW - 8) {
+          return scopeRight + clearW / 2;
+        }
+        return baseCx;
+      };
+      const renderHeader = (val, useBefore, cx) => {
         if (val === null) return "";
         const dec = String(val);
         const decSize = Math.min(25, (vw - 12) / (Math.max(1, dec.length) * CHAR));
         const decCol = isCorrupted && !useBefore ? P.error : P.fg;
-        const bg = isCorrupted && !useBefore ? rect(vx + vw / 2 - 14, gridY + 12, 28, 26, P.panel, "none", 4) : "";
-        return bg + text(vx + vw / 2, gridY + 33, dec, round(decSize), decCol, "middle");
+        const bg = isCorrupted && !useBefore ? rect(cx - 14, gridY + 12, 28, 26, P.panel, "none", 4) : "";
+        return bg + text(cx, gridY + 33, dec, round(decSize), decCol, "middle");
       };
       const normalWrite = animate && (op == null ? void 0 : op.kind) === "write" && op.name === v.name && !sim.isPunningWrite;
       const valueChanged = animate && sim.isPunningWrite && valBefore !== valAfter;
+      const isPtrLockStep = animate && (op == null ? void 0 : op.kind) === "write" && op.name === meta.ptrName && meta.direction === "smaller" && v.name === meta.targetVar;
+      const afterCx = headerCenterX(valAfter);
       if (normalWrite || valueChanged) {
-        const headCx = vx + vw / 2;
+        const beforeCx = headerCenterX(valBefore);
         const headCy = gridY + 26;
-        const swapped = (valBefore !== null ? `<g>${hide(at)}${renderHeader(valBefore, true)}</g>` : "") + `<g opacity="0">${show(at)}${renderHeader(valAfter, false)}</g>`;
-        markup += scaledAt(headCx, headCy, swapped, at - 0.15);
+        const swapped = (valBefore !== null ? `<g>${hide(at)}${renderHeader(valBefore, true, beforeCx)}</g>` : "") + `<g opacity="0">${show(at)}${renderHeader(valAfter, false, afterCx)}</g>`;
+        markup += scaledAt(afterCx, headCy, swapped, at - 0.15);
+      } else if (isPtrLockStep && Math.abs(afterCx - (vx + vw / 2)) > 1) {
+        const dx = afterCx - (vx + vw / 2);
+        markup += `<g><animateTransform attributeName="transform" type="translate" from="0 0" to="${round(dx)} 0" begin="${round(at + 0.52)}s" dur="0.32s" ${EASE} fill="freeze"/>${renderHeader(valAfter, false, vx + vw / 2)}</g>`;
       } else {
-        markup += renderHeader(valAfter, false);
+        markup += renderHeader(valAfter, false, afterCx);
       }
       const hexY = gridY + 74;
       for (let k = 0; k < v.size; k++) {
@@ -3803,7 +3878,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         arcMarkup += `<path d="${d}" fill="none" stroke="${pCol}" stroke-width="7" stroke-linecap="round" data-follow="${T.prepare}"/>`;
       }
     }
-    const scopeBox = targetScopeBox(c, meta, sim, xOf, byteW, gridY, cellH, pCol);
+    const scopeReticle = targetScopeReticle(c, meta, sim, xOf, byteW, gridY, cellH, pCol, reticleStyle);
     let belowOverlay = "";
     if (meta.direction === "larger" && sim.ubTriggered) {
       const wLeft = xOf(meta.targetAddress);
@@ -3846,16 +3921,16 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           flight += `<g opacity="0">${fade(0, 0.5, 0.2, begin)}${fade(0.5, 0, 0.25, end)}<path d="${path}" fill="none" stroke="${flyCol}" stroke-width="2.4"/></g><g opacity="0">${fade(0, 1, 0.1, begin)}${hide(end + 0.05)}` + rect(-20, -14, 40, 28, P.panel, flyCol, 6, 2) + text(0, 6, hex2(bytes[k]), 15, flyCol, "middle") + `<animateMotion begin="${round(begin)}s" dur="${dur}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
         }
       }
-      if (paneStyle === "B" && meta.direction === "smaller") {
+      if (meta.direction === "smaller") {
         for (let k = bytes.length; k < targetVar.size; k++) {
           const tx = tilesX + k * (tileW + tileGap);
           wb += `<rect x="${round(tx)}" y="${stripY}" width="${tileW}" height="${tileH}" rx="5" fill="none" stroke="${P.grey}" stroke-opacity="0.75" stroke-dasharray="4 3" stroke-width="1.6"/>`;
         }
       }
     }
-    return defs + code(c, oldLine) + tether(c, oldLine) + arcMarkup + mem + scopeBox + belowOverlay + pane(c, animate && copies(c.m.steps, c.index)) + wb + output(c) + gridTransfers(c, meta, sim, xOf, byteW, gridY, cellH) + flight;
+    return defs + code(c, oldLine) + tether(c, oldLine) + arcMarkup + mem + scopeReticle + belowOverlay + pane(c, animate && copies(c.m.steps, c.index)) + wb + output(c) + gridTransfers(c, meta, sim, xOf, byteW, gridY, cellH) + flight;
   }
-  function makeView(paneStyle) {
+  function makeView(reticleStyle) {
     return {
       geometry: (m) => {
         const meta = META.get(m.trace);
@@ -3871,37 +3946,47 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       stackBelow: 900,
       maxScale: 0.72,
       byteOrder: true,
-      scene: (c) => unifiedScene(c, paneStyle),
+      scene: (c) => unifiedScene(c, reticleStyle),
       stepSeconds: punningStepSeconds
     };
   }
   const VARIANTS = [
     {
       key: "A",
-      name: "A · Exact bytes written (symmetrical)",
-      summary: 'In every scenario, the pane shows only the exact bytes being written (4 tiles for int*, 1 tile for uint8_t*), aligned right under the written value. No labels, no "(LE)", no repeated numbers.',
+      name: "A · HUD corner reticle (zoom-snap lock)",
+      summary: "Full-height open L-corner brackets with inward midpoint crosshair ticks and a faint dashed perimeter. On b = &a, the reticle zooms in and snaps tight (1.28 -> 0.96 -> 1.0) as short values nudge clear.",
       bullets: [
-        "Larger pointer: 4 byte tiles (1 gold, 3 red on write). Smaller pointer: 1 gold byte tile.",
-        "Hit Play on scenarios 3–4 to see only byte 64 and the top value pulse while bytes 65..67 stay still."
+        "Open edges keep cell walls clean underneath while reading unmistakably as a target lock.",
+        "Hit Play (or step to line 3 / line 2) to watch the missile lock-on animation."
       ],
       view: makeView("A")
     },
     {
       key: "B",
-      name: "B · Written bytes + empty target slots",
-      summary: "Same bytes-being-written view, except smaller pointers also show 3 hollow dashed slots beside the 1 written byte so the pane itself mirrors the 1-of-4 coverage without duplicating a’s existing bytes.",
+      name: "B · Fighter-jet reticle (45° spin lock)",
+      summary: "Chamfered full-height targeting frame with outward crosshair sight ticks. On b = &a, the reticle rotates 45° from a diamond into horizontal lock while shrinking onto the bytes; on *b it double-blinks.",
       bullets: [
-        "Larger pointer: 1 gold + 3 red overflow tiles. Smaller pointer: 1 gold + 3 dashed empty slots.",
-        'No labels, no "(LE)", no repeated values.'
+        "Classic fighter-jet target acquisition spin when the pointer takes &a.",
+        "Double-blink confirmation pulse on dereference."
       ],
       view: makeView("B")
+    },
+    {
+      key: "C",
+      name: "C · Opposing [ ] byte clamps (clamp-shut lock)",
+      summary: "Bold opposing [ and ] clamps framing the exact left and right byte boundaries with midpoint teeth and light connecting rails. On b = &a, the two clamps slide inward from outside and snap shut.",
+      bullets: [
+        "Emphasizes exact byte start/end width cleanly without cluttering the middle.",
+        "Hit Play to watch the clamps slide in and lock around 64..67 or byte 64."
+      ],
+      view: makeView("C")
     }
   ];
   let players = [];
   function currentVariantKey() {
     var _a;
     const param = (_a = new URLSearchParams(window.location.search).get("variant")) == null ? void 0 : _a.toUpperCase();
-    return param === "B" ? "B" : "A";
+    return param === "B" || param === "C" ? param : "A";
   }
   function setVariantKey(key) {
     const url = new URL(window.location.href);

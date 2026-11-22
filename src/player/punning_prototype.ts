@@ -1,16 +1,18 @@
 // PROTOTYPE, throwaway (pointer type punning with larger and smaller pointee types, #60).
-// Clean unified design:
+// Folded design:
 //   - Plain Lab 4 syntax (no reinterpret_cast), all native animations active
 //   - Byte-accurate horizontal hex memory strip + bits_view byte-order arrow on multi-byte ints
-//   - Clean overhead pointer arc (no type pill) + clean single-line scope box
-//   - Subtle vertical highlight above byte 64 on smaller pointers; subtle veil on untouched bytes
-//   - Per-element write pulse: decimal header and changed byte(s) pulse; untouched bytes stay still
-//   - UB (red spilled bytes, red hazard fill, red overflow border, "⚠ UB") triggers ONLY on write
-//   - Pane shows ONLY the bytes being written (no "(LE)", no repeated value text, no "-> a = ...")
+//   - Clean overhead pointer arc (no type pill), full-height targeting scope around pointed-at bytes
+//   - Smart decimal nudge: short values inside a larger target shift clear of the scope edge;
+//     long values (e.g. 33554437 in BE) stay centered across the cell
+//   - Per-byte write pulse: decimal header and changed byte(s) pulse; untouched bytes stay still
+//   - UB (red spilled bytes, red hazard fill, red right side of scope, "⚠ UB") ONLY on write
+//   - Standardized pane byte strip (Variant B winner): written bytes + hollow dashed target slots
 //
-// Two clean pane-strip variations (?variant=A|B):
-//   A: Exact bytes written by the pointer (4 bytes for int*, 1 byte for uint8_t*)
-//   B: Written bytes plus hollow dashed slots for untouched target bytes on smaller pointers
+// Three lock-on scope styles + animations (?variant=A|B|C):
+//   A: Open HUD corner brackets + inward crosshair ticks (zoom-in snap lock)
+//   B: Notched targeting frame + outward sight ticks (45° diamond-to-square spin lock)
+//   C: Opposing [ ] byte clamps + hairline rails (horizontal clamp-shut lock)
 import type { ExecutionTrace, ScalarVariable, TraceStep } from '../core/trace_format.ts';
 import {
   CHAR,
@@ -310,7 +312,7 @@ function makeScenario1(): { trace: ExecutionTrace; meta: PunningMeta } {
       values: v3,
       targets: { b: 'a' },
       stdout: '',
-      hold: 1.1,
+      hold: 1.2,
       op: { kind: 'write', name: 'b', value: '64', span: [8, 10], destination: [5, 6] },
     },
     { line: 3, pane: '*b = 300', expr: [0, 2], values: v3, targets: { b: 'a' }, stdout: '', hold: 0.7, op: null },
@@ -355,7 +357,7 @@ function makeScenario1(): { trace: ExecutionTrace; meta: PunningMeta } {
   const meta: PunningMeta = {
     id: 'larger-padding',
     title: '1. Larger pointer writes past 1-byte object into padding',
-    subtitle: 'Scope covers 4 bytes (64..67) calmly while pointing; writing *b = 300 spills into padding and triggers UB.',
+    subtitle: 'Hit Play to watch the scope lock onto 64..67 on line 3, then trip UB on line 4.',
     direction: 'larger',
     baseAddress: 64,
     totalBytes: 16,
@@ -458,7 +460,7 @@ function makeScenario2(): { trace: ExecutionTrace; meta: PunningMeta } {
       values: v4,
       targets: { b: 'a' },
       stdout: '',
-      hold: 1.1,
+      hold: 1.2,
       op: { kind: 'write', name: 'b', value: '64', span: [8, 10], destination: [5, 6] },
     },
     { line: 4, pane: '*b = 0x04030201', expr: [0, 2], values: v4, targets: { b: 'a' }, stdout: '', hold: 0.7, op: null },
@@ -579,7 +581,7 @@ function makeScenario3(): { trace: ExecutionTrace; meta: PunningMeta } {
       values: v2,
       targets: { b: 'a' },
       stdout: '',
-      hold: 1.1,
+      hold: 1.2,
       op: { kind: 'write', name: 'b', value: '64', span: [13, 15], destination: [9, 10] },
     },
     { line: 2, pane: '*b = 2', expr: [0, 2], values: v2, targets: { b: 'a' }, stdout: '', hold: 0.7, op: null },
@@ -624,7 +626,7 @@ function makeScenario3(): { trace: ExecutionTrace; meta: PunningMeta } {
   const meta: PunningMeta = {
     id: 'smaller-five',
     title: '3. Smaller pointer overwrites only byte 64 of int a (a = 5)',
-    subtitle: '*b = 2 updates only byte 64; bytes 65..67 stay still. Flip Little-endian / Big-endian to see 2 vs 33554437.',
+    subtitle: 'Full-height scope locks onto byte 64; short value nudges clear. Flip LE/BE to see 2 vs 33554437.',
     direction: 'smaller',
     baseAddress: 64,
     totalBytes: 16,
@@ -698,7 +700,7 @@ function makeScenario4(): { trace: ExecutionTrace; meta: PunningMeta } {
       values: v2,
       targets: { b: 'a' },
       stdout: '',
-      hold: 1.1,
+      hold: 1.2,
       op: { kind: 'write', name: 'b', value: '64', span: [13, 15], destination: [9, 10] },
     },
     { line: 2, pane: '*b = 0', expr: [0, 2], values: v2, targets: { b: 'a' }, stdout: '', hold: 0.7, op: null },
@@ -771,7 +773,7 @@ const SCENARIOS = [makeScenario1(), makeScenario2(), makeScenario3(), makeScenar
 // SHARED SVG HELPERS + NATIVE TRANSFERS
 // ============================================================================================
 
-type PaneStyle = 'A' | 'B';
+type ReticleStyle = 'A' | 'B' | 'C';
 
 let patternSeq = 0;
 
@@ -847,6 +849,7 @@ function punningStepSeconds(m: PreparedModel, index: number): number {
   const meta = META.get(m.trace);
   if (meta && index === meta.writeAction.stepIndex) return m.steps[index].hold + 2.3;
   if (meta && index === meta.derefStep) return m.steps[index].hold + 1.6;
+  if (meta && index === meta.ptrInitStep) return m.steps[index].hold + 2.4;
   return stepSeconds(m.steps, index);
 }
 
@@ -947,10 +950,144 @@ function gridTransfers(
 }
 
 // ============================================================================================
-// CLEAN SCOPE BOX AROUND THE BYTES THE POINTER POINTS AT
+// FULL-HEIGHT MISSILE-LOCK TARGETING SCOPE (VARIANTS A / B / C)
 // ============================================================================================
 
-function targetScopeBox(
+function drawReticleA(
+  bx: number,
+  by: number,
+  bw: number,
+  bh: number,
+  leftCol: string,
+  rightCol: string,
+  splitX: number | null
+): string {
+  // Open 4-corner HUD L-brackets + 4 tiny inward midpoint crosshair ticks + faint dashed hairline
+  const arm = Math.min(14, bw * 0.28);
+  const tick = 5;
+  const rx = bx + bw;
+  const ry = by + bh;
+  const mx = bx + bw / 2;
+  const my = by + bh / 2;
+  const rightTopCol = splitX !== null ? rightCol : leftCol;
+
+  let out = '';
+  // Subtle dashed perimeter connecting the corners
+  if (splitX !== null) {
+    out +=
+      `<path d="M ${round(splitX)} ${round(by)} H ${round(bx)} V ${round(ry)} H ${round(splitX)}" fill="none" stroke="${leftCol}" stroke-opacity="0.32" stroke-dasharray="3 3" stroke-width="1.3"/>` +
+      `<path d="M ${round(splitX)} ${round(by)} H ${round(rx)} V ${round(ry)} H ${round(splitX)}" fill="none" stroke="${rightCol}" stroke-opacity="0.4" stroke-dasharray="3 3" stroke-width="1.3"/>`;
+  } else {
+    out += `<rect x="${round(bx)}" y="${round(by)}" width="${round(bw)}" height="${round(bh)}" fill="none" stroke="${leftCol}" stroke-opacity="0.32" stroke-dasharray="3 3" stroke-width="1.3"/>`;
+  }
+  // 4 crisp corner brackets
+  out +=
+    `<path d="M ${round(bx)} ${round(by + arm)} V ${round(by)} H ${round(bx + arm)}" fill="none" stroke="${leftCol}" stroke-width="3.2" stroke-linecap="square"/>` +
+    `<path d="M ${round(bx)} ${round(ry - arm)} V ${round(ry)} H ${round(bx + arm)}" fill="none" stroke="${leftCol}" stroke-width="3.2" stroke-linecap="square"/>` +
+    `<path d="M ${round(rx - arm)} ${round(by)} H ${round(rx)} V ${round(by + arm)}" fill="none" stroke="${rightTopCol}" stroke-width="3.2" stroke-linecap="square"/>` +
+    `<path d="M ${round(rx - arm)} ${round(ry)} H ${round(rx)} V ${round(ry - arm)}" fill="none" stroke="${rightTopCol}" stroke-width="3.2" stroke-linecap="square"/>`;
+  // 4 inward midpoint crosshair ticks
+  const topTickCol = splitX !== null && mx >= splitX ? rightCol : leftCol;
+  out +=
+    `<line x1="${round(mx)}" y1="${round(by)}" x2="${round(mx)}" y2="${round(by + tick)}" stroke="${topTickCol}" stroke-width="2.2"/>` +
+    `<line x1="${round(mx)}" y1="${round(ry)}" x2="${round(mx)}" y2="${round(ry - tick)}" stroke="${topTickCol}" stroke-width="2.2"/>` +
+    `<line x1="${round(bx)}" y1="${round(my)}" x2="${round(bx + tick)}" y2="${round(my)}" stroke="${leftCol}" stroke-width="2.2"/>` +
+    `<line x1="${round(rx)}" y1="${round(my)}" x2="${round(rx - tick)}" y2="${round(my)}" stroke="${rightTopCol}" stroke-width="2.2"/>`;
+  return out;
+}
+
+function drawReticleB(
+  bx: number,
+  by: number,
+  bw: number,
+  bh: number,
+  leftCol: string,
+  rightCol: string,
+  splitX: number | null
+): string {
+  // Chamfered/notched fighter-jet targeting frame + outward crosshair sight ticks
+  const cut = 6;
+  const rx = bx + bw;
+  const ry = by + bh;
+  const mx = bx + bw / 2;
+  const my = by + bh / 2;
+  const tick = 6;
+  const rightTopCol = splitX !== null ? rightCol : leftCol;
+  const topTickCol = splitX !== null && mx >= splitX ? rightCol : leftCol;
+
+  let out = '';
+  if (splitX !== null) {
+    out +=
+      `<path d="M ${round(splitX)} ${round(by)} H ${round(bx + cut)} L ${round(bx)} ${round(by + cut)} ` +
+      `V ${round(ry - cut)} L ${round(bx + cut)} ${round(ry)} H ${round(splitX)}" ` +
+      `fill="none" stroke="${leftCol}" stroke-width="2.6" stroke-linejoin="miter"/>` +
+      `<path d="M ${round(splitX)} ${round(by)} H ${round(rx - cut)} L ${round(rx)} ${round(by + cut)} ` +
+      `V ${round(ry - cut)} L ${round(rx - cut)} ${round(ry)} H ${round(splitX)}" ` +
+      `fill="none" stroke="${rightCol}" stroke-width="2.8" stroke-linejoin="miter"/>`;
+  } else {
+    out +=
+      `<path d="M ${round(bx + cut)} ${round(by)} H ${round(rx - cut)} L ${round(rx)} ${round(by + cut)} ` +
+      `V ${round(ry - cut)} L ${round(rx - cut)} ${round(ry)} H ${round(bx + cut)} L ${round(bx)} ${round(ry - cut)} ` +
+      `V ${round(by + cut)} Z" fill="none" stroke="${leftCol}" stroke-width="2.6" stroke-linejoin="miter"/>`;
+  }
+  // Outward crosshair sight ticks
+  out +=
+    `<line x1="${round(mx)}" y1="${round(by - tick)}" x2="${round(mx)}" y2="${round(by + 2)}" stroke="${topTickCol}" stroke-width="2.2"/>` +
+    `<line x1="${round(mx)}" y1="${round(ry - 2)}" x2="${round(mx)}" y2="${round(ry + tick)}" stroke="${topTickCol}" stroke-width="2.2"/>` +
+    `<line x1="${round(bx - tick)}" y1="${round(my)}" x2="${round(bx + 2)}" y2="${round(my)}" stroke="${leftCol}" stroke-width="2.2"/>` +
+    `<line x1="${round(rx - 2)}" y1="${round(my)}" x2="${round(rx + tick)}" y2="${round(my)}" stroke="${rightTopCol}" stroke-width="2.2"/>`;
+  return out;
+}
+
+function drawReticleC(
+  bx: number,
+  by: number,
+  bw: number,
+  bh: number,
+  leftCol: string,
+  rightCol: string,
+  splitX: number | null,
+  animateClamp: { begin: number } | null
+): string {
+  // Opposing full-height [ and ] clamps with small midpoint teeth + light connecting rails
+  const lip = Math.min(11, bw * 0.24);
+  const rx = bx + bw;
+  const ry = by + bh;
+  const my = by + bh / 2;
+  const rightTopCol = splitX !== null ? rightCol : leftCol;
+
+  const leftClamp =
+    `<path d="M ${round(bx + lip)} ${round(by)} H ${round(bx)} V ${round(ry)} H ${round(bx + lip)}" fill="none" stroke="${leftCol}" stroke-width="3.2" stroke-linecap="square"/>` +
+    `<line x1="${round(bx)}" y1="${round(my)}" x2="${round(bx + 5)}" y2="${round(my)}" stroke="${leftCol}" stroke-width="2.4"/>`;
+  const rightClamp =
+    `<path d="M ${round(rx - lip)} ${round(by)} H ${round(rx)} V ${round(ry)} H ${round(rx - lip)}" fill="none" stroke="${rightTopCol}" stroke-width="3.2" stroke-linecap="square"/>` +
+    `<line x1="${round(rx)}" y1="${round(my)}" x2="${round(rx - 5)}" y2="${round(my)}" stroke="${rightTopCol}" stroke-width="2.4"/>`;
+
+  const rails =
+    splitX !== null
+      ? `<line x1="${round(bx + lip)}" y1="${round(by)}" x2="${round(splitX)}" y2="${round(by)}" stroke="${leftCol}" stroke-opacity="0.35" stroke-width="1.4"/>` +
+        `<line x1="${round(splitX)}" y1="${round(by)}" x2="${round(rx - lip)}" y2="${round(by)}" stroke="${rightCol}" stroke-opacity="0.45" stroke-width="1.4"/>` +
+        `<line x1="${round(bx + lip)}" y1="${round(ry)}" x2="${round(splitX)}" y2="${round(ry)}" stroke="${leftCol}" stroke-opacity="0.35" stroke-width="1.4"/>` +
+        `<line x1="${round(splitX)}" y1="${round(ry)}" x2="${round(rx - lip)}" y2="${round(ry)}" stroke="${rightCol}" stroke-opacity="0.45" stroke-width="1.4"/>`
+      : `<line x1="${round(bx + lip)}" y1="${round(by)}" x2="${round(rx - lip)}" y2="${round(by)}" stroke="${leftCol}" stroke-opacity="0.35" stroke-width="1.4"/>` +
+        `<line x1="${round(bx + lip)}" y1="${round(ry)}" x2="${round(rx - lip)}" y2="${round(ry)}" stroke="${leftCol}" stroke-opacity="0.35" stroke-width="1.4"/>`;
+
+  if (animateClamp) {
+    const b = animateClamp.begin;
+    return (
+      `<g opacity="0">${fade(0, 1, 0.18, b + 0.25)}${rails}</g>` +
+      `<g opacity="0">${fade(0, 1, 0.14, b)}` +
+      `<animateTransform attributeName="transform" type="translate" values="-22 0;2 0;0 0" keyTimes="0;0.75;1" calcMode="spline" keySplines="0.2 0 0.2 1;0.4 0 0.2 1" begin="${round(b)}s" dur="0.46s" fill="freeze"/>` +
+      `${leftClamp}</g>` +
+      `<g opacity="0">${fade(0, 1, 0.14, b)}` +
+      `<animateTransform attributeName="transform" type="translate" values="22 0;-2 0;0 0" keyTimes="0;0.75;1" calcMode="spline" keySplines="0.2 0 0.2 1;0.4 0 0.2 1" begin="${round(b)}s" dur="0.46s" fill="freeze"/>` +
+      `${rightClamp}</g>`
+    );
+  }
+  return rails + leftClamp + rightClamp;
+}
+
+function targetScopeReticle(
   c: SceneContext,
   meta: PunningMeta,
   sim: SimState,
@@ -958,7 +1095,8 @@ function targetScopeBox(
   byteW: number,
   gridY: number,
   cellH: number,
-  pCol: string
+  pCol: string,
+  style: ReticleStyle
 ): string {
   if (!sim.ptrLive) return '';
   const { P, animate, op } = c;
@@ -968,63 +1106,83 @@ function targetScopeBox(
   const targetVar = meta.vars.find(v => v.name === meta.targetVar)!;
   const ownEnd = xOf(targetVar.address + targetVar.size);
 
-  const pad = 2.5;
+  // Full height for BOTH larger and smaller pointers!
+  const pad = 3.5;
   const bx = wLeft - pad;
+  const by = gridY - pad;
   const bw = wWidth + 2 * pad;
+  const bh = cellH + 2 * pad;
+  const cx = bx + bw / 2;
+  const cy = by + bh / 2;
+
   const isWritingPtr = animate && op?.kind === 'write' && op.name === meta.ptrName;
   const isDeref = animate && c.index === meta.derefStep;
   const hot = sim.windowActive;
 
-  let box = '';
-  if (meta.direction === 'larger') {
-    const by = gridY - pad;
-    const bh = cellH + 2 * pad;
-    if (!sim.ubTriggered) {
-      box += rect(bx, by, bw, bh, 'none', pCol, 5, 3);
-    } else {
-      const splitX = ownEnd;
-      const calm = rect(bx, by, bw, bh, 'none', pCol, 5, 3);
-      const breached =
-        `<path d="M ${round(splitX)} ${round(by)} H ${round(bx + 5)} Q ${round(bx)} ${round(by)} ${round(bx)} ${round(by + 5)} ` +
-        `V ${round(by + bh - 5)} Q ${round(bx)} ${round(by + bh)} ${round(bx + 5)} ${round(by + bh)} H ${round(splitX)}" ` +
-        `fill="none" stroke="${P.write}" stroke-width="3.2" stroke-linecap="round"/>` +
-        `<path d="M ${round(splitX)} ${round(by)} H ${round(bx + bw - 5)} Q ${round(bx + bw)} ${round(by)} ${round(bx + bw)} ${round(by + 5)} ` +
-        `V ${round(by + bh - 5)} Q ${round(bx + bw)} ${round(by + bh)} ${round(bx + bw - 5)} ${round(by + bh)} H ${round(splitX)}" ` +
-        `fill="none" stroke="${P.error}" stroke-width="3.4" stroke-linecap="round"/>`;
-      box +=
-        animate && sim.isPunningWrite
-          ? `<g>${hide(at)}${calm}</g><g opacity="0">${show(at)}${breached}</g>`
-          : breached;
-    }
+  const renderShape = (leftCol: string, rightCol: string, splitX: number | null, clampAnim: { begin: number } | null): string => {
+    if (style === 'A') return drawReticleA(bx, by, bw, bh, leftCol, rightCol, splitX);
+    if (style === 'B') return drawReticleB(bx, by, bw, bh, leftCol, rightCol, splitX);
+    return drawReticleC(bx, by, bw, bh, leftCol, rightCol, splitX, clampAnim);
+  };
+
+  let inner = '';
+  if (meta.direction === 'larger' && sim.ubTriggered) {
+    const calm = renderShape(pCol, pCol, null, null);
+    const breached = renderShape(P.write, P.error, ownEnd, null);
+    inner =
+      animate && sim.isPunningWrite
+        ? `<g>${hide(at)}${calm}</g><g opacity="0">${show(at)}${breached}</g>`
+        : breached;
   } else {
-    // Smaller pointer: subtle vertical highlight above byte 64 + clean single rounded box on byte 64!
-    const splitY = gridY + 48;
-    const sby = splitY - 1;
-    const sbh = gridY + cellH - splitY + pad + 1;
     const col = hot ? P.write : pCol;
-    box += rect(wLeft + 2, gridY + 2, wWidth - 4, splitY - gridY - 3, col, 'none', 0).replace(
-      'fill=',
-      'fill-opacity="0.14" fill='
-    );
-    box += rect(bx, sby, bw, sbh, 'none', col, 4, 3);
+    const clampAnim = isWritingPtr && style === 'C' ? { begin: at + 0.52 } : null;
+    inner = renderShape(col, col, null, clampAnim);
   }
 
+  // Missile lock-on animations!
   if (isWritingPtr) {
-    return `<g opacity="0">${fade(0, 1, 0.3, at + 0.55)}${box}</g>`;
+    const lockBegin = at + 0.52;
+    if (style === 'A') {
+      // Zoom-in snap lock with slight overshoot bounce (1.28 -> 0.96 -> 1.0)
+      return (
+        `<g opacity="0">${fade(0, 1, 0.14, lockBegin)}` +
+        `<g transform="translate(${round(cx)} ${round(cy)})"><g>` +
+        `<animateTransform attributeName="transform" type="scale" values="1.28;0.96;1" keyTimes="0;0.74;1" ` +
+        `calcMode="spline" keySplines="0.2 0 0.2 1;0.4 0 0.2 1" begin="${round(lockBegin)}s" dur="0.46s" fill="freeze"/>` +
+        `<g transform="translate(${round(-cx)} ${round(-cy)})">${inner}</g></g></g></g>`
+      );
+    }
+    if (style === 'B') {
+      // Fighter-jet 45° diamond spin-and-shrink into horizontal square lock!
+      return (
+        `<g opacity="0">${fade(0, 1, 0.16, lockBegin)}` +
+        `<g transform="translate(${round(cx)} ${round(cy)})">` +
+        `<g><animateTransform attributeName="transform" type="rotate" from="45" to="0" begin="${round(lockBegin)}s" dur="0.48s" ${EASE} fill="freeze"/>` +
+        `<g><animateTransform attributeName="transform" type="scale" values="1.32;0.97;1" keyTimes="0;0.78;1" ` +
+        `calcMode="spline" keySplines="0.2 0 0.2 1;0.4 0 0.2 1" begin="${round(lockBegin)}s" dur="0.48s" fill="freeze"/>` +
+        `<g transform="translate(${round(-cx)} ${round(-cy)})">${inner}</g></g></g></g></g>`
+      );
+    }
+    // Style C handles its own opposing horizontal clamp animation inside drawReticleC
+    return inner;
   }
+
   if (isDeref) {
-    const cy = meta.direction === 'larger' ? gridY + cellH / 2 : gridY + 68;
-    const cx = bx + bw / 2;
-    return scaledAt(cx, cy, box, at - 0.15);
+    const blink =
+      style === 'B'
+        ? `<animate attributeName="opacity" values="1;0.3;1;0.3;1" keyTimes="0;0.25;0.5;0.75;1" begin="${round(at - 0.18)}s" dur="0.46s" fill="freeze"/>`
+        : '';
+    return `<g>${blink}${scaledAt(cx, cy, inner, at - 0.18)}</g>`;
   }
-  return box;
+
+  return inner;
 }
 
 // ============================================================================================
-// UNIFIED SCENE (SYMMETRICAL PANE VARIANTS A / B)
+// UNIFIED SCENE (FOLDED PANE B + FULL-HEIGHT RETICLE VARIANTS A / B / C)
 // ============================================================================================
 
-function unifiedScene(c: SceneContext, paneStyle: PaneStyle): string {
+function unifiedScene(c: SceneContext, reticleStyle: ReticleStyle): string {
   const meta = META.get(c.m.trace)!;
   const sim = simulate(meta, c.index, c.littleEndian);
   const { g, P, animate, op, step, prev } = c;
@@ -1108,7 +1266,7 @@ function unifiedScene(c: SceneContext, paneStyle: PaneStyle): string {
   }
   const pillRowsCount = Math.max(1, pillRowEdge.length);
 
-  // 3. Variables (flush on byte grid; per-element pulse so unaffected bytes stay rock-solid!)
+  // 3. Variables (flush on byte grid; smart header nudge + per-byte pulse!)
   for (const v of meta.vars) {
     const vx = xOf(v.address);
     const vw = v.size * byteW;
@@ -1165,33 +1323,70 @@ function unifiedScene(c: SceneContext, paneStyle: PaneStyle): string {
       markup += rect(vx + 1.5, gridY + 1.5, vw - 3, cellH - 3, 'none', borderCol, 0, isCorrupted ? 3.2 : 2.8);
     }
 
-    // 3a. Decimal header (pulses independently whenever the variable's value changes!)
-    const renderHeader = (val: number | null, useBefore: boolean): string => {
+    // 3a. Decimal header with smart nudge when a smaller pointer's full-height scope overlaps left byte(s)
+    const headerCenterX = (val: number | null): number => {
+      const baseCx = vx + vw / 2;
+      if (
+        val === null ||
+        !sim.ptrLive ||
+        meta.direction !== 'smaller' ||
+        v.name !== meta.targetVar
+      ) {
+        return baseCx;
+      }
+      const dec = String(val);
+      const decSize = Math.min(25, (vw - 12) / (Math.max(1, dec.length) * CHAR));
+      const textW = dec.length * decSize * CHAR;
+      const scopeRight = xOf(meta.targetAddress + meta.pointeeSize) + 6;
+      const clearW = vx + vw - scopeRight - 8;
+      // Nudge into the clear right region when the number fits comfortably; leave huge numbers centered.
+      if (textW <= clearW - 8) {
+        return scopeRight + clearW / 2;
+      }
+      return baseCx;
+    };
+
+    const renderHeader = (val: number | null, useBefore: boolean, cx: number): string => {
       if (val === null) return '';
       const dec = String(val);
       const decSize = Math.min(25, (vw - 12) / (Math.max(1, dec.length) * CHAR));
       const decCol = isCorrupted && !useBefore ? P.error : P.fg;
       const bg =
         isCorrupted && !useBefore
-          ? rect(vx + vw / 2 - 14, gridY + 12, 28, 26, P.panel, 'none', 4)
+          ? rect(cx - 14, gridY + 12, 28, 26, P.panel, 'none', 4)
           : '';
-      return bg + text(vx + vw / 2, gridY + 33, dec, round(decSize), decCol, 'middle');
+      return bg + text(cx, gridY + 33, dec, round(decSize), decCol, 'middle');
     };
 
     const normalWrite = animate && op?.kind === 'write' && op.name === v.name && !sim.isPunningWrite;
     const valueChanged = animate && sim.isPunningWrite && valBefore !== valAfter;
+    const isPtrLockStep =
+      animate &&
+      op?.kind === 'write' &&
+      op.name === meta.ptrName &&
+      meta.direction === 'smaller' &&
+      v.name === meta.targetVar;
+
+    const afterCx = headerCenterX(valAfter);
     if (normalWrite || valueChanged) {
-      const headCx = vx + vw / 2;
+      const beforeCx = headerCenterX(valBefore);
       const headCy = gridY + 26;
       const swapped =
-        (valBefore !== null ? `<g>${hide(at)}${renderHeader(valBefore, true)}</g>` : '') +
-        `<g opacity="0">${show(at)}${renderHeader(valAfter, false)}</g>`;
-      markup += scaledAt(headCx, headCy, swapped, at - 0.15);
+        (valBefore !== null ? `<g>${hide(at)}${renderHeader(valBefore, true, beforeCx)}</g>` : '') +
+        `<g opacity="0">${show(at)}${renderHeader(valAfter, false, afterCx)}</g>`;
+      markup += scaledAt(afterCx, headCy, swapped, at - 0.15);
+    } else if (isPtrLockStep && Math.abs(afterCx - (vx + vw / 2)) > 1) {
+      // Smoothly slide `a`'s decimal number aside as the scope locks onto byte 64!
+      const dx = afterCx - (vx + vw / 2);
+      markup +=
+        `<g><animateTransform attributeName="transform" type="translate" from="0 0" to="${round(dx)} 0" ` +
+        `begin="${round(at + 0.52)}s" dur="0.32s" ${EASE} fill="freeze"/>` +
+        `${renderHeader(valAfter, false, vx + vw / 2)}</g>`;
     } else {
-      markup += renderHeader(valAfter, false);
+      markup += renderHeader(valAfter, false, afterCx);
     }
 
-    // 3b. Individual byte cells — ONLY bytes that actually change pulse! Unaffected bytes stay rock-solid.
+    // 3b. Individual byte cells — ONLY changed bytes pulse!
     const hexY = gridY + 74;
     for (let k = 0; k < v.size; k++) {
       const addr = v.address + k;
@@ -1246,7 +1441,7 @@ function unifiedScene(c: SceneContext, paneStyle: PaneStyle): string {
       }
     }
 
-    // Byte-order arrow from bits_view.ts (least -> most significant byte) on every multi-byte int
+    // Byte-order arrow from bits_view.ts on every multi-byte int
     if (v.kind === 'int' && v.size > 1) {
       const ay = gridY + cellH + 10;
       const dir = c.littleEndian ? 1 : -1;
@@ -1303,8 +1498,8 @@ function unifiedScene(c: SceneContext, paneStyle: PaneStyle): string {
     }
   }
 
-  // 5. Clean scope box around pointed-at bytes
-  const scopeBox = targetScopeBox(c, meta, sim, xOf, byteW, gridY, cellH, pCol);
+  // 5. Full-height missile-lock scope reticle
+  const scopeReticle = targetScopeReticle(c, meta, sim, xOf, byteW, gridY, cellH, pCol, reticleStyle);
 
   // 6. UB bracket & badge below memory — ONLY on larger-pointer write!
   let belowOverlay = '';
@@ -1318,12 +1513,11 @@ function unifiedScene(c: SceneContext, paneStyle: PaneStyle): string {
       `<path d="M ${round(wLeft + 2)} ${tickTop} V ${brY} H ${round(ownEnd)}" fill="none" stroke="${P.write}" stroke-width="2.2"/>` +
       `<path d="M ${round(ownEnd)} ${brY} H ${round(wRight - 2)} V ${tickTop}" fill="none" stroke="${P.error}" stroke-width="2.8"/>` +
       pill((ownEnd + wRight) / 2, brY + 18, '⚠ UB', 13.5, P.error, P.error, P.bg);
-    belowOverlay += animate && sim.isPunningWrite
-      ? `<g opacity="0">${fade(0, 1, 0.25, at)}${cal}</g>`
-      : cal;
+    belowOverlay +=
+      animate && sim.isPunningWrite ? `<g opacity="0">${fade(0, 1, 0.25, at)}${cal}</g>` : cal;
   }
 
-  // 7. Standardized pane byte strip: ONLY the bytes being written (aligned under the RHS value; zero extra text!)
+  // 7. Folded pane strip (Variant B winner): written bytes + hollow dashed target slots!
   let wb = '';
   let flight = '';
   if (sim.windowActive) {
@@ -1331,7 +1525,6 @@ function unifiedScene(c: SceneContext, paneStyle: PaneStyle): string {
     const tileW = 44;
     const tileH = 30;
     const tileGap = 6;
-    // Align the byte tiles cleanly under the RHS value in `*64 = <val>`
     const rhsStart = step.pane.indexOf('= ') + 2;
     const tilesX = g.tx + Math.max(0, rhsStart) * g.paneChar;
     const bytes = sim.writtenBytes;
@@ -1367,8 +1560,7 @@ function unifiedScene(c: SceneContext, paneStyle: PaneStyle): string {
       }
     }
 
-    // Variant B: when writing fewer bytes than targetVar.size, show hollow dashed slots for untouched target bytes
-    if (paneStyle === 'B' && meta.direction === 'smaller') {
+    if (meta.direction === 'smaller') {
       for (let k = bytes.length; k < targetVar.size; k++) {
         const tx = tilesX + k * (tileW + tileGap);
         wb += `<rect x="${round(tx)}" y="${stripY}" width="${tileW}" height="${tileH}" rx="5" fill="none" stroke="${P.grey}" stroke-opacity="0.75" stroke-dasharray="4 3" stroke-width="1.6"/>`;
@@ -1382,7 +1574,7 @@ function unifiedScene(c: SceneContext, paneStyle: PaneStyle): string {
     tether(c, oldLine) +
     arcMarkup +
     mem +
-    scopeBox +
+    scopeReticle +
     belowOverlay +
     pane(c, animate && copies(c.m.steps, c.index)) +
     wb +
@@ -1392,7 +1584,7 @@ function unifiedScene(c: SceneContext, paneStyle: PaneStyle): string {
   );
 }
 
-function makeView(paneStyle: PaneStyle): TraceView {
+function makeView(reticleStyle: ReticleStyle): TraceView {
   return {
     geometry: m => {
       const meta = META.get(m.trace)!;
@@ -1408,17 +1600,17 @@ function makeView(paneStyle: PaneStyle): TraceView {
     stackBelow: 900,
     maxScale: 0.72,
     byteOrder: true,
-    scene: c => unifiedScene(c, paneStyle),
+    scene: c => unifiedScene(c, reticleStyle),
     stepSeconds: punningStepSeconds,
   };
 }
 
 // ============================================================================================
-// PROTOTYPE SHELL + FLOATING VARIANT SWITCHER (?variant=A|B)
+// PROTOTYPE SHELL + FLOATING VARIANT SWITCHER (?variant=A|B|C)
 // ============================================================================================
 
 interface VariantDef {
-  key: PaneStyle;
+  key: ReticleStyle;
   name: string;
   summary: string;
   bullets: string[];
@@ -1428,43 +1620,54 @@ interface VariantDef {
 const VARIANTS: VariantDef[] = [
   {
     key: 'A',
-    name: 'A · Exact bytes written (symmetrical)',
+    name: 'A · HUD corner reticle (zoom-snap lock)',
     summary:
-      'In every scenario, the pane shows only the exact bytes being written (4 tiles for int*, 1 tile for uint8_t*), aligned right under the written value. No labels, no "(LE)", no repeated numbers.',
+      'Full-height open L-corner brackets with inward midpoint crosshair ticks and a faint dashed perimeter. On b = &a, the reticle zooms in and snaps tight (1.28 -> 0.96 -> 1.0) as short values nudge clear.',
     bullets: [
-      'Larger pointer: 4 byte tiles (1 gold, 3 red on write). Smaller pointer: 1 gold byte tile.',
-      'Hit Play on scenarios 3–4 to see only byte 64 and the top value pulse while bytes 65..67 stay still.',
+      'Open edges keep cell walls clean underneath while reading unmistakably as a target lock.',
+      'Hit Play (or step to line 3 / line 2) to watch the missile lock-on animation.',
     ],
     view: makeView('A'),
   },
   {
     key: 'B',
-    name: 'B · Written bytes + empty target slots',
+    name: 'B · Fighter-jet reticle (45° spin lock)',
     summary:
-      'Same bytes-being-written view, except smaller pointers also show 3 hollow dashed slots beside the 1 written byte so the pane itself mirrors the 1-of-4 coverage without duplicating a’s existing bytes.',
+      'Chamfered full-height targeting frame with outward crosshair sight ticks. On b = &a, the reticle rotates 45° from a diamond into horizontal lock while shrinking onto the bytes; on *b it double-blinks.',
     bullets: [
-      'Larger pointer: 1 gold + 3 red overflow tiles. Smaller pointer: 1 gold + 3 dashed empty slots.',
-      'No labels, no "(LE)", no repeated values.',
+      'Classic fighter-jet target acquisition spin when the pointer takes &a.',
+      'Double-blink confirmation pulse on dereference.',
     ],
     view: makeView('B'),
+  },
+  {
+    key: 'C',
+    name: 'C · Opposing [ ] byte clamps (clamp-shut lock)',
+    summary:
+      'Bold opposing [ and ] clamps framing the exact left and right byte boundaries with midpoint teeth and light connecting rails. On b = &a, the two clamps slide inward from outside and snap shut.',
+    bullets: [
+      'Emphasizes exact byte start/end width cleanly without cluttering the middle.',
+      'Hit Play to watch the clamps slide in and lock around 64..67 or byte 64.',
+    ],
+    view: makeView('C'),
   },
 ];
 
 let players: Player[] = [];
 
-function currentVariantKey(): PaneStyle {
+function currentVariantKey(): ReticleStyle {
   const param = new URLSearchParams(window.location.search).get('variant')?.toUpperCase();
-  return param === 'B' ? 'B' : 'A';
+  return param === 'B' || param === 'C' ? param : 'A';
 }
 
-function setVariantKey(key: PaneStyle): void {
+function setVariantKey(key: ReticleStyle): void {
   const url = new URL(window.location.href);
   url.searchParams.set('variant', key);
   window.history.replaceState(null, '', url.toString());
   mountVariant(key);
 }
 
-function mountVariant(key: PaneStyle): void {
+function mountVariant(key: ReticleStyle): void {
   for (const p of players) p.disconnect();
   players = [];
 
