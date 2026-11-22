@@ -121,6 +121,16 @@ bytes, and widening a signed value carries its sign bit into the new bytes while
 unsigned one fills zeros. Only integer variables are taken; floats, pointers, structs, arrays and
 references are rejected.
 
+`--punning` (the tag's `punning` attribute) is for examples about reading or writing through a
+pointer to another integer type (`reinterpret_cast<T*>`, C-style pointer casts, or `void*` with
+`static_cast<T*>`). Memory lays out typed integer and single-level pointer variables in ascending
+natural-aligned order on a flush byte strip with hatched `??` alignment padding and a live
+Little-endian / Big-endian switch. A HUD reticle frames the pointer's dereference window; larger
+out-of-bounds accesses trigger a `⚠ UB` caliper and mark overwritten padding or neighbor variables
+as corrupted, while reading indeterminate padding bytes produces poisoned hex values such as
+`0x??????2A` (LE) or `0x2A??????` (BE). Cannot be combined with `--bits`; structs, arrays, floats
+and references are rejected.
+
 A brace list of plain values (`A a { 1, 2 };`) is stored as spelled, with no step that only
 respaces it, and so is a typed one (`A{ 1, 2 }`); a designated list evaluates to its values.
 A struct value with a type of its own keeps it in the pane: a typed literal, and a struct that

@@ -5,6 +5,7 @@
 // snapshots by replaying the traced statements in a constant expression.
 
 import { arrayType, codeName, elementLabel, operatorName, resolveArrayAliases } from './arrays.ts';
+import { type ByteValue, encodeBytes, formatByteSlice } from './bytes.ts';
 import { type AstNode, type CompilerFrontend, IllFormed, NeedsFlag, Unsupported } from './errors.ts';
 import { ClangNumbers, drawnInteger, numberOperand, numberSpelling, verifyReplay, type ReplayStep } from './constants.ts';
 import { COMPOUND_OPERATORS, openCompound } from './compound.ts';
@@ -26,6 +27,7 @@ import {
   type ExecutionTrace,
   FORMAT,
   FormatError,
+  type PunningAccess,
   type Span,
   type StoredCellValue,
   type TypedPart,
@@ -87,6 +89,118 @@ export class Pointer {
   }
 }
 
+/** An integer value read from memory containing at least one indeterminate (`?`) byte. */
+export class PoisonedValue {
+  readonly bytes: readonly ByteValue[];
+  readonly text: string;
+
+  constructor(bytes: readonly ByteValue[], text: string) {
+    this.bytes = Object.freeze([...bytes]);
+    this.text = text;
+    Object.freeze(this);
+  }
+}
+
+interface PunningVarSpec {
+  name: string;
+  address: number;
+  size: number;
+  pointer: boolean;
+  signed: boolean;
+}
+
+/** Little-endian byte-level memory used while tracing `punning` snippets. */
+class PunningMemory {
+  readonly addresses: Record<string, number> = {};
+  private readonly specs = new Map<string, PunningVarSpec>();
+  private readonly mem = new Map<number, ByteValue>();
+  private readonly live = new Set<string>();
+
+  constructor(specs: readonly PunningVarSpec[]) {
+    for (const spec of specs) {
+      this.specs.set(spec.name, spec);
+      this.addresses[spec.name] = spec.address;
+    }
+  }
+
+  private byteAt(addr: number): ByteValue {
+    return this.mem.has(addr) ? this.mem.get(addr)! : '?';
+  }
+
+  writeVar(name: string, value: Value): void {
+    const spec = this.specs.get(name);
+    if (!spec) return;
+    this.live.add(name);
+    if (value === null) {
+      for (let k = 0; k < spec.size; k++) this.mem.set(spec.address + k, '?');
+      return;
+    }
+    if (value instanceof PoisonedValue) {
+      for (let k = 0; k < spec.size; k++) {
+        this.mem.set(spec.address + k, value.bytes[k] ?? '?');
+      }
+      return;
+    }
+    const raw =
+      value instanceof Pointer
+        ? (value.target ? this.addresses[value.target] : 0)
+        : typeof value === 'number'
+          ? value
+          : null;
+    if (raw === null) return;
+    const encoded = encodeBytes(raw, spec.size, true);
+    for (let k = 0; k < spec.size; k++) {
+      this.mem.set(spec.address + k, encoded[k]);
+    }
+  }
+
+  readPun(targetName: string, pun: PunningAccess, signed: boolean): Value {
+    const target = this.specs.get(targetName);
+    if (!target) throw new Unsupported(`unknown target ${targetName}`);
+    const slice: ByteValue[] = [];
+    for (let k = 0; k < pun.size; k++) {
+      slice.push(this.byteAt(target.address + k));
+    }
+    const decoded = formatByteSlice(slice, signed, true)!;
+    if (decoded.poisoned) return new PoisonedValue(slice, decoded.text);
+    if (decoded.numeric === null) {
+      throw new Unsupported('integer value exceeds the player safe range');
+    }
+    return drawnInteger(BigInt(decoded.numeric));
+  }
+
+  writePun(targetName: string, pun: PunningAccess, value: number, state: State): State {
+    const target = this.specs.get(targetName);
+    if (!target) throw new Unsupported(`unknown target ${targetName}`);
+    const encoded = encodeBytes(value, pun.size, true);
+    const start = target.address;
+    const end = start + pun.size;
+    for (let k = 0; k < pun.size; k++) {
+      this.mem.set(start + k, encoded[k]);
+    }
+    const next: State = { ...state };
+    for (const spec of this.specs.values()) {
+      if (!this.live.has(spec.name)) continue;
+      if (spec.address >= end || spec.address + spec.size <= start) continue;
+      if (spec.pointer) {
+        throw new Unsupported(`overwriting pointer ${spec.name} through a punned write is outside this category`);
+      }
+      const slice: ByteValue[] = [];
+      for (let k = 0; k < spec.size; k++) slice.push(this.byteAt(spec.address + k));
+      const decoded = formatByteSlice(slice, spec.signed, true);
+      if (!decoded) continue;
+      if (decoded.poisoned) {
+        next[spec.name] = new PoisonedValue(slice, decoded.text);
+      } else if (decoded.numeric === null) {
+        throw new Unsupported('integer value exceeds the player safe range');
+      } else {
+        next[spec.name] = drawnInteger(BigInt(decoded.numeric));
+      }
+    }
+    return next;
+  }
+}
+
 /** An operation before the pane says where it happens. */
 type Unplaced<T> = T extends unknown ? Omit<T, 'span'> : never;
 
@@ -95,8 +209,8 @@ export interface StructValue {
   [field: string]: Value;
 }
 
-/** What a variable or field holds: an integer, a pointer, a struct, or null until initialized. */
-export type Value = number | Pointer | StructValue | null;
+/** What a variable or field holds: an integer, a pointer, a struct, poisoned bytes, or null until initialized. */
+export type Value = number | Pointer | StructValue | PoisonedValue | null;
 
 /** Every variable's value by name, between two statements. */
 export type State = Record<string, Value>;
@@ -114,7 +228,13 @@ function fieldOf(value: Value, field: string): Value {
 }
 
 function isPlainObject(value: unknown): value is StructValue {
-  return typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Pointer);
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    !(value instanceof Pointer) &&
+    !(value instanceof PoisonedValue)
+  );
 }
 
 /** The integer type a spelling names, unless the snippet has a struct of that name. */
@@ -253,9 +373,11 @@ export type Reduction = { readonly span: Span; readonly type: string; readonly s
       readonly record: string | null;
       readonly compound?: string;
       readonly grouped?: boolean;
+      readonly pun?: PunningAccess;
+      readonly punValue?: Value;
     }
   | { readonly kind: 'addr'; readonly name: string }
-  | { readonly kind: 'deref'; readonly name: string; readonly value: Pointer | null }
+  | { readonly kind: 'deref'; readonly name: string; readonly value: Pointer | null; readonly pun?: PunningAccess }
   | { readonly kind: 'alias'; readonly name: string; readonly target: string }
   | { readonly kind: 'select'; readonly name: string }
   | { readonly kind: 'eval'; readonly value: Value; readonly record: string | null }
@@ -360,6 +482,8 @@ class Reductions {
   temporary: boolean;
   private readonly numbers: ClangNumbers;
   private readonly file: SourceFile;
+  private readonly punningMem: PunningMemory | null;
+  private pendingPun: { access: PunningAccess; signed: boolean } | null = null;
 
   constructor(
     state: State,
@@ -368,17 +492,25 @@ class Reductions {
     references: Record<string, string>,
     storageTypes: Record<string, string>,
     numbers: ClangNumbers,
-    file: SourceFile
+    file: SourceFile,
+    punningMem: PunningMemory | null = null
   ) {
     this.state = state;
     this.numbers = numbers;
     this.file = file;
+    this.punningMem = punningMem;
     this.locate = locate;
     this.reductions = [];
     this.records = records;
     this.references = references;
     this.storageTypes = storageTypes;
     this.temporary = false;
+  }
+
+  consumePun(): PunningAccess | null {
+    const pun = this.pendingPun?.access ?? null;
+    this.pendingPun = null;
+    return pun;
   }
 
   /** A type spelling with its pointee and integer typedefs resolved: `uint8_t *` is `unsigned char *`. */
@@ -389,14 +521,34 @@ class Reductions {
     return { base: integer ?? name, stars: stars.replace(/\s/g, '').length };
   }
 
-  /** Rejects reading `target` through a pointer to another type, such as a cast `void*`. */
-  private checkPointeeType(pointer: AstNode, target: string): void {
+  /**
+   * Checks that `pointer`'s pointee matches `target`'s storage type.
+   * In `punning` mode, returns pointee metadata when dereferencing an integer pointer of another
+   * integer type; otherwise rejects mismatched pointees.
+   */
+  private checkPointeeType(
+    pointer: AstNode,
+    target: string,
+    via?: string
+  ): { access: PunningAccess; signed: boolean } | null {
     if (!Object.hasOwn(this.storageTypes, target)) {
       throw new Unsupported(`the storage type of ${target} is unknown`);
     }
     const through = this.storageType(canonicalType(pointer));
     const held = this.storageType(this.storageTypes[target]);
     if (through.base !== held.base || through.stars !== held.stars + 1) {
+      if (this.punningMem && via && through.stars === 1 && held.stars === 0) {
+        const pointeeInt = integerNamed(through.base, this.records);
+        const targetInt = integerNamed(held.base, this.records);
+        if (pointeeInt && targetInt) {
+          const displayedPtr = displayedType(pointer);
+          const pointeeDisplay = displayedPtr.replace(/\s*\*$/, '').trim() || through.base;
+          return {
+            access: { type: pointeeDisplay, size: pointeeInt.size, via },
+            signed: pointeeInt.signed,
+          };
+        }
+      }
       const spell = ({ base, stars }: { base: string; stars: number }) =>
         stars ? `${base} ${'*'.repeat(stars)}` : base;
       throw new Unsupported(
@@ -404,6 +556,7 @@ class Reductions {
           `when ${target} holds ${spell(held)}`
       );
     }
+    return null;
   }
 
   private reduce(node: AstNode, details: ReductionDetails): void {
@@ -430,6 +583,9 @@ class Reductions {
     const [left, right] = node.inner!;
     const operator = node.opcode!.slice(0, -1);
     const held = this.load(target);
+    if (held instanceof PoisonedValue) {
+      throw new Unsupported('arithmetic on an indeterminate byte value is undefined');
+    }
     if (typeof held !== 'number') {
       throw new Unsupported('pointer arithmetic and comparison are not supported');
     }
@@ -612,8 +768,14 @@ class Reductions {
       if (pointer.target === null) {
         throw new Unsupported(`dereferencing the null pointer ${via} is undefined`);
       }
-      this.checkPointeeType(children[0], pointer.target);
-      this.reduce(outer ?? node, { kind: 'deref', name: via, value: null });
+      const pun = this.checkPointeeType(children[0], pointer.target, via);
+      this.pendingPun = pun;
+      this.reduce(outer ?? node, {
+        kind: 'deref',
+        name: via,
+        value: null,
+        ...(pun ? { pun: pun.access } : {}),
+      });
       return pointer.target;
     }
     throw new Unsupported(`unsupported assignable expression: ${kind}`);
@@ -634,6 +796,13 @@ class Reductions {
       if (cast === 'LValueToRValue') {
         pointerDepth(node, this.records);
         const name = this.lvalue(children[0]);
+        const pun = this.pendingPun;
+        this.pendingPun = null;
+        if (pun && this.punningMem) {
+          const value = this.punningMem.readPun(name, pun.access, pun.signed);
+          this.reduce(node, { kind: 'read', name, record: null, pun: pun.access, punValue: value });
+          return [value, name];
+        }
         const value = this.load(name);
         this.reduce(node, { kind: 'read', name, record: null });
         return [value, name];
@@ -679,6 +848,29 @@ class Reductions {
         operand = operand.inner![0];
       }
       return [this.convert(node, operand), null];
+    }
+    if (
+      this.punningMem &&
+      (kind === 'CXXReinterpretCastExpr' || kind === 'CStyleCastExpr') &&
+      children.length === 1 &&
+      (node.castKind === 'BitCast' || node.castKind === 'NoOp')
+    ) {
+      const depth = pointerDepth(node, this.records);
+      let operand = children[0];
+      while (
+        operand?.kind === 'ImplicitCastExpr' &&
+        operand.castKind === 'NoOp' &&
+        (operand.inner ?? []).length === 1
+      ) {
+        operand = operand.inner![0];
+      }
+      const operandDepth = pointerDepth(operand, this.records);
+      if (depth === 1 && operandDepth === 1) {
+        const [ptr] = this.rvalue(operand);
+        const pointer = asPointer(ptr);
+        this.conversion(node, operand, pointer);
+        return [pointer, null];
+      }
     }
     if (kind === 'UnaryExprOrTypeTraitExpr' && node.name === 'sizeof') {
       const target = node.argType ? { type: node.argType } : children[0];
@@ -840,6 +1032,9 @@ class Reductions {
 
   private numericOperand(node: AstNode): number {
     const [value] = this.rvalue(node);
+    if (value instanceof PoisonedValue) {
+      throw new Unsupported('arithmetic or conversion on an indeterminate byte value is undefined');
+    }
     if (typeof value !== 'number') {
       throw new Unsupported('pointer arithmetic and comparison are not supported');
     }
@@ -965,6 +1160,7 @@ export class Statement {
   signs: Map<number, string>;
   definition: [string, string] | null;
   typeOnly: boolean;
+  pun: PunningAccess | null;
   global = false;
   /** Whether `using namespace std;` precedes the statement in main. */
   opensStd = false;
@@ -995,6 +1191,7 @@ export class Statement {
     signs = new Map(),
     definition = null,
     typeOnly = false,
+    pun = null,
   }: {
     source: string;
     span: Span | null;
@@ -1021,6 +1218,7 @@ export class Statement {
     signs?: Map<number, string>;
     definition?: [string, string] | null;
     typeOnly?: boolean;
+    pun?: PunningAccess | null;
   }) {
     this.source = source;
     this.span = span;
@@ -1047,6 +1245,7 @@ export class Statement {
     this.signs = signs;
     this.definition = definition;
     this.typeOnly = typeOnly;
+    this.pun = pun;
   }
 }
 
@@ -1189,7 +1388,8 @@ function analyzeStatement(
   records: Record<string, RecordInfo>,
   references: Record<string, string>,
   storageTypes: Record<string, string>,
-  numbers: ClangNumbers
+  numbers: ClangNumbers,
+  punningMem: PunningMemory | null = null
 ): Statement {
   let cur = node;
   while (cur?.kind === 'ExprWithCleanups' && (cur.inner ?? []).length === 1) {
@@ -1332,7 +1532,7 @@ function analyzeStatement(
       records,
       references,
       storageTypes,
-    }, numbers);
+    }, numbers, punningMem);
   } else if (cur.kind === 'CXXOperatorCallExpr') {
     const operands = coutOperands(cur);
     if (operands.length === 0) {
@@ -1423,7 +1623,7 @@ function analyzeStatement(
     });
   }
 
-  const evaluator = new Reductions(state, locate, records, references, storageTypes, numbers, file);
+  const evaluator = new Reductions(state, locate, records, references, storageTypes, numbers, file, punningMem);
   const names = new Set([...Object.keys(state), ...Object.keys(references)]);
   const typedFor = (conversions: Span[] = []): Typed[] =>
     [
@@ -1455,8 +1655,10 @@ function analyzeStatement(
   let target = declared;
   let destination: Span | null = null;
   let designation: Reduction[] = [];
+  let writePun: PunningAccess | null = null;
   if (left !== null) {
     target = evaluator.lvalue(left);
+    writePun = evaluator.consumePun();
     destination = locate(left);
     evaluator.respell(left, target, pane.slice(...destination));
     let renamed = 0;
@@ -1478,6 +1680,8 @@ function analyzeStatement(
   if (declared) {
     destination = [toPane(nameOffset!), toPane(nameOffset!) + declared.length];
     slot = [0, destination[1]];
+  } else if (left === null && value instanceof PoisonedValue) {
+    throw new Unsupported('printing an indeterminate byte value is undefined');
   } else if (left === null && isPlainObject(value)) {
     throw new Unsupported('only integer and pointer output is supported');
   } else if (left === null && integerType(root)?.size === 1) {
@@ -1505,6 +1709,7 @@ function analyzeStatement(
     size,
     shape: shapeOf(declared ? variable : root, records),
     signs: file.signs(start, end, toPane),
+    pun: writePun,
   });
 }
 
@@ -1523,7 +1728,8 @@ function analyzeCompound(
     references: Record<string, string>;
     storageTypes: Record<string, string>;
   },
-  numbers: ClangNumbers
+  numbers: ClangNumbers,
+  punningMem: PunningMemory | null = null
 ): Statement {
   const { state, records, references, storageTypes } = context;
   const spelling = node.opcode!;
@@ -1574,7 +1780,7 @@ function analyzeCompound(
     ...(grouped ? [[pane.length - 1, pane.length, ''] as [number, number, string]] : []),
   ];
 
-  const evaluator = new Reductions(state, locate, records, references, storageTypes, numbers, file);
+  const evaluator = new Reductions(state, locate, records, references, storageTypes, numbers, file, punningMem);
   const names = new Set([...Object.keys(state), ...Object.keys(references)]);
   const typed = [
     ...typedParts(left, locate, names, records),
@@ -1582,6 +1788,9 @@ function analyzeCompound(
   ].sort(compareTyped);
   // The written order: the target, its old value, then the right side.
   const target = evaluator.lvalue(left);
+  if (evaluator.consumePun()) {
+    throw new Unsupported('compound assignment through a punned pointer is not supported');
+  }
   evaluator.respell(left, target, copied);
   const group: Span | null = grouped ? [opened.right - 1, pane.length] : null;
   const value = evaluator.compound(node, target, copy, result, group);
@@ -1611,7 +1820,20 @@ function storedAt(value: Value, path: string[], newValue: Value): Value {
   return { ...struct, [path[0]]: storedAt(fieldOf(struct, path[0]), path.slice(1), newValue) };
 }
 
-export function storeResult(statement: Statement, state: State): State {
+export function storeResult(
+  statement: Statement,
+  state: State,
+  punningMem: PunningMemory | null = null
+): State {
+  if (punningMem && statement.target !== null) {
+    if (statement.pun) {
+      if (typeof statement.value !== 'number') {
+        throw new Unsupported('storing a non-numeric value through a punned pointer is not supported');
+      }
+      return punningMem.writePun(statement.target, statement.pun, statement.value, state);
+    }
+    punningMem.writeVar(statement.target, statement.value);
+  }
   const after = { ...state };
   if (statement.target !== null) {
     const [owner, ...path] = statement.target.split('.');
@@ -1723,7 +1945,8 @@ export function analyzeWithFrontend(
   source: string,
   frontend: CompilerFrontend
 ): [Statement[], Record<string, RecordInfo>, Record<string, string>] {
-  return analyzeSource(new SourceFile(source, frontend), frontend);
+  const [statements, records, aliases] = analyzeSource(new SourceFile(source, frontend), frontend);
+  return [statements, records, aliases];
 }
 
 /** Whether a using-directive's tokens name the standard library's namespace itself. */
@@ -1731,19 +1954,56 @@ function opensStdNamespace(directive: string): boolean {
   return directive === 'usingnamespacestd;' || directive === 'usingnamespace::std;';
 }
 
+function buildPunningMemory(inner: AstNode[], records: Record<string, RecordInfo>): PunningMemory {
+  let cursor = FIRST_ADDRESS;
+  const specs: PunningVarSpec[] = [];
+  for (const node of inner) {
+    if (node.kind !== 'DeclStmt') continue;
+    const children = node.inner ?? [];
+    if (children.length === 1 && children[0]?.kind === 'CXXRecordDecl') {
+      throw new Unsupported('punning traces support integer and pointer variables only');
+    }
+    if (children.length !== 1 || children[0]?.kind !== 'VarDecl') continue;
+    const v = children[0];
+    const spelling = typeSpelling(v);
+    if (spelling.endsWith('&')) {
+      throw new Unsupported('punning traces support integer and pointer variables only');
+    }
+    const depth = pointerDepth(v, records);
+    const intInfo = depth === 0 ? integerType(v, records) : null;
+    if ((depth === 0 && !intInfo) || depth > 1) {
+      throw new Unsupported('punning traces support integer and single-level pointer variables only');
+    }
+    const size = depth > 0 ? POINTER_SIZE : intInfo!.size;
+    cursor = Math.ceil(cursor / size) * size;
+    specs.push({
+      name: v.name ?? '',
+      address: cursor,
+      size,
+      pointer: depth > 0,
+      signed: intInfo ? intInfo.signed : false,
+    });
+    cursor += size;
+  }
+  return new PunningMemory(specs);
+}
+
 function analyzeSource(
   file: SourceFile,
-  frontend: CompilerFrontend
-): [Statement[], Record<string, RecordInfo>, Record<string, string>] {
+  frontend: CompilerFrontend,
+  punning = false
+): [Statement[], Record<string, RecordInfo>, Record<string, string>, PunningMemory | null, State[]] {
   const [ast, globalCount] = file.ast(frontend);
   resolveArrayAliases(ast);
   const records = layoutsFromFrontend(ast, file.program, frontend);
   const statements: Statement[] = [];
+  const states: State[] = [];
   let state: State = {};
   const references: Record<string, string> = {};
   const storageTypes: Record<string, string> = {};
   const numbers = new ClangNumbers(frontend);
   const inner = ast.inner ?? [];
+  const punningMem = punning ? buildPunningMemory(inner, records) : null;
   let opensStd = false;
   for (let i = 0; i < inner.length; i++) {
     const node = inner[i];
@@ -1764,7 +2024,7 @@ function analyzeSource(
       opensStd = true;
       continue;
     }
-    const statement = analyzeStatement(node, file, state, records, references, storageTypes, numbers);
+    const statement = analyzeStatement(node, file, state, records, references, storageTypes, numbers, punningMem);
     statement.global = i < globalCount;
     statement.opensStd = opensStd;
     opensStd = false;
@@ -1777,7 +2037,8 @@ function analyzeSource(
     if (statements.length > MAX_STATEMENTS) {
       throw new Unsupported('too many statements');
     }
-    state = hooks.after(statement, state);
+    state = punningMem ? storeResult(statement, state, punningMem) : hooks.after(statement, state);
+    states.push(state);
     if (statement.bound && statement.declared) {
       references[statement.declared] = statement.bound;
     }
@@ -1788,7 +2049,7 @@ function analyzeSource(
   if (Object.keys(state).length === 0) {
     throw new Unsupported('a variable timeline requires at least one variable');
   }
-  return [statements, records, integerAliases(ast)];
+  return [statements, records, integerAliases(ast), punningMem, states];
 }
 
 // Memory -----------------------------------------------------------------------------------
@@ -1999,6 +2260,7 @@ class Renderer {
    * and so does the record itself when `named`, where nothing else in the pane names its type.
    */
   show(value: Value, shape: Shape, named = false): string {
+    if (value instanceof PoisonedValue) return value.text;
     if (isPlainObject(value)) {
       const record = shape !== null && typeof shape === 'object' ? shape : null;
       const fields = record?.fields ?? {};
@@ -2006,12 +2268,17 @@ class Renderer {
         .map(([field, item]) => this.show(item, fields[field] ?? null, true))
         .join(', ')}}`;
     }
-    return displayNumber(this.stored(value), typeof shape === 'number' ? shape : null);
+    const val = this.stored(value);
+    if (typeof val !== 'number') return String(val);
+    return displayNumber(val, typeof shape === 'number' ? shape : null);
   }
 
-  stored(value: Value): number {
+  stored(value: Value): StoredCellValue {
     if (value instanceof Pointer) {
       return value.target ? this.addresses[value.target] : 0;
+    }
+    if (value instanceof PoisonedValue) {
+      return value.text;
     }
     if (typeof value !== 'number') throw new Error('only an integer or a pointer is stored in a cell');
     return value;
@@ -2092,8 +2359,13 @@ class Renderer {
         continue;
       }
       if (reduction.kind === 'read') {
-        text = this.show(load(before, reduction.name), reduction.shape, reduction.record !== null);
-        op = { kind: 'read', name: reduction.name, value: text };
+        if (reduction.pun) {
+          text = this.show(reduction.punValue!, reduction.shape);
+          op = { kind: 'read', name: reduction.name, value: text, pun: reduction.pun };
+        } else {
+          text = this.show(load(before, reduction.name), reduction.shape, reduction.record !== null);
+          op = { kind: 'read', name: reduction.name, value: text };
+        }
       } else if (reduction.kind === 'addr') {
         text = String(this.addresses[reduction.name]);
         op = { kind: 'addr', name: reduction.name, value: text };
@@ -2106,6 +2378,18 @@ class Renderer {
       } else if (reduction.kind === 'deref') {
         // Only a pointer that is not null is ever dereferenced.
         const target = (reduction.value ?? asPointer(load(before, reduction.name))).target!;
+        if (reduction.pun) {
+          const span = pane.locate(reduction.span[0], reduction.span[1]);
+          pane.retype(reduction.span[0], reduction.span[1], reduction.type);
+          this.add(line, pane, expr, before, {
+            kind: 'deref',
+            target,
+            via: reduction.name,
+            pun: reduction.pun,
+            span,
+          });
+          continue;
+        }
         text = codeName(target);
         op = { kind: 'deref', target, via: reduction.name };
       } else if (
@@ -2204,6 +2488,7 @@ class Renderer {
       value: text,
       span,
       destination: pane.locate(statement.destination![0], statement.destination![1]),
+      ...(statement.pun ? { pun: statement.pun } : {}),
     };
     const redirected =
       old instanceof Pointer && Boolean(old.target) && !valuesEqual(old, load(after, name));
@@ -2262,15 +2547,20 @@ function tracesWithTypes(source: string, options: TraceOptions, error: IllFormed
  * Both CLI and browser use the same compiler-backed evaluation and illustrative memory layout.
  */
 export function traceWithFrontend(source: string, options: TraceOptions): ExecutionTrace {
-  const { bits = false, frontend } = options;
+  const { bits = false, punning = false, frontend } = options;
+  if (bits && punning) {
+    throw new Unsupported('bits and punning cannot be combined');
+  }
   const types = bits || (options.types ?? false);
   let file = new SourceFile(source, frontend);
   let mismatch: Mismatch | null = null;
   let statements: Statement[];
   let records: Record<string, RecordInfo>;
   let aliases: Record<string, string>;
+  let punningMem: PunningMemory | null;
+  let analyzedStates: State[];
   try {
-    [statements, records, aliases] = analyzeSource(file, frontend);
+    [statements, records, aliases, punningMem, analyzedStates] = analyzeSource(file, frontend, punning);
   } catch (error) {
     if (!(error instanceof IllFormed)) throw error;
     if (!types) {
@@ -2278,15 +2568,20 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
     }
     // A last statement whose types do not fit is shown, not run: the rest is traced.
     [file, mismatch] = cutMismatch(file, error, frontend);
-    [statements, records, aliases] = analyzeSource(file, frontend);
+    [statements, records, aliases, punningMem, analyzedStates] = analyzeSource(file, frontend, punning);
   }
-  const predicted: State[] = [];
-  let state: State = {};
-  for (const statement of statements) {
-    state = hooks.after(statement, state);
-    predicted.push(state);
+  let predicted: State[];
+  if (punning) {
+    predicted = analyzedStates;
+  } else {
+    predicted = [];
+    let state: State = {};
+    for (const statement of statements) {
+      state = hooks.after(statement, state);
+      predicted.push(state);
+    }
+    verifyReplay(frontend, file.replayPreamble, replaySteps(statements, predicted));
   }
-  verifyReplay(frontend, file.replayPreamble, replaySteps(statements, predicted));
   const declarations = statements.filter(s => s.declared);
   const variables: TraceVariable[] = [];
   const references: Record<string, TraceReference> = {};
@@ -2302,7 +2597,7 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
     const record = declaration.record ? records[declaration.record] : undefined;
     const size = record ? record.size : declaration.size!;
     const alignment = record ? record.alignment : size;
-    top = floorDiv(top - size, alignment) * alignment;
+    const addr = punningMem ? punningMem.addresses[name] : (top = floorDiv(top - size, alignment) * alignment);
     if (record) {
       const fieldsOf = (rec: RecordInfo, prefix: string): TraceField[] => {
         const flds: TraceField[] = [];
@@ -2329,16 +2624,16 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
         }
         return flds;
       };
-      variables.push(struct(name, record.name, top, size, fieldsOf(record, name), color));
+      variables.push(struct(name, record.name, addr, size, fieldsOf(record, name), color));
     } else {
       variables.push(
         scalar(
           name,
-          top,
+          addr,
           size,
           declaration.pointer ? 'ptr' : 'int',
           color,
-          types ? declaration.type : null,
+          types || punning ? declaration.type : null,
           typeof declaration.shape === 'number'
         )
       );
@@ -2351,14 +2646,19 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
   ) {
     throw new Unsupported('bits draw integer variables only');
   }
-  const alignment = Math.max(
-    ...Object.values(records).map(r => r.alignment),
-    ...declarations.filter(d => !d.record && !d.bound).map(d => d.size!),
-    4
-  );
-  const addresses = normalizeAddresses(storageAddresses(variables), { ABI: alignment });
-  for (const variable of variables) {
-    variable.address = addresses[variable.name];
+  let addresses: Record<string, number>;
+  if (punningMem) {
+    addresses = storageAddresses(variables);
+  } else {
+    const alignment = Math.max(
+      ...Object.values(records).map(r => r.alignment),
+      ...declarations.filter(d => !d.record && !d.bound).map(d => d.size!),
+      4
+    );
+    addresses = normalizeAddresses(storageAddresses(variables), { ABI: alignment });
+    for (const variable of variables) {
+      variable.address = addresses[variable.name];
+    }
   }
   variables.sort((a, b) => a.address - b.address);
 
@@ -2399,19 +2699,21 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
   if (hasRefs) {
     result.references = Object.values(references);
   }
-  if (bits) {
-    result.bits = true;
+  if (bits || punning) {
+    if (bits) result.bits = true;
+    if (punning) result.punning = true;
     // Only the aliases the trace spells, so it stays independent of the preamble.
     const spelled = new Set(
       [
-        ...variables.map(v => (v.kind === 'int' ? v.type : undefined)),
+        ...variables.map(v => (v.kind !== 'struct' ? v.type : undefined)),
         ...renderer.steps.flatMap(step => [
           ...(step.types ?? []).map(part => part.type),
           ...(step.op?.kind === 'convert' ? [step.op.from, step.op.to] : []),
+          ...(step.op && 'pun' in step.op && step.op.pun ? [step.op.pun.type] : []),
         ]),
       ]
         .filter((type): type is string => Boolean(type))
-        .map(bareSpelling)
+        .map(type => bareSpelling(type.replace(/\s*\*+$/, '')))
     );
     const used = Object.entries(aliases).filter(([name]) => spelled.has(name));
     if (used.length > 0) result.integers = Object.fromEntries(used);

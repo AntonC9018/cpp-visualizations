@@ -91,8 +91,12 @@ export interface GeometryOptions {
   cellHeight?: number;
   /** Room under the pane's text, for the view's own drawing. */
   extraPaneHeight?: number;
+  /** Extra room under memory's names and type labels before the pane (e.g. UB bracket). */
+  extraMemBottom?: number;
   /** Lay top-level variables flush on a single byte-accurate row without artificial `GAP`. */
   flush?: boolean;
+  /** Reserve trailing alignment padding width up to this exclusive address (requires `flush`). */
+  minEndAddress?: number;
   /** Keep memory on one row. */
   skipWrap?: boolean;
 }
@@ -240,7 +244,7 @@ function typeRows(
 ): { labels: Array<Omit<TypeLabel, 'top'> & { row: number }>; height: number } {
   const labels: Array<Omit<TypeLabel, 'top'> & { row: number }> = [];
   const edge: number[] = [];
-  for (const item of m.typed ? m.tops : []) {
+  for (const item of m.typed || m.trace.punning ? m.tops : []) {
     if (!item.type) continue;
     const at = box(item.name)!;
     const cx = at.x + at.w / 2;
@@ -394,7 +398,8 @@ function placement(
   m: PreparedModel,
   byte: number,
   rowOf?: Map<string, number>,
-  flush = false
+  flush = false,
+  minEndAddress?: number
 ): { spans: Map<string, [number, number]>; gaps: Array<[number, number, number]>; width: number } {
   const spans = new Map<string, [number, number]>();
   const gaps: Array<[number, number, number]> = [];
@@ -433,6 +438,10 @@ function placement(
     if (address !== null) x += unused(x, item.address - address) + gap;
     x += put(item, x);
     address = item.address + item.size;
+    width = Math.max(width, x);
+  }
+  if (flush && minEndAddress !== undefined && address !== null && minEndAddress > address) {
+    x += unused(x, minEndAddress - address);
     width = Math.max(width, x);
   }
   return { spans, gaps, width };
@@ -498,7 +507,9 @@ export function geometry(
 ): Geometry {
   const cellH = options.cellHeight ?? CELL;
   const extraPaneHeight = options.extraPaneHeight ?? 0;
+  const extraMemBottom = options.extraMemBottom ?? 0;
   const flush = Boolean(options.flush);
+  const minEndAddress = flush ? options.minEndAddress : undefined;
   if (flush && m.groups.length > 0) {
     throw new Error('flush byte layout does not support struct or array groups');
   }
@@ -560,7 +571,9 @@ export function geometry(
           widest,
           ...rows.map(row => {
             const items = row.map(i => m.tops[i]);
-            const bytes = items[items.length - 1].address + items[items.length - 1].size - items[0].address;
+            const lastEnd = items[items.length - 1].address + items[items.length - 1].size;
+            const spanEnd = minEndAddress !== undefined ? Math.max(lastEnd, minEndAddress) : lastEnd;
+            const bytes = spanEnd - items[0].address;
             const nested = m.groups.filter(s => s.parent && rowOf.get(s.top) === rowOf.get(items[0].name));
             return Math.max(1, (budget - gap * (items.length - 1) - 2 * NEST * nested.length) / bytes);
           })
@@ -568,7 +581,7 @@ export function geometry(
       );
     // The pane's text shrinks (down to PANE_MIN) rather than widen the drawing past what
     // memory and the other parts need: a long pane line otherwise shrinks code and memory too.
-    const natural = placement(m, byteFor(MEMORY_WIDTH), rowOf, flush).width;
+    const natural = placement(m, byteFor(MEMORY_WIDTH), rowOf, flush, minEndAddress).width;
     const paneSize = Math.max(
       PANE_MIN,
       Math.min(PANE_MAX, Math.floor((Math.max(360, natural + 48) - 48) / (paneChars * CHAR)))
@@ -587,7 +600,7 @@ export function geometry(
     // Memory takes the width the rest of the column already has, or the viewport leaves beside
     // the code, never less than its budget.
     const byte = byteFor(Math.max(MEMORY_WIDTH, others - 48, besideCode - 48));
-    const placed = placement(m, byte, rowOf, flush);
+    const placed = placement(m, byte, rowOf, flush, minEndAddress);
     const columnW = Math.max(others, placed.width + 48);
     // Fit the source after reserving space for memory and the expression pane.
     const codeBudget = stacked
@@ -686,7 +699,7 @@ export function geometry(
   const labelRise = m.typed ? labelHeight + 6 : 0;
   const named =
     (structs ? cellH + FRAME.bottom + 32 : cellH + 34) + rise * RISE.bottom + tagged.height;
-  const names = named + typeRow.height;
+  const names = named + typeRow.height + extraMemBottom;
   const paneTop = room + names + extraRows * pitch + 56;
   const paneH = 76 + labelRise + extraPaneHeight;
   const outputTop = paneTop + paneH + 60;

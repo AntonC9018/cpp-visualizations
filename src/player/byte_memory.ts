@@ -1,9 +1,9 @@
-// Shared byte-accurate memory strip renderer for flush byte-level views (e.g. `bits_view`).
+// Shared byte-accurate memory strip renderer for flush byte-level views (`bits_view`, `punning_view`).
 //
 // Requires a single-row flush geometry (`flush: true` in `GeometryOptions`): centered per-byte
 // address ruler, hatched `??` alignment padding, variable cells with centered value headers above
-// hex byte cells, per-byte pulse animation, LSB→MSB byte-order arrows, and transient full-height
-// read/write highlights.
+// hex byte cells, per-byte pulse animation, LSB→MSB byte-order arrows, optional corruption/poison
+// hazard styling, and transient full-height read/write highlights.
 import { type ByteValue, hexByte, paddingRuns } from '../core/bytes.ts';
 import { CHAR, LABEL, type Palette } from './constants.ts';
 import type { PlacedLeaf } from './geometry.ts';
@@ -18,18 +18,24 @@ const MAX_DETAIL_GAP = 16;
 
 let patternSeq = 0;
 
-/** SVG `<defs>` pattern for alignment padding hatch, unique per render. */
-export function hatchDefs(P: Palette): { defs: string; padId: string } {
+/** SVG `<defs>` patterns for alignment padding and UB hazard hatches, unique per render. */
+export function hatchDefs(P: Palette): { defs: string; padId: string; ubId: string } {
   const uid = ++patternSeq;
   const padId = `cv-pad-hatch-${uid}`;
+  const ubId = `cv-ub-hatch-${uid}`;
   const defs =
     '<defs>' +
     `<pattern id="${padId}" width="10" height="10" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">` +
     `<rect width="10" height="10" fill="${P.deadFill}"/>` +
     `<line x1="5" y1="0" x2="5" y2="10" stroke="${P.gapStroke}" stroke-width="2.2"/>` +
     '</pattern>' +
+    `<pattern id="${ubId}" width="10" height="10" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">` +
+    `<rect width="10" height="10" fill="${P.panel}"/>` +
+    `<rect width="10" height="10" fill="${P.error}" fill-opacity="0.13"/>` +
+    `<line x1="5" y1="0" x2="5" y2="10" stroke="${P.error}" stroke-opacity="0.34" stroke-width="2.6"/>` +
+    '</pattern>' +
     '</defs>';
-  return { defs, padId };
+  return { defs, padId, ubId };
 }
 
 /** Pulse `inner` about `(cx, cy)` starting at `begin` seconds. */
@@ -40,8 +46,47 @@ export function scaledAt(cx: number, cy: number, inner: string, begin: number): 
   );
 }
 
+/** Text whose `?` runs render in `errorColor` (for poisoned hexadecimal values like `0x??????2A`). */
+export function poisonText(
+  x: number,
+  y: number,
+  str: string,
+  size: number,
+  color: string,
+  errorColor: string,
+  anchor = 'start'
+): string {
+  if (!str.includes('?')) return text(x, y, str, size, color, anchor);
+  const length =
+    str.length > 1
+      ? ` textLength="${round(str.length * size * CHAR)}" lengthAdjust="spacing"`
+      : '';
+  const inner = str
+    .split(/(\?+)/)
+    .filter(Boolean)
+    .map(part => (part[0] === '?' ? `<tspan fill="${errorColor}">${esc(part)}</tspan>` : esc(part)))
+    .join('');
+  return (
+    `<text x="${round(x)}" y="${round(y)}" font-size="${size}" fill="${color}" ` +
+    `text-anchor="${anchor}" xml:space="preserve"${length}>${inner}</text>`
+  );
+}
+
+/** Highlight `?` digits inside poisoned hex literals (`0x[0-9A-F?]+`) within rendered SVG text nodes. */
+export function colorPoisonHexInSvg(markup: string, errorColor: string): string {
+  return markup.replace(
+    /(<text\b[^>]*>)([^<]*0x[0-9A-F?]*\?[0-9A-F?]*[^<]*)(<\/text>)/g,
+    (_, open, body, close) => {
+      const colored = String(body).replace(/0x[0-9A-F?]+/g, hex =>
+        hex.includes('?') ? hex.replace(/\?+/g, q => `<tspan fill="${errorColor}">${q}</tspan>`) : hex
+      );
+      return open + colored + close;
+    }
+  );
+}
+
 /** Transient full-height write highlight over `[x, x + w)` during a write arrival. */
-function transientWriteHighlight(
+export function transientWriteHighlight(
   x: number,
   y: number,
   w: number,
@@ -58,7 +103,7 @@ function transientWriteHighlight(
 }
 
 /** Transient full-height read highlight over `[x, x + w)` while a read travels to the pane. */
-function transientReadHighlight(
+export function transientReadHighlight(
   x: number,
   y: number,
   w: number,
@@ -98,21 +143,62 @@ function byteOrderArrow(
   );
 }
 
+export type ByteHeader = string | { text: string; poisoned?: boolean } | null;
+
+interface NormalizedHeader {
+  text: string;
+  poisoned: boolean;
+}
+
+function normalizeHeader(h: ByteHeader): NormalizedHeader | null {
+  if (h === null) return null;
+  if (typeof h === 'string') return { text: h, poisoned: false };
+  return { text: h.text, poisoned: Boolean(h.poisoned) };
+}
+
 export interface ByteCellState {
   before: ByteValue;
   after: ByteValue;
+  /** Full-height hazard hatch and error ink for bytes overwritten out of bounds. */
+  corrupted?: boolean;
+  /** True when out-of-bounds corruption lands on the current animated step. */
+  corruptedNow?: boolean;
+  /** Bottom-half hazard hatch and error `??` for indeterminate bytes copied into a variable. */
+  poisoned?: boolean;
+  /** Override reveal timestamp (seconds) for staggered byte arrivals. */
+  revealAt?: number;
 }
 
 export interface ByteVariableState {
-  beforeHeader: string | null;
-  afterHeader: string | null;
+  beforeHeader: ByteHeader;
+  afterHeader: ByteHeader;
   bytes: ByteCellState[];
   /** True when this variable is being written/modified during the current animated step. */
   changing?: boolean;
+  /** True when an out-of-bounds write corrupted this variable. */
+  corrupted?: boolean;
+  /** True when out-of-bounds corruption lands on the current animated step. */
+  corruptedNow?: boolean;
+  /** Keep this variable and its type label undimmed even when unnamed in the pane. */
+  keepBright?: boolean;
+  /** Suppress default per-variable transient read/write highlight (caller draws its own span). */
+  suppressDefaultHighlight?: boolean;
+}
+
+export interface PaddingByteState {
+  value: ByteValue;
+  corrupted: boolean;
+  corruptedNow: boolean;
+  revealAt?: number;
 }
 
 export interface ByteMemoryOptions {
   padId: string;
+  ubId?: string;
+  /** Exclusive end address for trailing alignment padding beyond the last variable. */
+  minEndAddress?: number;
+  /** Optional overwritten state for an alignment-padding byte. */
+  paddingByte?(addr: number): PaddingByteState | null;
   /** Per-variable byte and header state for the current step. */
   stateOf(leaf: PlacedLeaf): ByteVariableState;
 }
@@ -155,20 +241,40 @@ export function renderByteMemory(c: SceneContext, opts: ByteMemoryOptions): stri
   }
 
   // 2. Hatched alignment-padding runs (per-byte detail for small gaps, collapsed for sparse spans)
-  for (const run of paddingRuns(g.leaves)) {
+  for (const run of paddingRuns(g.leaves, opts.minEndAddress)) {
     const rx = xOf(run.start);
     const rw = run.size * byteW;
     out +=
       `<g class="cv-byte-padding" data-address="${run.start}" data-size="${run.size}">` +
       rect(rx + 1, gridY + 1, rw - 2, cellH - 2, `url(#${opts.padId})`, P.gapStroke, 0, 1.5);
     if (run.size <= MAX_DETAIL_GAP) {
+      const hexY = gridY + 74;
       for (let k = 0; k < run.size; k++) {
-        const bx = xOf(run.start + k);
-        out += text(bx + byteW / 2, gridY - 12, run.start + k, 13, P.grey, 'middle');
+        const addr = run.start + k;
+        const bx = xOf(addr);
+        out += text(bx + byteW / 2, gridY - 12, addr, 13, P.grey, 'middle');
         if (k > 0) {
           out += `<line x1="${round(bx)}" y1="${gridY + 2}" x2="${round(bx)}" y2="${gridY + cellH - 2}" stroke="${P.gapStroke}" stroke-dasharray="3 3" stroke-width="1"/>`;
         }
-        out += text(bx + byteW / 2, gridY + 74, '??', 13.5, P.grey, 'middle');
+        const padState = opts.paddingByte?.(addr);
+        if (padState?.corrupted && opts.ubId) {
+          const hexText = typeof padState.value === 'number' ? hexByte(padState.value) : '??';
+          const badgeBg = rect(bx + byteW / 2 - 15, hexY - 15, 30, 20, P.panel, 'none', 3);
+          const hazard =
+            rect(bx + 1.5, gridY + 1.5, byteW - 3, cellH - 3, `url(#${opts.ubId})`, P.error, 0, 1.6) +
+            badgeBg +
+            text(bx + byteW / 2, hexY, hexText, 15.5, P.error, 'middle');
+          if (animate && padState.corruptedNow) {
+            const rev = padState.revealAt ?? at;
+            out +=
+              `<g>${hide(rev)}${text(bx + byteW / 2, hexY, '??', 13.5, P.grey, 'middle')}</g>` +
+              `<g opacity="0">${show(rev)}${scaledAt(bx + byteW / 2, gridY + 68, hazard, rev - 0.1)}</g>`;
+          } else {
+            out += hazard;
+          }
+        } else {
+          out += text(bx + byteW / 2, hexY, '??', 13.5, P.grey, 'middle');
+        }
       }
     } else {
       out += text(rx + rw / 2, gridY - 12, `${run.start}..${run.start + run.size - 1}`, 13, P.grey, 'middle');
@@ -179,19 +285,41 @@ export function renderByteMemory(c: SceneContext, opts: ByteMemoryOptions): stri
 
   // 3. Variables
   const liveByName = new Map<string, boolean>();
+  const keepBrightByName = new Map<string, boolean>();
   for (const leaf of g.leaves) {
     const st = opts.stateOf(leaf);
+    const beforeH = normalizeHeader(st.beforeHeader);
+    const afterH = normalizeHeader(st.afterHeader);
     const vx = leaf.x;
     const vy = leaf.y;
     const vw = leaf.w;
     const vh = leaf.h;
     const splitY = vy + BYTE_SPLIT_OFFSET;
     const col = leaf.fieldColor || leaf.color;
-    const on = st.afterHeader !== null;
+    const on = afterH !== null;
+    const isCorrupted = Boolean(st.corrupted);
     liveByName.set(leaf.name, on);
+    keepBrightByName.set(leaf.name, Boolean(st.keepBright));
 
     let markup = '';
     markup += rect(vx + 1, vy + 1, vw - 2, vh - 2, on ? P.panel : P.deadFill, 'none', 0);
+
+    // Per-byte hazard fills (full-height for corrupted foreign bytes, bottom-half for copied `?` bytes)
+    if (opts.ubId) {
+      for (let k = 0; k < leaf.size; k++) {
+        const bs = st.bytes[k];
+        if (!bs) continue;
+        const bx = vx + k * byteW;
+        const rev = bs.revealAt ?? at;
+        if (bs.corrupted) {
+          const bg = rect(bx + 1.5, vy + 1.5, byteW - 3, vh - 3, `url(#${opts.ubId})`, 'none', 0);
+          markup += animate && bs.corruptedNow ? `<g opacity="0">${show(rev)}${bg}</g>` : bg;
+        } else if (bs.poisoned && bs.after === '?') {
+          const bg = rect(bx + 1.5, splitY + 0.8, byteW - 3, vy + vh - splitY - 2.3, `url(#${opts.ubId})`, 'none', 0);
+          markup += animate && st.changing ? `<g opacity="0">${show(rev)}${bg}</g>` : bg;
+        }
+      }
+    }
 
     // Horizontal split & vertical byte dividers
     const divCol = on ? P.gapStroke : P.deadStroke;
@@ -202,53 +330,90 @@ export function renderByteMemory(c: SceneContext, opts: ByteMemoryOptions): stri
     }
 
     // Outer variable border
-    markup += rect(vx + 1.5, vy + 1.5, vw - 3, vh - 3, 'none', on ? col : P.deadStroke, 0, 2.8);
+    if (animate && st.corruptedNow) {
+      markup +=
+        `<g>${hide(at)}${rect(vx + 1.5, vy + 1.5, vw - 3, vh - 3, 'none', col, 0, 2.8)}</g>` +
+        `<g opacity="0">${show(at)}${rect(vx + 1.5, vy + 1.5, vw - 3, vh - 3, 'none', P.error, 0, 3.2)}</g>`;
+    } else {
+      const borderCol = isCorrupted ? P.error : on ? col : P.deadStroke;
+      markup += rect(vx + 1.5, vy + 1.5, vw - 3, vh - 3, 'none', borderCol, 0, isCorrupted ? 3.2 : 2.8);
+    }
 
     // 3a. Centered header
     const headCx = vx + vw / 2;
-    const renderHeader = (str: string | null): string => {
-      if (str === null) return '';
+    const renderHeader = (h: NormalizedHeader | null, useBefore: boolean): string => {
+      if (h === null) return '';
       const inset = Math.min(12, vw / 5);
-      const decSize = Math.min(25, (vw - inset) / (Math.max(1, str.length) * CHAR));
-      return text(headCx, vy + 33, str, round(decSize), str === '?' ? P.grey : P.fg, 'middle');
+      const decSize = Math.min(25, (vw - inset) / (Math.max(1, h.text.length) * CHAR));
+      const errNow = isCorrupted && !useBefore;
+      const decCol = errNow ? P.error : !h.poisoned && h.text === '?' ? P.grey : P.fg;
+      const badgeW = Math.min(vw - 8, Math.max(28, h.text.length * decSize * CHAR + 8));
+      const bg = errNow ? rect(headCx - badgeW / 2, vy + 12, badgeW, 26, P.panel, 'none', 4) : '';
+      return (
+        bg +
+        (h.poisoned
+          ? poisonText(headCx, vy + 33, h.text, round(decSize), decCol, P.error, 'middle')
+          : text(headCx, vy + 33, h.text, round(decSize), decCol, 'middle'))
+      );
     };
 
-    if (animate && st.changing && st.beforeHeader !== st.afterHeader) {
+    const headerChanged = animate && st.changing && beforeH?.text !== afterH?.text;
+    if (headerChanged) {
       const swapped =
-        (st.beforeHeader !== null ? `<g>${hide(at)}${renderHeader(st.beforeHeader)}</g>` : '') +
-        `<g opacity="0">${show(at)}${renderHeader(st.afterHeader)}</g>`;
+        (beforeH !== null ? `<g>${hide(at)}${renderHeader(beforeH, true)}</g>` : '') +
+        `<g opacity="0">${show(at)}${renderHeader(afterH, false)}</g>`;
       markup += scaledAt(headCx, vy + 26, swapped, at - 0.15);
+    } else if (animate && st.corruptedNow) {
+      markup +=
+        (beforeH !== null ? `<g>${hide(at)}${renderHeader(beforeH, true)}</g>` : '') +
+        `<g opacity="0">${show(at)}${renderHeader(afterH, false)}</g>`;
     } else {
-      markup += renderHeader(st.afterHeader);
+      markup += renderHeader(afterH, false);
     }
 
-    // 3b. Individual hex byte cells — only changed bytes pulse
+    // 3b. Individual hex byte cells — only changed bytes pulse; unchanged corrupted bytes swap without pulsing
     const hexY = vy + 74;
     let hexGroup = `<g class="cv-byte-hex" data-name="${esc(leaf.name)}">`;
     for (let k = 0; k < leaf.size; k++) {
       const bs = st.bytes[k];
       if (!bs) continue;
       const bx = vx + k * byteW;
-      const renderByte = (bval: ByteValue): string => {
+      const rev = bs.revealAt ?? at;
+      const renderByte = (bval: ByteValue, useBefore: boolean): string => {
         if (bval === null) return '';
-        if (bval === '?') return text(bx + byteW / 2, hexY, '??', 13.5, P.grey, 'middle');
-        return text(bx + byteW / 2, hexY, hexByte(bval), 15.5, P.fg, 'middle');
+        if (bval === '?') {
+          if (bs.poisoned && !useBefore) {
+            const badgeBg = rect(bx + byteW / 2 - 15, hexY - 15, 30, 20, P.panel, 'none', 3);
+            return badgeBg + text(bx + byteW / 2, hexY, '??', 15.5, P.error, 'middle');
+          }
+          return text(bx + byteW / 2, hexY, '??', 13.5, P.grey, 'middle');
+        }
+        const errNow = Boolean(bs.corrupted && !useBefore);
+        const bg = errNow ? rect(bx + byteW / 2 - 15, hexY - 15, 30, 20, P.panel, 'none', 3) : '';
+        const byteInk = errNow ? P.error : leaf.kind === 'ptr' ? P.muted : P.fg;
+        const size = !errNow && leaf.kind === 'ptr' ? 13 : 15.5;
+        const glyph = text(bx + byteW / 2, hexY, hexByte(bval), size, byteInk, 'middle');
+        return bg + (!errNow && leaf.kind === 'ptr' ? `<g opacity="0.65">${glyph}</g>` : glyph);
       };
 
       const byteChanged = animate && st.changing && bs.before !== bs.after;
       if (byteChanged) {
         const swapped =
-          (bs.before !== null ? `<g>${hide(at)}${renderByte(bs.before)}</g>` : '') +
-          `<g opacity="0">${show(at)}${renderByte(bs.after)}</g>`;
-        hexGroup += scaledAt(bx + byteW / 2, vy + 68, swapped, at - 0.15);
+          (bs.before !== null ? `<g>${hide(rev)}${renderByte(bs.before, true)}</g>` : '') +
+          `<g opacity="0">${show(rev)}${renderByte(bs.after, false)}</g>`;
+        hexGroup += scaledAt(bx + byteW / 2, vy + 68, swapped, rev - 0.15);
+      } else if (animate && bs.corruptedNow) {
+        hexGroup +=
+          (bs.before !== null ? `<g>${hide(rev)}${renderByte(bs.before, true)}</g>` : '') +
+          `<g opacity="0">${show(rev)}${renderByte(bs.after, false)}</g>`;
       } else {
-        hexGroup += renderByte(bs.after);
+        hexGroup += renderByte(bs.after, false);
       }
     }
     markup += hexGroup + '</g>';
 
     // 3c. Transient full-height read/write highlight
-    if (animate && op) {
+    if (animate && op && !st.suppressDefaultHighlight) {
       if (readCells.has(leaf.name)) {
         markup += transientReadHighlight(vx, vy, vw, vh, P.read, at);
       } else if (writeCells.has(leaf.name)) {
@@ -262,16 +427,25 @@ export function renderByteMemory(c: SceneContext, opts: ByteMemoryOptions): stri
     }
 
     // 3e. Variable name
-    markup += text(vx + vw / 2, vy + vh + 34, leaf.label, g.nameSize, on ? col : P.grey, 'middle');
+    const nameY = vy + vh + 34;
+    if (animate && st.corruptedNow) {
+      markup +=
+        `<g>${hide(at)}${text(vx + vw / 2, nameY, leaf.label, g.nameSize, col, 'middle')}</g>` +
+        `<g opacity="0">${show(at)}${text(vx + vw / 2, nameY, leaf.label, g.nameSize, P.error, 'middle')}</g>`;
+    } else {
+      const nameCol = isCorrupted ? P.error : on ? col : P.grey;
+      markup += text(vx + vw / 2, nameY, leaf.label, g.nameSize, nameCol, 'middle');
+    }
 
-    out += dim(c, leaf.group || leaf.name, markup);
+    out += st.keepBright ? markup : dim(c, leaf.group || leaf.name, markup);
   }
 
   // 4. Staggered variable type labels below names (at LABEL.memory matching geometry.ts)
   for (const label of g.typeLabels) {
     const on = liveByName.get(label.name) ?? false;
     const color = on ? typeColour(c, label.type) : P.deadStroke;
-    out += dim(c, label.name, typeLabel(c, label.cx, label.top, label.type, LABEL.memory, color));
+    const pill = typeLabel(c, label.cx, label.top, label.type, LABEL.memory, color);
+    out += keepBrightByName.get(label.name) ? pill : dim(c, label.name, pill);
   }
 
   return out;

@@ -85,7 +85,7 @@ red, blue), each at least 3:1 against the stage. Reads use `#2f64d6` on `#d9e5ff
 ```text
 trace     = {format: 1, source: [line…], variables: [variable…], steps: [step…],
              title?: text, spans?: [span | null per source line],
-             types?: {struct name: definition text}, bits?: true,
+             types?: {struct name: definition text}, bits?: true, punning?: true,
              integers?: {alias: builtin integer type},
              references?: [{name, color}…]}
 variable  = {name, address, size, kind: "int" | "ptr", color, type?}
@@ -117,8 +117,16 @@ span      = [start, end)  — character offsets
   carries its sign bit into the new bytes, widening an unsigned one fills zeros. Every variable
   is then a typed integer, and there are no references. Every typed part is an integer, and a
   `convert` value is its operand converted to `to`.
-- `integers`, in a `bits` trace only, names the builtin type behind each alias the trace spells
-  that the player does not know (`{"streamsize": "long"}`), as Clang resolved it.
+- `punning` draws pointer type punning on a flush byte-accurate memory strip with a live
+  Little-endian / Big-endian switch, a HUD scope reticle for each punned pointer, hazard hatch
+  and `⚠ UB` caliper for out-of-bounds reads or writes, and bidirectional byte-tile flights.
+  Mutually exclusive with `bits`. Every variable must be a typed integer or pointer, with no
+  references. A `deref`, `read`, or `write` through a mismatched integer pointer carries
+  `pun: {type, size, via}`; a punning `deref` keeps `*addr` in the pane, a punning `write` may
+  modify any variable whose storage overlaps `[addr, addr + pun.size)`, and reading indeterminate
+  padding bytes produces a poisoned hex value (`0x[0-9A-F?]+` containing at least one `?`).
+- `integers`, in a `bits` or `punning` trace only, names the builtin type behind each alias the
+  trace spells that the player does not know (`{"streamsize": "long"}`), as Clang resolved it.
 - `references` are names without storage. `refs` maps each reference bound so far to the
   variable or leaf it names; it only ever grows, by a `bind`.
 - A scalar's `type` is its declared type as the lessons write it (`int*`, `uint8_t`); the

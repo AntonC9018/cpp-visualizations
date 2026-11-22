@@ -49,7 +49,9 @@ export function applicable(traceData: ExecutionTrace, snippet: string, frontend?
   if (variables.length > MAX_VARIABLES) {
     throw new Unsupported(`the memory row holds at most ${MAX_VARIABLES} variables`);
   }
-  checkContiguousStorage(variables);
+  if (!traceData.punning) {
+    checkContiguousStorage(variables);
+  }
   const ops = steps.filter(s => s.op !== null && s.op !== undefined).map(s => s.op!);
   if (ops.some(op => op.kind === 'clash')) {
     // Types that do not fit are the point, however little memory is involved.

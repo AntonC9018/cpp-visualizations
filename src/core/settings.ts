@@ -55,6 +55,14 @@ export const FLAGS = {
       ru: 'Показывать байты каждого целого в памяти и его биты при преобразовании; включает типы',
     },
   },
+  punning: {
+    templates: ['expression-timeline'],
+    label: { en: 'Pointer punning', ru: 'Реинтерпретация указателей' },
+    description: {
+      en: 'Trace reading or writing through a pointer to another integer type on a byte-accurate memory strip',
+      ru: 'Показывать чтение и запись через указатель на другой целочисленный тип на побайтовой карте памяти',
+    },
+  },
 } as const satisfies Record<string, FlagInfo>;
 
 export type Flag = keyof typeof FLAGS;

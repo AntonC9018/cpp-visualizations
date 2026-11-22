@@ -1,0 +1,656 @@
+// The pointer-punning view (`punning` traces): byte-accurate memory strip with HUD scope reticle,
+// out-of-bounds UB caliper and hazard hatch, bidirectional byte-tile flights, and live LE/BE switch.
+import { hexByte } from '../core/bytes.ts';
+import {
+  type ActivePunPointer,
+  type PunningSimState,
+  hasLargerPointerAccess,
+  punningMinEndAddress,
+  simulatePunningTrace,
+} from '../core/punning.ts';
+import type { Span, TraceStep, TypedPart } from '../core/trace_format.ts';
+import {
+  BYTE_CELL_HEIGHT,
+  type ByteCellState,
+  type ByteVariableState,
+  colorPoisonHexInSvg,
+  hatchDefs,
+  renderByteMemory,
+  scaledAt,
+  transientReadHighlight,
+  transientWriteHighlight,
+} from './byte_memory.ts';
+import { CHAR, EASE, LABEL, T } from './constants.ts';
+import { type PointerLink, links } from './geometry.ts';
+import { type PreparedModel, arrival, copies, departure, stepSeconds } from './model.ts';
+import { type SceneContext, code, dim, output, pane, tether, transfers } from './scene.ts';
+import { fade, hide, rect, round, show, text } from './svg.ts';
+import type { TraceView } from './views.ts';
+
+function pill(
+  cx: number,
+  cy: number,
+  label: string,
+  size: number,
+  fill: string,
+  stroke: string,
+  ink: string
+): string {
+  const w = label.length * size * CHAR + 16;
+  const h = size + 10;
+  return (
+    rect(cx - w / 2, cy - h / 2, w, h, fill, stroke, h / 2, 1.8) +
+    text(cx, cy + size * 0.35, label, size, ink, 'middle')
+  );
+}
+
+/** Shift `[start, end)` after replacing `[at, at + oldLen)` with length `oldLen + delta`. */
+function shiftSpan(span: Span, at: number, oldLen: number, delta: number): Span {
+  if (delta === 0) return span;
+  const oldEnd = at + oldLen;
+  const s = span[0] >= oldEnd ? span[0] + delta : span[0];
+  const e = span[1] >= oldEnd ? span[1] + delta : span[1];
+  return [s, e];
+}
+
+function patchTypedParts(
+  parts: TypedPart[] | undefined,
+  at: number,
+  oldLen: number,
+  delta: number
+): TypedPart[] | undefined {
+  if (!parts || delta === 0) return parts;
+  return parts.map(part => ({ ...part, span: shiftSpan(part.span, at, oldLen, delta) }));
+}
+
+/**
+ * Patch `step` and `prev` panes when toggling Little-endian / Big-endian changes the value
+ * produced by a punning read (or a read of a poisoned variable).
+ */
+function resolveEndianContext(c: SceneContext, sim: PunningSimState): SceneContext {
+  const patchStep = (
+    st: TraceStep | null,
+    idx: number,
+    rep: PunningSimState['paneReadReplacement']
+  ): TraceStep | null => {
+    if (!st || !rep || rep.resolvedValue === rep.originalValue) return st;
+    const { originalValue, resolvedValue } = rep;
+    const delta = resolvedValue.length - originalValue.length;
+    const op = st.op;
+    let at = -1;
+    if (idx === rep.stepIndex && op?.kind === 'read') {
+      const start = op.span[0];
+      if (st.pane.startsWith(originalValue, start)) at = start;
+      else if (st.pane.startsWith(`(${originalValue})`, start)) at = start + 1;
+    } else if (op && 'span' in op && st.pane.slice(op.span[0], op.span[1]) === originalValue) {
+      at = op.span[0];
+    } else if (st.expr) {
+      const found = st.pane.indexOf(originalValue, st.expr[0]);
+      if (found >= 0 && found + originalValue.length <= st.expr[1]) at = found;
+    }
+    if (at < 0) return st;
+
+    const patchedPane =
+      st.pane.slice(0, at) + resolvedValue + st.pane.slice(at + originalValue.length);
+    const patchedExpr = st.expr ? shiftSpan(st.expr, at, originalValue.length, delta) : st.expr;
+    const patchedTypes = patchTypedParts(st.types, at, originalValue.length, delta);
+    let patchedOp = op;
+    if (idx === rep.stepIndex && op?.kind === 'read') {
+      patchedOp = { ...op, value: resolvedValue };
+    } else if (op?.kind === 'write' && op.span[0] === at && op.span[1] === at + originalValue.length) {
+      patchedOp = {
+        ...op,
+        value: resolvedValue,
+        span: [at, at + resolvedValue.length],
+        destination: shiftSpan(op.destination, at, originalValue.length, delta),
+      };
+    }
+    return {
+      ...st,
+      pane: patchedPane,
+      expr: patchedExpr,
+      op: patchedOp,
+      ...(patchedTypes ? { types: patchedTypes } : {}),
+    };
+  };
+
+  const step = patchStep(c.step, c.index, sim.paneReadReplacement)!;
+  const prev = patchStep(c.prev, c.index - 1, sim.prevPaneReadReplacement);
+  if (step === c.step && prev === c.prev) return c;
+  return { ...c, step, prev, op: step.op };
+}
+
+/** Whether storing the result of a punning read should fly per-byte tiles instead of a scalar box. */
+function usesByteTileStore(sim: PunningSimState): boolean {
+  const st = sim.storeAfterPunRead;
+  return Boolean(st && (st.readResult.poisoned || st.bytes.length > 1));
+}
+
+function punningStepSeconds(m: PreparedModel, index: number): number {
+  const step = m.steps[index];
+  const op = step.op;
+  if (op?.kind === 'write' && op.pun) return step.hold + 2.3;
+  if (op?.kind === 'read' && op.pun) return step.hold + 2.2;
+  if (op?.kind === 'write') {
+    const sim = simulatePunningTrace(m.trace, index, true);
+    if (usesByteTileStore(sim)) return step.hold + 2.1;
+  }
+  return stepSeconds(m.steps, index);
+}
+
+// ============================================================================================
+// FULL-HEIGHT OPEN HUD CORNER RETICLE (APPROVED OPTION A)
+// ============================================================================================
+
+function drawHudReticle(
+  bx: number,
+  by: number,
+  bw: number,
+  bh: number,
+  leftCol: string,
+  rightCol: string,
+  splitX: number | null
+): string {
+  const arm = Math.min(14, bw * 0.28);
+  const tick = 5;
+  const rx = bx + bw;
+  const ry = by + bh;
+  const mx = bx + bw / 2;
+  const my = by + bh / 2;
+  const rightTopCol = splitX !== null ? rightCol : leftCol;
+  const topTickCol = splitX !== null && mx >= splitX ? rightCol : leftCol;
+
+  let out = '';
+  if (splitX !== null) {
+    out +=
+      `<path d="M ${round(splitX)} ${round(by)} H ${round(bx)} V ${round(ry)} H ${round(splitX)}" fill="none" stroke="${leftCol}" stroke-opacity="0.32" stroke-dasharray="3 3" stroke-width="1.3"/>` +
+      `<path d="M ${round(splitX)} ${round(by)} H ${round(rx)} V ${round(ry)} H ${round(splitX)}" fill="none" stroke="${rightCol}" stroke-opacity="0.4" stroke-dasharray="3 3" stroke-width="1.3"/>`;
+  } else {
+    out += `<rect x="${round(bx)}" y="${round(by)}" width="${round(bw)}" height="${round(bh)}" fill="none" stroke="${leftCol}" stroke-opacity="0.32" stroke-dasharray="3 3" stroke-width="1.3"/>`;
+  }
+  out +=
+    `<path d="M ${round(bx)} ${round(by + arm)} V ${round(by)} H ${round(bx + arm)}" fill="none" stroke="${leftCol}" stroke-width="3.2" stroke-linecap="square"/>` +
+    `<path d="M ${round(bx)} ${round(ry - arm)} V ${round(ry)} H ${round(bx + arm)}" fill="none" stroke="${leftCol}" stroke-width="3.2" stroke-linecap="square"/>` +
+    `<path d="M ${round(rx - arm)} ${round(by)} H ${round(rx)} V ${round(by + arm)}" fill="none" stroke="${rightTopCol}" stroke-width="3.2" stroke-linecap="square"/>` +
+    `<path d="M ${round(rx - arm)} ${round(ry)} H ${round(rx)} V ${round(ry - arm)}" fill="none" stroke="${rightTopCol}" stroke-width="3.2" stroke-linecap="square"/>` +
+    `<line x1="${round(mx)}" y1="${round(by)}" x2="${round(mx)}" y2="${round(by + tick)}" stroke="${topTickCol}" stroke-width="2.2"/>` +
+    `<line x1="${round(mx)}" y1="${round(ry)}" x2="${round(mx)}" y2="${round(ry - tick)}" stroke="${topTickCol}" stroke-width="2.2"/>` +
+    `<line x1="${round(bx)}" y1="${round(my)}" x2="${round(bx + tick)}" y2="${round(my)}" stroke="${leftCol}" stroke-width="2.2"/>` +
+    `<line x1="${round(rx)}" y1="${round(my)}" x2="${round(rx - tick)}" y2="${round(my)}" stroke="${rightTopCol}" stroke-width="2.2"/>`;
+  return out;
+}
+
+function punReticle(
+  c: SceneContext,
+  sim: PunningSimState,
+  ptr: ActivePunPointer,
+  xOf: (addr: number) => number,
+  byteW: number,
+  gridY: number,
+  cellH: number,
+  pCol: string
+): string {
+  const { P, animate, op } = c;
+  const at = op ? arrival(op) : 0;
+  const dep = op ? departure(op) : 0;
+  const wLeft = xOf(ptr.targetAddress);
+  const wWidth = ptr.pointeeSize * byteW;
+  const ownEnd = xOf(ptr.targetAddress + ptr.targetSize);
+
+  const pad = 3.5;
+  const bx = wLeft - pad;
+  const by = gridY - pad;
+  const bw = wWidth + 2 * pad;
+  const bh = cellH + 2 * pad;
+  const cx = bx + bw / 2;
+  const cy = by + bh / 2;
+
+  const isWritingPtr = animate && op?.kind === 'write' && op.name === ptr.ptrName;
+  const isDeref = animate && op?.kind === 'deref' && op.via === ptr.ptrName;
+  const isPunRead = sim.activePun?.kind === 'read' && sim.activePun.pun.via === ptr.ptrName;
+  const isPunWrite = sim.activePun?.kind === 'write' && sim.activePun.pun.via === ptr.ptrName;
+  const opCol =
+    ptr.ubKind === 'read' || isPunRead || sim.storeAfterPunRead?.pun.via === ptr.ptrName
+      ? P.read
+      : P.write;
+
+  let inner = '';
+  if (ptr.direction === 'larger' && ptr.ubKind !== 'none') {
+    const calm = drawHudReticle(bx, by, bw, bh, pCol, pCol, null);
+    const breached = drawHudReticle(bx, by, bw, bh, opCol, P.error, ownEnd);
+    const triggerAt = isPunRead ? dep : at;
+    inner =
+      animate && (isPunWrite || isPunRead)
+        ? `<g>${hide(triggerAt)}${calm}</g><g opacity="0">${show(triggerAt)}${breached}</g>`
+        : breached;
+  } else {
+    const col = ptr.windowActive ? opCol : pCol;
+    inner = drawHudReticle(bx, by, bw, bh, col, col, null);
+  }
+
+  let wrapped = inner;
+  if (isWritingPtr) {
+    const lockBegin = at + 0.52;
+    wrapped =
+      `<g opacity="0">${fade(0, 1, 0.14, lockBegin)}` +
+      `<g transform="translate(${round(cx)} ${round(cy)})"><g>` +
+      `<animateTransform attributeName="transform" type="scale" values="1.28;0.96;1" keyTimes="0;0.74;1" ` +
+      `calcMode="spline" keySplines="0.2 0 0.2 1;0.4 0 0.2 1" begin="${round(lockBegin)}s" dur="0.46s" fill="freeze"/>` +
+      `<g transform="translate(${round(-cx)} ${round(-cy)})">${inner}</g></g></g></g>`;
+  } else if (isDeref) {
+    wrapped = scaledAt(cx, cy, inner, at - 0.18);
+  }
+  return `<g class="cv-pun-reticle" data-ptr="${ptr.ptrName}">${wrapped}</g>`;
+}
+
+// ============================================================================================
+// CLEAN OVERHEAD POINTER ARCS
+// ============================================================================================
+
+function punningArrows(
+  c: SceneContext,
+  sim: PunningSimState,
+  xOf: (addr: number) => number,
+  byteW: number,
+  gridY: number
+): string {
+  const { g, P, step, prev, op, animate } = c;
+  const punNames = new Set(sim.punPointers.map(p => p.ptrName));
+  const at = op ? arrival(op) : 0;
+
+  const arcFor = (
+    l: PointerLink,
+    opts: { grow?: number | null; fadeOut?: number | null; keepBright?: boolean } = {}
+  ): string => {
+    const isPun = punNames.has(l.from.name);
+    const col = l.from.color;
+    let d = l.d;
+    let hx = l.head[0];
+    let hy = l.head[1];
+    if (isPun) {
+      const sx = l.from.x + l.from.w / 2;
+      const ex = xOf(l.to.address) + byteW * 0.5;
+      const sy = gridY - 2;
+      const ey = gridY - 26;
+      const apex = gridY - 92 - l.level * 36;
+      d = `M ${round(sx)} ${round(sy)} C ${round(sx)} ${round(apex)}, ${round(ex)} ${round(apex)}, ${round(ex)} ${round(ey - 8)}`;
+      hx = ex;
+      hy = ey;
+    }
+    const grow = opts.grow != null ? ` data-grow="${round(opts.grow)}"` : '';
+    const head = `<path d="M -10 -6 L 0 0 L -10 6 Z" fill="${col}" transform="translate(${round(hx)} ${round(hy)}) rotate(90)"/>`;
+    const body =
+      '<g>' +
+      (opts.fadeOut != null ? fade(1, 0, 0.3, opts.fadeOut) : '') +
+      `<path d="${d}" fill="none" stroke="${P.bg}" stroke-width="9"${grow}/>` +
+      `<path d="${d}" fill="none" stroke="${col}" stroke-width="2.6"${grow}/>` +
+      (opts.grow != null ? `<g opacity="0">${fade(0, 1, 0.15, opts.grow + 0.47)}${head}</g>` : head) +
+      '</g>';
+    return opts.keepBright ? body : dim(c, l.from.name, body);
+  };
+
+  const now = links(g, step);
+  const writesPtr =
+    animate && op?.kind === 'write' && g.cellsOf(op.name).some(l => l.kind === 'ptr');
+  if (writesPtr && prev) {
+    const changed = new Set(g.cellsOf(op.name).map(l => l.name));
+    let out = '';
+    for (const l of links(g, prev)) {
+      out += arcFor(l, {
+        ...(changed.has(l.from.name) ? { fadeOut: at } : {}),
+        keepBright: punNames.has(l.from.name),
+      });
+    }
+    for (const l of now) {
+      if (changed.has(l.from.name)) {
+        out += arcFor(l, { grow: at + 0.08, keepBright: punNames.has(l.from.name) });
+      }
+    }
+    return out;
+  }
+
+  let out = now.map(l => arcFor(l, { keepBright: punNames.has(l.from.name) })).join('');
+  if (animate && op?.kind === 'deref') {
+    const l = now.find(link => link.from.name === op.via);
+    if (l) {
+      const isPun = punNames.has(l.from.name);
+      const sx = l.from.x + l.from.w / 2;
+      const ex = xOf(l.to.address) + byteW * 0.5;
+      const sy = gridY - 2;
+      const ey = gridY - 26;
+      const apex = gridY - 92 - l.level * 36;
+      const d = isPun
+        ? `M ${round(sx)} ${round(sy)} C ${round(sx)} ${round(apex)}, ${round(ex)} ${round(apex)}, ${round(ex)} ${round(ey - 8)}`
+        : l.d;
+      const pulsePath = `<path d="${d}" fill="none" stroke="${l.from.color}" stroke-width="7" stroke-linecap="round" data-follow="${T.prepare}"/>`;
+      out += isPun ? pulsePath : dim(c, l.from.name, pulsePath);
+    }
+  }
+  return out;
+}
+
+// ============================================================================================
+// UNIFIED PUNNING SCENE
+// ============================================================================================
+
+function punningScene(rawC: SceneContext): string {
+  const sim = simulatePunningTrace(rawC.m.trace, rawC.index, rawC.littleEndian);
+  const c = resolveEndianContext(rawC, sim);
+  const { g, P, animate, op, step, prev } = c;
+  const { defs, padId, ubId } = hatchDefs(P);
+  const lineChanged = animate && prev !== null && prev.line !== step.line;
+  const oldLine = lineChanged && prev ? prev.line : null;
+
+  const byteW = g.byteWidth;
+  const gridY = g.leaves[0]?.y ?? g.memY;
+  const cellH = g.leaves[0]?.h ?? BYTE_CELL_HEIGHT;
+  const xOf = (addr: number): number => g.memX + (addr - sim.baseAddress) * byteW;
+  const at = op ? arrival(op) : 0;
+  const dep = op ? departure(op) : 0;
+
+  const isPunWrite = sim.activePun?.kind === 'write';
+  const isPunRead = sim.activePun?.kind === 'read';
+  const byteTileStore = usesByteTileStore(sim);
+  const activePtrNames = new Set(sim.punPointers.map(p => p.ptrName));
+  const activeTargetNames = new Set(sim.punPointers.map(p => p.targetName));
+
+  // 1. Shared byte-accurate memory strip
+  const mem = renderByteMemory(c, {
+    padId,
+    ubId,
+    minEndAddress: sim.endAddress,
+    paddingByte(addr) {
+      const slot = sim.bytes[addr - sim.baseAddress];
+      if (!slot || !slot.corrupted) return null;
+      const revealAt =
+        isPunWrite && sim.activePun
+          ? at + 0.08 * Math.max(0, addr - sim.activePun.targetAddress)
+          : at;
+      return {
+        value: slot.after,
+        corrupted: true,
+        corruptedNow: slot.corruptedNow,
+        revealAt,
+      };
+    },
+    stateOf(leaf): ByteVariableState {
+      const beforeDec = sim.varBefore.get(leaf.name) ?? null;
+      const afterDec = sim.varAfter.get(leaf.name) ?? null;
+      const isCorrupted = sim.corruptedVars.has(leaf.name);
+      const isDestTileStore = Boolean(byteTileStore && sim.storeAfterPunRead?.destVar.name === leaf.name);
+      const isNormalWrite = Boolean(op?.kind === 'write' && op.name === leaf.name && !isPunWrite && !isDestTileStore);
+      const changing = Boolean(
+        isNormalWrite ||
+          isDestTileStore ||
+          (isPunWrite &&
+            sim.activePun &&
+            leaf.address < sim.activePun.targetAddress + sim.activePun.pun.size &&
+            leaf.address + leaf.size > sim.activePun.targetAddress)
+      );
+      const allUnknown = afterDec !== null && afterDec.text === '?' && !afterDec.poisoned;
+      let corruptedNow = false;
+      const bytes: ByteCellState[] = [];
+      for (let k = 0; k < leaf.size; k++) {
+        const addr = leaf.address + k;
+        const slot = sim.bytes[addr - sim.baseAddress];
+        if (!slot) continue;
+        if (slot.corruptedNow) corruptedNow = true;
+        const revealAt = isPunWrite && sim.activePun
+          ? at + 0.08 * Math.max(0, addr - sim.activePun.targetAddress)
+          : isDestTileStore
+            ? at + 0.08 * k
+            : at;
+        bytes.push({
+          before: slot.before,
+          after: slot.after,
+          corrupted: slot.corrupted,
+          corruptedNow: slot.corruptedNow,
+          poisoned: !allUnknown && slot.after === '?',
+          revealAt,
+        });
+      }
+      const keepBright =
+        isCorrupted ||
+        sim.readForeignVars.has(leaf.name) ||
+        activePtrNames.has(leaf.name) ||
+        activeTargetNames.has(leaf.name);
+      return {
+        beforeHeader: beforeDec ? { text: beforeDec.text, poisoned: beforeDec.poisoned } : null,
+        afterHeader: afterDec ? { text: afterDec.text, poisoned: afterDec.poisoned } : null,
+        bytes,
+        changing,
+        corrupted: isCorrupted,
+        corruptedNow,
+        keepBright,
+        suppressDefaultHighlight: Boolean(isPunWrite || isPunRead),
+      };
+    },
+  });
+
+  // 2. Transient full-height read/write highlight on the exact punned byte span
+  let accessFlash = '';
+  if (animate && sim.activePun && (isPunWrite || isPunRead)) {
+    const { targetAddress, targetSize, pun, direction } = sim.activePun;
+    const wLeft = xOf(targetAddress);
+    const wWidth = pun.size * byteW;
+    const ownW = targetSize * byteW;
+    const spillW = wWidth - ownW;
+    if (isPunWrite) {
+      if (direction === 'larger') {
+        accessFlash += transientWriteHighlight(wLeft, gridY, ownW, cellH, P.write, at);
+        if (spillW > 0) accessFlash += transientWriteHighlight(wLeft + ownW, gridY, spillW, cellH, P.error, at + 0.08);
+      } else {
+        accessFlash += transientWriteHighlight(wLeft, gridY, wWidth, cellH, P.write, at);
+      }
+    } else if (isPunRead) {
+      if (direction === 'larger') {
+        accessFlash += transientReadHighlight(wLeft, gridY, ownW, cellH, P.read, at);
+        if (spillW > 0) accessFlash += transientReadHighlight(wLeft + ownW, gridY, spillW, cellH, P.error, at);
+      } else {
+        accessFlash += transientReadHighlight(wLeft, gridY, wWidth, cellH, P.read, at);
+      }
+    }
+  }
+
+  // 3. Clean overhead pointer arcs
+  const arcMarkup = punningArrows(c, sim, xOf, byteW, gridY);
+
+  // 4. Full-height open HUD corner reticles
+  let scopeReticles = '';
+  for (const ptr of sim.punPointers) {
+    const ptrLeaf = g.leaves.find(l => l.name === ptr.ptrName);
+    if (!ptrLeaf) continue;
+    scopeReticles += punReticle(c, sim, ptr, xOf, byteW, gridY, cellH, ptrLeaf.color);
+  }
+
+  // 5. UB bracket & `⚠ UB` badge below memory — ONLY on larger-pointer read or write
+  let belowOverlay = '';
+  const typeBottom = g.typeLabels.length
+    ? Math.max(...g.typeLabels.map(l => l.top + LABEL.memory + 7))
+    : gridY + cellH + 40;
+  const brY = typeBottom + 16;
+  const tickTop = brY - 10;
+  for (const ptr of sim.punPointers) {
+    if (ptr.direction !== 'larger' || ptr.ubKind === 'none') continue;
+    const wLeft = xOf(ptr.targetAddress);
+    const wRight = xOf(ptr.targetAddress + ptr.pointeeSize);
+    const ownEnd = xOf(ptr.targetAddress + ptr.targetSize);
+    const ownCol = ptr.ubKind === 'read' ? P.read : P.write;
+    const cal =
+      `<g class="cv-ub-badge" data-ptr="${ptr.ptrName}">` +
+      `<path d="M ${round(wLeft + 2)} ${tickTop} V ${brY} H ${round(ownEnd)}" fill="none" stroke="${ownCol}" stroke-width="2.2"/>` +
+      `<path d="M ${round(ownEnd)} ${brY} H ${round(wRight - 2)} V ${tickTop}" fill="none" stroke="${P.error}" stroke-width="2.8"/>` +
+      pill((ownEnd + wRight) / 2, brY + 18, '⚠ UB', 13.5, P.error, P.error, P.bg) +
+      '</g>';
+    const triggersNow =
+      animate &&
+      ((isPunRead && sim.activePun?.pun.via === ptr.ptrName) ||
+        (isPunWrite && sim.activePun?.pun.via === ptr.ptrName));
+    const showAt = isPunRead ? dep : at;
+    belowOverlay += triggersNow ? `<g opacity="0">${fade(0, 1, 0.25, showAt)}${cal}</g>` : cal;
+  }
+
+  // 6. Standardized pane byte strip & bidirectional byte-tile flights
+  let wb = '';
+  let flight = '';
+  const stripSource =
+    isPunWrite || isPunRead
+      ? {
+          bytes: sim.activePun!.bytes,
+          targetAddress: sim.activePun!.targetAddress,
+          targetSize: sim.activePun!.targetSize,
+          direction: sim.activePun!.direction,
+          destVar: null,
+          mode: isPunRead ? ('read' as const) : ('write' as const),
+        }
+      : byteTileStore && sim.storeAfterPunRead
+        ? {
+            bytes: sim.storeAfterPunRead.bytes,
+            targetAddress: sim.storeAfterPunRead.targetAddress,
+            targetSize: sim.storeAfterPunRead.targetSize,
+            direction: sim.storeAfterPunRead.direction,
+            destVar: sim.storeAfterPunRead.destVar,
+            mode: 'store' as const,
+          }
+        : null;
+
+  if (stripSource) {
+    const stripY = g.ty + 28;
+    const tileW = 44;
+    const tileH = 30;
+    const tileGap = 6;
+    const rhsStart =
+      op && 'span' in op
+        ? op.span[0]
+        : Math.max(0, step.pane.indexOf('= ') + 2);
+    const tilesX = g.tx + rhsStart * g.paneChar;
+
+    for (let k = 0; k < stripSource.bytes.length; k++) {
+      const addr = stripSource.targetAddress + k;
+      const slot = sim.bytes[addr - sim.baseAddress];
+      const bval = stripSource.bytes[k];
+      const label = typeof bval === 'number' ? hexByte(bval) : '??';
+      const isOobSlot = slot && (slot.status === 'padding' || slot.status === 'foreign');
+      const isBad =
+        stripSource.mode === 'store'
+          ? bval === '?' || (stripSource.direction === 'larger' && Boolean(isOobSlot))
+          : Boolean(isOobSlot) || bval === '?';
+      const tx = tilesX + k * (tileW + tileGap);
+      const isReadPhase = stripSource.mode === 'read';
+      const baseStroke = isReadPhase ? P.read : P.write;
+      const baseFill = isReadPhase ? P.readFill : P.writeFill;
+      const stroke = isBad ? P.error : baseStroke;
+      const fill = isBad ? P.panel : baseFill;
+      const tileMarkup =
+        rect(tx, stripY, tileW, tileH, fill, stroke, 5, 2) +
+        text(tx + tileW / 2, stripY + 20, label, 15.5, stroke, 'middle');
+
+      if (animate && stripSource.mode === 'read') {
+        const sx = xOf(addr) + byteW / 2;
+        const sy = gridY + 70;
+        const ex = tx + tileW / 2;
+        const ey = stripY + tileH / 2;
+        const midY = (sy + ey) / 2;
+        const path = `M ${round(sx)} ${round(sy)} C ${round(sx)} ${round(midY)}, ${round(ex)} ${round(midY)}, ${round(ex)} ${round(ey)}`;
+        const dur = 0.85;
+        const begin = dep + k * 0.08;
+        const end = begin + dur;
+        const flyCol = isOobSlot ? P.error : P.read;
+        wb += `<g opacity="0">${show(end)}${tileMarkup}</g>`;
+        flight +=
+          `<g opacity="0">${fade(0, 0.5, 0.2, begin)}${fade(0.5, 0, 0.25, end)}<path d="${path}" fill="none" stroke="${flyCol}" stroke-width="2.4"/></g>` +
+          `<g opacity="0">${fade(0, 1, 0.1, begin)}${hide(end + 0.05)}` +
+          rect(-20, -14, 40, 28, P.panel, flyCol, 6, 2) +
+          text(0, 6, label, 15, flyCol, 'middle') +
+          `<animateMotion begin="${round(begin)}s" dur="${dur}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
+      } else {
+        wb += tileMarkup;
+        if (animate && stripSource.mode === 'write') {
+          const sx = tx + tileW / 2;
+          const sy = stripY;
+          const ex = xOf(addr) + byteW / 2;
+          const ey = gridY + 70;
+          const midY = (sy + ey) / 2;
+          const path = `M ${round(sx)} ${round(sy)} C ${round(sx)} ${round(midY)}, ${round(ex)} ${round(midY)}, ${round(ex)} ${round(ey)}`;
+          const dur = 0.85;
+          const end = at + k * 0.08;
+          const begin = Math.max(0.2, end - dur);
+          const flyCol = isOobSlot ? P.error : P.write;
+          flight +=
+            `<g opacity="0">${fade(0, 0.5, 0.2, begin)}${fade(0.5, 0, 0.25, end)}<path d="${path}" fill="none" stroke="${flyCol}" stroke-width="2.4"/></g>` +
+            `<g opacity="0">${fade(0, 1, 0.1, begin)}${hide(end + 0.05)}` +
+            rect(-20, -14, 40, 28, P.panel, flyCol, 6, 2) +
+            text(0, 6, label, 15, flyCol, 'middle') +
+            `<animateMotion begin="${round(begin)}s" dur="${dur}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
+        } else if (animate && stripSource.mode === 'store' && stripSource.destVar) {
+          const sx = tx + tileW / 2;
+          const sy = stripY;
+          const ex = xOf(stripSource.destVar.address + k) + byteW / 2;
+          const ey = gridY + 70;
+          const midY = (sy + ey) / 2;
+          const path = `M ${round(sx)} ${round(sy)} C ${round(sx)} ${round(midY)}, ${round(ex)} ${round(midY)}, ${round(ex)} ${round(ey)}`;
+          const dur = 0.85;
+          const end = at + k * 0.08;
+          const begin = Math.max(0.2, end - dur);
+          const flyCol = bval === '?' ? P.error : P.write;
+          flight +=
+            `<g opacity="0">${fade(0, 0.5, 0.2, begin)}${fade(0.5, 0, 0.25, end)}<path d="${path}" fill="none" stroke="${flyCol}" stroke-width="2.4"/></g>` +
+            `<g opacity="0">${fade(0, 1, 0.1, begin)}${hide(end + 0.05)}` +
+            rect(-20, -14, 40, 28, P.panel, flyCol, 6, 2) +
+            text(0, 6, label, 15, flyCol, 'middle') +
+            `<animateMotion begin="${round(begin)}s" dur="${dur}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
+        }
+      }
+    }
+
+    if (stripSource.direction === 'smaller') {
+      let slots = '';
+      for (let k = stripSource.bytes.length; k < stripSource.targetSize; k++) {
+        const tx = tilesX + k * (tileW + tileGap);
+        slots += `<rect x="${round(tx)}" y="${stripY}" width="${tileW}" height="${tileH}" rx="5" fill="none" stroke="${P.grey}" stroke-opacity="0.75" stroke-dasharray="4 3" stroke-width="1.6"/>`;
+      }
+      wb +=
+        animate && stripSource.mode === 'read'
+          ? `<g opacity="0">${fade(0, 1, 0.2, dep + 0.65)}${slots}</g>`
+          : slots;
+    }
+  }
+
+  const paneMarkup = colorPoisonHexInSvg(pane(c, animate && copies(c.m.steps, c.index)), P.error);
+  const transferMarkup = !animate || isPunWrite || isPunRead || byteTileStore ? '' : transfers(c);
+
+  return (
+    defs +
+    code(c, oldLine) +
+    tether(c, oldLine) +
+    arcMarkup +
+    mem +
+    accessFlash +
+    scopeReticles +
+    belowOverlay +
+    paneMarkup +
+    wb +
+    output(c) +
+    transferMarkup +
+    flight
+  );
+}
+
+export const PUNNING_VIEW: TraceView = {
+  geometry(m) {
+    return {
+      minByteWidth: 46,
+      minColumnWidth: 780,
+      cellHeight: BYTE_CELL_HEIGHT,
+      extraMemBottom: hasLargerPointerAccess(m.trace) ? 58 : 12,
+      extraPaneHeight: 46,
+      flush: true,
+      minEndAddress: punningMinEndAddress(m.trace),
+    };
+  },
+  stackBelow: 900,
+  maxScale: 0.72,
+  byteOrder: true,
+  scene: punningScene,
+  stepSeconds: punningStepSeconds,
+};
