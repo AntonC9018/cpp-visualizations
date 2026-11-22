@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "node --test \"tests/*.test.ts\"",
-    "test:tracer": "node --test tests/arrays.test.ts tests/conversions.test.ts tests/generation.test.ts tests/layout.test.ts tests/references.test.ts tests/settings.test.ts tests/structs.test.ts tests/trace_format.test.ts tests/tracing.test.ts tests/types.test.ts tests/wasm_frontend.test.ts",
+    "test:tracer": "node --test tests/arrays.test.ts tests/bytes.test.ts tests/conversions.test.ts tests/generation.test.ts tests/layout.test.ts tests/references.test.ts tests/settings.test.ts tests/structs.test.ts tests/trace_format.test.ts tests/tracing.test.ts tests/types.test.ts tests/wasm_frontend.test.ts",
     "test:player": "node --test tests/player.test.ts tests/focus.test.ts",
     "test:wasm": "node --test tests/wasm_frontend.test.ts tests/playground.test.ts"
   },

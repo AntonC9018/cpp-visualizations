@@ -91,6 +91,8 @@ export interface GeometryOptions {
   cellHeight?: number;
   /** Room under the pane's text, for the view's own drawing. */
   extraPaneHeight?: number;
+  /** Lay top-level variables flush on a single byte-accurate row without artificial `GAP`. */
+  flush?: boolean;
   /** Keep memory on one row. */
   skipWrap?: boolean;
 }
@@ -99,6 +101,10 @@ export interface Geometry {
   stacked: boolean;
   paneSize: number;
   paneChar: number;
+  /** Units per byte on the memory row. */
+  byteWidth: number;
+  /** Whether top-level variables sit flush on a single contiguous byte row. */
+  flush: boolean;
   isStruct(c: { fields?: unknown }): c is PlacedGroup;
   rise: number;
   width: number;
@@ -387,10 +393,12 @@ const WRAP_HEIGHT_FACTOR = 1.5;
 function placement(
   m: PreparedModel,
   byte: number,
-  rowOf?: Map<string, number>
+  rowOf?: Map<string, number>,
+  flush = false
 ): { spans: Map<string, [number, number]>; gaps: Array<[number, number, number]>; width: number } {
   const spans = new Map<string, [number, number]>();
   const gaps: Array<[number, number, number]> = [];
+  const gap = flush ? 0 : GAP;
   let row = 0;
   const unused = (x: number, bytes: number): number => {
     if (bytes > 0) gaps.push([x, bytes * byte, row]);
@@ -422,7 +430,7 @@ function placement(
       x = 0;
       address = null;
     }
-    if (address !== null) x += unused(x, item.address - address) + GAP;
+    if (address !== null) x += unused(x, item.address - address) + gap;
     x += put(item, x);
     address = item.address + item.size;
     width = Math.max(width, x);
@@ -490,6 +498,11 @@ export function geometry(
 ): Geometry {
   const cellH = options.cellHeight ?? CELL;
   const extraPaneHeight = options.extraPaneHeight ?? 0;
+  const flush = Boolean(options.flush);
+  if (flush && m.groups.length > 0) {
+    throw new Error('flush byte layout does not support struct or array groups');
+  }
+  const gap = flush ? 0 : GAP;
   const minByteWidth = options.minByteWidth ?? 0;
   const isStruct = (c: { fields?: unknown }): c is PlacedGroup => Boolean(c.fields);
   const unwrapped = codeLayout(m.source);
@@ -526,6 +539,7 @@ export function geometry(
   const canWrap =
     !stacked &&
     !options.skipWrap &&
+    !flush &&
     m.tops.length > 1 &&
     !m.typed &&
     m.references.length === 0 &&
@@ -548,13 +562,13 @@ export function geometry(
             const items = row.map(i => m.tops[i]);
             const bytes = items[items.length - 1].address + items[items.length - 1].size - items[0].address;
             const nested = m.groups.filter(s => s.parent && rowOf.get(s.top) === rowOf.get(items[0].name));
-            return Math.max(1, (budget - GAP * (items.length - 1) - 2 * NEST * nested.length) / bytes);
+            return Math.max(1, (budget - gap * (items.length - 1) - 2 * NEST * nested.length) / bytes);
           })
         )
       );
     // The pane's text shrinks (down to PANE_MIN) rather than widen the drawing past what
     // memory and the other parts need: a long pane line otherwise shrinks code and memory too.
-    const natural = placement(m, byteFor(MEMORY_WIDTH), rowOf).width;
+    const natural = placement(m, byteFor(MEMORY_WIDTH), rowOf, flush).width;
     const paneSize = Math.max(
       PANE_MIN,
       Math.min(PANE_MAX, Math.floor((Math.max(360, natural + 48) - 48) / (paneChars * CHAR)))
@@ -573,7 +587,7 @@ export function geometry(
     // Memory takes the width the rest of the column already has, or the viewport leaves beside
     // the code, never less than its budget.
     const byte = byteFor(Math.max(MEMORY_WIDTH, others - 48, besideCode - 48));
-    const placed = placement(m, byte, rowOf);
+    const placed = placement(m, byte, rowOf, flush);
     const columnW = Math.max(others, placed.width + 48);
     // Fit the source after reserving space for memory and the expression pane.
     const codeBudget = stacked
@@ -581,7 +595,7 @@ export function geometry(
       : canvasBudget - (columnW + COLUMN_GAP + 2 * MARGIN);
     const code = fitCode(codeBudget);
     const width = code.width + COLUMN_GAP + columnW;
-    return { rows, rowOf, code, paneSize, paneChar, labelExtent, placed, columnW, width, cell: byte / width };
+    return { rows, rowOf, code, paneSize, paneChar, byte, labelExtent, placed, columnW, width, cell: byte / width };
   };
   const partitions = (n: number, count: number): number[][][] => {
     if (count === 1) return [[Array.from({ length: n }, (_, i) => i)]];
@@ -762,6 +776,8 @@ export function geometry(
   const g: Geometry = {
     paneSize: chosen.paneSize,
     paneChar: chosen.paneChar,
+    byteWidth: chosen.byte,
+    flush,
     stacked,
     isStruct,
     rise,

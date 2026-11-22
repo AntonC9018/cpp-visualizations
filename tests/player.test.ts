@@ -549,6 +549,48 @@ test('a bits trace keeps the value in the workbench while printing it', async ()
   assert.deepEqual(shown, ['00000000', '00000000', '00000000', '00000111']);
 });
 
+test('a bits trace lays variables flush on the byte grid, hatches padding, and pulses only changed bytes', async () => {
+  const bits = traceSource('int8_t a{ 5 }; int b; b = 5; b = 2;', { bits: true });
+  await page.setContent(PAGE.replace(trace, JSON.stringify(bits).replace(/</g, '\\u003c')));
+  await page.evaluate(() => window.CourseVisualization!.scan());
+  await page.waitForSelector('.cv-player');
+  const write2 = bits.steps.findIndex(step => step.op?.kind === 'write' && step.op.value === '2');
+  const uninitStep = bits.steps.findIndex(step => step.values.b === '?');
+  const report = await page.locator('.course-visualization').evaluate((h: PlayerElement, { write2, uninitStep }) => {
+    const g = h.cvPlayer.g;
+    const base = Math.min(...g.leaves.map(l => l.address));
+    const bLeaf = g.leaves.find(l => l.name === 'b')!;
+    const aligned = g.leaves.every(
+      l => Math.abs(l.x - (g.memX + (l.address - base) * g.byteWidth)) < 0.01 &&
+           Math.abs(l.w - l.size * g.byteWidth) < 0.01
+    );
+    h.cvPlayer.settle(uninitStep);
+    const uninitHex = h.cvPlayer.svg.querySelector('.cv-byte-hex[data-name="b"]')?.textContent ?? '';
+    const paddingCount = h.cvPlayer.svg.querySelectorAll('.cv-byte-padding').length;
+    h.cvPlayer.inspect(write2, 1.5);
+    const lePulseGs = [...h.cvPlayer.svg.querySelectorAll('.cv-byte-hex[data-name="b"] animateTransform[type="scale"]')].map(
+      el => el.parentElement!.parentElement!.getAttribute('transform') ?? ''
+    );
+    return { aligned, uninitHex, paddingCount, lePulseGs, bx: bLeaf.x, bw: g.byteWidth };
+  }, { write2, uninitStep });
+  await page.getByRole('button', { name: 'Big-endian' }).click();
+  const bePulseGs = await page.locator('.course-visualization').evaluate((h: PlayerElement, step) => {
+    h.cvPlayer.inspect(step, 1.5);
+    return [...h.cvPlayer.svg.querySelectorAll('.cv-byte-hex[data-name="b"] animateTransform[type="scale"]')].map(
+      el => el.parentElement!.parentElement!.getAttribute('transform') ?? ''
+    );
+  }, write2);
+  const pulseX = (t: string): number => Number(t.match(/translate\(([-\d.]+)/)?.[1]);
+  assert.equal(report.aligned, true);
+  assert.equal(report.uninitHex, '????????');
+  assert.equal(report.paddingCount, 1);
+  // Only the modified byte pulses: byte 0 (leftmost) in LE, byte 3 (rightmost) in BE.
+  assert.equal(report.lePulseGs.length, 1);
+  assert.equal(bePulseGs.length, 1);
+  assert.ok(Math.abs(pulseX(report.lePulseGs[0]) - (report.bx + report.bw / 2)) < 0.5);
+  assert.ok(Math.abs(pulseX(bePulseGs[0]) - (report.bx + 3.5 * report.bw)) < 0.5);
+});
+
 test('a trace without bits has no byte order switch', async () => {
   await page.waitForSelector('.cv-player');
   assert.equal(await page.locator('.cv-endian').count(), 0);
