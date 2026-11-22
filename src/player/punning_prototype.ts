@@ -1,18 +1,13 @@
 // PROTOTYPE, throwaway (pointer type punning with larger and smaller pointee types, #60).
-// Folded design:
-//   - Plain Lab 4 syntax (no reinterpret_cast), all native animations active
+// Approved design candidate:
+//   - Plain Lab 4 syntax (no reinterpret_cast), all native step animations active
 //   - Byte-accurate horizontal hex memory strip + bits_view byte-order arrow on multi-byte ints
-//   - Clean overhead pointer arc (no type pill), full-height targeting scope around pointed-at bytes
-//   - Smart decimal nudge: short values inside a larger target shift clear of the scope edge;
-//     long values (e.g. 33554437 in BE) stay centered across the cell
-//   - Per-byte write pulse: decimal header and changed byte(s) pulse; untouched bytes stay still
-//   - UB (red spilled bytes, red hazard fill, red right side of scope, "⚠ UB") ONLY on write
-//   - Standardized pane byte strip (Variant B winner): written bytes + hollow dashed target slots
-//
-// Three lock-on scope styles + animations (?variant=A|B|C):
-//   A: Open HUD corner brackets + inward crosshair ticks (zoom-in snap lock)
-//   B: Notched targeting frame + outward sight ticks (45° diamond-to-square spin lock)
-//   C: Opposing [ ] byte clamps + hairline rails (horizontal clamp-shut lock)
+//   - Clean overhead pointer arc (no type pill) + full-height open HUD corner reticle (zoom-snap lock)
+//   - Values stay centered inside cells; per-byte write pulse keeps unaffected bytes rock-solid
+//   - No persistent highlight or veil in memory: write highlight is transient and full-height over
+//     the exact bytes actually written (4 tall bytes for int*, 1 tall misaligned byte for uint8_t*)
+//   - Corrupted memory (padding & overwritten neighbors) stays red with "⚠ UB", triggered only on write
+//   - Pane shows only the written bytes plus hollow dashed slots for untouched target bytes
 import type { ExecutionTrace, ScalarVariable, TraceStep } from '../core/trace_format.ts';
 import {
   CHAR,
@@ -357,7 +352,7 @@ function makeScenario1(): { trace: ExecutionTrace; meta: PunningMeta } {
   const meta: PunningMeta = {
     id: 'larger-padding',
     title: '1. Larger pointer writes past 1-byte object into padding',
-    subtitle: 'Hit Play to watch the scope lock onto 64..67 on line 3, then trip UB on line 4.',
+    subtitle: 'Scope locks onto 64..67 on line 3; writing *b = 300 highlights all 4 written bytes and marks spilled padding red.',
     direction: 'larger',
     baseAddress: 64,
     totalBytes: 16,
@@ -626,7 +621,7 @@ function makeScenario3(): { trace: ExecutionTrace; meta: PunningMeta } {
   const meta: PunningMeta = {
     id: 'smaller-five',
     title: '3. Smaller pointer overwrites only byte 64 of int a (a = 5)',
-    subtitle: 'Full-height scope locks onto byte 64; value stays centered. Flip LE/BE to see 2 vs 33554437.',
+    subtitle: 'Hit Play or Replay on step 9 to see the tall 1-byte write highlight on byte 64. Flip LE/BE for 2 vs 33554437.',
     direction: 'smaller',
     baseAddress: 64,
     totalBytes: 16,
@@ -773,15 +768,12 @@ const SCENARIOS = [makeScenario1(), makeScenario2(), makeScenario3(), makeScenar
 // SHARED SVG HELPERS + NATIVE TRANSFERS
 // ============================================================================================
 
-type ReticleStyle = 'A' | 'B' | 'C';
-
 let patternSeq = 0;
 
-function hatchDefs(P: Palette): { defs: string; padId: string; ubId: string; veilId: string } {
+function hatchDefs(P: Palette): { defs: string; padId: string; ubId: string } {
   const uid = ++patternSeq;
   const padId = `cv-pad-hatch-${uid}`;
   const ubId = `cv-ub-hatch-${uid}`;
-  const veilId = `cv-veil-hatch-${uid}`;
   const defs =
     '<defs>' +
     `<pattern id="${padId}" width="10" height="10" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">` +
@@ -793,12 +785,8 @@ function hatchDefs(P: Palette): { defs: string; padId: string; ubId: string; vei
     `<rect width="10" height="10" fill="${P.error}" fill-opacity="0.13"/>` +
     `<line x1="0" y1="0" x2="0" y2="10" stroke="${P.error}" stroke-opacity="0.34" stroke-width="2.8"/>` +
     '</pattern>' +
-    `<pattern id="${veilId}" width="9" height="9" patternUnits="userSpaceOnUse" patternTransform="rotate(-45)">` +
-    `<rect width="9" height="9" fill="${P.deadFill}" fill-opacity="0.58"/>` +
-    `<line x1="0" y1="0" x2="0" y2="9" stroke="${P.gapStroke}" stroke-opacity="0.45" stroke-width="1.6"/>` +
-    '</pattern>' +
     '</defs>';
-  return { defs, padId, ubId, veilId };
+  return { defs, padId, ubId };
 }
 
 function varColor(P: Palette, v: PunningVar): string {
@@ -950,10 +938,10 @@ function gridTransfers(
 }
 
 // ============================================================================================
-// FULL-HEIGHT MISSILE-LOCK TARGETING SCOPE (VARIANTS A / B / C)
+// FULL-HEIGHT OPEN HUD CORNER RETICLE (APPROVED VARIANT A)
 // ============================================================================================
 
-function drawReticleA(
+function drawHudReticle(
   bx: number,
   by: number,
   bw: number,
@@ -962,7 +950,6 @@ function drawReticleA(
   rightCol: string,
   splitX: number | null
 ): string {
-  // Open 4-corner HUD L-brackets + 4 tiny inward midpoint crosshair ticks + faint dashed hairline
   const arm = Math.min(14, bw * 0.28);
   const tick = 5;
   const rx = bx + bw;
@@ -970,9 +957,9 @@ function drawReticleA(
   const mx = bx + bw / 2;
   const my = by + bh / 2;
   const rightTopCol = splitX !== null ? rightCol : leftCol;
+  const topTickCol = splitX !== null && mx >= splitX ? rightCol : leftCol;
 
   let out = '';
-  // Subtle dashed perimeter connecting the corners
   if (splitX !== null) {
     out +=
       `<path d="M ${round(splitX)} ${round(by)} H ${round(bx)} V ${round(ry)} H ${round(splitX)}" fill="none" stroke="${leftCol}" stroke-opacity="0.32" stroke-dasharray="3 3" stroke-width="1.3"/>` +
@@ -980,111 +967,16 @@ function drawReticleA(
   } else {
     out += `<rect x="${round(bx)}" y="${round(by)}" width="${round(bw)}" height="${round(bh)}" fill="none" stroke="${leftCol}" stroke-opacity="0.32" stroke-dasharray="3 3" stroke-width="1.3"/>`;
   }
-  // 4 crisp corner brackets
   out +=
     `<path d="M ${round(bx)} ${round(by + arm)} V ${round(by)} H ${round(bx + arm)}" fill="none" stroke="${leftCol}" stroke-width="3.2" stroke-linecap="square"/>` +
     `<path d="M ${round(bx)} ${round(ry - arm)} V ${round(ry)} H ${round(bx + arm)}" fill="none" stroke="${leftCol}" stroke-width="3.2" stroke-linecap="square"/>` +
     `<path d="M ${round(rx - arm)} ${round(by)} H ${round(rx)} V ${round(by + arm)}" fill="none" stroke="${rightTopCol}" stroke-width="3.2" stroke-linecap="square"/>` +
-    `<path d="M ${round(rx - arm)} ${round(ry)} H ${round(rx)} V ${round(ry - arm)}" fill="none" stroke="${rightTopCol}" stroke-width="3.2" stroke-linecap="square"/>`;
-  // 4 inward midpoint crosshair ticks
-  const topTickCol = splitX !== null && mx >= splitX ? rightCol : leftCol;
-  out +=
+    `<path d="M ${round(rx - arm)} ${round(ry)} H ${round(rx)} V ${round(ry - arm)}" fill="none" stroke="${rightTopCol}" stroke-width="3.2" stroke-linecap="square"/>` +
     `<line x1="${round(mx)}" y1="${round(by)}" x2="${round(mx)}" y2="${round(by + tick)}" stroke="${topTickCol}" stroke-width="2.2"/>` +
     `<line x1="${round(mx)}" y1="${round(ry)}" x2="${round(mx)}" y2="${round(ry - tick)}" stroke="${topTickCol}" stroke-width="2.2"/>` +
     `<line x1="${round(bx)}" y1="${round(my)}" x2="${round(bx + tick)}" y2="${round(my)}" stroke="${leftCol}" stroke-width="2.2"/>` +
     `<line x1="${round(rx)}" y1="${round(my)}" x2="${round(rx - tick)}" y2="${round(my)}" stroke="${rightTopCol}" stroke-width="2.2"/>`;
   return out;
-}
-
-function drawReticleB(
-  bx: number,
-  by: number,
-  bw: number,
-  bh: number,
-  leftCol: string,
-  rightCol: string,
-  splitX: number | null
-): string {
-  // Chamfered/notched fighter-jet targeting frame + outward crosshair sight ticks
-  const cut = 6;
-  const rx = bx + bw;
-  const ry = by + bh;
-  const mx = bx + bw / 2;
-  const my = by + bh / 2;
-  const tick = 6;
-  const rightTopCol = splitX !== null ? rightCol : leftCol;
-  const topTickCol = splitX !== null && mx >= splitX ? rightCol : leftCol;
-
-  let out = '';
-  if (splitX !== null) {
-    out +=
-      `<path d="M ${round(splitX)} ${round(by)} H ${round(bx + cut)} L ${round(bx)} ${round(by + cut)} ` +
-      `V ${round(ry - cut)} L ${round(bx + cut)} ${round(ry)} H ${round(splitX)}" ` +
-      `fill="none" stroke="${leftCol}" stroke-width="2.6" stroke-linejoin="miter"/>` +
-      `<path d="M ${round(splitX)} ${round(by)} H ${round(rx - cut)} L ${round(rx)} ${round(by + cut)} ` +
-      `V ${round(ry - cut)} L ${round(rx - cut)} ${round(ry)} H ${round(splitX)}" ` +
-      `fill="none" stroke="${rightCol}" stroke-width="2.8" stroke-linejoin="miter"/>`;
-  } else {
-    out +=
-      `<path d="M ${round(bx + cut)} ${round(by)} H ${round(rx - cut)} L ${round(rx)} ${round(by + cut)} ` +
-      `V ${round(ry - cut)} L ${round(rx - cut)} ${round(ry)} H ${round(bx + cut)} L ${round(bx)} ${round(ry - cut)} ` +
-      `V ${round(by + cut)} Z" fill="none" stroke="${leftCol}" stroke-width="2.6" stroke-linejoin="miter"/>`;
-  }
-  // Outward crosshair sight ticks
-  out +=
-    `<line x1="${round(mx)}" y1="${round(by - tick)}" x2="${round(mx)}" y2="${round(by + 2)}" stroke="${topTickCol}" stroke-width="2.2"/>` +
-    `<line x1="${round(mx)}" y1="${round(ry - 2)}" x2="${round(mx)}" y2="${round(ry + tick)}" stroke="${topTickCol}" stroke-width="2.2"/>` +
-    `<line x1="${round(bx - tick)}" y1="${round(my)}" x2="${round(bx + 2)}" y2="${round(my)}" stroke="${leftCol}" stroke-width="2.2"/>` +
-    `<line x1="${round(rx - 2)}" y1="${round(my)}" x2="${round(rx + tick)}" y2="${round(my)}" stroke="${rightTopCol}" stroke-width="2.2"/>`;
-  return out;
-}
-
-function drawReticleC(
-  bx: number,
-  by: number,
-  bw: number,
-  bh: number,
-  leftCol: string,
-  rightCol: string,
-  splitX: number | null,
-  animateClamp: { begin: number } | null
-): string {
-  // Opposing full-height [ and ] clamps with small midpoint teeth + light connecting rails
-  const lip = Math.min(11, bw * 0.24);
-  const rx = bx + bw;
-  const ry = by + bh;
-  const my = by + bh / 2;
-  const rightTopCol = splitX !== null ? rightCol : leftCol;
-
-  const leftClamp =
-    `<path d="M ${round(bx + lip)} ${round(by)} H ${round(bx)} V ${round(ry)} H ${round(bx + lip)}" fill="none" stroke="${leftCol}" stroke-width="3.2" stroke-linecap="square"/>` +
-    `<line x1="${round(bx)}" y1="${round(my)}" x2="${round(bx + 5)}" y2="${round(my)}" stroke="${leftCol}" stroke-width="2.4"/>`;
-  const rightClamp =
-    `<path d="M ${round(rx - lip)} ${round(by)} H ${round(rx)} V ${round(ry)} H ${round(rx - lip)}" fill="none" stroke="${rightTopCol}" stroke-width="3.2" stroke-linecap="square"/>` +
-    `<line x1="${round(rx)}" y1="${round(my)}" x2="${round(rx - 5)}" y2="${round(my)}" stroke="${rightTopCol}" stroke-width="2.4"/>`;
-
-  const rails =
-    splitX !== null
-      ? `<line x1="${round(bx + lip)}" y1="${round(by)}" x2="${round(splitX)}" y2="${round(by)}" stroke="${leftCol}" stroke-opacity="0.35" stroke-width="1.4"/>` +
-        `<line x1="${round(splitX)}" y1="${round(by)}" x2="${round(rx - lip)}" y2="${round(by)}" stroke="${rightCol}" stroke-opacity="0.45" stroke-width="1.4"/>` +
-        `<line x1="${round(bx + lip)}" y1="${round(ry)}" x2="${round(splitX)}" y2="${round(ry)}" stroke="${leftCol}" stroke-opacity="0.35" stroke-width="1.4"/>` +
-        `<line x1="${round(splitX)}" y1="${round(ry)}" x2="${round(rx - lip)}" y2="${round(ry)}" stroke="${rightCol}" stroke-opacity="0.45" stroke-width="1.4"/>`
-      : `<line x1="${round(bx + lip)}" y1="${round(by)}" x2="${round(rx - lip)}" y2="${round(by)}" stroke="${leftCol}" stroke-opacity="0.35" stroke-width="1.4"/>` +
-        `<line x1="${round(bx + lip)}" y1="${round(ry)}" x2="${round(rx - lip)}" y2="${round(ry)}" stroke="${leftCol}" stroke-opacity="0.35" stroke-width="1.4"/>`;
-
-  if (animateClamp) {
-    const b = animateClamp.begin;
-    return (
-      `<g opacity="0">${fade(0, 1, 0.18, b + 0.25)}${rails}</g>` +
-      `<g opacity="0">${fade(0, 1, 0.14, b)}` +
-      `<animateTransform attributeName="transform" type="translate" values="-22 0;2 0;0 0" keyTimes="0;0.75;1" calcMode="spline" keySplines="0.2 0 0.2 1;0.4 0 0.2 1" begin="${round(b)}s" dur="0.46s" fill="freeze"/>` +
-      `${leftClamp}</g>` +
-      `<g opacity="0">${fade(0, 1, 0.14, b)}` +
-      `<animateTransform attributeName="transform" type="translate" values="22 0;-2 0;0 0" keyTimes="0;0.75;1" calcMode="spline" keySplines="0.2 0 0.2 1;0.4 0 0.2 1" begin="${round(b)}s" dur="0.46s" fill="freeze"/>` +
-      `${rightClamp}</g>`
-    );
-  }
-  return rails + leftClamp + rightClamp;
 }
 
 function targetScopeReticle(
@@ -1095,8 +987,7 @@ function targetScopeReticle(
   byteW: number,
   gridY: number,
   cellH: number,
-  pCol: string,
-  style: ReticleStyle
+  pCol: string
 ): string {
   if (!sim.ptrLive) return '';
   const { P, animate, op } = c;
@@ -1106,7 +997,6 @@ function targetScopeReticle(
   const targetVar = meta.vars.find(v => v.name === meta.targetVar)!;
   const ownEnd = xOf(targetVar.address + targetVar.size);
 
-  // Full height for BOTH larger and smaller pointers!
   const pad = 3.5;
   const bx = wLeft - pad;
   const by = gridY - pad;
@@ -1119,74 +1009,61 @@ function targetScopeReticle(
   const isDeref = animate && c.index === meta.derefStep;
   const hot = sim.windowActive;
 
-  const renderShape = (leftCol: string, rightCol: string, splitX: number | null, clampAnim: { begin: number } | null): string => {
-    if (style === 'A') return drawReticleA(bx, by, bw, bh, leftCol, rightCol, splitX);
-    if (style === 'B') return drawReticleB(bx, by, bw, bh, leftCol, rightCol, splitX);
-    return drawReticleC(bx, by, bw, bh, leftCol, rightCol, splitX, clampAnim);
-  };
-
   let inner = '';
   if (meta.direction === 'larger' && sim.ubTriggered) {
-    const calm = renderShape(pCol, pCol, null, null);
-    const breached = renderShape(P.write, P.error, ownEnd, null);
+    const calm = drawHudReticle(bx, by, bw, bh, pCol, pCol, null);
+    const breached = drawHudReticle(bx, by, bw, bh, P.write, P.error, ownEnd);
     inner =
       animate && sim.isPunningWrite
         ? `<g>${hide(at)}${calm}</g><g opacity="0">${show(at)}${breached}</g>`
         : breached;
   } else {
     const col = hot ? P.write : pCol;
-    const clampAnim = isWritingPtr && style === 'C' ? { begin: at + 0.52 } : null;
-    inner = renderShape(col, col, null, clampAnim);
+    inner = drawHudReticle(bx, by, bw, bh, col, col, null);
   }
 
-  // Missile lock-on animations!
   if (isWritingPtr) {
     const lockBegin = at + 0.52;
-    if (style === 'A') {
-      // Zoom-in snap lock with slight overshoot bounce (1.28 -> 0.96 -> 1.0)
-      return (
-        `<g opacity="0">${fade(0, 1, 0.14, lockBegin)}` +
-        `<g transform="translate(${round(cx)} ${round(cy)})"><g>` +
-        `<animateTransform attributeName="transform" type="scale" values="1.28;0.96;1" keyTimes="0;0.74;1" ` +
-        `calcMode="spline" keySplines="0.2 0 0.2 1;0.4 0 0.2 1" begin="${round(lockBegin)}s" dur="0.46s" fill="freeze"/>` +
-        `<g transform="translate(${round(-cx)} ${round(-cy)})">${inner}</g></g></g></g>`
-      );
-    }
-    if (style === 'B') {
-      // Fighter-jet 45° diamond spin-and-shrink into horizontal square lock!
-      return (
-        `<g opacity="0">${fade(0, 1, 0.16, lockBegin)}` +
-        `<g transform="translate(${round(cx)} ${round(cy)})">` +
-        `<g><animateTransform attributeName="transform" type="rotate" from="45" to="0" begin="${round(lockBegin)}s" dur="0.48s" ${EASE} fill="freeze"/>` +
-        `<g><animateTransform attributeName="transform" type="scale" values="1.32;0.97;1" keyTimes="0;0.78;1" ` +
-        `calcMode="spline" keySplines="0.2 0 0.2 1;0.4 0 0.2 1" begin="${round(lockBegin)}s" dur="0.48s" fill="freeze"/>` +
-        `<g transform="translate(${round(-cx)} ${round(-cy)})">${inner}</g></g></g></g></g>`
-      );
-    }
-    // Style C handles its own opposing horizontal clamp animation inside drawReticleC
-    return inner;
+    return (
+      `<g opacity="0">${fade(0, 1, 0.14, lockBegin)}` +
+      `<g transform="translate(${round(cx)} ${round(cy)})"><g>` +
+      `<animateTransform attributeName="transform" type="scale" values="1.28;0.96;1" keyTimes="0;0.74;1" ` +
+      `calcMode="spline" keySplines="0.2 0 0.2 1;0.4 0 0.2 1" begin="${round(lockBegin)}s" dur="0.46s" fill="freeze"/>` +
+      `<g transform="translate(${round(-cx)} ${round(-cy)})">${inner}</g></g></g></g>`
+    );
   }
-
   if (isDeref) {
-    const blink =
-      style === 'B'
-        ? `<animate attributeName="opacity" values="1;0.3;1;0.3;1" keyTimes="0;0.25;0.5;0.75;1" begin="${round(at - 0.18)}s" dur="0.46s" fill="freeze"/>`
-        : '';
-    return `<g>${blink}${scaledAt(cx, cy, inner, at - 0.18)}</g>`;
+    return scaledAt(cx, cy, inner, at - 0.18);
   }
-
   return inner;
 }
 
+/** Transient full-height write highlight over the exact byte span actually being written. */
+function transientWriteHighlight(
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  color: string,
+  at: number
+): string {
+  return (
+    `<g opacity="0">${fade(0, 1, 0.15, Math.max(0, at - 0.25))}${fade(1, 0, 0.3, at + 0.35)}` +
+    rect(x + 2, y + 2, w - 4, h - 4, color, 'none', 0).replace('fill=', 'fill-opacity="0.2" fill=') +
+    rect(x + 2, y + 2, w - 4, h - 4, 'none', color, 0, 2.8) +
+    '</g>'
+  );
+}
+
 // ============================================================================================
-// UNIFIED SCENE (FOLDED PANE B + FULL-HEIGHT RETICLE VARIANTS A / B / C)
+// UNIFIED SCENE
 // ============================================================================================
 
-function unifiedScene(c: SceneContext, reticleStyle: ReticleStyle): string {
+function punningScene(c: SceneContext): string {
   const meta = META.get(c.m.trace)!;
   const sim = simulate(meta, c.index, c.littleEndian);
   const { g, P, animate, op, step, prev } = c;
-  const { defs, padId, ubId, veilId } = hatchDefs(P);
+  const { defs, padId, ubId } = hatchDefs(P);
   const lineChanged = animate && prev !== null && prev.line !== step.line;
   const oldLine = lineChanged && prev ? prev.line : null;
 
@@ -1219,7 +1096,7 @@ function unifiedScene(c: SceneContext, reticleStyle: ReticleStyle): string {
     );
   }
 
-  // 2. Padding runs (hatched only; red UB fill ONLY on write)
+  // 2. Padding runs (hatched only; corrupted red hatch ONLY on write)
   for (const run of paddingRuns(meta)) {
     const rx = xOf(run.start);
     const rw = run.size * byteW;
@@ -1266,7 +1143,7 @@ function unifiedScene(c: SceneContext, reticleStyle: ReticleStyle): string {
   }
   const pillRowsCount = Math.max(1, pillRowEdge.length);
 
-  // 3. Variables (flush on byte grid; smart header nudge + per-byte pulse!)
+  // 3. Variables (clean panel fill; NO persistent highlight or veil; corrupted foreign bytes stay red)
   for (const v of meta.vars) {
     const vx = xOf(v.address);
     const vw = v.size * byteW;
@@ -1280,7 +1157,7 @@ function unifiedScene(c: SceneContext, reticleStyle: ReticleStyle): string {
     let markup = '';
     markup += rect(vx + 1, gridY + 1, vw - 2, cellH - 2, on ? P.panel : P.deadFill, 'none', 0);
 
-    // Per-byte backgrounds inside the variable
+    // Only corrupted foreign bytes keep the red hazard fill after a UB write
     for (let k = 0; k < v.size; k++) {
       const addr = v.address + k;
       const slot = sim.bytes[addr - meta.baseAddress];
@@ -1291,18 +1168,6 @@ function unifiedScene(c: SceneContext, reticleStyle: ReticleStyle): string {
           animate && sim.isPunningWrite
             ? `<g opacity="0">${show(at + 0.08 * (addr - meta.targetAddress))}${bg}</g>`
             : bg;
-      } else if (slot.status === 'owned' && sim.windowActive) {
-        const bg = rect(bx + 1.5, splitY, byteW - 3, cellH - (splitY - gridY) - 1.5, P.writeFill, 'none', 0);
-        markup +=
-          animate && c.index === meta.derefStep
-            ? `<g opacity="0">${fade(0, 1, 0.25, at - 0.15)}${bg}</g>`
-            : bg;
-      } else if (slot.status === 'untouched' && meta.direction === 'smaller') {
-        const veil = rect(bx + 1.5, splitY, byteW - 3, cellH - (splitY - gridY) - 1.5, `url(#${veilId})`, 'none', 0);
-        markup +=
-          animate && op?.kind === 'write' && op.name === meta.ptrName
-            ? `<g opacity="0">${fade(0, 1, 0.3, at + 0.55)}${veil}</g>`
-            : veil;
       }
     }
 
@@ -1323,7 +1188,7 @@ function unifiedScene(c: SceneContext, reticleStyle: ReticleStyle): string {
       markup += rect(vx + 1.5, gridY + 1.5, vw - 3, cellH - 3, 'none', borderCol, 0, isCorrupted ? 3.2 : 2.8);
     }
 
-    // 3a. Decimal header (always centered; Variant A's open HUD reticle does not obstruct it)
+    // 3a. Centered decimal header (pulses independently when the variable's value changes)
     const headCx = vx + vw / 2;
     const renderHeader = (val: number | null, useBefore: boolean): string => {
       if (val === null) return '';
@@ -1350,7 +1215,7 @@ function unifiedScene(c: SceneContext, reticleStyle: ReticleStyle): string {
       markup += renderHeader(valAfter, false);
     }
 
-    // 3b. Individual byte cells — ONLY changed bytes pulse!
+    // 3b. Individual byte cells — ONLY changed bytes pulse; unaffected bytes stay still & clean
     const hexY = gridY + 74;
     for (let k = 0; k < v.size; k++) {
       const addr = v.address + k;
@@ -1359,16 +1224,13 @@ function unifiedScene(c: SceneContext, reticleStyle: ReticleStyle): string {
 
       const renderByte = (bval: ByteVal, useBefore: boolean): string => {
         if (typeof bval !== 'number') return '';
-        const isUntouched = slot.status === 'untouched';
         const byteInk =
           slot.status === 'foreign' && sim.ubTriggered && !useBefore
             ? P.error
-            : slot.status === 'owned' && c.index >= meta.writeAction.stepIndex && !useBefore
-              ? P.write
-              : v.kind === 'ptr'
-                ? P.muted
-                : P.fg;
-        const opAttr = isUntouched ? ' opacity="0.4"' : v.kind === 'ptr' ? ' opacity="0.65"' : '';
+            : v.kind === 'ptr'
+              ? P.muted
+              : P.fg;
+        const opAttr = v.kind === 'ptr' ? ' opacity="0.65"' : '';
         const bg =
           slot.status === 'foreign' && sim.ubTriggered && !useBefore
             ? rect(bx + byteW / 2 - 15, hexY - 15, 30, 20, P.panel, 'none', 3)
@@ -1388,20 +1250,16 @@ function unifiedScene(c: SceneContext, reticleStyle: ReticleStyle): string {
       }
     }
 
-    // Read/write highlight outline on normal steps
+    // Transient read / normal write highlight (full height, same as scene.ts)
     if (animate && op && !sim.isPunningWrite) {
       if (op.kind === 'read' && op.name === v.name) {
         markup +=
           `<g opacity="0">${fade(0, 1, 0.15)}${fade(1, 0, 0.25, at)}` +
-          rect(vx + 3, gridY + 3, vw - 6, cellH - 6, P.read, 'none', 0).replace('fill=', 'fill-opacity="0.18" fill=') +
-          rect(vx + 3, gridY + 3, vw - 6, cellH - 6, 'none', P.read, 0, 3) +
+          rect(vx + 2, gridY + 2, vw - 4, cellH - 4, P.read, 'none', 0).replace('fill=', 'fill-opacity="0.18" fill=') +
+          rect(vx + 2, gridY + 2, vw - 4, cellH - 4, 'none', P.read, 0, 2.8) +
           '</g>';
       } else if (op.kind === 'write' && op.name === v.name) {
-        markup +=
-          `<g opacity="0">${fade(0, 1, 0.15, at - 0.25)}${fade(1, 0, 0.3, at + 0.3)}` +
-          rect(vx + 3, gridY + 3, vw - 6, cellH - 6, P.write, 'none', 0).replace('fill=', 'fill-opacity="0.18" fill=') +
-          rect(vx + 3, gridY + 3, vw - 6, cellH - 6, 'none', P.write, 0, 3) +
-          '</g>';
+        markup += transientWriteHighlight(vx, gridY, vw, cellH, P.write, at);
       }
     }
 
@@ -1439,6 +1297,26 @@ function unifiedScene(c: SceneContext, reticleStyle: ReticleStyle): string {
     mem += keepBright ? markup : dim(c, v.name, markup);
   }
 
+  // 3c. Transient full-height write highlight on the EXACT bytes actually being written by `*b = ...`!
+  //     (4 tall bytes for int*, 1 tall misaligned byte for uint8_t* — consistent with normal writes!)
+  let writeFlash = '';
+  if (animate && sim.isPunningWrite) {
+    const wLeft = xOf(meta.targetAddress);
+    const wWidth = meta.pointeeSize * byteW;
+    if (meta.direction === 'larger') {
+      const ownW = targetVar.size * byteW;
+      const spillW = wWidth - ownW;
+      // Full-height gold flash on owned bytes + full-height red flash on out-of-bounds bytes
+      writeFlash += transientWriteHighlight(wLeft, gridY, ownW, cellH, P.write, at);
+      if (spillW > 0) {
+        writeFlash += transientWriteHighlight(wLeft + ownW, gridY, spillW, cellH, P.error, at + 0.08);
+      }
+    } else {
+      // Full-height misaligned 1-byte gold flash across byte 64 inside `int a`!
+      writeFlash += transientWriteHighlight(wLeft, gridY, wWidth, cellH, P.write, at);
+    }
+  }
+
   // 4. Clean overhead pointer arc from `b` (no text on arrow)
   let arcMarkup = '';
   if (sim.ptrLive) {
@@ -1462,8 +1340,8 @@ function unifiedScene(c: SceneContext, reticleStyle: ReticleStyle): string {
     }
   }
 
-  // 5. Full-height missile-lock scope reticle
-  const scopeReticle = targetScopeReticle(c, meta, sim, xOf, byteW, gridY, cellH, pCol, reticleStyle);
+  // 5. Full-height open HUD corner reticle
+  const scopeReticle = targetScopeReticle(c, meta, sim, xOf, byteW, gridY, cellH, pCol);
 
   // 6. UB bracket & badge below memory — ONLY on larger-pointer write!
   let belowOverlay = '';
@@ -1481,7 +1359,7 @@ function unifiedScene(c: SceneContext, reticleStyle: ReticleStyle): string {
       animate && sim.isPunningWrite ? `<g opacity="0">${fade(0, 1, 0.25, at)}${cal}</g>` : cal;
   }
 
-  // 7. Folded pane strip (Variant B winner): written bytes + hollow dashed target slots!
+  // 7. Standardized pane byte strip (written bytes + hollow dashed target slots)
   let wb = '';
   let flight = '';
   if (sim.windowActive) {
@@ -1511,9 +1389,9 @@ function unifiedScene(c: SceneContext, reticleStyle: ReticleStyle): string {
         const ey = gridY + 70;
         const midY = (sy + ey) / 2;
         const path = `M ${round(sx)} ${round(sy)} C ${round(sx)} ${round(midY)}, ${round(ex)} ${round(midY)}, ${round(ex)} ${round(ey)}`;
-        const begin = 0.25 + k * 0.1;
         const dur = 0.85;
-        const end = begin + dur;
+        const end = at + k * 0.08;
+        const begin = Math.max(0.2, end - dur);
         const flyCol = slot.status === 'padding' || slot.status === 'foreign' ? P.error : P.write;
         flight +=
           `<g opacity="0">${fade(0, 0.5, 0.2, begin)}${fade(0.5, 0, 0.25, end)}<path d="${path}" fill="none" stroke="${flyCol}" stroke-width="2.4"/></g>` +
@@ -1538,6 +1416,7 @@ function unifiedScene(c: SceneContext, reticleStyle: ReticleStyle): string {
     tether(c, oldLine) +
     arcMarkup +
     mem +
+    writeFlash +
     scopeReticle +
     belowOverlay +
     pane(c, animate && copies(c.m.steps, c.index)) +
@@ -1548,102 +1427,32 @@ function unifiedScene(c: SceneContext, reticleStyle: ReticleStyle): string {
   );
 }
 
-function makeView(reticleStyle: ReticleStyle): TraceView {
-  return {
-    geometry: m => {
-      const meta = META.get(m.trace)!;
-      return {
-        minByteWidth: 46,
-        minColumnWidth: 780,
-        cellHeight: 88,
-        extraMemBottom: meta.direction === 'larger' ? 104 : 46,
-        extraPaneHeight: 46,
-        skipWrap: true,
-      };
-    },
-    stackBelow: 900,
-    maxScale: 0.72,
-    byteOrder: true,
-    scene: c => unifiedScene(c, reticleStyle),
-    stepSeconds: punningStepSeconds,
-  };
-}
+const PUNNING_VIEW: TraceView = {
+  geometry: m => {
+    const meta = META.get(m.trace)!;
+    return {
+      minByteWidth: 46,
+      minColumnWidth: 780,
+      cellHeight: 88,
+      extraMemBottom: meta.direction === 'larger' ? 104 : 46,
+      extraPaneHeight: 46,
+      skipWrap: true,
+    };
+  },
+  stackBelow: 900,
+  maxScale: 0.72,
+  byteOrder: true,
+  scene: punningScene,
+  stepSeconds: punningStepSeconds,
+};
 
 // ============================================================================================
-// PROTOTYPE SHELL + FLOATING VARIANT SWITCHER (?variant=A|B|C)
+// PROTOTYPE SHELL
 // ============================================================================================
-
-interface VariantDef {
-  key: ReticleStyle;
-  name: string;
-  summary: string;
-  bullets: string[];
-  view: TraceView;
-}
-
-const VARIANTS: VariantDef[] = [
-  {
-    key: 'A',
-    name: 'A · HUD corner reticle (zoom-snap lock)',
-    summary:
-      'Full-height open L-corner brackets with inward midpoint crosshair ticks and a faint dashed perimeter. On b = &a, the reticle zooms in and snaps tight (1.28 -> 0.96 -> 1.0) while the value stays centered.',
-    bullets: [
-      'Open edges keep cell walls clean underneath while reading unmistakably as a target lock.',
-      'Hit Play (or step to line 3 / line 2) to watch the missile lock-on animation.',
-    ],
-    view: makeView('A'),
-  },
-  {
-    key: 'B',
-    name: 'B · Fighter-jet reticle (45° spin lock)',
-    summary:
-      'Chamfered full-height targeting frame with outward crosshair sight ticks. On b = &a, the reticle rotates 45° from a diamond into horizontal lock while shrinking onto the bytes; on *b it double-blinks.',
-    bullets: [
-      'Classic fighter-jet target acquisition spin when the pointer takes &a.',
-      'Double-blink confirmation pulse on dereference.',
-    ],
-    view: makeView('B'),
-  },
-  {
-    key: 'C',
-    name: 'C · Opposing [ ] byte clamps (clamp-shut lock)',
-    summary:
-      'Bold opposing [ and ] clamps framing the exact left and right byte boundaries with midpoint teeth and light connecting rails. On b = &a, the two clamps slide inward from outside and snap shut.',
-    bullets: [
-      'Emphasizes exact byte start/end width cleanly without cluttering the middle.',
-      'Hit Play to watch the clamps slide in and lock around 64..67 or byte 64.',
-    ],
-    view: makeView('C'),
-  },
-];
 
 let players: Player[] = [];
 
-function currentVariantKey(): ReticleStyle {
-  const param = new URLSearchParams(window.location.search).get('variant')?.toUpperCase();
-  return param === 'B' || param === 'C' ? param : 'A';
-}
-
-function setVariantKey(key: ReticleStyle): void {
-  const url = new URL(window.location.href);
-  url.searchParams.set('variant', key);
-  window.history.replaceState(null, '', url.toString());
-  mountVariant(key);
-}
-
-function mountVariant(key: ReticleStyle): void {
-  for (const p of players) p.disconnect();
-  players = [];
-
-  const def = VARIANTS.find(v => v.key === key) ?? VARIANTS[0];
-  const about = document.getElementById('about')!;
-  about.innerHTML =
-    `<p><strong>${esc(def.name)}</strong> — ${esc(def.summary)}</p>` +
-    `<ul>${def.bullets.map(b => `<li>${esc(b)}</li>`).join('')}</ul>`;
-
-  const label = document.getElementById('label')!;
-  label.textContent = def.name;
-
+function init(): void {
   const sections = document.getElementById('sections')!;
   sections.innerHTML = '';
 
@@ -1656,39 +1465,16 @@ function mountVariant(key: ReticleStyle): void {
       `<div class="course-visualization"></div>`;
     sections.append(sec);
     const host = sec.querySelector('.course-visualization') as HTMLElement;
-    const player = new Player(host, trace, def.view);
+    const player = new Player(host, trace, PUNNING_VIEW);
     player.settle(trace.steps.length - 1);
     players.push(player);
   }
-}
 
-function cycleVariant(delta: number): void {
-  const keys = VARIANTS.map(v => v.key);
-  const idx = keys.indexOf(currentVariantKey());
-  const next = keys[(idx + delta + keys.length) % keys.length];
-  setVariantKey(next);
-}
-
-function init(): void {
-  document.getElementById('prev')!.addEventListener('click', () => cycleVariant(-1));
-  document.getElementById('next')!.addEventListener('click', () => cycleVariant(1));
   document.getElementById('theme')!.addEventListener('click', () => {
     const root = document.documentElement;
     root.dataset.theme = root.dataset.theme === 'light' ? 'dark' : 'light';
     for (const p of players) p.refresh();
   });
-  window.addEventListener('keydown', event => {
-    const target = event.target as HTMLElement | null;
-    if (target && (target.matches('input, select, textarea') || target.isContentEditable)) return;
-    if (event.key === '[') {
-      event.preventDefault();
-      cycleVariant(-1);
-    } else if (event.key === ']') {
-      event.preventDefault();
-      cycleVariant(1);
-    }
-  });
-  mountVariant(currentVariantKey());
 }
 
 if (document.readyState === 'loading') {
