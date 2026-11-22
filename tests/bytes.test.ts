@@ -12,7 +12,7 @@ import {
 } from '../src/core/bytes.ts';
 
 describe('bytes', () => {
-  test('encodes and decodes signed and unsigned integers in both byte orders', () => {
+  test('encodes and decodes signed, unsigned, and 64-bit bigint values in both byte orders', () => {
     assert.equal(hexByte(5), '05');
     assert.equal(hexByte(42), '2A');
     assert.deepEqual(toBytesMSB(300, 4), [0x00, 0x00, 0x01, 0x2c]);
@@ -21,15 +21,26 @@ describe('bytes', () => {
     assert.deepEqual(encodeBytes(-3, 4, true), [0xfd, 0xff, 0xff, 0xff]);
     assert.deepEqual(encodeBytes(-3, 4, false), [0xff, 0xff, 0xff, 0xfd]);
 
-    assert.equal(decodeBytes([0x2c, 0x01, 0x00, 0x00], true, true), 300n);
-    assert.equal(decodeBytes([0x00, 0x00, 0x01, 0x2c], true, false), 300n);
+    const big = 0x0102030405060708n;
+    assert.deepEqual(toBytesMSB(big, 8), [1, 2, 3, 4, 5, 6, 7, 8]);
+    assert.equal(decodeBytes([1, 2, 3, 4, 5, 6, 7, 8], false, false), big);
+    assert.equal(decodeBytes([8, 7, 6, 5, 4, 3, 2, 1], false, true), big);
+    assert.equal(decodeBytes([0xff, 0xff, 0xff, 0xfd], false, false), 0xfffffffdn);
     assert.equal(decodeBytes([0xfd, 0xff, 0xff, 0xff], true, true), -3n);
-    assert.equal(decodeBytes([0xfd, 0xff, 0xff, 0xff], false, true), 0xfffffffdn);
     assert.equal(decodeBytes([0x02, 0x00, 0x00, 0x05], true, false), 33554437n);
+
+    assert.throws(() => toBytesMSB(Number.NaN, 4), RangeError);
+    assert.throws(() => toBytesMSB(Number.POSITIVE_INFINITY, 4), RangeError);
   });
 
-  test('formats poisoned byte slices in hex with endian-accurate ? positions', () => {
+  test('formats poisoned and mixed-null byte slices in hex with endian-accurate ? positions', () => {
+    assert.equal(formatByteSlice([], true, true), null);
     assert.equal(formatByteSlice([null, null, null, null], true, true), null);
+    assert.deepEqual(formatByteSlice([0x2a, null, null, null], true, true), {
+      text: '0x??????2A',
+      poisoned: true,
+      numeric: null,
+    });
     assert.deepEqual(formatByteSlice([0x2a, '?', '?', '?'], true, true), {
       text: '0x??????2A',
       poisoned: true,

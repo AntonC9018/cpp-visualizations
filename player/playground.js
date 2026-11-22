@@ -827,8 +827,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   function geometry(m, P, stacked, viewport, options = {}) {
     const cellH = options.cellHeight ?? CELL;
     const extraPaneHeight = options.extraPaneHeight ?? 0;
-    const extraMemBottom = options.extraMemBottom ?? 0;
     const flush = Boolean(options.flush);
+    if (flush && m.groups.length > 0) {
+      throw new Error("flush byte layout does not support struct or array groups");
+    }
     const gap = flush ? 0 : GAP;
     const minByteWidth = options.minByteWidth ?? 0;
     const isStruct = (c) => Boolean(c.fields);
@@ -856,7 +858,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const finalStdout = m.steps[m.steps.length - 1].stdout;
     const outputLines = finalStdout ? finalStdout.replace(/\n$/, "").split("\n") : [];
     const outputChars = Math.max(0, ...outputLines.map((line) => line.length));
-    const canWrap = !stacked && !options.skipWrap && m.tops.length > 1 && !m.typed && m.references.length === 0 && m.steps.every((step) => Object.keys(step.targets).length === 0);
+    const canWrap = !stacked && !options.skipWrap && !flush && m.tops.length > 1 && !m.typed && m.references.length === 0 && m.steps.every((step) => Object.keys(step.targets).length === 0);
     const pitch = (structs ? cellH + FRAME.bottom + 32 : cellH + 34) + rise * RISE.bottom + (structs ? FRAME.top : 0) + 30 + rise * RISE.top;
     const plan = (rows2) => {
       const rowOf2 = /* @__PURE__ */ new Map();
@@ -976,7 +978,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const labelHeight = m.typed ? LABEL.rise + Math.max(0, labelExtent.rows - 1) * LABEL.row : 0;
     const labelRise = m.typed ? labelHeight + 6 : 0;
     const named = (structs ? cellH + FRAME.bottom + 32 : cellH + 34) + rise * RISE.bottom + tagged.height;
-    const names = named + typeRow.height + extraMemBottom;
+    const names = named + typeRow.height;
     const paneTop = room + names + extraRows * pitch + 56;
     const paneH = 76 + labelRise + extraPaneHeight;
     const outputTop = paneTop + paneH + 60;
@@ -2163,9 +2165,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
       cursor = Math.max(cursor, item.address + item.size);
     }
-    if (minEnd !== void 0 && minEnd > cursor) {
-      runs.push({ start: cursor, size: minEnd - cursor });
-    }
     return runs;
   }
   class Integer {
@@ -2272,24 +2271,17 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   function hatchDefs(P) {
     const uid = ++patternSeq;
     const padId = `cv-pad-hatch-${uid}`;
-    const ubId = `cv-ub-hatch-${uid}`;
-    const defs = `<defs><pattern id="${padId}" width="10" height="10" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="10" height="10" fill="${P.deadFill}"/><line x1="0" y1="0" x2="0" y2="10" stroke="${P.gapStroke}" stroke-width="3.2"/></pattern><pattern id="${ubId}" width="10" height="10" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="10" height="10" fill="${P.panel}"/><rect width="10" height="10" fill="${P.error}" fill-opacity="0.13"/><line x1="0" y1="0" x2="0" y2="10" stroke="${P.error}" stroke-opacity="0.34" stroke-width="2.8"/></pattern></defs>`;
-    return { defs, padId, ubId };
+    const defs = `<defs><pattern id="${padId}" width="10" height="10" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="10" height="10" fill="${P.deadFill}"/><line x1="0" y1="0" x2="0" y2="10" stroke="${P.gapStroke}" stroke-width="3.2"/></pattern></defs>`;
+    return { defs, padId };
   }
   function scaledAt(cx, cy, inner, begin) {
     return `<g transform="translate(${round(cx)} ${round(cy)})"><g>${pulse(begin)}<g transform="translate(${round(-cx)} ${round(-cy)})">${inner}</g></g></g>`;
   }
-  function poisonText(x, y, str, size, color, errorColor, anchor = "start") {
-    if (!str.includes("?")) return text(x, y, str, size, color, anchor);
-    const length = str.length > 1 ? ` textLength="${round(str.length * size * CHAR)}" lengthAdjust="spacing"` : "";
-    const inner = str.split(/(\?+)/).filter(Boolean).map((part) => part[0] === "?" ? `<tspan fill="${errorColor}">${esc(part)}</tspan>` : esc(part)).join("");
-    return `<text x="${round(x)}" y="${round(y)}" font-size="${size}" fill="${color}" text-anchor="${anchor}" xml:space="preserve"${length}>${inner}</text>`;
-  }
   function transientWriteHighlight(x, y, w, h, color, at) {
-    return `<g opacity="0">${fade(0, 1, 0.15, Math.max(0, at - 0.25))}${fade(1, 0, 0.3, at + 0.35)}` + rect(x + 2, y + 2, w - 4, h - 4, color, "none", 0).replace("fill=", 'fill-opacity="0.2" fill=') + rect(x + 2, y + 2, w - 4, h - 4, "none", color, 0, 2.8) + "</g>";
+    return `<g opacity="0">${fade(0, 1, 0.15, Math.max(0, at - 0.25))}${fade(1, 0, 0.3, at + 0.35)}<g opacity="0.2">${rect(x + 2, y + 2, w - 4, h - 4, color, "none", 0)}</g>` + rect(x + 2, y + 2, w - 4, h - 4, "none", color, 0, 2.8) + "</g>";
   }
   function transientReadHighlight(x, y, w, h, color, at) {
-    return `<g opacity="0">${fade(0, 1, 0.15, 0)}${fade(1, 0, 0.25, at)}` + rect(x + 2, y + 2, w - 4, h - 4, color, "none", 0).replace("fill=", 'fill-opacity="0.18" fill=') + rect(x + 2, y + 2, w - 4, h - 4, "none", color, 0, 2.8) + "</g>";
+    return `<g opacity="0">${fade(0, 1, 0.15, 0)}${fade(1, 0, 0.25, at)}<g opacity="0.18">${rect(x + 2, y + 2, w - 4, h - 4, color, "none", 0)}</g>` + rect(x + 2, y + 2, w - 4, h - 4, "none", color, 0, 2.8) + "</g>";
   }
   function byteOrderArrow(vx, vw, byteW, gridY, cellH, littleEndian, on, P) {
     const ay = gridY + cellH + 10;
@@ -2300,19 +2292,18 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return `<g opacity="${on ? "0.75" : "0.45"}"><line x1="${round(xLow)}" y1="${ay}" x2="${round(xHigh - 6 * dir)}" y2="${ay}" stroke="${arrowCol}" stroke-width="1.5" stroke-linecap="round"/><path d="M -8 -4 L 0 0 L -8 4 Z" fill="${arrowCol}" transform="translate(${round(xHigh)} ${ay}) rotate(${littleEndian ? 0 : 180})"/></g>`;
   }
   function renderByteMemory(c, opts) {
-    var _a, _b;
     const { g, P, animate, op } = c;
     if (g.leaves.length === 0) return "";
     const byteW = g.byteWidth;
-    const gridY = g.memY;
+    const gridY = g.leaves[0].y;
     const cellH = g.leaves[0].h;
-    const splitY = gridY + BYTE_SPLIT_OFFSET;
     const baseAddress = Math.min(...g.leaves.map((l) => l.address));
-    const lastEnd = Math.max(...g.leaves.map((l) => l.address + l.size), opts.minEndAddress ?? 0);
+    const lastEnd = Math.max(...g.leaves.map((l) => l.address + l.size));
     const totalBytes = Math.max(0, lastEnd - baseAddress);
     const xOf = (addr) => g.memX + (addr - baseAddress) * byteW;
     const at = op ? arrival(op) : 0;
-    const typeSize = opts.typeLabelSize ?? LABEL.memory;
+    const readCells = new Set((op == null ? void 0 : op.kind) === "read" ? g.cellsOf(op.name).map((l) => l.name) : []);
+    const writeCells = new Set((op == null ? void 0 : op.kind) === "write" ? g.cellsOf(op.name).map((l) => l.name) : []);
     const ownerStarts = new Set(g.leaves.map((l) => l.address));
     let out = "";
     for (let i = 0; i < totalBytes; i++) {
@@ -2328,136 +2319,92 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         "middle"
       );
     }
-    for (const run of paddingRuns(g.leaves, opts.minEndAddress)) {
+    for (const run of paddingRuns(g.leaves)) {
       const rx = xOf(run.start);
       const rw = run.size * byteW;
-      out += rect(rx + 1, gridY + 1, rw - 2, cellH - 2, `url(#${opts.padId})`, P.gapStroke, 0, 1.5);
+      out += `<g class="cv-byte-padding" data-address="${run.start}" data-size="${run.size}">` + rect(rx + 1, gridY + 1, rw - 2, cellH - 2, `url(#${opts.padId})`, P.gapStroke, 0, 1.5);
       for (let k = 0; k < run.size; k++) {
-        const addr = run.start + k;
-        const bx = xOf(addr);
+        const bx = xOf(run.start + k);
         if (k > 0) {
           out += `<line x1="${round(bx)}" y1="${gridY + 2}" x2="${round(bx)}" y2="${gridY + cellH - 2}" stroke="${P.gapStroke}" stroke-dasharray="3 3" stroke-width="1"/>`;
         }
-        const custom = (_a = opts.paddingByte) == null ? void 0 : _a.call(opts, addr, bx, byteW, gridY, cellH);
-        out += custom ?? text(bx + byteW / 2, gridY + 74, "??", 13.5, P.grey, "middle");
+        out += text(bx + byteW / 2, gridY + 74, "??", 13.5, P.grey, "middle");
       }
+      out += "</g>";
     }
     const liveByName = /* @__PURE__ */ new Map();
-    const keepBrightByName = /* @__PURE__ */ new Map();
     for (const leaf of g.leaves) {
       const st = opts.stateOf(leaf);
       const vx = leaf.x;
+      const vy = leaf.y;
       const vw = leaf.w;
+      const vh = leaf.h;
+      const splitY = vy + BYTE_SPLIT_OFFSET;
       const col = leaf.fieldColor || leaf.color;
       const on = st.afterHeader !== null;
       liveByName.set(leaf.name, on);
-      const isCorrupted = Boolean(st.corrupted);
-      const borderCol = isCorrupted ? P.error : on ? col : P.deadStroke;
       let markup = "";
-      markup += rect(vx + 1, gridY + 1, vw - 2, cellH - 2, on ? P.panel : P.deadFill, "none", 0);
-      for (let k = 0; k < leaf.size; k++) {
-        const bs = st.bytes[k];
-        if (!bs) continue;
-        const bx = vx + k * byteW;
-        const revealAt = bs.revealAt ?? at;
-        if (bs.corrupted) {
-          const bg = rect(bx + 1.5, gridY + 1.5, byteW - 3, cellH - 3, `url(#${opts.ubId})`, "none", 0);
-          markup += animate && st.headerChanging ? `<g opacity="0">${show(revealAt)}${bg}</g>` : bg;
-        } else if (bs.after === "?" && ((_b = st.afterHeader) == null ? void 0 : _b.poisoned)) {
-          const bg = rect(
-            bx + 1.5,
-            splitY + 0.8,
-            byteW - 3,
-            gridY + cellH - splitY - 2.3,
-            `url(#${opts.ubId})`,
-            "none",
-            0
-          );
-          markup += animate && st.headerChanging ? `<g opacity="0">${show(revealAt)}${bg}</g>` : bg;
-        }
-      }
+      markup += rect(vx + 1, vy + 1, vw - 2, vh - 2, on ? P.panel : P.deadFill, "none", 0);
       const divCol = on ? P.gapStroke : P.deadStroke;
       markup += `<line x1="${round(vx + 2)}" y1="${splitY}" x2="${round(vx + vw - 2)}" y2="${splitY}" stroke="${divCol}" stroke-width="1.2"/>`;
       for (let k = 1; k < leaf.size; k++) {
         const lx = vx + k * byteW;
-        markup += `<line x1="${round(lx)}" y1="${splitY}" x2="${round(lx)}" y2="${gridY + cellH - 2}" stroke="${divCol}" stroke-width="1.2"/>`;
+        markup += `<line x1="${round(lx)}" y1="${splitY}" x2="${round(lx)}" y2="${vy + vh - 2}" stroke="${divCol}" stroke-width="1.2"/>`;
       }
-      if (animate && st.headerChanging && isCorrupted) {
-        markup += `<g>${hide(at)}${rect(vx + 1.5, gridY + 1.5, vw - 3, cellH - 3, "none", col, 0, 2.8)}</g><g opacity="0">${show(at)}${rect(vx + 1.5, gridY + 1.5, vw - 3, cellH - 3, "none", P.error, 0, 3.2)}</g>`;
-      } else {
-        markup += rect(vx + 1.5, gridY + 1.5, vw - 3, cellH - 3, "none", borderCol, 0, isCorrupted ? 3.2 : 2.8);
-      }
+      markup += rect(vx + 1.5, vy + 1.5, vw - 3, vh - 3, "none", on ? col : P.deadStroke, 0, 2.8);
       const headCx = vx + vw / 2;
-      const renderHeader = (val, useBefore) => {
+      const renderHeader = (val) => {
         if (!val) return "";
         const str = val.text;
         const decSize = Math.min(25, (vw - 12) / (Math.max(1, str.length) * CHAR));
-        const uninit = str === "?";
-        const decCol = isCorrupted && !useBefore ? P.error : uninit ? P.grey : P.fg;
-        const bg = isCorrupted && !useBefore ? rect(headCx - 14, gridY + 12, 28, 26, P.panel, "none", 4) : "";
-        return bg + poisonText(headCx, gridY + 33, str, round(decSize), decCol, P.error, "middle");
+        const decCol = str === "?" ? P.grey : P.fg;
+        return text(headCx, vy + 33, str, round(decSize), decCol, "middle");
       };
       if (animate && st.headerChanging) {
-        const swapped = (st.beforeHeader !== null ? `<g>${hide(at)}${renderHeader(st.beforeHeader, true)}</g>` : "") + `<g opacity="0">${show(at)}${renderHeader(st.afterHeader, false)}</g>`;
-        markup += scaledAt(headCx, gridY + 26, swapped, at - 0.15);
+        const swapped = (st.beforeHeader !== null ? `<g>${hide(at)}${renderHeader(st.beforeHeader)}</g>` : "") + `<g opacity="0">${show(at)}${renderHeader(st.afterHeader)}</g>`;
+        markup += scaledAt(headCx, vy + 26, swapped, at - 0.15);
       } else {
-        markup += renderHeader(st.afterHeader, false);
+        markup += renderHeader(st.afterHeader);
       }
-      const hexY = gridY + 74;
+      const hexY = vy + 74;
       let hexGroup = `<g class="cv-byte-hex" data-name="${esc(leaf.name)}">`;
       for (let k = 0; k < leaf.size; k++) {
         const bs = st.bytes[k];
         if (!bs) continue;
         const bx = vx + k * byteW;
-        const renderByte = (bval, useBefore) => {
-          var _a2;
+        const renderByte = (bval) => {
           if (bval === null) return "";
-          if (bval === "?") {
-            const poisoned = Boolean(((_a2 = st.afterHeader) == null ? void 0 : _a2.poisoned) && !useBefore);
-            const badgeBg = poisoned ? rect(bx + byteW / 2 - 15, hexY - 15, 30, 20, P.panel, "none", 3) : "";
-            return badgeBg + text(bx + byteW / 2, hexY, "??", poisoned ? 15.5 : 13.5, poisoned ? P.error : P.grey, "middle");
-          }
-          const byteInk = bs.corrupted && !useBefore ? P.error : leaf.kind === "ptr" ? P.muted : P.fg;
+          if (bval === "?") return text(bx + byteW / 2, hexY, "??", 13.5, P.grey, "middle");
+          const byteInk = leaf.kind === "ptr" ? P.muted : P.fg;
           const opAttr = leaf.kind === "ptr" ? ' opacity="0.65"' : "";
-          const bg = bs.corrupted && !useBefore ? rect(bx + byteW / 2 - 15, hexY - 15, 30, 20, P.panel, "none", 3) : "";
-          return bg + `<g${opAttr}>${text(bx + byteW / 2, hexY, hexByte(bval), leaf.kind === "ptr" ? 13 : 15.5, byteInk, "middle")}</g>`;
+          return `<g${opAttr}>${text(bx + byteW / 2, hexY, hexByte(bval), leaf.kind === "ptr" ? 13 : 15.5, byteInk, "middle")}</g>`;
         };
         const byteChanged = animate && st.headerChanging && bs.before !== bs.after;
         if (byteChanged) {
-          const byteAt = bs.revealAt ?? at;
-          const swapped = (bs.before !== null ? `<g>${hide(byteAt)}${renderByte(bs.before, true)}</g>` : "") + `<g opacity="0">${show(byteAt)}${renderByte(bs.after, false)}</g>`;
-          hexGroup += scaledAt(bx + byteW / 2, gridY + 68, swapped, byteAt - 0.15);
+          const swapped = (bs.before !== null ? `<g>${hide(at)}${renderByte(bs.before)}</g>` : "") + `<g opacity="0">${show(at)}${renderByte(bs.after)}</g>`;
+          hexGroup += scaledAt(bx + byteW / 2, vy + 68, swapped, at - 0.15);
         } else {
-          hexGroup += renderByte(bs.after, false);
+          hexGroup += renderByte(bs.after);
         }
       }
       markup += hexGroup + "</g>";
-      if (animate && op && !st.suppressDefaultHighlight) {
-        if (op.kind === "read" && op.name === leaf.name) {
-          markup += transientReadHighlight(vx, gridY, vw, cellH, P.read, at);
-        } else if (op.kind === "write" && op.name === leaf.name) {
-          markup += transientWriteHighlight(vx, gridY, vw, cellH, P.write, at);
+      if (animate && op) {
+        if (readCells.has(leaf.name)) {
+          markup += transientReadHighlight(vx, vy, vw, vh, P.read, at);
+        } else if (writeCells.has(leaf.name)) {
+          markup += transientWriteHighlight(vx, vy, vw, vh, P.write, at);
         }
       }
       if (leaf.kind === "int" && leaf.size > 1) {
-        markup += byteOrderArrow(vx, vw, byteW, gridY, cellH, c.littleEndian, on, P);
+        markup += byteOrderArrow(vx, vw, byteW, vy, vh, c.littleEndian, on, P);
       }
-      const nameY = gridY + cellH + 34;
-      const nameCol = isCorrupted ? P.error : on ? col : P.grey;
-      if (animate && st.headerChanging && isCorrupted) {
-        markup += `<g>${hide(at)}${text(vx + vw / 2, nameY, leaf.label, g.nameSize, col, "middle")}</g><g opacity="0">${show(at)}${text(vx + vw / 2, nameY, leaf.label, g.nameSize, P.error, "middle")}</g>`;
-      } else {
-        markup += text(vx + vw / 2, nameY, leaf.label, g.nameSize, nameCol, "middle");
-      }
-      const keepBright = Boolean(isCorrupted || st.keepBright);
-      keepBrightByName.set(leaf.name, keepBright);
-      out += keepBright ? markup : dim(c, leaf.group || leaf.name, markup);
+      markup += text(vx + vw / 2, vy + vh + 34, leaf.label, g.nameSize, on ? col : P.grey, "middle");
+      out += dim(c, leaf.group || leaf.name, markup);
     }
     for (const label of g.typeLabels) {
       const on = liveByName.get(label.name) ?? false;
       const color = on ? typeColour(c, label.type) : P.deadStroke;
-      const pill = typeLabel(c, label.cx, label.top, label.type, typeSize, color);
-      out += keepBrightByName.get(label.name) ? pill : dim(c, label.name, pill);
+      out += dim(c, label.name, typeLabel(c, label.cx, label.top, label.type, LABEL.memory, color));
     }
     return out;
   }
@@ -2550,12 +2497,11 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     if (typeof val === "number") return encodeBytes(BigInt(val), size, littleEndian);
     return Array.from({ length: size }, () => "?");
   }
-  function memory(c, padId, ubId) {
+  function memory(c, padId) {
     const { g, step, prev, op, littleEndian } = c;
     const writing = new Set(op && op.kind === "write" ? g.cellsOf(op.name).map((l) => l.name) : []);
     return renderByteMemory(c, {
       padId,
-      ubId,
       stateOf(leaf) {
         const before = prev ? prev.values[leaf.name] : null;
         const after = step.values[leaf.name];
@@ -2772,10 +2718,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }
   function bitsScene(c) {
     const { step, prev, animate, P } = c;
-    const { defs, padId, ubId } = hatchDefs(P);
+    const { defs, padId } = hatchDefs(P);
     const lineChanged = animate && prev !== null && prev.line !== step.line;
     const oldLine = lineChanged && prev ? prev.line : null;
-    return defs + code(c, oldLine) + tether(c, oldLine) + arrows(c) + memory(c, padId, ubId) + pane(c, animate && copies(c.m.steps, c.index)) + workbench(c) + output(c) + transfers(c);
+    return defs + code(c, oldLine) + tether(c, oldLine) + arrows(c) + memory(c, padId) + pane(c, animate && copies(c.m.steps, c.index)) + workbench(c) + output(c) + transfers(c);
   }
   const BITS_VIEW = {
     geometry(m) {
@@ -2805,7 +2751,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   };
   const viewOf = (m) => m.trace.bits ? BITS_VIEW : DEFAULT_VIEW;
   class Player {
-    constructor(host, trace, view) {
+    constructor(host, trace) {
       __publicField(this, "host");
       __publicField(this, "m");
       __publicField(this, "S");
@@ -2844,7 +2790,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.host = host;
       this.m = prepare(trace);
       this.S = strings();
-      this.view = view ?? viewOf(this.m);
+      this.view = viewOf(this.m);
       this.index = 0;
       this.elapsed = 0;
       this.duration = 0;

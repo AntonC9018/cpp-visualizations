@@ -91,9 +91,7 @@ export interface GeometryOptions {
   cellHeight?: number;
   /** Room under the pane's text, for the view's own drawing. */
   extraPaneHeight?: number;
-  /** Room under memory cells, after names/type labels and before the pane. */
-  extraMemBottom?: number;
-  /** Lay top-level variables flush on the real byte address grid without artificial `GAP`. */
+  /** Lay top-level variables flush on a single byte-accurate row without artificial `GAP`. */
   flush?: boolean;
   /** Keep memory on one row. */
   skipWrap?: boolean;
@@ -498,8 +496,10 @@ export function geometry(
 ): Geometry {
   const cellH = options.cellHeight ?? CELL;
   const extraPaneHeight = options.extraPaneHeight ?? 0;
-  const extraMemBottom = options.extraMemBottom ?? 0;
   const flush = Boolean(options.flush);
+  if (flush && m.groups.length > 0) {
+    throw new Error('flush byte layout does not support struct or array groups');
+  }
   const gap = flush ? 0 : GAP;
   const minByteWidth = options.minByteWidth ?? 0;
   const isStruct = (c: { fields?: unknown }): c is PlacedGroup => Boolean(c.fields);
@@ -537,6 +537,7 @@ export function geometry(
   const canWrap =
     !stacked &&
     !options.skipWrap &&
+    !flush &&
     m.tops.length > 1 &&
     !m.typed &&
     m.references.length === 0 &&
@@ -683,7 +684,7 @@ export function geometry(
   const labelRise = m.typed ? labelHeight + 6 : 0;
   const named =
     (structs ? cellH + FRAME.bottom + 32 : cellH + 34) + rise * RISE.bottom + tagged.height;
-  const names = named + typeRow.height + extraMemBottom;
+  const names = named + typeRow.height;
   const paneTop = room + names + extraRows * pitch + 56;
   const paneH = 76 + labelRise + extraPaneHeight;
   const outputTop = paneTop + paneH + 60;

@@ -1,5 +1,5 @@
 // Byte-level integer encoding, decoding, poisoned hex formatting, and alignment padding helpers.
-// Isomorphic: shared by the tracer/validator (`src/core/`) and the byte-level player views (`src/player/`).
+// Pure isomorphic utilities with no DOM or Node dependencies.
 
 /** One byte of storage: a concrete 0..255 value, indeterminate (`?`), or not yet live (`null`). */
 export type ByteValue = number | '?' | null;

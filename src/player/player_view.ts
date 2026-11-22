@@ -57,11 +57,11 @@ export class Player {
   g!: Geometry;
   shownType: TypeTarget | null;
 
-  constructor(host: HTMLElement, trace: ExecutionTrace, view?: TraceView) {
+  constructor(host: HTMLElement, trace: ExecutionTrace) {
     this.host = host;
     this.m = prepare(trace);
     this.S = strings();
-    this.view = view ?? viewOf(this.m);
+    this.view = viewOf(this.m);
     this.index = 0;
     this.elapsed = 0;
     this.duration = 0;

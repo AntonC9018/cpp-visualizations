@@ -161,12 +161,11 @@ function bytesFor(val: unknown, size: number, littleEndian: boolean): ByteValue[
   return Array.from({ length: size }, () => '?');
 }
 
-function memory(c: SceneContext, padId: string, ubId: string): string {
+function memory(c: SceneContext, padId: string): string {
   const { g, step, prev, op, littleEndian } = c;
   const writing = new Set(op && op.kind === 'write' ? g.cellsOf(op.name).map(l => l.name) : []);
   return renderByteMemory(c, {
     padId,
-    ubId,
     stateOf(leaf): ByteVariableState {
       const before = prev ? prev.values[leaf.name] : null;
       const after = step.values[leaf.name];
@@ -462,7 +461,7 @@ function workbench(c: SceneContext): string {
 
 function bitsScene(c: SceneContext): string {
   const { step, prev, animate, P } = c;
-  const { defs, padId, ubId } = hatchDefs(P);
+  const { defs, padId } = hatchDefs(P);
   const lineChanged = animate && prev !== null && prev.line !== step.line;
   const oldLine = lineChanged && prev ? prev.line : null;
   return (
@@ -470,7 +469,7 @@ function bitsScene(c: SceneContext): string {
     code(c, oldLine) +
     tether(c, oldLine) +
     arrows(c) +
-    memory(c, padId, ubId) +
+    memory(c, padId) +
     pane(c, animate && copies(c.m.steps, c.index)) +
     workbench(c) +
     output(c) +

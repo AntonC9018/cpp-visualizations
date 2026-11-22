@@ -18,7 +18,6 @@ export const TRACER_SOURCES = [
   'src/node/records.ts',
   'src/node/toolchain.ts',
   'src/core/arrays.ts',
-  'src/core/bytes.ts',
   'src/core/errors.ts',
   'src/core/compound.ts',
   'src/core/constants.ts',
