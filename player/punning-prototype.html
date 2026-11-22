@@ -38,10 +38,10 @@
 <main>
   <h1>PROTOTYPE · Pointer type punning (#60)</h1>
   <p class="note">
-    Throwaway UI study for larger- and smaller-pointee writes (Lab 4 §8–9: uncast initialization is a compile error shown by the
-    <code>types</code> view; these scenes force the cast with <code>reinterpret_cast</code> to show the byte-level damage).
-    Switch variants with the bar below or <kbd>[</kbd> / <kbd>]</kbd>; use each player's <strong>Play</strong>, <strong>Reset</strong>,
-    and <strong>Little-endian / Big-endian</strong> controls to compare animation and byte order.
+    Folded horizontal hex view with plain Lab 4 syntax (no <code>reinterpret_cast</code>), clean pointer arrow,
+    prominent target box around the pointed-at bytes, red spilled bytes, and <code>⚠ UB</code>.
+    Variants <kbd>A</kbd> / <kbd>B</kbd> / <kbd>C</kbd> (<kbd>[</kbd> / <kbd>]</kbd>) compare three stronger treatments for
+    the smaller-pointer case (scenarios 3–4). Hit <strong>Play</strong> on any scenario to watch all animations from line 1.
   </p>
   <div id="about"></div>
   <div id="sections"></div>
