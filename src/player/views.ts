@@ -1,12 +1,14 @@
 // How a trace is drawn: the default view, or the one a trace asks for.
 import { BITS_VIEW } from './bits_view.ts';
-import { MAX_SCALE, STACK_BELOW } from './constants.ts';
-import type { GeometryOptions } from './geometry.ts';
+import { MAX_SCALE, STACK_BELOW, type Palette } from './constants.ts';
+import type { Geometry, GeometryOptions } from './geometry.ts';
 import { type PreparedModel, stepSeconds } from './model.ts';
 import { type SceneContext, scene } from './scene.ts';
 
 export interface TraceView {
   geometry?(m: PreparedModel): GeometryOptions;
+  /** Optional full geometry override for views with a different stage layout. */
+  layout?(m: PreparedModel, P: Palette, stacked: boolean, width: number): Geometry;
   /** CSS pixels: narrower players stack code above memory. */
   stackBelow: number;
   /** CSS pixels per unit at most. */

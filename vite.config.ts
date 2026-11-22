@@ -30,6 +30,11 @@ const BUILD_ENTRIES: Record<string, BuildEntry> = {
     name: 'CoursePlaygroundBundle',
     fileName: 'playground.js',
   },
+  punning: {
+    entry: resolve(ROOT, 'src/player/punning_prototype.ts'),
+    name: 'PunningPrototypeBundle',
+    fileName: 'punning-prototype.js',
+  },
 };
 
 export default defineConfig(({ mode }) => {

@@ -91,6 +91,8 @@ export interface GeometryOptions {
   cellHeight?: number;
   /** Room under the pane's text, for the view's own drawing. */
   extraPaneHeight?: number;
+  /** Room under memory cells, before type labels and the pane. */
+  extraMemBottom?: number;
   /** Keep memory on one row. */
   skipWrap?: boolean;
 }
@@ -671,7 +673,10 @@ export function geometry(
   const labelHeight = m.typed ? LABEL.rise + Math.max(0, labelExtent.rows - 1) * LABEL.row : 0;
   const labelRise = m.typed ? labelHeight + 6 : 0;
   const named =
-    (structs ? cellH + FRAME.bottom + 32 : cellH + 34) + rise * RISE.bottom + tagged.height;
+    (structs ? cellH + FRAME.bottom + 32 : cellH + 34) +
+    rise * RISE.bottom +
+    tagged.height +
+    (options.extraMemBottom ?? 0);
   const names = named + typeRow.height;
   const paneTop = room + names + extraRows * pitch + 56;
   const paneH = 76 + labelRise + extraPaneHeight;
