@@ -968,10 +968,53 @@ test('punning view updates poisoned hex reads live across LE and BE and routes 1
       return {
         texts: [...p.svg.querySelectorAll('text')].map(el => el.textContent ?? ''),
         tspans: [...p.svg.querySelectorAll('tspan')].map(el => el.textContent ?? ''),
+        status: document.querySelector('.cv-status')?.textContent ?? '',
       };
     });
     assert.ok(readBe.texts.includes('0x2A??????'));
     assert.ok(readBe.tspans.includes('??????'));
+    assert.ok(readBe.status.includes('0x2A??????'), `status bar updates to BE: ${readBe.status}`);
+
+    // Settled render on an endian-patched read step must stay settled (showing BE value, not animated t=0 old expression)
+    const readIdx = poisoned.steps.findIndex(s => s.op?.kind === 'read' && s.op.pun);
+    const settledBeRead = await page.evaluate(idx => {
+      const p = (document.querySelector('.course-visualization') as PlayerElement).cvPlayer;
+      p.settle(idx);
+      return {
+        texts: [...p.svg.querySelectorAll('text')].map(el => el.textContent ?? '').join(' '),
+        status: document.querySelector('.cv-status')?.textContent ?? '',
+      };
+    }, readIdx);
+    assert.ok(settledBeRead.texts.includes('0x2A??????'));
+    assert.ok(!settledBeRead.texts.includes('*64'));
+    assert.ok(settledBeRead.status.includes('0x2A??????'));
+
+    // Varying-length LE/BE static_cast<int>(*p) (`0` -> `255`) must animate cleanly without garbled pane text
+    const castVarLen = traceSource(
+      `
+        int a{ -16777216 };
+        uint8_t* p = reinterpret_cast<uint8_t*>(&a);
+        int x = static_cast<int>(*p);
+      `,
+      { punning: true }
+    );
+    await page.setContent(PAGE.replace(trace, JSON.stringify(castVarLen).replace(/</g, '\\u003c')));
+    await page.evaluate(() => window.CourseVisualization!.scan());
+    await page.waitForSelector('.cv-player');
+    await page.getByRole('button', { name: 'Big-endian' }).click();
+    const evalIdx = castVarLen.steps.findIndex(s => s.op?.kind === 'eval' && s.line === 2);
+    const castBe = await page.evaluate(idx => {
+      const p = (document.querySelector('.course-visualization') as PlayerElement).cvPlayer;
+      p.inspect(idx, 1.5);
+      const texts = [...p.svg.querySelectorAll('text')].map(el => el.textContent ?? '');
+      // Check that `op.span` on the eval step shifted to cover all of `static_cast<int>(255)` with no leftover `5)`
+      const hasGarbledSuffix = texts.some(t => t === '5)' || t === 'static_cast<int>(25');
+      p.end();
+      const endText = [...p.svg.querySelectorAll('text')].map(el => el.textContent ?? '');
+      return { hasGarbledSuffix, endText };
+    }, evalIdx);
+    assert.equal(castBe.hasGarbledSuffix, false, 'old cast wrapper is replaced whole in BE');
+    assert.ok(castBe.endText.includes('255'));
 
     // Clean 1-byte store (`uint8_t x = *b;`) uses native scalar transfer into x's number center, not a byte tile at y+70
     const smaller = traceSource(

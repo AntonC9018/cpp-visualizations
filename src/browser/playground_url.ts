@@ -52,6 +52,11 @@ export function readState(params: URLSearchParams): PlaygroundState {
       flags[flag] = true;
     }
   }
+  if (flags.bits && flags.punning) {
+    // Prefer an explicit query override over a preset's flag; if both are explicit, keep punning off.
+    if (params.get('punning') === '1' && params.get('bits') !== '1') delete flags.bits;
+    else delete flags.punning;
+  }
   const source = params.has('code') ? (params.get('code') ?? '') : fallback.source;
   return { source, template, flags };
 }

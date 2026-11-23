@@ -14,6 +14,8 @@ export interface TraceView {
   maxScale: number;
   /** Whether memory has a byte order the player lets the reader switch. */
   byteOrder: boolean;
+  /** Optional context rewrite applied before rendering and describing a step (e.g. endianness). */
+  resolveContext?(c: SceneContext): SceneContext;
   scene(c: SceneContext): string;
   stepSeconds(m: PreparedModel, index: number): number;
 }

@@ -120,11 +120,17 @@ span      = [start, end)  — character offsets
 - `punning` draws pointer type punning on a flush byte-accurate memory strip with a live
   Little-endian / Big-endian switch, a HUD scope reticle for each punned pointer, hazard hatch
   and `⚠ UB` caliper for out-of-bounds reads or writes, and bidirectional byte-tile flights.
-  Mutually exclusive with `bits`. Every variable must be a typed integer or pointer, with no
-  references. A `deref`, `read`, or `write` through a mismatched integer pointer carries
-  `pun: {type, size, via}`; a punning `deref` keeps `*addr` in the pane, a punning `write` may
-  modify any variable whose storage overlaps `[addr, addr + pun.size)`, and reading indeterminate
-  padding bytes produces a poisoned hex value (`0x[0-9A-F?]+` containing at least one `?`).
+  Mutually exclusive with `bits`. Every variable must be a typed integer or single-level pointer
+  (to an integer or `void*`), with no references. A `deref`, `read`, or `write` through a
+  mismatched integer pointer carries `pun: {type, size, via}` matching `via`'s pointee type; a
+  punning `deref` keeps `*addr` in the pane, and a punning `write`'s `destination` covers `*addr`
+  while its operand is an integer fitting `pun.type` (which need not equal the target cell's
+  resulting value). A punning `write` updates only live integer cells whose storage overlaps
+  `[addr, addr + pun.size)` according to little-endian byte overlay; it does not initialize
+  not-yet-declared variables (`null`) and rejects overlaps with live pointers. Reading
+  indeterminate bytes produces a poisoned hex value of complete byte pairs
+  (`0x` followed by `size` pairs of `[0-9A-F]{2}` or `??`, with at least one `??`), which may
+  appear in `values` and in `read`/`write` operands.
 - `integers`, in a `bits` or `punning` trace only, names the builtin type behind each alias the
   trace spells that the player does not know (`{"streamsize": "long"}`), as Clang resolved it.
 - `references` are names without storage. `refs` maps each reference bound so far to the
@@ -138,8 +144,9 @@ span      = [start, end)  — character offsets
 - `line` is the zero-based source line. `pane` is the statement as currently evaluated, in the
   lessons' notation (`int b{ a };` appears as `int b = a`, `int a{};` as `int a = {}`);
   `expr` is the part of the pane that is being evaluated, the rest being muted context.
-- `values` maps every leaf to an integer, `"?"` (declared, value unknown) or `null`
-  (storage not yet in use). Pointers hold the address they store, `nullptr` being `0`.
+- `values` maps every leaf to an integer, `"?"` (declared, value unknown), `null`
+  (storage not yet in use), or—in a `punning` trace—a poisoned hex string (`0x??????2A`) of
+  complete byte pairs. Pointers hold the address they store, `nullptr` being `0`.
 - `targets` maps a pointer leaf to the variable or leaf it points to. A pointer with a target
   holds that target's address; a pointer holding a nonzero value has a target. `stdout` is everything printed so far. `hold` is the pause after the step,
   in seconds at 1×.
@@ -172,14 +179,17 @@ a value may only change from `null` to `"?"` (a declaration).
 - A `clash` is the last step, on a statement that does not compile. It follows the statement
   as written, changes nothing, and its `destination` is the pane's `slot`.
 - `write` and `print` leave the pane unchanged; their `span` covers `value` in it. A write's
-  `destination` covers `name` in the pane. A print of whitespace alone is no value: its `span`
+  `destination` covers `name` in the pane (or `*addr` for a punned write). A print of whitespace alone is no value: its `span`
   covers the spelling that prints it, `std::endl` (or `endl`) or `'\n'` for `"\n"`, `'\t'`
   for `"\t"` and `' '` for `" "`. The player sends it to the output as a glyph (`↵`).
 - Only a write changes values or targets, and only of the cells its `name` covers (all fields of
-  a struct). Only a print changes `stdout`, by its value plus optional whitespace.
-- Values agree with memory. A value is an integer, `nullptr` (stored as `0`) or `"?"`; a struct
-  is `{…}` of its fields' values, in order, optionally after its type's name (`A{…}`). A read's value is what `name` held before the step,
-  a write's value what `name` holds after it, field by field, and an `addr` value is the
+  a struct, or live integer cells overlapping `[addr, addr + pun.size)` for a punned write). Only a print changes `stdout`, by its value plus optional whitespace.
+- Values agree with memory. A value is an integer, `nullptr` (stored as `0`), `"?"`, or (in a
+  `punning` trace) a poisoned hex string of complete byte pairs; a struct
+  is `{…}` of its fields' values, in order, optionally after its type's name (`A{…}`). A normal read's value is what `name` held before the step,
+  a normal write's value what `name` holds after it, field by field (a punned read or write checks
+  the little-endian byte slice `[addr, addr + pun.size)` against `pun.type`, so a punned write's
+  operand need not equal `name`'s resulting cell value), and an `addr` value is the
   address of `name`. A dereference's `target` is `via`'s target or one of its fields.
 
 The double-pointer fixture shows a full reduction: `**pp = 7` → `**72 = 7` (read) → `*p = 7`

@@ -187,7 +187,9 @@ export interface ByteVariableState {
 
 export interface PaddingByteState {
   value: ByteValue;
+  beforeValue?: ByteValue;
   corrupted: boolean;
+  corruptedBefore?: boolean;
   corruptedNow: boolean;
   revealAt?: number;
 }
@@ -258,17 +260,25 @@ export function renderByteMemory(c: SceneContext, opts: ByteMemoryOptions): stri
         }
         const padState = opts.paddingByte?.(addr);
         if (padState?.corrupted && opts.ubId) {
-          const hexText = typeof padState.value === 'number' ? hexByte(padState.value) : '??';
-          const badgeBg = rect(bx + byteW / 2 - 15, hexY - 15, 30, 20, P.panel, 'none', 3);
-          const hazard =
-            rect(bx + 1.5, gridY + 1.5, byteW - 3, cellH - 3, `url(#${opts.ubId})`, P.error, 0, 1.6) +
-            badgeBg +
-            text(bx + byteW / 2, hexY, hexText, 15.5, P.error, 'middle');
+          const makeHazard = (val: ByteValue): string => {
+            const hexText = typeof val === 'number' ? hexByte(val) : '??';
+            const badgeBg = rect(bx + byteW / 2 - 15, hexY - 15, 30, 20, P.panel, 'none', 3);
+            return (
+              rect(bx + 1.5, gridY + 1.5, byteW - 3, cellH - 3, `url(#${opts.ubId})`, P.error, 0, 1.6) +
+              badgeBg +
+              text(bx + byteW / 2, hexY, hexText, 15.5, P.error, 'middle')
+            );
+          };
+          const hazard = makeHazard(padState.value);
           if (animate && padState.corruptedNow) {
             const rev = padState.revealAt ?? at;
+            const beforeMarkup = padState.corruptedBefore
+              ? makeHazard(padState.beforeValue ?? '?')
+              : text(bx + byteW / 2, hexY, '??', 13.5, P.grey, 'middle');
+            const changed = !padState.corruptedBefore || padState.beforeValue !== padState.value;
             out +=
-              `<g>${hide(rev)}${text(bx + byteW / 2, hexY, '??', 13.5, P.grey, 'middle')}</g>` +
-              `<g opacity="0">${show(rev)}${scaledAt(bx + byteW / 2, gridY + 68, hazard, rev - 0.1)}</g>`;
+              `<g>${hide(rev)}${beforeMarkup}</g>` +
+              `<g opacity="0">${show(rev)}${changed ? scaledAt(bx + byteW / 2, gridY + 68, hazard, rev - 0.1) : hazard}</g>`;
           } else {
             out += hazard;
           }

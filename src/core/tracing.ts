@@ -2031,6 +2031,12 @@ function buildPunningMemory(inner: AstNode[], records: Record<string, RecordInfo
     if ((depth === 0 && !intInfo) || depth > 1) {
       throw new Unsupported('punning traces support integer and single-level pointer variables only');
     }
+    if (depth === 1) {
+      const base = canonicalType(v).replace(/\s*\*$/, '').trim();
+      if (base !== 'void' && !integerNamed(base, records)) {
+        throw new Unsupported('punning traces support pointers to integers or void* only');
+      }
+    }
     const size = depth > 0 ? POINTER_SIZE : intInfo!.size;
     cursor = Math.ceil(cursor / size) * size;
     specs.push({

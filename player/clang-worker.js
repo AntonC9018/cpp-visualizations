@@ -1248,12 +1248,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     if (slice.some((b) => typeof b !== "number")) {
       const ordered = [...slice].reverse();
       const hex = ordered.map((b) => typeof b === "number" ? hexByte(b) : "??").join("");
-      return { text: `0x${hex}`, poisoned: true, numeric: null };
+      return { text: `0x${hex}`, poisoned: true, exact: null, numeric: null };
     }
     const value = decodeBytes(slice, signed);
     const n = Number(value);
     const numeric = Number.isSafeInteger(n) && BigInt(n) === value ? n : null;
-    return { text: value.toString(10), poisoned: false, numeric };
+    return { text: value.toString(10), poisoned: false, exact: value, numeric };
   }
   const COMPOUND_OPERATORS = ["+", "-", "*", "/", "%"];
   function openCompound(pane, span, left, operator, grouped) {
@@ -1352,7 +1352,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     "clash"
   ];
   const UNKNOWN = "?";
-  const POISONED_HEX = /^0x(?=[0-9A-F?]*\?)[0-9A-F?]+$/;
+  const POISONED_HEX = /^0x(?=(?:[0-9A-F]{2}|\?\?)*\?\?)(?:[0-9A-F]{2}|\?\?)+$/;
   const IDENTIFIER = /^[A-Za-z_]\w*$/;
   class FormatError extends Error {
     constructor(message) {
@@ -1731,6 +1731,30 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return null;
   }
+  function updatePunningMem(step, previous, storage) {
+    const mem = storage.punMem;
+    if (!mem) return;
+    const op = step.op;
+    if ((op == null ? void 0 : op.kind) === "write" && Object.hasOwn(op, "pun")) {
+      const literal = integerLiteral(op.value);
+      if (literal !== null) {
+        const start = storage.addresses[op.name];
+        const written = encodeBytes(literal, op.pun.size);
+        for (let k = 0; k < op.pun.size; k++) mem.set(start + k, written[k]);
+      }
+      return;
+    }
+    for (const v of storage.variables) {
+      if (v.kind === "struct") continue;
+      const val = step.values[v.name];
+      const old = previous ? previous.values[v.name] : null;
+      if (Object.is(val, old)) continue;
+      const bytes = bytesFromCellValue(val, v.size);
+      if (bytes) {
+        for (let k = 0; k < v.size; k++) mem.set(v.address + k, bytes[k]);
+      }
+    }
+  }
   function checkMemory(op, step, previous, storage, where) {
     const { kind, name } = op;
     if (kind === "addr") {
@@ -1750,6 +1774,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       );
       const items2 = storedItems(op.value, where, true);
       check(items2.length === 1, `${where}.value`, "expected a single scalar value for a punning access");
+      const punInfo = integerSpelled(op.pun.type, storage.aliases);
       if (POISONED_HEX.test(items2[0])) {
         check(
           items2[0].length === 2 + op.pun.size * 2,
@@ -1757,9 +1782,30 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           `poisoned hex ${pyRepr(items2[0])} does not match ${op.pun.size} bytes`
         );
       }
+      if (kind === "read") {
+        const start = storage.addresses[name];
+        if (storage.punMem && punInfo) {
+          const slice = [];
+          for (let k = 0; k < op.pun.size; k++) {
+            slice.push(storage.punMem.has(start + k) ? storage.punMem.get(start + k) : "?");
+          }
+          const expected2 = formatByteSlice(slice, punInfo.signed);
+          check(
+            items2[0] === expected2.text,
+            `${where}.value`,
+            `punning read of ${op.pun.size} bytes at ${start} yields ${pyRepr(expected2.text)}, not ${pyRepr(items2[0])}`
+          );
+        }
+        return;
+      }
       if (kind === "write") {
         const literal = integerLiteral(items2[0]);
         check(literal !== null, `${where}.value`, "a punning write requires an integer value");
+        check(
+          punInfo !== null && punInfo.holds(literal),
+          `${where}.value`,
+          `${items2[0]} does not fit in ${op.pun.type}`
+        );
         const start = storage.addresses[name];
         const end = start + op.pun.size;
         const written = encodeBytes(literal, op.pun.size);
@@ -1865,8 +1911,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       check(step.pane.slice(start, end) === text, `${where}.${key}`, `does not cover ${pyRepr(text)}`);
     }
   }
-  function matchesDereferencedAddress(text, addr) {
-    return new RegExp(`\\*\\s*(?:\\(\\s*)?${addr}(?!\\d)`).test(text);
+  const DEREF_ADDR = /^\*\s*(?:\(\s*)?(\d+)(?:\s*\))?$/;
+  function matchesDereferencedAddress(pane, span, addr) {
+    const [start, end] = span;
+    const covered = pane.slice(start, end).trim();
+    const match = DEREF_ADDR.exec(covered);
+    if (!match || match[1] !== addr) return false;
+    return !/^\d/.test(pane[end] ?? "");
   }
   function checkPunningAccess(pun, storage, where) {
     check(storage.punning, where, "pun is only allowed in a punning trace");
@@ -1896,12 +1947,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       "does not cover the value"
     );
     if (kind === "write") {
-      const [dStart, dEnd] = checkSpan(op.destination, step.pane, `${where}.destination`);
-      const destText = step.pane.slice(dStart, dEnd);
+      const destSpan = checkSpan(op.destination, step.pane, `${where}.destination`);
+      const destText = step.pane.slice(destSpan[0], destSpan[1]);
       if (Object.hasOwn(op, "pun")) {
         const addr = String(storage.addresses[op.name]);
         check(
-          matchesDereferencedAddress(destText, addr),
+          matchesDereferencedAddress(step.pane, destSpan, addr),
           `${where}.destination`,
           `does not cover dereferenced address ${addr}`
         );
@@ -1992,10 +2043,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       if (Object.hasOwn(op, "pun")) {
         check(op.pun.via === op.via, `${where}.pun.via`, `expected ${op.via}`);
         check(step.pane === previous.pane, where, "a punning deref keeps the dereferenced address in the pane");
-        const [s, e] = checkSpan(op.span, previous.pane, `${where}.span`);
+        const derefSpan = checkSpan(op.span, previous.pane, `${where}.span`);
         const addr = String(storage.addresses[op.target]);
-        const covered = previous.pane.slice(s, e);
-        check(matchesDereferencedAddress(covered, addr), `${where}.span`, `does not cover *${addr}`);
+        check(matchesDereferencedAddress(previous.pane, derefSpan, addr), `${where}.span`, `does not cover *${addr}`);
         return;
       }
     }
@@ -2037,7 +2087,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const start = storage.addresses[op.name];
       const end = start + op.pun.size;
       for (const v of storage.variables) {
-        if (v.kind === "int" && v.address < end && v.address + v.size > start) {
+        if (v.kind === "int" && previous.values[v.name] !== null && v.address < end && v.address + v.size > start) {
           for (const cell of storage.cellsOf(v.name)) written.add(cell);
         }
       }
@@ -2210,6 +2260,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       references,
       punning: isPunning,
       aliases,
+      punMem: isPunning ? /* @__PURE__ */ new Map() : null,
       cellsOf(name) {
         return cellsOf(variables, name);
       }
@@ -2278,6 +2329,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       if (trace.bits) {
         checkBitsStep(step, previous, aliases, where);
       }
+      updatePunningMem(step, previous, storage);
       check(
         index === steps.length - 1 || ((_a = step.op) == null ? void 0 : _a.kind) !== "clash",
         `${where}.op`,
@@ -4025,6 +4077,12 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
       const intInfo = depth === 0 ? integerType(v, records) : null;
       if (depth === 0 && !intInfo || depth > 1) {
         throw new Unsupported("punning traces support integer and single-level pointer variables only");
+      }
+      if (depth === 1) {
+        const base = canonicalType(v).replace(/\s*\*$/, "").trim();
+        if (base !== "void" && !integerNamed(base, records)) {
+          throw new Unsupported("punning traces support pointers to integers or void* only");
+        }
       }
       const size = depth > 0 ? POINTER_SIZE : intInfo.size;
       cursor = Math.ceil(cursor / size) * size;

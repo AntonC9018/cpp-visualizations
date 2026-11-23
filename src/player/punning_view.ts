@@ -3,6 +3,7 @@
 import { hexByte } from '../core/bytes.ts';
 import {
   type ActivePunPointer,
+  type PaneReadReplacement,
   type PunningSimState,
   hasLargerPointerAccess,
   punningMinEndAddress,
@@ -66,34 +67,93 @@ function patchTypedParts(
 /**
  * Patch `step` and `prev` panes when toggling Little-endian / Big-endian changes the value
  * produced by a punning read (or a read of a poisoned/endian-dependent variable).
- * Uses the exact span recorded by `simulatePunningTrace`, never a substring search.
+ * Uses exact spans recorded by `simulatePunningTrace`, shifts `op.span` on `prev`-indexed ops,
+ * and preserves `c.op === null` on settled renders.
  */
 function resolveEndianContext(c: SceneContext, sim: PunningSimState): SceneContext {
+  const prevRep = sim.prevPaneReadReplacement;
+  const prevDelta =
+    prevRep && prevRep.resolvedValue !== prevRep.originalValue
+      ? prevRep.resolvedValue.length - prevRep.originalValue.length
+      : 0;
+
+  const shiftAgainstPrev = (span: Span): Span => {
+    if (!prevRep || prevDelta === 0) return span;
+    return shiftSpan(span, prevRep.span[0], prevRep.originalValue.length, prevDelta);
+  };
+
   const patchStep = (
     st: TraceStep | null,
     idx: number,
-    rep: PunningSimState['paneReadReplacement']
+    rep: PaneReadReplacement | null,
+    isCurrent: boolean
   ): TraceStep | null => {
-    if (!st || !rep || rep.resolvedValue === rep.originalValue) return st;
-    const { originalValue, resolvedValue, span } = rep;
-    const [at, end] = span;
-    if (st.pane.slice(at, end) !== originalValue) return st;
+    if (!st) return null;
+    const hasRep = Boolean(rep && rep.resolvedValue !== rep.originalValue);
+    let patchedPane = st.pane;
+    let patchedExpr = st.expr;
+    let patchedTypes = st.types;
+    let patchedOp = st.op;
 
-    const delta = resolvedValue.length - originalValue.length;
-    const patchedPane = st.pane.slice(0, at) + resolvedValue + st.pane.slice(end);
-    const patchedExpr = st.expr ? shiftSpan(st.expr, at, originalValue.length, delta) : st.expr;
-    const patchedTypes = patchTypedParts(st.types, at, originalValue.length, delta);
-    const op = st.op;
-    let patchedOp = op;
-    if (idx === rep.stepIndex && (op?.kind === 'read' || op?.kind === 'convert' || op?.kind === 'eval')) {
-      patchedOp = { ...op, value: resolvedValue };
-    } else if (op?.kind === 'write' && op.span[0] === at && op.span[1] === end) {
-      patchedOp = {
-        ...op,
-        value: resolvedValue,
-        span: [at, at + resolvedValue.length],
-        destination: shiftSpan(op.destination, at, originalValue.length, delta),
-      };
+    if (hasRep && rep) {
+      const { originalValue, resolvedValue, span } = rep;
+      const [at, end] = span;
+      if (st.pane.slice(at, end) === originalValue) {
+        const delta = resolvedValue.length - originalValue.length;
+        patchedPane = st.pane.slice(0, at) + resolvedValue + st.pane.slice(end);
+        patchedExpr = st.expr ? shiftSpan(st.expr, at, originalValue.length, delta) : st.expr;
+        patchedTypes = patchTypedParts(st.types, at, originalValue.length, delta);
+        if (idx === rep.stepIndex && (patchedOp?.kind === 'read' || patchedOp?.kind === 'convert' || patchedOp?.kind === 'eval')) {
+          patchedOp = { ...patchedOp, value: resolvedValue };
+        } else if (patchedOp?.kind === 'write' && patchedOp.span[0] === at && patchedOp.span[1] === end) {
+          patchedOp = {
+            ...patchedOp,
+            value: resolvedValue,
+            span: [at, at + resolvedValue.length],
+            destination: shiftSpan(patchedOp.destination, at, originalValue.length, delta),
+          };
+        }
+      }
+    }
+
+    // Operations whose `span` indexes `prev.pane` must track length changes made to `prev.pane`.
+    if (
+      isCurrent &&
+      prevDelta !== 0 &&
+      patchedOp &&
+      (patchedOp.kind === 'convert' ||
+        patchedOp.kind === 'eval' ||
+        patchedOp.kind === 'read' ||
+        patchedOp.kind === 'deref' ||
+        patchedOp.kind === 'addr')
+    ) {
+      const nextSpan = shiftAgainstPrev(patchedOp.span);
+      const nextOperator =
+        patchedOp.kind === 'convert' && patchedOp.operator
+          ? shiftAgainstPrev(patchedOp.operator)
+          : undefined;
+      if (
+        nextSpan[0] !== patchedOp.span[0] ||
+        nextSpan[1] !== patchedOp.span[1] ||
+        (nextOperator &&
+          patchedOp.kind === 'convert' &&
+          patchedOp.operator &&
+          (nextOperator[0] !== patchedOp.operator[0] || nextOperator[1] !== patchedOp.operator[1]))
+      ) {
+        patchedOp =
+          patchedOp.kind === 'convert' && nextOperator
+            ? { ...patchedOp, span: nextSpan, operator: nextOperator }
+            : { ...patchedOp, span: nextSpan };
+      }
+    }
+
+    if (
+      patchedPane === st.pane &&
+      patchedExpr === st.expr &&
+      patchedTypes === st.types &&
+      patchedOp === st.op
+    ) {
+      return st;
     }
     return {
       ...st,
@@ -104,10 +164,11 @@ function resolveEndianContext(c: SceneContext, sim: PunningSimState): SceneConte
     };
   };
 
-  const step = patchStep(c.step, c.index, sim.paneReadReplacement)!;
-  const prev = patchStep(c.prev, c.index - 1, sim.prevPaneReadReplacement);
+  const step = patchStep(c.step, c.index, sim.paneReadReplacement, true)!;
+  const prev = patchStep(c.prev, c.index - 1, sim.prevPaneReadReplacement, false);
   if (step === c.step && prev === c.prev) return c;
-  return { ...c, step, prev, op: step.op };
+  // Preserve `c.op === null` on settled renders so the pane stays settled rather than animating at t = 0.
+  return { ...c, step, prev, op: c.op ? step.op : null };
 }
 
 /** Whether storing the result of a punning read should fly per-byte tiles instead of a scalar box. */
@@ -210,7 +271,7 @@ function punReticle(
     const breached = drawHudReticle(bx, by, bw, bh, opCol, P.error, ownEnd);
     const triggerAt = isPunRead ? dep : at;
     inner =
-      animate && (isPunWrite || isPunRead)
+      animate && ptr.ubTriggeredNow && (isPunWrite || isPunRead)
         ? `<g>${hide(triggerAt)}${calm}</g><g opacity="0">${show(triggerAt)}${breached}</g>`
         : breached;
   } else {
@@ -234,7 +295,7 @@ function punReticle(
 }
 
 // ============================================================================================
-// CLEAN OVERHEAD POINTER ARCS
+// CLEAN OVERHEAD POINTER ARCS (ALL LIFTED CLEAR OF THE PER-BYTE ADDRESS RULER)
 // ============================================================================================
 
 function punningArrows(
@@ -248,25 +309,26 @@ function punningArrows(
   const punNames = new Set(sim.punPointers.map(p => p.ptrName));
   const at = op ? arrival(op) : 0;
 
+  const arcGeom = (l: PointerLink, isPun: boolean): { d: string; hx: number; hy: number } => {
+    const sx = l.from.x + l.from.w / 2;
+    const ex = isPun ? xOf(l.to.address) + byteW * 0.5 : l.head[0];
+    const sy = gridY - 2;
+    const ey = gridY - 26;
+    const apex = gridY - 92 - l.level * 36;
+    return {
+      d: `M ${round(sx)} ${round(sy)} C ${round(sx)} ${round(apex)}, ${round(ex)} ${round(apex)}, ${round(ex)} ${round(ey - 8)}`,
+      hx: ex,
+      hy: ey,
+    };
+  };
+
   const arcFor = (
     l: PointerLink,
+    isPun: boolean,
     opts: { grow?: number | null; fadeOut?: number | null; keepBright?: boolean } = {}
   ): string => {
-    const isPun = punNames.has(l.from.name);
     const col = l.from.color;
-    let d = l.d;
-    let hx = l.head[0];
-    let hy = l.head[1];
-    if (isPun) {
-      const sx = l.from.x + l.from.w / 2;
-      const ex = xOf(l.to.address) + byteW * 0.5;
-      const sy = gridY - 2;
-      const ey = gridY - 26;
-      const apex = gridY - 92 - l.level * 36;
-      d = `M ${round(sx)} ${round(sy)} C ${round(sx)} ${round(apex)}, ${round(ex)} ${round(apex)}, ${round(ex)} ${round(ey - 8)}`;
-      hx = ex;
-      hy = ey;
-    }
+    const { d, hx, hy } = arcGeom(l, isPun);
     const grow = opts.grow != null ? ` data-grow="${round(opts.grow)}"` : '';
     const head = `<path d="M -10 -6 L 0 0 L -10 6 Z" fill="${col}" transform="translate(${round(hx)} ${round(hy)}) rotate(90)"/>`;
     const body =
@@ -289,35 +351,33 @@ function punningArrows(
   const writesPtr =
     animate && op?.kind === 'write' && g.cellsOf(op.name).some(l => l.kind === 'ptr');
   if (writesPtr && prev) {
+    const prevPunNames = new Set(
+      simulatePunningTrace(c.m.trace, Math.max(0, c.index - 1), c.littleEndian).punPointers.map(p => p.ptrName)
+    );
     const changed = new Set(g.cellsOf(op.name).map(l => l.name));
     let out = '';
     for (const l of links(g, prev)) {
-      out += arcFor(l, {
-        ...(changed.has(l.from.name) ? { fadeOut: at } : {}),
+      const isOutgoing = changed.has(l.from.name);
+      const isPun = isOutgoing ? prevPunNames.has(l.from.name) : punNames.has(l.from.name);
+      out += arcFor(l, isPun, {
+        ...(isOutgoing ? { fadeOut: at } : {}),
         keepBright: activeArcPtrs.has(l.from.name),
       });
     }
     for (const l of now) {
       if (changed.has(l.from.name)) {
-        out += arcFor(l, { grow: at + 0.08, keepBright: activeArcPtrs.has(l.from.name) });
+        out += arcFor(l, punNames.has(l.from.name), { grow: at + 0.08, keepBright: activeArcPtrs.has(l.from.name) });
       }
     }
     return out;
   }
 
-  let out = now.map(l => arcFor(l, { keepBright: activeArcPtrs.has(l.from.name) })).join('');
+  let out = now.map(l => arcFor(l, punNames.has(l.from.name), { keepBright: activeArcPtrs.has(l.from.name) })).join('');
   if (animate && op?.kind === 'deref') {
     const l = now.find(link => link.from.name === op.via);
     if (l) {
       const isPun = punNames.has(l.from.name);
-      const sx = l.from.x + l.from.w / 2;
-      const ex = xOf(l.to.address) + byteW * 0.5;
-      const sy = gridY - 2;
-      const ey = gridY - 26;
-      const apex = gridY - 92 - l.level * 36;
-      const d = isPun
-        ? `M ${round(sx)} ${round(sy)} C ${round(sx)} ${round(apex)}, ${round(ex)} ${round(apex)}, ${round(ex)} ${round(ey - 8)}`
-        : l.d;
+      const { d } = arcGeom(l, isPun);
       const pulsePath = `<path d="${d}" fill="none" stroke="${l.from.color}" stroke-width="7" stroke-linecap="round" data-follow="${T.prepare}"/>`;
       out += isPun ? pulsePath : dim(c, l.from.name, pulsePath);
     }
@@ -329,9 +389,8 @@ function punningArrows(
 // UNIFIED PUNNING SCENE
 // ============================================================================================
 
-function punningScene(rawC: SceneContext): string {
-  const sim = simulatePunningTrace(rawC.m.trace, rawC.index, rawC.littleEndian);
-  const c = resolveEndianContext(rawC, sim);
+function punningScene(c: SceneContext): string {
+  const sim = simulatePunningTrace(c.m.trace, c.index, c.littleEndian);
   const { g, P, animate, op, step, prev } = c;
   const { defs, padId, ubId } = hatchDefs(P);
   const lineChanged = animate && prev !== null && prev.line !== step.line;
@@ -379,7 +438,9 @@ function punningScene(rawC: SceneContext): string {
           : at;
       return {
         value: slot.after,
+        beforeValue: slot.before,
         corrupted: true,
+        corruptedBefore: slot.corruptedBefore,
         corruptedNow: slot.corruptedNow,
         revealAt,
       };
@@ -387,6 +448,19 @@ function punningScene(rawC: SceneContext): string {
     stateOf(leaf): ByteVariableState {
       const beforeDec = sim.varBefore.get(leaf.name) ?? null;
       const afterDec = sim.varAfter.get(leaf.name) ?? null;
+      // Undeclared variables stay dark and empty until declared, even if an OOB write touched their slot.
+      if (afterDec === null) {
+        return {
+          beforeHeader: null,
+          afterHeader: null,
+          bytes: [],
+          changing: false,
+          corrupted: false,
+          corruptedNow: false,
+          keepBright: false,
+          suppressDefaultHighlight: Boolean(isPunWrite || isPunRead),
+        };
+      }
       const isCorrupted = sim.corruptedVars.has(leaf.name);
       const isDestTileStore = Boolean(byteTileStore && sim.storeAfterPunRead?.destVar.name === leaf.name);
       const isNormalWrite = Boolean(op?.kind === 'write' && op.name === leaf.name && !isPunWrite && !isDestTileStore);
@@ -398,7 +472,7 @@ function punningScene(rawC: SceneContext): string {
             leaf.address < sim.activePun.targetAddress + sim.activePun.pun.size &&
             leaf.address + leaf.size > sim.activePun.targetAddress)
       );
-      const allUnknown = afterDec !== null && afterDec.text === '?' && !afterDec.poisoned;
+      const allUnknown = afterDec.text === '?' && !afterDec.poisoned;
       let corruptedNow = false;
       const bytes: ByteCellState[] = [];
       for (let k = 0; k < leaf.size; k++) {
@@ -426,7 +500,7 @@ function punningScene(rawC: SceneContext): string {
         involvedNames.has(leaf.name);
       return {
         beforeHeader: beforeDec ? { text: beforeDec.text, poisoned: beforeDec.poisoned } : null,
-        afterHeader: afterDec ? { text: afterDec.text, poisoned: afterDec.poisoned } : null,
+        afterHeader: { text: afterDec.text, poisoned: afterDec.poisoned },
         bytes,
         changing,
         corrupted: isCorrupted,
@@ -494,6 +568,7 @@ function punningScene(rawC: SceneContext): string {
       '</g>';
     const triggersNow =
       animate &&
+      ptr.ubTriggeredNow &&
       ((isPunRead && sim.activePun?.pun.via === ptr.ptrName) ||
         (isPunWrite && sim.activePun?.pun.via === ptr.ptrName));
     const showAt = isPunRead ? dep : at;
@@ -534,9 +609,10 @@ function punningScene(rawC: SceneContext): string {
         ? Math.max(stripSource.bytes.length, stripSource.targetSize)
         : stripSource.bytes.length;
     const stripW = slotCount * tileW + Math.max(0, slotCount - 1) * tileGap;
+    const stepOp = step.op;
     const rhsStart =
-      op && 'span' in op
-        ? op.span[0]
+      stepOp && 'span' in stepOp
+        ? stepOp.span[0]
         : Math.max(0, step.pane.indexOf('= ') + 2);
     const tilesX = Math.max(
       g.pane.x + 12,
@@ -612,12 +688,11 @@ function punningScene(rawC: SceneContext): string {
           const dur = 0.85;
           const end = at + k * 0.08;
           const begin = Math.max(0.2, end - dur);
-          const flyCol = bval === '?' ? P.error : P.write;
           flight +=
-            `<g opacity="0">${fade(0, 0.5, 0.2, begin)}${fade(0.5, 0, 0.25, end)}<path d="${path}" fill="none" stroke="${flyCol}" stroke-width="2.4"/></g>` +
+            `<g opacity="0">${fade(0, 0.5, 0.2, begin)}${fade(0.5, 0, 0.25, end)}<path d="${path}" fill="none" stroke="${stroke}" stroke-width="2.4"/></g>` +
             `<g opacity="0">${fade(0, 1, 0.1, begin)}${hide(end + 0.05)}` +
-            rect(-20, -14, 40, 28, P.panel, flyCol, 6, 2) +
-            text(0, 6, label, 15, flyCol, 'middle') +
+            rect(-20, -14, 40, 28, P.panel, stroke, 6, 2) +
+            text(0, 6, label, 15, stroke, 'middle') +
             `<animateMotion begin="${round(begin)}s" dur="${dur}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
         }
       }
@@ -637,7 +712,10 @@ function punningScene(rawC: SceneContext): string {
   }
 
   const paneMarkup = colorPoisonHexInSvg(pane(c, animate && copies(c.m.steps, c.index)), P.error);
-  const transferMarkup = !animate || isPunWrite || isPunRead || byteTileStore ? '' : transfers(c);
+  const transferMarkup =
+    !animate || isPunWrite || isPunRead || byteTileStore
+      ? ''
+      : colorPoisonHexInSvg(transfers(c), P.error);
 
   return (
     defs +
@@ -671,6 +749,10 @@ export const PUNNING_VIEW: TraceView = {
   stackBelow: 900,
   maxScale: 0.72,
   byteOrder: true,
+  resolveContext(c) {
+    const sim = simulatePunningTrace(c.m.trace, c.index, c.littleEndian);
+    return resolveEndianContext(c, sim);
+  },
   scene: punningScene,
   stepSeconds: punningStepSeconds,
 };

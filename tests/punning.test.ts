@@ -130,9 +130,12 @@ test('punning read across adjacent known bytes and smaller pointer read flip acc
   );
   assert.equal(adjacent.steps.at(-1)!.values.x, 131077);
   assert.equal(hasLargerPointerAccess(adjacent), true);
+  const adjReadIdx = adjacent.steps.findIndex(s => s.op?.kind === 'read' && s.op.pun);
+  const adjReadBe = simulatePunningTrace(adjacent, adjReadIdx, false);
+  assert.ok(adjReadBe.readForeignVars.has('c'));
   const adjBe = simulatePunningTrace(adjacent, adjacent.steps.length - 1, false);
   assert.equal(adjBe.varAfter.get('x')?.text, '327682');
-  assert.ok(adjBe.readForeignVars.has('c'));
+  assert.equal(adjBe.readForeignVars.size, 0);
 
   const smaller = traceSource(
     `
@@ -418,15 +421,44 @@ test('validate rejects mutated punning traces (wrong via, target, type, byte val
   wrongValue.steps[wIdx].values.a = 99;
   assert.throws(() => validate(wrongValue), FormatError);
 
-  // Address substring spoofing (*164 must not pass for address 64)
+  // Address substring spoofing (*164 and *640 must not pass for address 64)
   const badAddr = structuredClone(writeTrace);
   const derefIdx = badAddr.steps.findIndex(s => s.op?.kind === 'deref');
-  badAddr.steps[derefIdx - 1].pane = '*164 = 300';
-  badAddr.steps[derefIdx].pane = '*164 = 300';
-  (badAddr.steps[derefIdx].op as { span: [number, number] }).span = [0, 4];
-  assert.throws(() => validate(badAddr), FormatError);
+  // Keep the preceding read consistent by placing the spoofed *164 right on the deref step (and its prior pane via op: null)
+  badAddr.steps[derefIdx - 1] = {
+    ...badAddr.steps[derefIdx - 1],
+    pane: '*164 = 300',
+    expr: [0, 10],
+    op: null,
+  };
+  badAddr.steps[derefIdx] = {
+    ...badAddr.steps[derefIdx],
+    pane: '*164 = 300',
+    expr: [0, 10],
+    op: { ...(badAddr.steps[derefIdx].op as Record<string, unknown>), span: [0, 4] } as typeof badAddr.steps[number]['op'],
+  };
+  assert.throws(() => validate(badAddr), err => err instanceof FormatError && /does not cover \*64/.test(err.message));
 
-  // Poisoned hex width mismatch on punning read
+  // Trailing digit outside span (*64 sliced out of *640 = 300) must also fail
+  const badDigitBoundary = structuredClone(writeTrace);
+  badDigitBoundary.steps[derefIdx - 1] = {
+    ...badDigitBoundary.steps[derefIdx - 1],
+    pane: '*640 = 300',
+    expr: [0, 10],
+    op: null,
+  };
+  badDigitBoundary.steps[derefIdx] = {
+    ...badDigitBoundary.steps[derefIdx],
+    pane: '*640 = 300',
+    expr: [0, 10],
+    op: { ...(badDigitBoundary.steps[derefIdx].op as Record<string, unknown>), span: [0, 3] } as typeof badDigitBoundary.steps[number]['op'],
+  };
+  assert.throws(
+    () => validate(badDigitBoundary),
+    err => err instanceof FormatError && /does not cover \*64/.test(err.message)
+  );
+
+  // Poisoned hex width mismatch and half-poisoned byte pairs (`0xA?`)
   const readTrace = traceSource(
     'uint8_t a{ 42 }; int c{ 10 }; int* b = reinterpret_cast<int*>(&a); int x = *b;',
     { punning: true }
@@ -436,4 +468,143 @@ test('validate rejects mutated punning traces (wrong via, target, type, byte val
   (badReadHex.steps[rIdx].op as { value: string }).value = '0x??2A';
   badReadHex.steps[rIdx].pane = badReadHex.steps[rIdx].pane.replace('0x??????2A', '0x??2A');
   assert.throws(() => validate(badReadHex), FormatError);
+
+  const halfByte = structuredClone(readTrace);
+  (halfByte.steps[rIdx].op as { value: string }).value = '0x000000?A';
+  halfByte.steps[rIdx].pane = halfByte.steps[rIdx].pane.replace('0x??????2A', '0x000000?A');
+  assert.throws(() => validate(halfByte), FormatError);
+
+  // Punned read with arbitrary wrong value (`123`) must be rejected against actual bytes
+  const wrongReadVal = structuredClone(readTrace);
+  (wrongReadVal.steps[rIdx].op as { value: string }).value = '123';
+  wrongReadVal.steps[rIdx].pane = wrongReadVal.steps[rIdx].pane.replace('0x??????2A', '123');
+  wrongReadVal.steps[rIdx].expr = [8, 11];
+  assert.throws(() => validate(wrongReadVal), err => err instanceof FormatError && /yields '0x\?\?\?\?\?\?2A'/.test(err.message));
+
+  // Punned write with out-of-range value (`300` through `uint8_t*`) must fail
+  const narrowWrite = traceSource(
+    'int a{ 5 }; uint8_t* b = reinterpret_cast<uint8_t*>(&a); *b = 10;',
+    { punning: true }
+  );
+  const nwIdx = narrowWrite.steps.length - 1;
+  const oobWriteVal = structuredClone(narrowWrite);
+  for (const s of oobWriteVal.steps) {
+    if (s.line === narrowWrite.steps[nwIdx].line) {
+      s.pane = s.pane.replace('10', '300');
+      if (s.expr) s.expr = [s.expr[0], s.expr[1] + 1];
+    }
+  }
+  const nwOp = oobWriteVal.steps[nwIdx].op as { value: string; span: [number, number] };
+  nwOp.value = '300';
+  nwOp.span = [nwOp.span[0], nwOp.span[0] + 3];
+  oobWriteVal.steps[nwIdx].values.a = 44;
+  assert.throws(() => validate(oobWriteVal), err => err instanceof FormatError && /does not fit in uint8_t/.test(err.message));
+
+  // Punned write must not authorize mutating an undeclared (`null`) overlapping variable
+  const lateDecl = traceSource(
+    `
+      uint8_t a{ 1 };
+      int* b = reinterpret_cast<int*>(&a);
+      uint8_t c{ 2 };
+      b = reinterpret_cast<int*>(&c);
+      *b = 300;
+      uint8_t d{ 3 };
+    `,
+    { punning: true }
+  );
+  const ldWriteIdx = lateDecl.steps.findIndex(s => s.op?.kind === 'write' && s.op.pun);
+  const badLateDecl = structuredClone(lateDecl);
+  badLateDecl.steps[ldWriteIdx].values.d = 1;
+  assert.throws(() => validate(badLateDecl), FormatError);
+});
+
+test('punning handles 64-bit BE values above MAX_SAFE_INTEGER, all-poisoned reads, long-vs-long-long, float* rejection, and widening --types', () => {
+  // 64-bit BE read > 2^53 - 1 into *q = *p must not fall back to LE
+  const big64 = traceSource(
+    `
+      uint32_t a{ 268435456 };
+      uint32_t c{ 0 };
+      uint32_t d{ 0 };
+      uint32_t e{ 0 };
+      uint64_t* p = reinterpret_cast<uint64_t*>(&a);
+      uint64_t* q = reinterpret_cast<uint64_t*>(&d);
+      *q = *p;
+    `,
+    { punning: true }
+  );
+  const bigBe = simulatePunningTrace(big64, big64.steps.length - 1, false);
+  assert.equal(bigBe.varAfter.get('d')?.text, '268435456');
+  assert.equal(bigBe.varAfter.get('e')?.text, '0');
+
+  // All-indeterminate punned read stays `0x????????` (poisoned), never collapsing to `?`
+  const allPoison = traceSource(
+    `
+      uint8_t a;
+      int* b = reinterpret_cast<int*>(&a);
+      int x = *b;
+      int y = x;
+    `,
+    { punning: true }
+  );
+  assert.equal(allPoison.steps.at(-1)!.values.x, '0x????????');
+  const allPoisonLe = simulatePunningTrace(allPoison, allPoison.steps.length - 1, true);
+  assert.equal(allPoisonLe.varAfter.get('x')?.text, '0x????????');
+  assert.equal(allPoisonLe.varAfter.get('x')?.poisoned, true);
+  assert.equal(allPoisonLe.varAfter.get('y')?.text, '0x????????');
+  assert.equal(allPoisonLe.paneReadReplacement, null);
+
+  // Distinct canonical types with same width/signedness (`long long*` to `long`) still get a reticle
+  const longPun = traceSource(
+    `
+      long a{ 5 };
+      long long* b = reinterpret_cast<long long*>(&a);
+      *b = 7;
+    `,
+    { punning: true }
+  );
+  const longSim = simulatePunningTrace(longPun, longPun.steps.length - 1, true);
+  assert.equal(longSim.punPointers.length, 1);
+  assert.equal(longSim.punPointers[0].ptrName, 'b');
+
+  // Widening convert with `--punning --types` downgrades directRead so storeAfterPunRead does not index past pun.size
+  const widenedTyped = traceSource(
+    `
+      uint8_t a{ 1 };
+      uint8_t c{ 2 };
+      uint16_t* p = reinterpret_cast<uint16_t*>(&a);
+      int x = *p;
+    `,
+    { punning: true, types: true }
+  );
+  const wtEnd = simulatePunningTrace(widenedTyped, widenedTyped.steps.length - 1, false);
+  assert.equal(wtEnd.storeAfterPunRead, null);
+  assert.equal(wtEnd.varAfter.get('x')?.text, '258');
+
+  // float* is rejected upfront in --punning mode
+  assert.throws(
+    () => traceSource('int a{ 5 }; float* fp = reinterpret_cast<float*>(&a);', { punning: true }),
+    Unsupported
+  );
+
+  // Repeated OOB writes only set ubTriggeredNow on the first write and track corruptedBefore on the second
+  const repeated = traceSource(
+    `
+      uint8_t a{ 5 };
+      int c{ 10 };
+      int* b = reinterpret_cast<int*>(&a);
+      *b = 300;
+      *b = 400;
+    `,
+    { punning: true }
+  );
+  const writeIndices = repeated.steps
+    .map((s, i) => (s.op?.kind === 'write' && s.op.pun ? i : -1))
+    .filter(i => i >= 0);
+  assert.equal(writeIndices.length, 2);
+  const firstWrite = simulatePunningTrace(repeated, writeIndices[0], true);
+  assert.equal(firstWrite.punPointers[0].ubTriggeredNow, true);
+  assert.equal(firstWrite.bytes[1].corruptedBefore, false);
+  const secondWrite = simulatePunningTrace(repeated, writeIndices[1], true);
+  assert.equal(secondWrite.punPointers[0].ubTriggeredNow, false);
+  assert.equal(secondWrite.bytes[1].corruptedBefore, true);
 });

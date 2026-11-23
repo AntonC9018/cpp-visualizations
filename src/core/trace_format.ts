@@ -40,7 +40,7 @@ export const OPERATIONS: readonly OperationKind[] = [
 ];
 export const UNKNOWN = '?' as const;
 /** Poisoned hexadecimal integer value produced by reading indeterminate padding bytes (`0x??????2A`). */
-export const POISONED_HEX = /^0x(?=[0-9A-F?]*\?)[0-9A-F?]+$/;
+export const POISONED_HEX = /^0x(?=(?:[0-9A-F]{2}|\?\?)*\?\?)(?:[0-9A-F]{2}|\?\?)+$/;
 export type StoredCellValue = number | typeof UNKNOWN | string | null;
 export type Span = [number, number];
 
@@ -775,6 +775,7 @@ interface StorageContext {
   references: Set<string>;
   punning: boolean;
   aliases: Record<string, string>;
+  punMem: Map<number, ByteValue> | null;
   cellsOf(name: string): string[];
 }
 
@@ -792,6 +793,35 @@ function bytesFromCellValue(value: unknown, size: number): ByteValue[] | null {
     return out;
   }
   return null;
+}
+
+function updatePunningMem(
+  step: Record<string, any>,
+  previous: Record<string, any> | null,
+  storage: StorageContext
+): void {
+  const mem = storage.punMem;
+  if (!mem) return;
+  const op = step.op;
+  if (op?.kind === 'write' && Object.hasOwn(op, 'pun')) {
+    const literal = integerLiteral(op.value);
+    if (literal !== null) {
+      const start = storage.addresses[op.name];
+      const written = encodeBytes(literal, op.pun.size, true);
+      for (let k = 0; k < op.pun.size; k++) mem.set(start + k, written[k]);
+    }
+    return;
+  }
+  for (const v of storage.variables) {
+    if (v.kind === 'struct') continue;
+    const val = step.values[v.name];
+    const old = previous ? previous.values[v.name] : null;
+    if (Object.is(val, old)) continue;
+    const bytes = bytesFromCellValue(val, v.size);
+    if (bytes) {
+      for (let k = 0; k < v.size; k++) mem.set(v.address + k, bytes[k]);
+    }
+  }
 }
 
 function checkMemory(
@@ -820,6 +850,7 @@ function checkMemory(
     );
     const items = storedItems(op.value, where, true);
     check(items.length === 1, `${where}.value`, 'expected a single scalar value for a punning access');
+    const punInfo = integerSpelled(op.pun.type, storage.aliases);
     if (POISONED_HEX.test(items[0])) {
       check(
         items[0].length === 2 + op.pun.size * 2,
@@ -827,9 +858,30 @@ function checkMemory(
         `poisoned hex ${pyRepr(items[0])} does not match ${op.pun.size} bytes`
       );
     }
+    if (kind === 'read') {
+      const start = storage.addresses[name];
+      if (storage.punMem && punInfo) {
+        const slice: ByteValue[] = [];
+        for (let k = 0; k < op.pun.size; k++) {
+          slice.push(storage.punMem.has(start + k) ? storage.punMem.get(start + k)! : '?');
+        }
+        const expected = formatByteSlice(slice, punInfo.signed, true)!;
+        check(
+          items[0] === expected.text,
+          `${where}.value`,
+          `punning read of ${op.pun.size} bytes at ${start} yields ${pyRepr(expected.text)}, not ${pyRepr(items[0])}`
+        );
+      }
+      return;
+    }
     if (kind === 'write') {
       const literal = integerLiteral(items[0]);
       check(literal !== null, `${where}.value`, 'a punning write requires an integer value');
+      check(
+        punInfo !== null && punInfo.holds(literal!),
+        `${where}.value`,
+        `${items[0]} does not fit in ${op.pun.type}`
+      );
       const start = storage.addresses[name];
       const end = start + op.pun.size;
       const written = encodeBytes(literal!, op.pun.size, true);
@@ -945,8 +997,14 @@ function checkReferenceOp(
   }
 }
 
-function matchesDereferencedAddress(text: string, addr: string): boolean {
-  return new RegExp(`\\*\\s*(?:\\(\\s*)?${addr}(?!\\d)`).test(text);
+const DEREF_ADDR = /^\*\s*(?:\(\s*)?(\d+)(?:\s*\))?$/;
+
+function matchesDereferencedAddress(pane: string, span: Span, addr: string): boolean {
+  const [start, end] = span;
+  const covered = pane.slice(start, end).trim();
+  const match = DEREF_ADDR.exec(covered);
+  if (!match || match[1] !== addr) return false;
+  return !/^\d/.test(pane[end] ?? '');
 }
 
 function checkPunningAccess(
@@ -988,12 +1046,12 @@ function unchangedPane(
     'does not cover the value'
   );
   if (kind === 'write') {
-    const [dStart, dEnd] = checkSpan(op.destination, step.pane, `${where}.destination`);
-    const destText = step.pane.slice(dStart, dEnd);
+    const destSpan = checkSpan(op.destination, step.pane, `${where}.destination`);
+    const destText = step.pane.slice(destSpan[0], destSpan[1]);
     if (Object.hasOwn(op, 'pun')) {
       const addr = String(storage.addresses[op.name]);
       check(
-        matchesDereferencedAddress(destText, addr),
+        matchesDereferencedAddress(step.pane, destSpan, addr),
         `${where}.destination`,
         `does not cover dereferenced address ${addr}`
       );
@@ -1089,10 +1147,9 @@ function checkOperation(
     if (Object.hasOwn(op, 'pun')) {
       check(op.pun.via === op.via, `${where}.pun.via`, `expected ${op.via}`);
       check(step.pane === previous.pane, where, 'a punning deref keeps the dereferenced address in the pane');
-      const [s, e] = checkSpan(op.span, previous.pane, `${where}.span`);
+      const derefSpan = checkSpan(op.span, previous.pane, `${where}.span`);
       const addr = String(storage.addresses[op.target]);
-      const covered = previous.pane.slice(s, e);
-      check(matchesDereferencedAddress(covered, addr), `${where}.span`, `does not cover *${addr}`);
+      check(matchesDereferencedAddress(previous.pane, derefSpan, addr), `${where}.span`, `does not cover *${addr}`);
       return;
     }
   }
@@ -1142,7 +1199,7 @@ function checkChanges(
     const start = storage.addresses[op.name];
     const end = start + op.pun.size;
     for (const v of storage.variables) {
-      if (v.kind === 'int' && v.address < end && v.address + v.size > start) {
+      if (v.kind === 'int' && previous.values[v.name] !== null && v.address < end && v.address + v.size > start) {
         for (const cell of storage.cellsOf(v.name)) written.add(cell);
       }
     }
@@ -1321,6 +1378,7 @@ export function validate(trace: unknown): asserts trace is AnyTrace {
     references,
     punning: isPunning,
     aliases,
+    punMem: isPunning ? new Map<number, ByteValue>() : null,
     cellsOf(name: string) {
       return cellsOf(variables, name);
     },
@@ -1391,6 +1449,7 @@ export function validate(trace: unknown): asserts trace is AnyTrace {
     if (trace.bits) {
       checkBitsStep(step as TraceStep, previous as TraceStep | null, aliases, where);
     }
+    updatePunningMem(step, previous, storage);
     check(
       index === steps.length - 1 || step.op?.kind !== 'clash',
       `${where}.op`,
