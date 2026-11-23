@@ -8,6 +8,9 @@ export interface DecodedBytes {
   /** Decimal when all bytes are known; `0x…` with `?` nibbles whenever any byte is unknown. */
   text: string;
   poisoned: boolean;
+  /** Exact signed/unsigned value when all bytes are known, `null` when poisoned. */
+  exact: bigint | null;
+  /** JS number when `exact` is within safe integer range, otherwise `null`. */
   numeric: number | null;
 }
 
@@ -71,12 +74,12 @@ export function formatByteSlice(
   if (slice.some(b => typeof b !== 'number')) {
     const ordered = littleEndian ? [...slice].reverse() : [...slice];
     const hex = ordered.map(b => (typeof b === 'number' ? hexByte(b) : '??')).join('');
-    return { text: `0x${hex}`, poisoned: true, numeric: null };
+    return { text: `0x${hex}`, poisoned: true, exact: null, numeric: null };
   }
   const value = decodeBytes(slice as number[], signed, littleEndian);
   const n = Number(value);
   const numeric = Number.isSafeInteger(n) && BigInt(n) === value ? n : null;
-  return { text: value.toString(10), poisoned: false, numeric };
+  return { text: value.toString(10), poisoned: false, exact: value, numeric };
 }
 
 /** Contiguous alignment-padding runs between `items` (and optional trailing padding up to `minEnd`). */

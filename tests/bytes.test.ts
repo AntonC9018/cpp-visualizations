@@ -43,49 +43,58 @@ describe('bytes', () => {
     assert.deepEqual(formatByteSlice([0x2a, null, null, null], true, true), {
       text: '0x??????2A',
       poisoned: true,
+      exact: null,
       numeric: null,
     });
     assert.deepEqual(formatByteSlice([0x2a, '?', '?', '?'], true, true), {
       text: '0x??????2A',
       poisoned: true,
+      exact: null,
       numeric: null,
     });
     assert.deepEqual(formatByteSlice([0x2a, '?', '?', '?'], true, false), {
       text: '0x2A??????',
       poisoned: true,
+      exact: null,
       numeric: null,
     });
     assert.deepEqual(formatByteSlice([0x05, 0x1a, '?', '?'], true, true), {
       text: '0x????1A05',
       poisoned: true,
+      exact: null,
       numeric: null,
     });
     assert.deepEqual(formatByteSlice([0x05, 0x1a, '?', '?'], true, false), {
       text: '0x051A????',
       poisoned: true,
+      exact: null,
       numeric: null,
     });
     assert.deepEqual(formatByteSlice([0x05, 0x00, 0x02, 0x00], true, true), {
       text: '131077',
       poisoned: false,
+      exact: 131077n,
       numeric: 131077,
     });
     assert.deepEqual(formatByteSlice([0xfd, 0xff, 0xff, 0xff], true, true), {
       text: '-3',
       poisoned: false,
+      exact: -3n,
       numeric: -3,
     });
-    // Values beyond Number.MAX_SAFE_INTEGER keep exact decimal text and null numeric (never rounded).
+    // Values beyond Number.MAX_SAFE_INTEGER keep exact decimal text, exact bigint, and null numeric (never rounded).
     const unsafe = encodeBytes((1n << 53n) + 1n, 8, true);
     assert.deepEqual(formatByteSlice(unsafe, false, true), {
       text: '9007199254740993',
       poisoned: false,
+      exact: 9007199254740993n,
       numeric: null,
     });
     const maxSafe = encodeBytes((1n << 53n) - 1n, 8, true);
     assert.deepEqual(formatByteSlice(maxSafe, false, true), {
       text: '9007199254740991',
       poisoned: false,
+      exact: 9007199254740991n,
       numeric: Number.MAX_SAFE_INTEGER,
     });
   });

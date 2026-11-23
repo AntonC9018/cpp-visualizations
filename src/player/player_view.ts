@@ -344,14 +344,15 @@ export class Player {
       focus: stepFocus(this.m, this.index, animate),
       littleEndian: this.littleEndian,
     };
+    const ctx = this.view.resolveContext ? this.view.resolveContext(c) : c;
     this.animated = animate;
     this.svg.setAttribute('viewBox', `0 0 ${Math.ceil(g.width)} ${Math.ceil(g.height)}`);
     this.svg.style.maxWidth = `${Math.ceil(g.width * this.view.maxScale)}px`;
-    this.scene.innerHTML = `<rect width="100%" height="100%" fill="${this.P.bg}"/>` + this.view.scene(c);
+    this.scene.innerHTML = `<rect width="100%" height="100%" fill="${this.P.bg}"/>` + this.view.scene(ctx);
     placeLineTargets(g, this.lines);
     this.finishPaths();
     this.seek(0);
-    this.update(describe(c));
+    this.update(describe(ctx));
   }
 
   finishPaths(): void {

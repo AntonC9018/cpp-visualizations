@@ -83,6 +83,28 @@ export const PRESETS: readonly PlaygroundPreset[] = [
     source: ['int c = -200;', 'int8_t d = static_cast<int8_t>(c);', 'int e = d;', 'uint8_t f = 200;', 'int g = f;'].join('\n'),
   },
   {
+    id: 'punning-write-ub',
+    settings: { template: 'expression-timeline', flags: { punning: true } },
+    label: { en: 'Pointer punning: out-of-bounds write', ru: 'Реинтерпретация указателя: запись за границы' },
+    source: [
+      'uint8_t a{ 5 };',
+      'uint8_t c{ 10 };',
+      'int* b = reinterpret_cast<int*>(&a);',
+      '*b = 300;',
+    ].join('\n'),
+  },
+  {
+    id: 'punning-read-padding',
+    settings: { template: 'expression-timeline', flags: { punning: true } },
+    label: { en: 'Pointer punning: reading padding bytes', ru: 'Реинтерпретация указателя: чтение байтов выравнивания' },
+    source: [
+      'uint8_t a{ 42 };',
+      'int c{ 10 };',
+      'int* b = reinterpret_cast<int*>(&a);',
+      'int x = *b;',
+    ].join('\n'),
+  },
+  {
     id: 'layout-padding',
     settings: { template: 'layout', flags: {} },
     label: { en: 'Struct padding & alignment', ru: 'Выравнивание и заполнение полей' },
