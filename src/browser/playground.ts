@@ -525,17 +525,22 @@ export function initPlayground(root: HTMLElement): PlaygroundController {
     void run();
   });
 
-  themeBtn.addEventListener('click', () => {
-    const next = getTheme() === 'dark' ? 'light' : 'dark';
-    document.documentElement.dataset.theme = next;
+  let activeTheme = getTheme();
+  let activeLang = getLang();
+
+  function applyThemeChange(): void {
+    const next = getTheme();
+    if (next === activeTheme) return;
+    activeTheme = next;
     currentView?.refresh();
     renderStrings();
     syncUrl();
-  });
+  }
 
-  langBtn.addEventListener('click', () => {
-    const next = getLang() === 'en' ? 'ru' : 'en';
-    document.documentElement.lang = next;
+  function applyLangChange(): void {
+    const next = getLang();
+    if (next === activeLang) return;
+    activeLang = next;
     renderStrings();
     syncUrl();
     if (lastTrace) {
@@ -553,7 +558,32 @@ export function initPlayground(root: HTMLElement): PlaygroundController {
         currentView.settle(prior.index);
       }
     }
+  }
+
+  themeBtn.addEventListener('click', () => {
+    const next = getTheme() === 'dark' ? 'light' : 'dark';
+    document.documentElement.dataset.theme = next;
+    applyThemeChange();
   });
+
+  langBtn.addEventListener('click', () => {
+    const next = getLang() === 'en' ? 'ru' : 'en';
+    document.documentElement.lang = next;
+    applyLangChange();
+  });
+
+  if (typeof MutationObserver !== 'undefined') {
+    const rootObserver = new MutationObserver(mutations => {
+      for (const m of mutations) {
+        if (m.attributeName === 'data-theme') applyThemeChange();
+        if (m.attributeName === 'lang') applyLangChange();
+      }
+    });
+    rootObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['data-theme', 'lang'],
+    });
+  }
 
   runBtn.addEventListener('click', () => {
     syncUrl();

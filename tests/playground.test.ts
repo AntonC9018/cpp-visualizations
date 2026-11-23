@@ -263,6 +263,24 @@ test(
         /выравнивание 3 B/
       );
 
+      // Direct attribute updates from the site header selects also sync playground state and URL.
+      await page.evaluate(() => {
+        document.documentElement.dataset.theme = 'dark';
+        document.documentElement.lang = 'en';
+      });
+      await page.waitForFunction(
+        () => (document.querySelector('.pg-vis-host .cv-layout-record')?.textContent || '').includes('padding 3 B')
+      );
+      assert.match(page.url(), /[?&]theme=dark/);
+      assert.match(page.url(), /[?&]lang=en/);
+      await page.evaluate(() => {
+        document.documentElement.dataset.theme = 'light';
+        document.documentElement.lang = 'ru';
+      });
+      await page.waitForFunction(
+        () => (document.querySelector('.pg-vis-host .cv-layout-record')?.textContent || '').includes('выравнивание 3 B')
+      );
+
       // Reload the page: custom code, mode, theme, and language persist AND WASM loads from Cache API with 0 fetches!
       await page.reload();
       await page.waitForSelector('.pg-vis-host .cv-layout-record');

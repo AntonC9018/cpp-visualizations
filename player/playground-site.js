@@ -86,6 +86,7 @@
   }
 
   function injectHeaderButtons() {
+    if (document.getElementById('playground-root')) return;
     var selectors = ['.header .right-group', '.mobile-preferences'];
     for (var i = 0; i < selectors.length; i++) {
       var container = document.querySelector(selectors[i]);

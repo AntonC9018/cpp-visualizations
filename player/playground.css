@@ -52,6 +52,31 @@ body {
   padding: 1rem 1.25rem 2.5rem;
 }
 
+header.header {
+  font-family: var(--__sl-font);
+  line-height: var(--sl-line-height);
+  color: var(--sl-color-text);
+}
+
+header.header ~ #playground-root {
+  padding-top: calc(var(--sl-nav-height, 3.5rem) + 1rem);
+}
+
+header.header ~ #playground-root .pg-lang-btn,
+header.header ~ #playground-root .pg-theme-btn {
+  display: none;
+}
+
+@media (max-width: 50rem) {
+  [data-has-sidebar] header.header {
+    padding-inline-end: var(--sl-nav-pad-x, 1rem);
+  }
+
+  header.header .right-group {
+    display: flex;
+  }
+}
+
 .pg-header {
   display: flex;
   flex-wrap: wrap;
