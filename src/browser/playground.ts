@@ -52,7 +52,7 @@ interface UiCopy {
   /** The error's button that turns on the flag the snippet needs, by the flag's label. */
   turnOn: (flag: string) => string;
   /** What follows such an error's diagnostic. */
-  needsFlag: (flag: string) => string;
+  needsFlag: (flag: string, causeName: 'IllFormed' | 'Unsupported') => string;
 }
 
 const UI_COPY: Record<'en' | 'ru', UiCopy> = {
@@ -87,7 +87,10 @@ const UI_COPY: Record<'en' | 'ru', UiCopy> = {
     traceTime: ms => `Traced in ${ms} ms`,
     emptyPlaceholder: 'Write a C++ snippet on the left and press Visualize.',
     turnOn: flag => `Turn on ${flag}`,
-    needsFlag: flag => `; with ${flag} on, the trace shows why`,
+    needsFlag: (flag, causeName) =>
+      causeName === 'IllFormed'
+        ? `; with ${flag} on, the trace shows why`
+        : `; switch to ${flag} to trace this snippet`,
   },
   ru: {
     title: 'Песочница памяти и раскладки C++',
@@ -120,7 +123,10 @@ const UI_COPY: Record<'en' | 'ru', UiCopy> = {
     traceTime: ms => `Готово за ${ms} мс`,
     emptyPlaceholder: 'Введите фрагмент C++ слева и нажмите «Визуализировать».',
     turnOn: flag => `Включить «${flag}»`,
-    needsFlag: flag => `; если включить «${flag}», трасса покажет причину`,
+    needsFlag: (flag, causeName) =>
+      causeName === 'IllFormed'
+        ? `; если включить «${flag}», трасса покажет причину`
+        : `; переключитесь на «${flag}», чтобы трассировать этот фрагмент`,
   },
 };
 
@@ -409,9 +415,9 @@ export function initPlayground(root: HTMLElement): PlaygroundController {
     if (err instanceof NeedsFlag && isFlag(err.flag) && takesFlag(state.template, err.flag)) {
       const flag = err.flag;
       const label = FLAGS[flag].label[lang];
-      errorBox.replaceChildren(`IllFormed: ${err.diagnostic}`);
+      errorBox.replaceChildren(`${err.causeName}: ${err.diagnostic}`);
       if (errorSource !== editor.value) return;
-      errorBox.append(UI_COPY[lang].needsFlag(label));
+      errorBox.append(UI_COPY[lang].needsFlag(label, err.causeName));
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'pg-btn pg-error-action';

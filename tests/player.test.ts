@@ -1048,4 +1048,62 @@ test('punning view updates poisoned hex reads live across LE and BE and routes 1
   }
 });
 
+test('punning view renders direct uninitialized reads with UB badge and red poisoned hex', async () => {
+  const generated = traceSource('int a;\nint b = a;\nstd::cout << b << std::endl;', { punning: true });
+  const errors: string[] = [];
+  const onError = (error: Error) => errors.push(error.message);
+  page.on('pageerror', onError);
+  try {
+    await page.setContent(PAGE.replace(trace, JSON.stringify(generated).replace(/</g, '\\u003c')));
+    await page.evaluate(() => window.CourseVisualization!.scan());
+    await page.waitForSelector('.cv-player');
+    const summary = await page.evaluate(() => {
+      const p = (document.querySelector('.course-visualization') as PlayerElement).cvPlayer;
+      for (let i = 0; i < p.m.steps.length; i++) {
+        p.settle(i);
+        if (/NaN|undefined/.test(p.svg.innerHTML)) throw new Error(`invalid SVG at step ${i}`);
+      }
+      return {
+        ubBadges: p.svg.querySelectorAll('.cv-ub-badge').length,
+        texts: [...p.svg.querySelectorAll('text')].map(el => el.textContent ?? ''),
+        tspans: [...p.svg.querySelectorAll('tspan')].map(el => el.textContent ?? ''),
+      };
+    });
+    assert.ok(summary.ubBadges >= 1);
+    assert.ok(summary.texts.includes('⚠ UB'));
+    assert.ok(summary.texts.includes('0x????????'));
+    assert.ok(summary.tspans.includes('????????'));
+    assert.deepEqual(errors, []);
+  } finally {
+    page.off('pageerror', onError);
+  }
+});
+
+test('static layout renders array fields with element alignment and C-array syntax', async () => {
+  const arrLayout: LayoutTrace = {
+    format: 1,
+    kind: 'layout',
+    records: [
+      {
+        name: 'B',
+        size: 16,
+        alignment: 4,
+        fields: [
+          { name: 'tag', type: 'uint8_t', offset: 0, size: 1, kind: 'int' },
+          { name: 'vals', type: 'int[2]', offset: 4, size: 8, kind: 'int', alignment: 4, count: 2 },
+          { name: 'end', type: 'uint8_t', offset: 12, size: 1, kind: 'int' },
+        ],
+      },
+    ],
+  };
+  await showLayout(arrLayout, 760);
+  const text = (await page.locator('.cv-layout-record').textContent()) ?? '';
+  assert.match(text, /int vals\[2\];/);
+  assert.match(text, /alignof = max\(1, 4, 1\) = 4/);
+  assert.match(text, /padding 6 B/);
+  assert.equal(await page.locator('.cv-byte.cv-byte-elem').count(), 1);
+  await page.locator('.cv-layout-fact[data-layout-key="0:widest"]').hover();
+  assert.equal(await linkedBytes(), 8);
+});
+
 

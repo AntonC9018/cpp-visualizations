@@ -87,7 +87,8 @@ program, so no real address exists: Clang's constant evaluation checks which obj
 pointer designates. A null pointer prints `0`. A string
 literal or another character is rejected.
 
-Integers of every width are values: `int`, `short`, `long`, `long long`, their unsigned kinds
+Integers of every width are values: `int`, `short`, `long`, `long long`, their unsigned kinds,
+`std::byte` (equivalent to `uint8_t`, with `std::byte{v}`, `static_cast`, and `std::to_integer`),
 and the aliases over them (`uint8_t`, `int16_t`, `size_t`), each drawn at its own size.
 `float` (4 bytes) and `double` (8 bytes) values and arithmetic (`+`, `-`, `*`, `/`), `void*`
 pointers (with implicit conversions to `void*` and `static_cast` to or from `void*`), and
@@ -123,17 +124,20 @@ references are rejected.
 
 `--punning` (the tag's `punning` attribute) is for examples about reading or writing through a
 pointer to another integer type (`reinterpret_cast<T*>`, C-style pointer casts, or `void*` with
-`static_cast<T*>`). Memory lays out typed integer and single-level pointer variables in ascending
+`static_cast<T*>`) as well as reading uninitialized scalar variables directly or through a matching
+pointer. Memory lays out typed integer and single-level pointer variables in ascending
 natural-aligned order on a flush byte strip with hatched `??` alignment padding and a live
 Little-endian / Big-endian switch. A HUD reticle frames the pointer's dereference window; larger
-out-of-bounds accesses trigger a `⚠ UB` caliper and mark overwritten padding or neighbor variables
-as corrupted, while reading indeterminate padding bytes produces poisoned hex values such as
-`0x??????2A` (LE) or `0x2A??????` (BE). Because C++ constant evaluation forbids `reinterpret_cast`
-and type-punning UB, `--punning` traces skip Clang's `constexpr` replay and instead verify
-byte-level transitions in `PunningMemory` and `trace_format.ts`. Arithmetic and `std::cout` on
-endian-dependent punned values are rejected so every valid trace flips accurately between
-Little-endian and Big-endian. Cannot be combined with `--bits`; structs, arrays, floats and
-references are rejected.
+out-of-bounds accesses and uninitialized reads trigger a `⚠ UB` caliper and mark overwritten padding
+or neighbor variables as corrupted, while reading indeterminate bytes produces poisoned hex values
+such as `0x??????2A` (LE), `0x2A??????` (BE), or `0x????????`. Because C++ constant evaluation
+forbids `reinterpret_cast` and UB, `--punning` traces skip Clang's `constexpr` replay and instead
+verify byte-level transitions in `PunningMemory` and `trace_format.ts`. Arithmetic and `std::cout`
+on endian-dependent punned values are rejected so every valid trace flips accurately between
+Little-endian and Big-endian (all-indeterminate `0x????????` values are endian-independent and may
+be copied, converted, or printed). Cannot be combined with `--bits`; structs, arrays, floats and
+references are rejected. When regular tracing rejects a snippet that `--punning` can trace, the
+tracer raises `NeedsFlag` (`punning`) so the playground offers a one-click switch.
 
 A brace list of plain values (`A a { 1, 2 };`) is stored as spelled, with no step that only
 respaces it, and so is a typed one (`A{ 1, 2 }`); a designated list evaluates to its values.
@@ -189,11 +193,12 @@ an answer block. Maintenance uses the nearest preceding top-level C++ fence, jus
 execution traces. Plain tags retain the step-through player.
 
 Both `probe --template layout` and `trace --template layout` use Clang without executing the
-snippet. Plain aggregate fields may be `uint8_t`, `int8_t`, `int`, `size_t`, `uint64_t`
-(including `std::` spellings), or pointers. Unsupported field types are rejected explicitly.
+snippet. Plain aggregate fields may be `uint8_t`, `int8_t`, `std::byte`, `int`, `size_t`, `uint64_t`
+(including `std::` spellings), pointers, or fixed-size arrays (`T arr[N]` or `std::array<T, N>`, up
+to 64 elements) of those types. Unsupported field types are rejected explicitly.
 The view lists the fields, then draws the struct's bytes as one tape with each field's name
 above its bytes. Padding appears in the list as `padding ×N` rows and on the tape as hatched
-bytes. Alignment is shown only when it inserted padding: `alignof = max(field sizes)`, slot
+bytes. Alignment is shown only when it inserted padding: `alignof = max(field alignments)`, slot
 edges on the tape and offsets at each slot; otherwise the offsets mark where fields start.
 Hover, click or keyboard focus links a field's row, name and bytes; `struct` and `sizeof`
 highlight the whole object, `alignof` the widest fields. Theme changes preserve focus.

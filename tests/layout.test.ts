@@ -59,10 +59,68 @@ describe('LayoutTests', () => {
       'struct A {};',
       'struct A { double x; };',
       'struct A { int x:2; };',
-      'struct A { int x[2]; };',
+      'struct A { double x[2]; };',
+      'struct A { std::array<double, 2> x; };',
+      'struct A { int x[65]; };',
+      'struct A { std::array<int, 65> x; };',
     ]) {
-      assert.throws(() => trace(source), Unsupported);
+      assert.throws(() => trace(source), Unsupported, source);
     }
+  });
+
+  test('arrays_and_std_byte_in_structs', () => {
+    // Lab 10 Example 2: std::array<int, 4> + int*
+    const stdArr = trace('#include <array>\nstruct A { std::array<int, 4> f1; int* f2; };');
+    assert.deepEqual(stdArr.records[0], {
+      name: 'A',
+      size: 24,
+      alignment: 8,
+      fields: [
+        { name: 'f1', type: 'std::array<int, 4>', offset: 0, size: 16, kind: 'int', alignment: 4, count: 4 },
+        { name: 'f2', type: 'int *', offset: 16, size: 8, kind: 'ptr' },
+      ],
+    });
+
+    // C arrays with padding: element alignment (4) governs struct alignment, not total field size (8)
+    const cArr = trace('struct B { uint8_t tag; int vals[2]; uint8_t end; };');
+    assert.deepEqual(cArr.records[0], {
+      name: 'B',
+      size: 16,
+      alignment: 4,
+      fields: [
+        { name: 'tag', type: 'uint8_t', offset: 0, size: 1, kind: 'int' },
+        { name: 'vals', type: 'int[2]', offset: 4, size: 8, kind: 'int', alignment: 4, count: 2 },
+        { name: 'end', type: 'uint8_t', offset: 12, size: 1, kind: 'int' },
+      ],
+    });
+
+    // Multi-dimensional C array, pointer array, and std::byte (scalar, C array, std::array)
+    const bytesAndPtrs = trace(`
+      #include <array>
+      #include <cstddef>
+      struct Packet {
+        std::byte kind;
+        std::byte buf[3];
+        std::array<std::byte, 4> hdr;
+        int grid[2][2];
+        int* ptrs[2];
+      };
+    `);
+    assert.deepEqual(bytesAndPtrs.records[0], {
+      name: 'Packet',
+      size: 40,
+      alignment: 8,
+      fields: [
+        { name: 'kind', type: 'std::byte', offset: 0, size: 1, kind: 'int' },
+        { name: 'buf', type: 'std::byte[3]', offset: 1, size: 3, kind: 'int', alignment: 1, count: 3 },
+        { name: 'hdr', type: 'std::array<std::byte, 4>', offset: 4, size: 4, kind: 'int', alignment: 1, count: 4 },
+        { name: 'grid', type: 'int[2][2]', offset: 8, size: 16, kind: 'int', alignment: 4, count: 4 },
+        { name: 'ptrs', type: 'int *[2]', offset: 24, size: 16, kind: 'ptr', alignment: 8, count: 2 },
+      ],
+    });
+    validate(stdArr);
+    validate(cArr);
+    validate(bytesAndPtrs);
   });
 
   test('shadowed_type_names', () => {

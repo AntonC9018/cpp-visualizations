@@ -19,6 +19,11 @@ namespace std {
   using size_t = decltype(sizeof(0));
   using ptrdiff_t = decltype(static_cast<char*>(nullptr) - static_cast<char*>(nullptr));
   using nullptr_t = decltype(nullptr);
+  enum class byte : unsigned char {};
+  template<class IntegerType>
+  constexpr IntegerType to_integer(byte b) noexcept {
+    return static_cast<IntegerType>(b);
+  }
   using int8_t = signed char;
   using uint8_t = unsigned char;
   using int16_t = short;

@@ -17,15 +17,20 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       this.offset = offset;
     }
   }
-  class NeedsFlag extends IllFormed {
-    constructor(diagnostic, flag, offset = null) {
-      super(`${diagnostic}; with ${flag} on (--${flag}), the trace shows why`, offset);
-      /** Clang's error, without the hint. */
+  class NeedsFlag extends Unsupported {
+    constructor(diagnostic, flag, offset = null, causeName = "IllFormed") {
+      const hint = causeName === "IllFormed" ? `; with ${flag} on (--${flag}), the trace shows why` : `; trace it with ${flag} on (--${flag})`;
+      super(`${diagnostic}${hint}`);
+      /** Original diagnostic, without the hint. */
       __publicField(this, "diagnostic");
       __publicField(this, "flag");
+      __publicField(this, "offset");
+      __publicField(this, "causeName");
       this.name = "NeedsFlag";
       this.diagnostic = diagnostic;
       this.flag = flag;
+      this.offset = offset;
+      this.causeName = causeName;
     }
   }
   function sourceCoordinates(source) {
@@ -273,7 +278,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }
   function arrayType(spelling) {
     var _a;
-    const type = spelling.replace(/\b(?:struct|class) /g, "").replace(/^const /, "");
+    const type = spelling.replace(/\b(?:struct|class|enum) /g, "").replace(/^const /, "");
     const match = /^(?:std::)?array<(.+), (\d+)>$/.exec(type);
     if (!match) return null;
     const element = ((_a = arrayType(match[1])) == null ? void 0 : _a.name) ?? match[1];
@@ -377,6 +382,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     "unsigned long long": new Integer(8, false)
   });
   const ALIASES = Object.freeze({
+    byte: "unsigned char",
     size_t: "unsigned long",
     ptrdiff_t: "long",
     intptr_t: "long",
@@ -458,7 +464,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return qualified.replace(/^(const )?struct /, "$1");
   }
   function displayed(spelling) {
-    return spelling.replace(/^(const )?struct /, "$1").replace(/\s+(?=[*&])/g, "").replace(/^std::/, "");
+    return spelling.replace(/^(const )?struct /, "$1").replace(/\s+(?=[*&])/g, "").replace(/^std::(?!byte\b)/, "");
   }
   function displayedType(node) {
     const spelling = typeSpelling(node);
@@ -486,18 +492,67 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     "int",
     "size_t",
     "uint64_t",
+    "byte",
     "std::uint8_t",
     "std::int8_t",
     "std::size_t",
-    "std::uint64_t"
+    "std::uint64_t",
+    "std::byte"
   ];
   const BUILTIN_INTEGERS = [
     "signed char",
     "unsigned char",
     "int",
     "unsigned long",
-    "unsigned long long"
+    "unsigned long long",
+    "std::byte"
   ];
+  const MAX_LAYOUT_ARRAY_ELEMENTS = 64;
+  function isAllowedLayoutScalar(qualified, canonical) {
+    return LAYOUT_SPELLINGS.includes(qualified) && BUILTIN_INTEGERS.includes(canonical) || /^(?:const )?[\w:]+ \*+$/.test(qualified);
+  }
+  function parseLayoutArray(qualified, canonical) {
+    const cArr = /^(.+?)\s*((?:\[\d+\])+)$/.exec(canonical);
+    if (cArr) {
+      const dims = [...cArr[2].matchAll(/\[(\d+)\]/g)].map((m) => Number(m[1]));
+      let count2 = 1;
+      for (const d of dims) {
+        if (d < 1) throw new Unsupported("array fields in structs must have positive length");
+        count2 *= d;
+        if (count2 > MAX_LAYOUT_ARRAY_ELEMENTS) {
+          throw new Unsupported(`array fields in struct layouts support at most ${MAX_LAYOUT_ARRAY_ELEMENTS} elements`);
+        }
+      }
+      const elemCanonical2 = cArr[1].trim();
+      const qArr = /^(.+?)\s*((?:\[\d+\])+)$/.exec(qualified);
+      const elemAllowed = qArr ? isAllowedLayoutScalar(qArr[1].trim(), elemCanonical2) : BUILTIN_INTEGERS.includes(elemCanonical2) || elemCanonical2.endsWith("*");
+      if (!elemAllowed) return null;
+      return { kind: "c", count: count2, isPtr: elemCanonical2.endsWith("*"), elemCanonical: elemCanonical2 };
+    }
+    const top = arrayType(canonical);
+    if (!top) return null;
+    let cur = top;
+    let count = 1;
+    while (true) {
+      if (cur.count < 1) throw new Unsupported("array fields in structs must have positive length");
+      count *= cur.count;
+      if (count > MAX_LAYOUT_ARRAY_ELEMENTS) {
+        throw new Unsupported(`array fields in struct layouts support at most ${MAX_LAYOUT_ARRAY_ELEMENTS} elements`);
+      }
+      const inner = arrayType(cur.element);
+      if (!inner) break;
+      cur = inner;
+    }
+    const elemCanonical = cur.element;
+    const isPtr = elemCanonical.endsWith("*");
+    if (!BUILTIN_INTEGERS.includes(elemCanonical) && !(isPtr && /^(?:const )?[\w: ]+\*+$/.test(elemCanonical))) {
+      return null;
+    }
+    return { kind: "std", arrayName: top.name, count, isPtr, elemCanonical };
+  }
+  function sizeProbeType(canonical) {
+    return canonical === "std::byte" ? "unsigned char" : canonical;
+  }
   function isPointer(node) {
     return canonicalType(node).endsWith("*");
   }
@@ -539,6 +594,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
     }
     const arrayTypes = /* @__PURE__ */ new Set();
+    const layoutArrays = /* @__PURE__ */ new Map();
     if (!layoutOnly) {
       let collectType = function(spelling) {
         const array = arrayType(spelling);
@@ -577,8 +633,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         allowed || (allowed = Object.hasOwn(definitions, qualified) && qualified !== name);
         allowed || (allowed = arrayTypes.has(recordName(child)));
         if (layoutOnly) {
-          allowed = LAYOUT_SPELLINGS.includes(qualified) && BUILTIN_INTEGERS.includes(canonical);
-          allowed || (allowed = /^(?:const )?[\w:]+ \*+$/.test(qualified));
+          const arr = parseLayoutArray(qualified, canonical);
+          allowed = isAllowedLayoutScalar(qualified, canonical) || arr !== null;
+          if (arr) {
+            layoutArrays.set(child, arr);
+            if (arr.arrayName) arrayTypes.add(arr.arrayName);
+          }
         }
         if (!allowed) {
           throw new Unsupported(`struct ${name}.${child.name}: unsupported field type ${qualified}`);
@@ -596,6 +656,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const records = {};
     const arrayLayouts = /* @__PURE__ */ new Map();
     const canonicals = {};
+    const layoutArrayRefs = {};
     for (const block of dumpOutput.split("*** Dumping AST Record Layout")) {
       const header = /^\s*0 \| struct (\S[^\n]*)$/m.exec(block);
       if (!header) continue;
@@ -613,18 +674,21 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
       const fields = [];
       const recordCanonicals = [];
+      const recordArrays = [];
       for (let i = 0; i < rows.length; i++) {
         const offset = Number.parseInt(rows[i][1], 10);
         const member = rows[i][3];
         const node = nodes[i];
         const spelling = typeSpelling(node);
+        const arr = layoutOnly ? layoutArrays.get(node) ?? null : null;
         const nestedName = recordName(node);
         const nested = !layoutOnly && (Object.hasOwn(definitions, nestedName) || arrayTypes.has(nestedName)) ? nestedName : null;
         const item = {
           name: member,
           offset,
-          kind: nested ? "struct" : isPointer(node) ? "ptr" : "int",
+          kind: arr ? arr.isPtr ? "ptr" : "int" : nested ? "struct" : isPointer(node) ? "ptr" : "int",
           size: 0,
+          ...arr ? { count: arr.count } : {},
           ...!layoutOnly ? { canonical: canonicalType(node).replace(/^struct /, "") } : {},
           ...floatSpelled(canonicalType(node)) ? { floating: true } : {}
         };
@@ -632,9 +696,16 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           item.type = nested ?? spelling;
         }
         fields.push(item);
-        recordCanonicals.push(
-          item.kind === "struct" ? null : isPointer(node) ? "void *" : canonicalType(node)
-        );
+        recordArrays.push(arr);
+        if (arr) {
+          recordCanonicals.push(
+            arr.kind === "std" ? null : arr.isPtr ? "void *" : sizeProbeType(arr.elemCanonical)
+          );
+        } else {
+          recordCanonicals.push(
+            item.kind === "struct" ? null : isPointer(node) ? "void *" : sizeProbeType(canonicalType(node))
+          );
+        }
       }
       records[name] = new RecordLayout(
         name,
@@ -643,6 +714,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         fields
       );
       canonicals[name] = recordCanonicals;
+      layoutArrayRefs[name] = recordArrays;
     }
     const defKeys = Object.keys(definitions);
     const recKeys = Object.keys(records);
@@ -667,7 +739,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           throw new Unsupported(`Clang omitted a contiguous layout for ${name}`);
         }
         const nested = arrayType(array.element) || Object.hasOwn(records, array.element);
-        const scalarElem = /^(?:(?:signed|unsigned) char|(?:unsigned )?(?:short|int|long(?: long)?)|float|double)$/;
+        const scalarElem = /^(?:(?:signed|unsigned) char|(?:unsigned )?(?:short|int|long(?: long)?)|float|double|std::byte)$/;
         const pointee = (_a = /^(.*) \*+$/.exec(array.element)) == null ? void 0 : _a[1];
         const pointer = pointee !== void 0 && (scalarElem.test(pointee) || pointee === "void" || Object.hasOwn(records, pointee) || Boolean(arrayType(pointee)));
         if (!nested && !pointer && !scalarElem.test(array.element)) {
@@ -697,14 +769,33 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       leafCounts.set(name, count);
       return count;
     }
-    for (const name of arrayTypes) countCells(name);
+    if (!layoutOnly) {
+      for (const name of arrayTypes) countCells(name);
+    }
     for (const [name, record] of Object.entries(records)) {
       const recCanonicals = canonicals[name];
+      const recArrays = layoutArrayRefs[name];
       if (!recCanonicals) continue;
       for (let i = 0; i < record.fields.length; i++) {
         const item = record.fields[i];
         const canonical = recCanonicals[i];
-        item.size = canonical === null ? records[item.type].size : sizesMap[canonical];
+        const arr = (recArrays == null ? void 0 : recArrays[i]) ?? null;
+        if (arr) {
+          if (arr.kind === "std") {
+            const layout = arrayLayouts.get(arr.arrayName);
+            if (!layout || layout.size !== arr.count * layout.alignment) {
+              throw new Unsupported(`Clang omitted a contiguous layout for ${arr.arrayName}`);
+            }
+            item.size = layout.size;
+            item.alignment = layout.alignment;
+          } else {
+            const elemSize = sizesMap[canonical];
+            item.size = elemSize * arr.count;
+            item.alignment = elemSize;
+          }
+        } else {
+          item.size = canonical === null ? records[item.type].size : sizesMap[canonical];
+        }
       }
     }
     return records;
@@ -1578,7 +1669,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const integer = (cell == null ? void 0 : cell.kind) === "int" ? integerSpelled(cell.type ?? "", aliases) : null;
     check(integer === null || integer.size === cell.size, where, `${cell == null ? void 0 : cell.type} is not ${cell == null ? void 0 : cell.size} bytes`);
     if (value === null || value === UNKNOWN) return;
-    if (punning && (cell == null ? void 0 : cell.kind) === "int" && typeof value === "string" && POISONED_HEX.test(value)) {
+    if (punning && cell && !cell.floating && typeof value === "string" && POISONED_HEX.test(value)) {
       check(
         value.length === 2 + cell.size * 2,
         where,
@@ -1846,7 +1937,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const when = kind === "write" ? "after the write" : "before the read";
     const items = storedItems(op.value, where, storage.punning);
     check(
-      items.length === cells.length && items.every((item, i) => showsCell(item, expected[i], storage.cells[cells[i]])),
+      items.length === cells.length && items.every((item, i) => {
+        const cell = storage.cells[cells[i]];
+        if (kind === "read" && storage.punning && expected[i] === UNKNOWN && cell && !cell.floating && item === `0x${"??".repeat(cell.size)}`) {
+          return true;
+        }
+        return showsCell(item, expected[i], cell);
+      }),
       `${where}.value`,
       `${name} holds ${shown} ${when}, not ${pyRepr(op.value)}`
     );
@@ -2144,7 +2241,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const seen = /* @__PURE__ */ new Set();
       let end = 0;
       for (const item of fields) {
-        checkKeys(item, name, ["name", "offset", "size", "kind", "type"]);
+        checkKeys(item, name, ["name", "offset", "size", "kind", "type"], ["alignment", "count"]);
         check(typeof item.name === "string" && IDENTIFIER.test(item.name), name, "invalid field name");
         check(!seen.has(item.name), name, "duplicate field");
         seen.add(item.name);
@@ -2153,8 +2250,25 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         natural(item.offset, `${name}.offset`);
         natural(item.size, `${name}.size`, true);
         const { size } = item;
-        check([1, 4, 8].includes(size) && (item.kind !== "ptr" || size === 8), name, "unsupported field size");
-        const expectedOffset = roundUp(end, size);
+        const hasAlign = Object.hasOwn(item, "alignment");
+        const hasCount = Object.hasOwn(item, "count");
+        check(hasAlign === hasCount, name, "array layout fields must specify both alignment and count");
+        let fieldAlign = size;
+        if (hasCount) {
+          natural(item.count, `${name}.count`, true);
+          check(item.count <= 64, name, "unsupported array field length");
+          natural(item.alignment, `${name}.alignment`, true);
+          check(
+            [1, 4, 8].includes(item.alignment) && (item.kind !== "ptr" || item.alignment === 8),
+            name,
+            "unsupported field alignment"
+          );
+          check(size === item.alignment * item.count, name, "array field size must equal alignment * count");
+          fieldAlign = item.alignment;
+        } else {
+          check([1, 4, 8].includes(size) && (item.kind !== "ptr" || size === 8), name, "unsupported field size");
+        }
+        const expectedOffset = roundUp(end, fieldAlign);
         check(
           item.offset === expectedOffset,
           name,
@@ -2162,7 +2276,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         );
         end = item.offset + size;
       }
-      const widest = Math.max(...fields.map((item) => item.size));
+      const widest = Math.max(...fields.map((item) => item.alignment ?? item.size));
       check(align === widest, name, `alignment must be ${widest}, the widest field`);
       const expectedSize = roundUp(end, align);
       check(
@@ -2627,7 +2741,7 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
       const spec = this.specs.get(name);
       if (!spec) return;
       this.live.add(name);
-      if (tainted || value instanceof PoisonedValue) {
+      if (tainted || value instanceof PoisonedValue && value.bytes.some((b) => typeof b === "number")) {
         this.endianTainted.add(name);
       } else {
         this.endianTainted.delete(name);
@@ -2648,6 +2762,16 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
       for (let k = 0; k < spec.size; k++) {
         this.mem.set(spec.address + k, encoded[k]);
       }
+    }
+    readVar(name) {
+      const spec = this.specs.get(name);
+      if (!spec) return null;
+      const slice = [];
+      for (let k = 0; k < spec.size; k++) {
+        slice.push(this.byteAt(spec.address + k));
+      }
+      const decoded = formatByteSlice(slice, spec.signed);
+      return (decoded == null ? void 0 : decoded.poisoned) ? new PoisonedValue(slice, decoded.text) : null;
     }
     readPun(targetName, pun, signed) {
       const target = this.specs.get(targetName);
@@ -3109,6 +3233,9 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
         if (via === null) {
           throw new Unsupported("only dereferencing a pointer variable is supported, not a computed address");
         }
+        if (value instanceof PoisonedValue) {
+          throw new Unsupported(`dereferencing uninitialized pointer ${via} is undefined`);
+        }
         const pointer = asPointer(value);
         if (pointer.target === null) {
           throw new Unsupported(`dereferencing the null pointer ${via} is undefined`);
@@ -3126,7 +3253,7 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
       throw new Unsupported(`unsupported assignable expression: ${kind}`);
     }
     rvalue(node) {
-      var _a, _b, _c, _d;
+      var _a, _b, _c, _d, _e, _f;
       const kind = node == null ? void 0 : node.kind;
       const children = (node == null ? void 0 : node.inner) ?? [];
       if (kind === "MaterializeTemporaryExpr" && children.length === 1) {
@@ -3146,8 +3273,15 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
           if (pun && this.punningMem) {
             const value3 = this.punningMem.readPun(name, pun.access, pun.signed);
             this.exprTainted = true;
-            this.reduce(node, { kind: "read", name, record: null, pun: pun.access, punValue: value3 });
+            this.reduce(node, { kind: "read", name, record: null, pun: pun.access, readValue: value3 });
             return [value3, name];
+          }
+          if (this.punningMem && load(this.state, name) === null) {
+            const value3 = this.punningMem.readVar(name);
+            if (value3) {
+              this.reduce(node, { kind: "read", name, record: null, readValue: value3 });
+              return [value3, name];
+            }
           }
           const value2 = this.load(name);
           if ((_a = this.punningMem) == null ? void 0 : _a.isEndianTainted(name)) {
@@ -3188,10 +3322,16 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
         const operandDepth = pointerDepth(operand, this.records);
         if (depth2 === 1 && operandDepth === 1) {
           const [ptr] = this.rvalue(operand);
+          if (ptr instanceof PoisonedValue) {
+            throw new Unsupported("casting an uninitialized pointer is undefined");
+          }
           const pointer = asPointer(ptr);
           this.conversion(node, operand, pointer);
           return [pointer, null];
         }
+      }
+      if (kind === "CallExpr" && children.length === 2 && ((_c = (_b = stripCasts(children[0])) == null ? void 0 : _b.referencedDecl) == null ? void 0 : _c.name) === "to_integer" && canonicalType(children[1]) === "std::byte") {
+        return [this.convert(node, children[1]), null];
       }
       if (kind === "UnaryExprOrTypeTraitExpr" && node.name === "sizeof") {
         const target = node.argType ? { type: node.argType } : children[0];
@@ -3231,7 +3371,7 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
         if (kind === "InitListExpr") {
           const value2 = {};
           const storage = array ? children[0] : null;
-          const elements = array ? ((_b = storage == null ? void 0 : storage.array_filler) == null ? void 0 : _b.slice(1)) ?? (storage == null ? void 0 : storage.inner) ?? [] : children;
+          const elements = array ? ((_d = storage == null ? void 0 : storage.array_filler) == null ? void 0 : _d.slice(1)) ?? (storage == null ? void 0 : storage.inner) ?? [] : children;
           for (const [i, item] of record.fields.entries()) {
             const child = elements[i];
             if (!child || child.kind === "ImplicitValueInitExpr") {
@@ -3278,7 +3418,7 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
       if (kind === "ParenExpr" && children.length === 1) {
         [value] = this.rvalue(children[0]);
       } else if (kind === "UnaryOperator" && node.opcode === "&" && children.length === 1) {
-        if (((_c = children[0]) == null ? void 0 : _c.kind) !== "DeclRefExpr" && ((_d = children[0]) == null ? void 0 : _d.kind) !== "MemberExpr" && !this.arrayAccess(stripParentheses(children[0]))) {
+        if (((_e = children[0]) == null ? void 0 : _e.kind) !== "DeclRefExpr" && ((_f = children[0]) == null ? void 0 : _f.kind) !== "MemberExpr" && !this.arrayAccess(stripParentheses(children[0]))) {
           throw new Unsupported("only the address of a variable is supported");
         }
         const name = this.lvalue(children[0]);
@@ -3363,9 +3503,26 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
       let value;
       if (depth > 0 && operandDepth > 0 && (canonicalType(node) === "void *" || canonicalType(operand) === "void *")) {
         const [ptr] = this.rvalue(operand);
+        if (ptr instanceof PoisonedValue) {
+          throw new Unsupported("casting an uninitialized pointer is undefined");
+        }
         value = asPointer(ptr);
       } else {
-        value = this.convertNumber(this.numericOperand(operand), node, operand);
+        const [raw] = this.rvalue(operand);
+        if (raw instanceof PoisonedValue) {
+          const target = integerNamed(this.numericType(node), this.records);
+          const from = integerNamed(this.numericType(operand), this.records);
+          if (target && from && raw.bytes.every((b) => b === "?")) {
+            const bytes = target.size > from.size && !from.signed ? [...Array(from.size).fill("?"), ...Array(target.size - from.size).fill(0)] : Array(target.size).fill("?");
+            value = new PoisonedValue(bytes, formatByteSlice(bytes, target.signed).text);
+          } else {
+            throw new Unsupported("arithmetic or conversion on an indeterminate byte value is undefined");
+          }
+        } else if (typeof raw !== "number") {
+          throw new Unsupported("pointer arithmetic and comparison are not supported");
+        } else {
+          value = this.convertNumber(raw, node, operand);
+        }
       }
       this.conversion(node, operand, value);
       return value;
@@ -3399,10 +3556,15 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
       const children = node.inner ?? [];
       let value;
       if (node.kind === "CXXFunctionalCastExpr") {
-        if (children.length !== 1 || ((_a = children[0]) == null ? void 0 : _a.kind) !== "InitListExpr" || children[0].inner && children[0].inner.length > 0) {
-          throw new Unsupported("only empty int{} functional initialization is supported");
+        if (children.length !== 1 || ((_a = children[0]) == null ? void 0 : _a.kind) !== "InitListExpr" || children[0].inner && children[0].inner.length > 1) {
+          throw new Unsupported("only empty or single-element scalar functional initialization is supported");
         }
-        value = 0;
+        const items = children[0].inner ?? [];
+        if (items.length === 1) {
+          [value] = this.rvalue(items[0]);
+        } else {
+          value = depth ? new Pointer() : 0;
+        }
       } else if (children.length > 1) {
         throw new Unsupported("multiple initializer elements are unsupported");
       } else if (children.length === 1) {
@@ -3849,9 +4011,7 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
     if (declared) {
       destination = [toPane(nameOffset), toPane(nameOffset) + declared.length];
       slot = [0, destination[1]];
-    } else if (left === null && value instanceof PoisonedValue) {
-      throw new Unsupported("printing an indeterminate byte value is undefined");
-    } else if (left === null && rhsTainted) {
+    } else if (left === null && (value instanceof PoisonedValue && value.bytes.some((b) => typeof b === "number") || rhsTainted)) {
       throw new Unsupported("printing an endian-dependent punned value is not supported");
     } else if (left === null && isPlainObject(value)) {
       throw new Unsupported("only integer and pointer output is supported");
@@ -4407,10 +4567,11 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
         }
         if (reduction.kind === "read") {
           if (reduction.pun) {
-            text2 = this.show(reduction.punValue, reduction.shape);
+            text2 = this.show(reduction.readValue, reduction.shape);
             op2 = { kind: "read", name: reduction.name, value: text2, pun: reduction.pun };
           } else {
-            text2 = this.show(load(before, reduction.name), reduction.shape, reduction.record !== null);
+            const shown = reduction.readValue !== void 0 ? reduction.readValue : load(before, reduction.name);
+            text2 = this.show(shown, reduction.shape, reduction.record !== null);
             op2 = { kind: "read", name: reduction.name, value: text2 };
           }
         } else if (reduction.kind === "addr") {
@@ -4555,6 +4716,24 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
       return false;
     }
   }
+  const PUNNING_RECOVERABLE = [
+    /^unsupported expression: CXXReinterpretCastExpr\b/,
+    /^unsupported expression: CStyleCastExpr\b/,
+    /^dereferencing a pointer to /,
+    /^reading uninitialized variable /,
+    /^Clang could not evaluate the trace:/
+  ];
+  function tracesWithPunning(source, options, error) {
+    var _a;
+    if (!PUNNING_RECOVERABLE.some((pattern) => pattern.test(error.message))) return false;
+    try {
+      const traced = traceWithFrontend(source, { ...options, punning: true });
+      (_a = options.accept) == null ? void 0 : _a.call(options, traced);
+      return true;
+    } catch {
+      return false;
+    }
+  }
   function traceWithFrontend(source, options) {
     const { bits = false, punning = false, frontend } = options;
     if (bits && punning) {
@@ -4568,27 +4747,34 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
     let aliases;
     let punningMem;
     let analyzedStates;
-    try {
-      [statements, records, aliases, punningMem, analyzedStates] = analyzeSource(file, frontend, punning);
-    } catch (error) {
-      if (!(error instanceof IllFormed)) throw error;
-      if (!types) {
-        throw tracesWithTypes(source, options, error) ? new NeedsFlag(error.message, "types", error.offset) : error;
-      }
-      [file, mismatch] = cutMismatch(file, error, frontend);
-      [statements, records, aliases, punningMem, analyzedStates] = analyzeSource(file, frontend, punning);
-    }
     let predicted;
-    if (punning) {
-      predicted = analyzedStates;
-    } else {
-      predicted = [];
-      let state = {};
-      for (const statement of statements) {
-        state = hooks.after(statement, state);
-        predicted.push(state);
+    try {
+      try {
+        [statements, records, aliases, punningMem, analyzedStates] = analyzeSource(file, frontend, punning);
+      } catch (error) {
+        if (!(error instanceof IllFormed)) throw error;
+        if (!types) {
+          throw tracesWithTypes(source, options, error) ? new NeedsFlag(error.message, "types", error.offset) : error;
+        }
+        [file, mismatch] = cutMismatch(file, error, frontend);
+        [statements, records, aliases, punningMem, analyzedStates] = analyzeSource(file, frontend, punning);
       }
-      verifyReplay(frontend, file.replayPreamble, replaySteps(statements, predicted));
+      if (punning) {
+        predicted = analyzedStates;
+      } else {
+        predicted = [];
+        let state = {};
+        for (const statement of statements) {
+          state = hooks.after(statement, state);
+          predicted.push(state);
+        }
+        verifyReplay(frontend, file.replayPreamble, replaySteps(statements, predicted));
+      }
+    } catch (error) {
+      if (!punning && !bits && error instanceof Unsupported && !(error instanceof IllFormed) && !(error instanceof NeedsFlag) && tracesWithPunning(source, options, error)) {
+        throw new NeedsFlag(error.message, "punning", null, "Unsupported");
+      }
+      throw error;
     }
     const declarations = statements.filter((s) => s.declared);
     const variables = [];
@@ -4958,8 +5144,42 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
     return decoder.decode(out);
   }
   const macroCache = /* @__PURE__ */ new WeakMap();
+  const needsByteShimCache = /* @__PURE__ */ new WeakMap();
+  const BYTE_PRELUDE = 'namespace std { enum class byte : unsigned char {}; template<class T> constexpr T to_integer(byte b) noexcept { return static_cast<T>(b); } }\n#line 1 "/virtual/source.cpp"\n';
+  function shiftAstOffsets(node, delta, inSource = true) {
+    var _a, _b;
+    let current = inSource;
+    const shift = (place) => {
+      if (!place) return;
+      if (place.file !== void 0) current = place.file === "/virtual/source.cpp";
+      if (current && typeof place.offset === "number" && place.offset >= -delta) {
+        place.offset += delta;
+      }
+    };
+    shift(node.loc);
+    shift((_a = node.range) == null ? void 0 : _a.begin);
+    shift((_b = node.range) == null ? void 0 : _b.end);
+    for (const child of [...node.inner ?? [], ...node.array_filler ?? []]) {
+      shiftAstOffsets(child, delta, current);
+    }
+  }
   function createWasmClangFrontend(module) {
     const clang = (program, args, standard = "c++20") => runWasiModule(module, { args: ["clang-trace-frontend", ...STANDARD_FLAGS[standard], ...args, "-"], stdin: program });
+    const needsByteShim = () => {
+      let missing = needsByteShimCache.get(module);
+      if (missing === void 0) {
+        const check2 = clang("#include <cstddef>\nusing __course_byte_check = std::byte;\n", []);
+        missing = check2.returncode !== 0;
+        needsByteShimCache.set(module, missing);
+      }
+      return missing;
+    };
+    const withByteShim = (program) => {
+      if (/\bbyte\b/.test(program) && needsByteShim()) {
+        return { text: BYTE_PRELUDE + program, shift: BYTE_PRELUDE.length };
+      }
+      return { text: program, shift: 0 };
+    };
     return {
       tokens(program, options) {
         const result = clang(program, ["-Xclang", "-dump-tokens"]);
@@ -4976,12 +5196,22 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
         });
       },
       astDump(program, filter, standard = "c++20") {
-        const result = clang(program, ["-Xclang", "-ast-dump=json", "-Xclang", "-ast-dump-filter=" + filter], standard);
-        if (result.returncode !== 0) throw illFormed(result.stderr, program);
-        return parseAstDump(result.stdout);
+        const { text, shift } = withByteShim(program);
+        const result = clang(text, ["-Xclang", "-ast-dump=json", "-Xclang", "-ast-dump-filter=" + filter], standard);
+        if (result.returncode !== 0) {
+          const err = illFormed(result.stderr, text);
+          if (!shift) throw err;
+          throw new IllFormed(err.message, err.offset !== null && err.offset >= shift ? err.offset - shift : null);
+        }
+        const nodes = parseAstDump(result.stdout);
+        if (shift) {
+          for (const node of nodes) shiftAstOffsets(node, -shift);
+        }
+        return nodes;
       },
       recordLayoutsDump(program) {
-        const result = clang(program, ["-Xclang", "-fdump-record-layouts-complete"]);
+        const { text } = withByteShim(program);
+        const result = clang(text, ["-Xclang", "-fdump-record-layouts-complete"]);
         if (result.returncode !== 0) {
           throw new Unsupported("Clang could not compute record layouts");
         }
@@ -4991,7 +5221,8 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
         if (types.length === 0) return {};
         const probe = types.map((t, i) => `enum { __course_${i} = sizeof(${t}) };
 `).join("");
-        const result = clang(probe, ["-Xclang", "-ast-dump=json"]);
+        const { text } = withByteShim(probe);
+        const result = clang(text, ["-Xclang", "-ast-dump=json"]);
         if (result.returncode !== 0) {
           throw new Unsupported("Clang could not obtain field sizes");
         }
@@ -5069,7 +5300,7 @@ template<class T, class U> constexpr bool __course_points_to(T* actual, U* expec
       const error = err instanceof Error ? {
         name: err.name || "Error",
         message: err.message,
-        ...err instanceof NeedsFlag ? { flag: err.flag, diagnostic: err.diagnostic } : {}
+        ...err instanceof NeedsFlag ? { flag: err.flag, diagnostic: err.diagnostic, causeName: err.causeName } : {}
       } : { name: "Error", message: String(err) };
       workerSelf.postMessage({ id: request.id, type: "error", error });
     }

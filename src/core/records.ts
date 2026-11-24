@@ -12,6 +12,8 @@ export interface RecordFieldInfo {
   type?: string;
   canonical?: string;
   size: number;
+  alignment?: number;
+  count?: number;
   floating?: boolean;
 }
 
@@ -37,12 +39,12 @@ export function typeSpelling(node: AstNode | null | undefined): string {
   return qualified.replace(/^(const )?struct /, '$1');
 }
 
-/** Clang's spelling of a type as the lessons write it: `int*`, `A**`. */
+/** Clang's spelling of a type as the lessons write it: `int*`, `A**`, `std::byte`. */
 export function displayed(spelling: string): string {
   return spelling
     .replace(/^(const )?struct /, '$1')
     .replace(/\s+(?=[*&])/g, '')
-    .replace(/^std::/, '');
+    .replace(/^std::(?!byte\b)/, '');
 }
 
 export function displayedType(node: AstNode | null | undefined): string {
@@ -77,10 +79,12 @@ const LAYOUT_SPELLINGS = [
   'int',
   'size_t',
   'uint64_t',
+  'byte',
   'std::uint8_t',
   'std::int8_t',
   'std::size_t',
   'std::uint64_t',
+  'std::byte',
 ];
 const BUILTIN_INTEGERS = [
   'signed char',
@@ -88,7 +92,71 @@ const BUILTIN_INTEGERS = [
   'int',
   'unsigned long',
   'unsigned long long',
+  'std::byte',
 ];
+
+const MAX_LAYOUT_ARRAY_ELEMENTS = 64;
+
+interface LayoutArrayInfo {
+  kind: 'c' | 'std';
+  arrayName?: string;
+  count: number;
+  isPtr: boolean;
+  elemCanonical: string;
+}
+
+function isAllowedLayoutScalar(qualified: string, canonical: string): boolean {
+  return (
+    (LAYOUT_SPELLINGS.includes(qualified) && BUILTIN_INTEGERS.includes(canonical)) ||
+    /^(?:const )?[\w:]+ \*+$/.test(qualified)
+  );
+}
+
+function parseLayoutArray(qualified: string, canonical: string): LayoutArrayInfo | null {
+  const cArr = /^(.+?)\s*((?:\[\d+\])+)$/.exec(canonical);
+  if (cArr) {
+    const dims = [...cArr[2].matchAll(/\[(\d+)\]/g)].map(m => Number(m[1]));
+    let count = 1;
+    for (const d of dims) {
+      if (d < 1) throw new Unsupported('array fields in structs must have positive length');
+      count *= d;
+      if (count > MAX_LAYOUT_ARRAY_ELEMENTS) {
+        throw new Unsupported(`array fields in struct layouts support at most ${MAX_LAYOUT_ARRAY_ELEMENTS} elements`);
+      }
+    }
+    const elemCanonical = cArr[1].trim();
+    const qArr = /^(.+?)\s*((?:\[\d+\])+)$/.exec(qualified);
+    const elemAllowed = qArr
+      ? isAllowedLayoutScalar(qArr[1].trim(), elemCanonical)
+      : BUILTIN_INTEGERS.includes(elemCanonical) || elemCanonical.endsWith('*');
+    if (!elemAllowed) return null;
+    return { kind: 'c', count, isPtr: elemCanonical.endsWith('*'), elemCanonical };
+  }
+  const top = arrayType(canonical);
+  if (!top) return null;
+  let cur = top;
+  let count = 1;
+  while (true) {
+    if (cur.count < 1) throw new Unsupported('array fields in structs must have positive length');
+    count *= cur.count;
+    if (count > MAX_LAYOUT_ARRAY_ELEMENTS) {
+      throw new Unsupported(`array fields in struct layouts support at most ${MAX_LAYOUT_ARRAY_ELEMENTS} elements`);
+    }
+    const inner = arrayType(cur.element);
+    if (!inner) break;
+    cur = inner;
+  }
+  const elemCanonical = cur.element;
+  const isPtr = elemCanonical.endsWith('*');
+  if (!BUILTIN_INTEGERS.includes(elemCanonical) && !(isPtr && /^(?:const )?[\w: ]+\*+$/.test(elemCanonical))) {
+    return null;
+  }
+  return { kind: 'std', arrayName: top.name, count, isPtr, elemCanonical };
+}
+
+function sizeProbeType(canonical: string): string {
+  return canonical === 'std::byte' ? 'unsigned char' : canonical;
+}
 
 function isPointer(node: AstNode): boolean {
   return canonicalType(node).endsWith('*');
@@ -138,6 +206,7 @@ export function layoutsFromFrontend(
     }
   }
   const arrayTypes = new Set<string>();
+  const layoutArrays = new Map<AstNode, LayoutArrayInfo>();
   if (!layoutOnly) {
     function collectType(spelling: string): void {
       const array = arrayType(spelling);
@@ -183,8 +252,12 @@ export function layoutsFromFrontend(
       allowed ||= Object.hasOwn(definitions, qualified) && qualified !== name;
       allowed ||= arrayTypes.has(recordName(child));
       if (layoutOnly) {
-        allowed = LAYOUT_SPELLINGS.includes(qualified) && BUILTIN_INTEGERS.includes(canonical);
-        allowed ||= /^(?:const )?[\w:]+ \*+$/.test(qualified);
+        const arr = parseLayoutArray(qualified, canonical);
+        allowed = isAllowedLayoutScalar(qualified, canonical) || arr !== null;
+        if (arr) {
+          layoutArrays.set(child, arr);
+          if (arr.arrayName) arrayTypes.add(arr.arrayName);
+        }
       }
       if (!allowed) {
         throw new Unsupported(`struct ${name}.${child.name}: unsupported field type ${qualified}`);
@@ -203,6 +276,7 @@ export function layoutsFromFrontend(
   const records: Record<string, RecordLayout> = {};
   const arrayLayouts = new Map<string, { size: number; alignment: number }>();
   const canonicals: Record<string, (string | null)[]> = {};
+  const layoutArrayRefs: Record<string, (LayoutArrayInfo | null)[]> = {};
   for (const block of dumpOutput.split('*** Dumping AST Record Layout')) {
     const header = /^\s*0 \| struct (\S[^\n]*)$/m.exec(block);
     if (!header) continue;
@@ -224,11 +298,13 @@ export function layoutsFromFrontend(
     }
     const fields: RecordFieldInfo[] = [];
     const recordCanonicals: (string | null)[] = [];
+    const recordArrays: (LayoutArrayInfo | null)[] = [];
     for (let i = 0; i < rows.length; i++) {
       const offset = Number.parseInt(rows[i][1], 10);
       const member = rows[i][3];
       const node = nodes[i];
       const spelling = typeSpelling(node);
+      const arr = layoutOnly ? (layoutArrays.get(node) ?? null) : null;
       const nestedName = recordName(node);
       const nested = !layoutOnly && (Object.hasOwn(definitions, nestedName) || arrayTypes.has(nestedName))
         ? nestedName
@@ -236,8 +312,9 @@ export function layoutsFromFrontend(
       const item: RecordFieldInfo = {
         name: member,
         offset,
-        kind: nested ? 'struct' : isPointer(node) ? 'ptr' : 'int',
+        kind: arr ? (arr.isPtr ? 'ptr' : 'int') : nested ? 'struct' : isPointer(node) ? 'ptr' : 'int',
         size: 0,
+        ...(arr ? { count: arr.count } : {}),
         ...(!layoutOnly ? { canonical: canonicalType(node).replace(/^struct /, '') } : {}),
         ...(floatSpelled(canonicalType(node)) ? { floating: true } : {}),
       };
@@ -245,9 +322,16 @@ export function layoutsFromFrontend(
         item.type = nested ?? spelling;
       }
       fields.push(item);
-      recordCanonicals.push(
-        item.kind === 'struct' ? null : isPointer(node) ? 'void *' : canonicalType(node)
-      );
+      recordArrays.push(arr);
+      if (arr) {
+        recordCanonicals.push(
+          arr.kind === 'std' ? null : arr.isPtr ? 'void *' : sizeProbeType(arr.elemCanonical)
+        );
+      } else {
+        recordCanonicals.push(
+          item.kind === 'struct' ? null : isPointer(node) ? 'void *' : sizeProbeType(canonicalType(node))
+        );
+      }
     }
     records[name] = new RecordLayout(
       name,
@@ -256,6 +340,7 @@ export function layoutsFromFrontend(
       fields
     );
     canonicals[name] = recordCanonicals;
+    layoutArrayRefs[name] = recordArrays;
   }
 
   const defKeys = Object.keys(definitions);
@@ -284,7 +369,7 @@ export function layoutsFromFrontend(
         throw new Unsupported(`Clang omitted a contiguous layout for ${name}`);
       }
       const nested = arrayType(array.element) || Object.hasOwn(records, array.element);
-      const scalarElem = /^(?:(?:signed|unsigned) char|(?:unsigned )?(?:short|int|long(?: long)?)|float|double)$/;
+      const scalarElem = /^(?:(?:signed|unsigned) char|(?:unsigned )?(?:short|int|long(?: long)?)|float|double|std::byte)$/;
       const pointee = /^(.*) \*+$/.exec(array.element)?.[1];
       const pointer = pointee !== undefined && (
         scalarElem.test(pointee) || pointee === 'void' || Object.hasOwn(records, pointee) || Boolean(arrayType(pointee))
@@ -315,17 +400,36 @@ export function layoutsFromFrontend(
     leafCounts.set(name, count);
     return count;
   }
-  for (const name of arrayTypes) countCells(name);
+  if (!layoutOnly) {
+    for (const name of arrayTypes) countCells(name);
+  }
   for (const [name, record] of Object.entries(records)) {
     const recCanonicals = canonicals[name];
+    const recArrays = layoutArrayRefs[name];
     if (!recCanonicals) continue;
     for (let i = 0; i < record.fields.length; i++) {
       const item = record.fields[i];
       const canonical = recCanonicals[i];
-      item.size =
-        canonical === null
-          ? records[item.type!].size
-          : sizesMap[canonical];
+      const arr = recArrays?.[i] ?? null;
+      if (arr) {
+        if (arr.kind === 'std') {
+          const layout = arrayLayouts.get(arr.arrayName!);
+          if (!layout || layout.size !== arr.count * layout.alignment) {
+            throw new Unsupported(`Clang omitted a contiguous layout for ${arr.arrayName}`);
+          }
+          item.size = layout.size;
+          item.alignment = layout.alignment;
+        } else {
+          const elemSize = sizesMap[canonical!];
+          item.size = elemSize * arr.count;
+          item.alignment = elemSize;
+        }
+      } else {
+        item.size =
+          canonical === null
+            ? records[item.type!].size
+            : sizesMap[canonical];
+      }
     }
   }
   return records;

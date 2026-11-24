@@ -212,9 +212,11 @@ nix develop --command node player/demo.mjs
 
 A version 1 trace with `kind: "layout"` has `records` instead of timeline source, variables
 and steps. Each record contains `name`, `size`, `alignment`, and ordered `fields`. Each field
-contains `name`, `type` (display spelling), `kind` (`int` or `ptr`), `offset`, and `size`.
+contains `name`, `type` (display spelling), `kind` (`int` or `ptr`), `offset`, and `size`, plus
+optional `alignment` and `count` when the field is a fixed-size array (`T[N]` or `std::array<T, N>`).
 All sizes and offsets are bytes derived from Clang. Gaps and trailing padding are inferred
-from these ranges. The validator checks record alignment, field sizes, ordering and bounds.
+from these ranges. The validator checks record alignment, field sizes, array alignments/counts,
+ordering and bounds.
 
 The same global engine lazily creates the view when the answer opens: a field list with
 `padding ×N` rows, a line of facts, and a tape of bytes with field names stacked above it

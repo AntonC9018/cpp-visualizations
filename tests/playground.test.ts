@@ -237,6 +237,37 @@ test(
       assert.equal(await page.locator('.pg-error-box').isHidden(), true);
       assert.match(page.url(), /[?&]types=1/);
 
+      // A punning or uninitialized-read snippet in regular mode offers a one-click switch to Pointer punning.
+      await page.click('[data-flag="types"]');
+      await page.fill('#pg-source', 'int a;\nint b = a;');
+      await page.click('.pg-run-btn');
+      await page.waitForSelector('.pg-error-box:not([hidden])');
+      assert.match(
+        (await page.locator('.pg-error-box').textContent()) ?? '',
+        /Unsupported: .*switch to Pointer punning/
+      );
+      await page.click('.pg-lang-btn');
+      assert.match(
+        (await page.locator('.pg-error-box').textContent()) ?? '',
+        /переключитесь на «Реинтерпретация указателей»/
+      );
+      await page.click('.pg-lang-btn');
+      await page.locator('.pg-error-box .pg-error-action:has-text("Turn on Pointer punning")').click();
+      await page.waitForFunction(
+        () => (document.querySelector('.pg-vis-host .cv-stage')?.textContent || '').includes('??')
+      );
+      assert.equal(await page.locator('.pg-error-box').isHidden(), true);
+      assert.match(page.url(), /[?&]punning=1/);
+      await page.evaluate(() => {
+        const host = document.querySelector('.pg-vis-host') as HTMLElement & {
+          cvPlayer: { end(): void };
+        };
+        host.cvPlayer.end();
+      });
+      const punText = (await page.locator('.pg-vis-host .cv-stage').textContent()) ?? '';
+      assert.match(punText, /0x\?\?\?\?\?\?\?\?/);
+      assert.match(punText, /UB/);
+
       // Switch to Struct layout preset -> renders Layout grid cleanly.
       await page.selectOption('.pg-preset-select', 'layout-padding');
       await page.waitForSelector('.pg-vis-host .cv-layout-record');
