@@ -6,6 +6,7 @@ import {
   type PaneReadReplacement,
   type PunningSimState,
   hasLargerPointerAccess,
+  hasUninitializedRead,
   punningMinEndAddress,
   simulatePunningTrace,
 } from '../core/punning.ts';
@@ -171,10 +172,11 @@ function resolveEndianContext(c: SceneContext, sim: PunningSimState): SceneConte
   return { ...c, step, prev, op: c.op ? step.op : null };
 }
 
-/** Whether storing the result of a punning read should fly per-byte tiles instead of a scalar box. */
+/** Whether storing the result of a punning or poisoned read should fly per-byte tiles instead of a scalar box. */
 function usesByteTileStore(sim: PunningSimState): boolean {
   const st = sim.storeAfterPunRead;
-  return Boolean(st && (st.readResult.poisoned || st.bytes.length > 1));
+  if (st && (st.readResult.poisoned || st.bytes.length > 1)) return true;
+  return Boolean(sim.storeAfterPoisonRead);
 }
 
 function punningStepSeconds(m: PreparedModel, index: number): number {
@@ -182,6 +184,10 @@ function punningStepSeconds(m: PreparedModel, index: number): number {
   const op = step.op;
   if (op?.kind === 'write' && op.pun) return step.hold + 2.3;
   if (op?.kind === 'read' && op.pun) return step.hold + 2.2;
+  if (op?.kind === 'read') {
+    const sim = simulatePunningTrace(m.trace, index, true);
+    if (sim.activePoisonRead) return step.hold + 2.2;
+  }
   if (op?.kind === 'write') {
     const sim = simulatePunningTrace(m.trace, index, true);
     if (usesByteTileStore(sim)) return step.hold + 2.1;
@@ -405,16 +411,23 @@ function punningScene(c: SceneContext): string {
 
   const isPunWrite = sim.activePun?.kind === 'write';
   const isPunRead = sim.activePun?.kind === 'read';
+  const isPoisonRead = sim.activePoisonRead !== null;
   const byteTileStore = usesByteTileStore(sim);
   const involvedNames = new Set<string>();
   if (sim.activePun) {
     involvedNames.add(sim.activePun.pun.via);
     involvedNames.add(sim.activePun.targetName);
   }
+  if (sim.activePoisonRead) {
+    involvedNames.add(sim.activePoisonRead.varName);
+  }
   if (sim.storeAfterPunRead) {
     involvedNames.add(sim.storeAfterPunRead.destVar.name);
     involvedNames.add(sim.storeAfterPunRead.pun.via);
     involvedNames.add(sim.punPointers.find(p => p.ptrName === sim.storeAfterPunRead!.pun.via)?.targetName ?? '');
+  }
+  if (sim.storeAfterPoisonRead) {
+    involvedNames.add(sim.storeAfterPoisonRead.destVar.name);
   }
   if (op?.kind === 'write') {
     const ptr = sim.punPointers.find(p => p.ptrName === op.name);
@@ -462,7 +475,11 @@ function punningScene(c: SceneContext): string {
         };
       }
       const isCorrupted = sim.corruptedVars.has(leaf.name);
-      const isDestTileStore = Boolean(byteTileStore && sim.storeAfterPunRead?.destVar.name === leaf.name);
+      const isDestTileStore = Boolean(
+        byteTileStore &&
+          (sim.storeAfterPunRead?.destVar.name === leaf.name ||
+            sim.storeAfterPoisonRead?.destVar.name === leaf.name)
+      );
       const isNormalWrite = Boolean(op?.kind === 'write' && op.name === leaf.name && !isPunWrite && !isDestTileStore);
       const changing = Boolean(
         isNormalWrite ||
@@ -506,12 +523,12 @@ function punningScene(c: SceneContext): string {
         corrupted: isCorrupted,
         corruptedNow,
         keepBright,
-        suppressDefaultHighlight: Boolean(isPunWrite || isPunRead),
+        suppressDefaultHighlight: Boolean(isPunWrite || isPunRead || isPoisonRead),
       };
     },
   });
 
-  // 2. Transient full-height read/write highlight on the exact punned byte span
+  // 2. Transient full-height read/write highlight on the exact punned or uninitialized byte span
   let accessFlash = '';
   if (animate && sim.activePun && (isPunWrite || isPunRead)) {
     const { targetAddress, targetSize, pun, direction } = sim.activePun;
@@ -534,6 +551,16 @@ function punningScene(c: SceneContext): string {
         accessFlash += transientReadHighlight(wLeft, gridY, wWidth, cellH, P.read, at);
       }
     }
+  } else if (animate && sim.activePoisonRead) {
+    const { address, size, bytes } = sim.activePoisonRead;
+    if (bytes.every(b => b === '?')) {
+      accessFlash += transientReadHighlight(xOf(address), gridY, size * byteW, cellH, P.error, at);
+    } else {
+      for (let k = 0; k < size; k++) {
+        const col = bytes[k] === '?' ? P.error : P.read;
+        accessFlash += transientReadHighlight(xOf(address + k), gridY, byteW, cellH, col, at);
+      }
+    }
   }
 
   // 3. Clean overhead pointer arcs
@@ -547,15 +574,17 @@ function punningScene(c: SceneContext): string {
     scopeReticles += punReticle(c, sim, ptr, xOf, byteW, gridY, cellH, ptrLeaf.color);
   }
 
-  // 5. UB bracket & `⚠ UB` badge below memory — ONLY on larger-pointer read or write
+  // 5. UB bracket & `⚠ UB` badge below memory — on larger-pointer access or uninitialized read
   let belowOverlay = '';
   const typeBottom = g.typeLabels.length
     ? Math.max(...g.typeLabels.map(l => l.top + LABEL.memory + 7))
     : gridY + cellH + 40;
   const brY = typeBottom + 16;
   const tickTop = brY - 10;
+  const punUbCovered = new Set<string>();
   for (const ptr of sim.punPointers) {
     if (ptr.direction !== 'larger' || ptr.ubKind === 'none') continue;
+    punUbCovered.add(ptr.targetName);
     const wLeft = xOf(ptr.targetAddress);
     const wRight = xOf(ptr.targetAddress + ptr.pointeeSize);
     const ownEnd = xOf(ptr.targetAddress + ptr.targetSize);
@@ -574,6 +603,20 @@ function punningScene(c: SceneContext): string {
     const showAt = isPunRead ? dep : at;
     belowOverlay += triggersNow ? `<g opacity="0">${fade(0, 1, 0.25, showAt)}${cal}</g>` : cal;
   }
+  for (const varName of sim.uninitUbVars) {
+    if (punUbCovered.has(varName)) continue;
+    const leaf = g.leaves.find(l => l.name === varName);
+    if (!leaf) continue;
+    const wLeft = xOf(leaf.address);
+    const wRight = xOf(leaf.address + leaf.size);
+    const cal =
+      `<g class="cv-ub-badge" data-var="${leaf.name}">` +
+      `<path d="M ${round(wLeft + 2)} ${tickTop} V ${brY} H ${round(wRight - 2)} V ${tickTop}" fill="none" stroke="${P.error}" stroke-width="2.8"/>` +
+      pill((wLeft + wRight) / 2, brY + 18, '⚠ UB', 13.5, P.error, P.error, P.bg) +
+      '</g>';
+    const triggersNow = animate && sim.uninitUbTriggeredNow.has(varName) && sim.activePoisonRead?.varName === varName;
+    belowOverlay += triggersNow ? `<g opacity="0">${fade(0, 1, 0.25, dep)}${cal}</g>` : cal;
+  }
 
   // 6. Standardized pane byte strip & bidirectional byte-tile flights
   let wb = '';
@@ -588,16 +631,34 @@ function punningScene(c: SceneContext): string {
           destVar: null,
           mode: isPunRead ? ('read' as const) : ('write' as const),
         }
-      : byteTileStore && sim.storeAfterPunRead
+      : isPoisonRead && sim.activePoisonRead
         ? {
-            bytes: sim.storeAfterPunRead.bytes,
-            targetAddress: sim.storeAfterPunRead.targetAddress,
-            targetSize: sim.storeAfterPunRead.targetSize,
-            direction: sim.storeAfterPunRead.direction,
-            destVar: sim.storeAfterPunRead.destVar,
-            mode: 'store' as const,
+            bytes: sim.activePoisonRead.bytes,
+            targetAddress: sim.activePoisonRead.address,
+            targetSize: sim.activePoisonRead.size,
+            direction: 'same' as const,
+            destVar: null,
+            mode: 'read' as const,
           }
-        : null;
+        : byteTileStore && sim.storeAfterPunRead
+          ? {
+              bytes: sim.storeAfterPunRead.bytes,
+              targetAddress: sim.storeAfterPunRead.targetAddress,
+              targetSize: sim.storeAfterPunRead.targetSize,
+              direction: sim.storeAfterPunRead.direction,
+              destVar: sim.storeAfterPunRead.destVar,
+              mode: 'store' as const,
+            }
+          : byteTileStore && sim.storeAfterPoisonRead
+            ? {
+                bytes: sim.storeAfterPoisonRead.bytes,
+                targetAddress: sim.storeAfterPoisonRead.sourceAddress,
+                targetSize: sim.storeAfterPoisonRead.sourceSize,
+                direction: 'same' as const,
+                destVar: sim.storeAfterPoisonRead.destVar,
+                mode: 'store' as const,
+              }
+            : null;
 
   if (stripSource) {
     const stripY = g.ty + 28;
@@ -651,7 +712,7 @@ function punningScene(c: SceneContext): string {
         const path = `M ${round(sx)} ${round(sy)} C ${round(sx)} ${round(midY)}, ${round(ex)} ${round(midY)}, ${round(ex)} ${round(ey)}`;
         const begin = dep + k * readStagger;
         const end = begin + readDur;
-        const flyCol = isOobSlot ? P.error : P.read;
+        const flyCol = isOobSlot || bval === '?' ? P.error : P.read;
         wb += `<g opacity="0">${show(end)}${tileMarkup}</g>`;
         flight +=
           `<g opacity="0">${fade(0, 0.5, 0.2, begin)}${fade(0.5, 0, 0.25, end)}<path d="${path}" fill="none" stroke="${flyCol}" stroke-width="2.4"/></g>` +
@@ -712,8 +773,9 @@ function punningScene(c: SceneContext): string {
   }
 
   const paneMarkup = colorPoisonHexInSvg(pane(c, animate && copies(c.m.steps, c.index)), P.error);
+  const outputMarkup = colorPoisonHexInSvg(output(c), P.error);
   const transferMarkup =
-    !animate || isPunWrite || isPunRead || byteTileStore
+    !animate || isPunWrite || isPunRead || isPoisonRead || byteTileStore
       ? ''
       : colorPoisonHexInSvg(transfers(c), P.error);
 
@@ -728,7 +790,7 @@ function punningScene(c: SceneContext): string {
     belowOverlay +
     paneMarkup +
     wb +
-    output(c) +
+    outputMarkup +
     transferMarkup +
     flight
   );
@@ -740,7 +802,7 @@ export const PUNNING_VIEW: TraceView = {
       minByteWidth: 46,
       minColumnWidth: 780,
       cellHeight: BYTE_CELL_HEIGHT,
-      extraMemBottom: hasLargerPointerAccess(m.trace) ? 58 : 12,
+      extraMemBottom: hasLargerPointerAccess(m.trace) || hasUninitializedRead(m.trace) ? 58 : 12,
       extraPaneHeight: 46,
       flush: true,
       minEndAddress: punningMinEndAddress(m.trace),

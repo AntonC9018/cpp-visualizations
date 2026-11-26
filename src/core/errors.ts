@@ -21,19 +21,33 @@ export class IllFormed extends Unsupported {
 }
 
 /**
- * The snippet does not compile as it is, but traces with `flag` on: with `types`, a last statement
- * whose types do not fit is shown instead of run.
+ * The snippet does not trace as it is, but traces with `flag` on: with `types`, a last statement
+ * whose types do not fit is shown instead of run; with `punning`, pointer type punning and
+ * uninitialized reads are traced on the byte memory strip.
  */
-export class NeedsFlag extends IllFormed {
-  /** Clang's error, without the hint. */
+export class NeedsFlag extends Unsupported {
+  /** Original diagnostic, without the hint. */
   readonly diagnostic: string;
   readonly flag: string;
+  readonly offset: number | null;
+  readonly causeName: 'IllFormed' | 'Unsupported';
 
-  constructor(diagnostic: string, flag: string, offset: number | null = null) {
-    super(`${diagnostic}; with ${flag} on (--${flag}), the trace shows why`, offset);
+  constructor(
+    diagnostic: string,
+    flag: string,
+    offset: number | null = null,
+    causeName: 'IllFormed' | 'Unsupported' = 'IllFormed'
+  ) {
+    const hint =
+      causeName === 'IllFormed'
+        ? `; with ${flag} on (--${flag}), the trace shows why`
+        : `; trace it with ${flag} on (--${flag})`;
+    super(`${diagnostic}${hint}`);
     this.name = 'NeedsFlag';
     this.diagnostic = diagnostic;
     this.flag = flag;
+    this.offset = offset;
+    this.causeName = causeName;
   }
 }
 

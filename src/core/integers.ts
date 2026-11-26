@@ -39,6 +39,7 @@ export const INTEGERS: Readonly<Record<string, Integer>> = Object.freeze({
 
 // Clang resolves an alias only where it is the whole type, not under a pointer (`uint8_t *`).
 const ALIASES: Readonly<Record<string, string>> = Object.freeze({
+  byte: 'unsigned char',
   size_t: 'unsigned long',
   ptrdiff_t: 'long',
   intptr_t: 'long',

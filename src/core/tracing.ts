@@ -136,7 +136,7 @@ class PunningMemory {
     const spec = this.specs.get(name);
     if (!spec) return;
     this.live.add(name);
-    if (tainted || value instanceof PoisonedValue) {
+    if (tainted || (value instanceof PoisonedValue && value.bytes.some(b => typeof b === 'number'))) {
       this.endianTainted.add(name);
     } else {
       this.endianTainted.delete(name);
@@ -162,6 +162,17 @@ class PunningMemory {
     for (let k = 0; k < spec.size; k++) {
       this.mem.set(spec.address + k, encoded[k]);
     }
+  }
+
+  readVar(name: string): PoisonedValue | null {
+    const spec = this.specs.get(name);
+    if (!spec) return null;
+    const slice: ByteValue[] = [];
+    for (let k = 0; k < spec.size; k++) {
+      slice.push(this.byteAt(spec.address + k));
+    }
+    const decoded = formatByteSlice(slice, spec.signed, true);
+    return decoded?.poisoned ? new PoisonedValue(slice, decoded.text) : null;
   }
 
   readPun(targetName: string, pun: PunningAccess, signed: boolean): Value {
@@ -385,7 +396,7 @@ export type Reduction = { readonly span: Span; readonly type: string; readonly s
       readonly compound?: string;
       readonly grouped?: boolean;
       readonly pun?: PunningAccess;
-      readonly punValue?: Value;
+      readonly readValue?: Value;
     }
   | { readonly kind: 'addr'; readonly name: string }
   | { readonly kind: 'deref'; readonly name: string; readonly value: Pointer | null; readonly pun?: PunningAccess }
@@ -394,7 +405,7 @@ export type Reduction = { readonly span: Span; readonly type: string; readonly s
   | { readonly kind: 'eval'; readonly value: Value; readonly record: string | null }
   | {
       readonly kind: 'convert';
-      readonly value: number | Pointer;
+      readonly value: number | Pointer | PoisonedValue;
       readonly source: string;
       // The operator whose operands' conversions this is one of, as `+` promotes in `a + a`.
       readonly operator?: Span;
@@ -785,6 +796,9 @@ class Reductions {
       if (via === null) {
         throw new Unsupported('only dereferencing a pointer variable is supported, not a computed address');
       }
+      if (value instanceof PoisonedValue) {
+        throw new Unsupported(`dereferencing uninitialized pointer ${via} is undefined`);
+      }
       const pointer = asPointer(value);
       if (pointer.target === null) {
         throw new Unsupported(`dereferencing the null pointer ${via} is undefined`);
@@ -822,8 +836,15 @@ class Reductions {
         if (pun && this.punningMem) {
           const value = this.punningMem.readPun(name, pun.access, pun.signed);
           this.exprTainted = true;
-          this.reduce(node, { kind: 'read', name, record: null, pun: pun.access, punValue: value });
+          this.reduce(node, { kind: 'read', name, record: null, pun: pun.access, readValue: value });
           return [value, name];
+        }
+        if (this.punningMem && load(this.state, name) === null) {
+          const value = this.punningMem.readVar(name);
+          if (value) {
+            this.reduce(node, { kind: 'read', name, record: null, readValue: value });
+            return [value, name];
+          }
         }
         const value = this.load(name);
         if (this.punningMem?.isEndianTainted(name)) {
@@ -892,10 +913,21 @@ class Reductions {
       const operandDepth = pointerDepth(operand, this.records);
       if (depth === 1 && operandDepth === 1) {
         const [ptr] = this.rvalue(operand);
+        if (ptr instanceof PoisonedValue) {
+          throw new Unsupported('casting an uninitialized pointer is undefined');
+        }
         const pointer = asPointer(ptr);
         this.conversion(node, operand, pointer);
         return [pointer, null];
       }
+    }
+    if (
+      kind === 'CallExpr' &&
+      children.length === 2 &&
+      stripCasts(children[0])?.referencedDecl?.name === 'to_integer' &&
+      canonicalType(children[1]) === 'std::byte'
+    ) {
+      return [this.convert(node, children[1]), null];
     }
     if (kind === 'UnaryExprOrTypeTraitExpr' && node.name === 'sizeof') {
       const target = node.argType ? { type: node.argType } : children[0];
@@ -1087,22 +1119,42 @@ class Reductions {
   }
 
   /** `operand` converted to the integer, float or pointer type of `node`, a cast written or implied. */
-  private convert(node: AstNode, operand: AstNode): number | Pointer {
+  private convert(node: AstNode, operand: AstNode): number | Pointer | PoisonedValue {
     const depth = pointerDepth(node, this.records);
     const operandDepth = pointerDepth(operand, this.records);
-    let value: number | Pointer;
+    let value: number | Pointer | PoisonedValue;
     if (depth > 0 && operandDepth > 0 && (canonicalType(node) === 'void *' || canonicalType(operand) === 'void *')) {
       const [ptr] = this.rvalue(operand);
+      if (ptr instanceof PoisonedValue) {
+        throw new Unsupported('casting an uninitialized pointer is undefined');
+      }
       value = asPointer(ptr);
     } else {
-      value = this.convertNumber(this.numericOperand(operand), node, operand);
+      const [raw] = this.rvalue(operand);
+      if (raw instanceof PoisonedValue) {
+        const target = integerNamed(this.numericType(node), this.records);
+        const from = integerNamed(this.numericType(operand), this.records);
+        if (target && from && raw.bytes.every(b => b === '?')) {
+          const bytes: ByteValue[] =
+            target.size > from.size && !from.signed
+              ? [...Array<ByteValue>(from.size).fill('?'), ...Array<ByteValue>(target.size - from.size).fill(0)]
+              : Array<ByteValue>(target.size).fill('?');
+          value = new PoisonedValue(bytes, formatByteSlice(bytes, target.signed, true)!.text);
+        } else {
+          throw new Unsupported('arithmetic or conversion on an indeterminate byte value is undefined');
+        }
+      } else if (typeof raw !== 'number') {
+        throw new Unsupported('pointer arithmetic and comparison are not supported');
+      } else {
+        value = this.convertNumber(raw, node, operand);
+      }
     }
     this.conversion(node, operand, value);
     return value;
   }
 
   /** The step that turns `operand` into `value` in the type of `node`, one of `operator`'s. */
-  private conversion(node: AstNode, operand: AstNode, value: number | Pointer, operator?: Span): void {
+  private conversion(node: AstNode, operand: AstNode, value: number | Pointer | PoisonedValue, operator?: Span): void {
     const source = displayedType(operand);
     if (source === displayedType(node)) {
       // `static_cast<int>` of an int changes nothing: the cast just goes away.
@@ -1141,11 +1193,16 @@ class Reductions {
       if (
         children.length !== 1 ||
         children[0]?.kind !== 'InitListExpr' ||
-        (children[0].inner && children[0].inner.length > 0)
+        (children[0].inner && children[0].inner.length > 1)
       ) {
-        throw new Unsupported('only empty int{} functional initialization is supported');
+        throw new Unsupported('only empty or single-element scalar functional initialization is supported');
       }
-      value = 0;
+      const items = children[0].inner ?? [];
+      if (items.length === 1) {
+        [value] = this.rvalue(items[0]);
+      } else {
+        value = depth ? new Pointer() : 0;
+      }
     } else if (children.length > 1) {
       throw new Unsupported('multiple initializer elements are unsupported');
     } else if (children.length === 1) {
@@ -1734,9 +1791,10 @@ function analyzeStatement(
   if (declared) {
     destination = [toPane(nameOffset!), toPane(nameOffset!) + declared.length];
     slot = [0, destination[1]];
-  } else if (left === null && value instanceof PoisonedValue) {
-    throw new Unsupported('printing an indeterminate byte value is undefined');
-  } else if (left === null && rhsTainted) {
+  } else if (
+    left === null &&
+    ((value instanceof PoisonedValue && value.bytes.some(b => typeof b === 'number')) || rhsTainted)
+  ) {
     throw new Unsupported('printing an endian-dependent punned value is not supported');
   } else if (left === null && isPlainObject(value)) {
     throw new Unsupported('only integer and pointer output is supported');
@@ -2423,10 +2481,11 @@ class Renderer {
       }
       if (reduction.kind === 'read') {
         if (reduction.pun) {
-          text = this.show(reduction.punValue!, reduction.shape);
+          text = this.show(reduction.readValue!, reduction.shape);
           op = { kind: 'read', name: reduction.name, value: text, pun: reduction.pun };
         } else {
-          text = this.show(load(before, reduction.name), reduction.shape, reduction.record !== null);
+          const shown = reduction.readValue !== undefined ? reduction.readValue : load(before, reduction.name);
+          text = this.show(shown, reduction.shape, reduction.record !== null);
           op = { kind: 'read', name: reduction.name, value: text };
         }
       } else if (reduction.kind === 'addr') {
@@ -2604,6 +2663,28 @@ function tracesWithTypes(source: string, options: TraceOptions, error: IllFormed
   }
 }
 
+const PUNNING_RECOVERABLE = [
+  /^unsupported expression: CXXReinterpretCastExpr\b/,
+  /^unsupported expression: CStyleCastExpr\b/,
+  /^dereferencing a pointer to /,
+  /^reading uninitialized variable /,
+  /^Clang could not evaluate the trace:/,
+];
+
+/**
+ * Whether a valid snippet rejected in regular mode traces with `punning` on.
+ */
+function tracesWithPunning(source: string, options: TraceOptions, error: Unsupported): boolean {
+  if (!PUNNING_RECOVERABLE.some(pattern => pattern.test(error.message))) return false;
+  try {
+    const traced = traceWithFrontend(source, { ...options, punning: true });
+    options.accept?.(traced);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Trace a snippet into a validated unified-format trace, rejecting unsupported constructs.
  *
@@ -2622,28 +2703,42 @@ export function traceWithFrontend(source: string, options: TraceOptions): Execut
   let aliases: Record<string, string>;
   let punningMem: PunningMemory | null;
   let analyzedStates: State[];
-  try {
-    [statements, records, aliases, punningMem, analyzedStates] = analyzeSource(file, frontend, punning);
-  } catch (error) {
-    if (!(error instanceof IllFormed)) throw error;
-    if (!types) {
-      throw tracesWithTypes(source, options, error) ? new NeedsFlag(error.message, 'types', error.offset) : error;
-    }
-    // A last statement whose types do not fit is shown, not run: the rest is traced.
-    [file, mismatch] = cutMismatch(file, error, frontend);
-    [statements, records, aliases, punningMem, analyzedStates] = analyzeSource(file, frontend, punning);
-  }
   let predicted: State[];
-  if (punning) {
-    predicted = analyzedStates;
-  } else {
-    predicted = [];
-    let state: State = {};
-    for (const statement of statements) {
-      state = hooks.after(statement, state);
-      predicted.push(state);
+  try {
+    try {
+      [statements, records, aliases, punningMem, analyzedStates] = analyzeSource(file, frontend, punning);
+    } catch (error) {
+      if (!(error instanceof IllFormed)) throw error;
+      if (!types) {
+        throw tracesWithTypes(source, options, error) ? new NeedsFlag(error.message, 'types', error.offset) : error;
+      }
+      // A last statement whose types do not fit is shown, not run: the rest is traced.
+      [file, mismatch] = cutMismatch(file, error, frontend);
+      [statements, records, aliases, punningMem, analyzedStates] = analyzeSource(file, frontend, punning);
     }
-    verifyReplay(frontend, file.replayPreamble, replaySteps(statements, predicted));
+    if (punning) {
+      predicted = analyzedStates;
+    } else {
+      predicted = [];
+      let state: State = {};
+      for (const statement of statements) {
+        state = hooks.after(statement, state);
+        predicted.push(state);
+      }
+      verifyReplay(frontend, file.replayPreamble, replaySteps(statements, predicted));
+    }
+  } catch (error) {
+    if (
+      !punning &&
+      !bits &&
+      error instanceof Unsupported &&
+      !(error instanceof IllFormed) &&
+      !(error instanceof NeedsFlag) &&
+      tracesWithPunning(source, options, error)
+    ) {
+      throw new NeedsFlag(error.message, 'punning', null, 'Unsupported');
+    }
+    throw error;
   }
   const declarations = statements.filter(s => s.declared);
   const variables: TraceVariable[] = [];

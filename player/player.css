@@ -420,6 +420,7 @@
   box-shadow: inset 1px 0 0 color-mix(in srgb, var(--cv-bg) 55%, transparent);
 }
 .course-visualization .cv-byte.cv-byte-padding { background-color: transparent; }
+.course-visualization .cv-byte.cv-byte-elem { box-shadow: inset 1.5px 0 0 color-mix(in srgb, var(--cv-bg) 92%, transparent); }
 .course-visualization .cv-byte.cv-byte-start { box-shadow: inset 2px 0 0 var(--cv-bg); }
 .course-visualization .cv-byte.cv-byte-slot { box-shadow: inset 2px 0 0 var(--cv-fg); }
 .course-visualization .cv-byte.cv-byte-last { border-right: 1px solid var(--cv-border); }

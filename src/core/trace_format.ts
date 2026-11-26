@@ -246,6 +246,10 @@ export interface LayoutField {
   size: number;
   kind: ScalarKind;
   type: string;
+  /** Element alignment when the field is an array (`int a[4]` or `std::array<int, 4>`). */
+  alignment?: number;
+  /** Element count when the field is an array. */
+  count?: number;
 }
 
 export interface LayoutRecord {
@@ -580,7 +584,7 @@ function checkValue(
   const integer = cell?.kind === 'int' ? integerSpelled(cell.type ?? '', aliases) : null;
   check(integer === null || integer.size === cell!.size, where, `${cell?.type} is not ${cell?.size} bytes`);
   if (value === null || value === UNKNOWN) return;
-  if (punning && cell?.kind === 'int' && typeof value === 'string' && POISONED_HEX.test(value)) {
+  if (punning && cell && !cell.floating && typeof value === 'string' && POISONED_HEX.test(value)) {
     check(
       value.length === 2 + cell.size * 2,
       where,
@@ -923,7 +927,21 @@ function checkMemory(
   const when = kind === 'write' ? 'after the write' : 'before the read';
   const items = storedItems(op.value, where, storage.punning);
   check(
-    items.length === cells.length && items.every((item, i) => showsCell(item, expected[i], storage.cells[cells[i]])),
+    items.length === cells.length &&
+      items.every((item, i) => {
+        const cell = storage.cells[cells[i]];
+        if (
+          kind === 'read' &&
+          storage.punning &&
+          expected[i] === UNKNOWN &&
+          cell &&
+          !cell.floating &&
+          item === `0x${'??'.repeat(cell.size)}`
+        ) {
+          return true;
+        }
+        return showsCell(item, expected[i], cell);
+      }),
     `${where}.value`,
     `${name} holds ${shown} ${when}, not ${pyRepr(op.value)}`
   );
@@ -1258,7 +1276,7 @@ function checkLayout(trace: unknown): asserts trace is LayoutTrace {
     const seen = new Set<string>();
     let end = 0;
     for (const item of fields) {
-      checkKeys(item, name, ['name', 'offset', 'size', 'kind', 'type']);
+      checkKeys(item, name, ['name', 'offset', 'size', 'kind', 'type'], ['alignment', 'count']);
       check(typeof item.name === 'string' && IDENTIFIER.test(item.name), name, 'invalid field name');
       check(!seen.has(item.name), name, 'duplicate field');
       seen.add(item.name);
@@ -1267,8 +1285,25 @@ function checkLayout(trace: unknown): asserts trace is LayoutTrace {
       natural(item.offset, `${name}.offset`);
       natural(item.size, `${name}.size`, true);
       const { size } = item;
-      check([1, 4, 8].includes(size) && (item.kind !== 'ptr' || size === 8), name, 'unsupported field size');
-      const expectedOffset = roundUp(end, size);
+      const hasAlign = Object.hasOwn(item, 'alignment');
+      const hasCount = Object.hasOwn(item, 'count');
+      check(hasAlign === hasCount, name, 'array layout fields must specify both alignment and count');
+      let fieldAlign = size;
+      if (hasCount) {
+        natural(item.count, `${name}.count`, true);
+        check(item.count <= 64, name, 'unsupported array field length');
+        natural(item.alignment, `${name}.alignment`, true);
+        check(
+          [1, 4, 8].includes(item.alignment) && (item.kind !== 'ptr' || item.alignment === 8),
+          name,
+          'unsupported field alignment'
+        );
+        check(size === item.alignment * item.count, name, 'array field size must equal alignment * count');
+        fieldAlign = item.alignment;
+      } else {
+        check([1, 4, 8].includes(size) && (item.kind !== 'ptr' || size === 8), name, 'unsupported field size');
+      }
+      const expectedOffset = roundUp(end, fieldAlign);
       check(
         item.offset === expectedOffset,
         name,
@@ -1276,7 +1311,7 @@ function checkLayout(trace: unknown): asserts trace is LayoutTrace {
       );
       end = item.offset + size;
     }
-    const widest = Math.max(...fields.map((item: LayoutField) => item.size));
+    const widest = Math.max(...fields.map((item: LayoutField) => item.alignment ?? item.size));
     check(align === widest, name, `alignment must be ${widest}, the widest field`);
     const expectedSize = roundUp(end, align);
     check(

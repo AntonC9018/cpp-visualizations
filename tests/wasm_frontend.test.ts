@@ -250,11 +250,24 @@ describe('ClangWasmParityTests', { skip: !existsSync(WASM_PATH) }, () => {
       'struct data { int x; };\nint main() {\n    data v{1};\n    v.x = v.x + 2;\n}',
       '#include <iostream>\n#include <array>\nint n = 1;\nstd::array a{n, 2};\n#include <cstdint>\nn += a[1];',
       '#if defined(COURSE_VIRTUAL_ARRAY_H)\nint n = 1;\n#else\nint n = 2;\n#endif\nstd::array a{n};',
+      'std::byte a{ 5 }; std::byte b = std::byte{ 7 }; int n = std::to_integer<int>(b); int sz = sizeof(std::byte);',
+      'struct Box { std::byte tag; std::array<std::byte, 2> buf; }; Box box{ std::byte{ 1 }, { std::byte{ 2 } } };',
     ];
     for (const source of moreTraces) {
       assert.equal(
         dumpsSorted(traceWithWasmModule(source, wasmModule, EXECUTION)),
         dumpsSorted(traceWithFrontend(source, { frontend: nativeFrontend }))
+      );
+    }
+
+    const punning = { template: 'expression-timeline', flags: { punning: true } } as const;
+    for (const source of [
+      'int a;\nint b = a;\nstd::cout << b << std::endl;',
+      'int a{ 261 };\nstd::byte* p = reinterpret_cast<std::byte*>(&a);\nstd::byte low = *p;\n*p = std::byte{ 9 };',
+    ]) {
+      assert.equal(
+        dumpsSorted(traceWithWasmModule(source, wasmModule, punning)),
+        dumpsSorted(traceSnippet(source, punning, { frontend: nativeFrontend }))
       );
     }
 
@@ -269,11 +282,16 @@ describe('ClangWasmParityTests', { skip: !existsSync(WASM_PATH) }, () => {
     }
 
     const layout = { template: 'layout', flags: {} } as const;
-    const offsetSource = '#include <cstddef>\nstruct S { int a; int b; }; int main() { return offsetof(S, b); }';
-    assert.deepEqual(
-      traceWithWasmModule(offsetSource, wasmModule, layout),
-      traceSnippet(offsetSource, layout, { frontend: nativeFrontend })
-    );
+    for (const source of [
+      '#include <cstddef>\nstruct S { int a; int b; }; int main() { return offsetof(S, b); }',
+      '#include <array>\nstruct A { std::array<int, 4> f1; int* f2; };',
+      'struct B { std::byte tag; std::byte buf[3]; int vals[2]; };',
+    ]) {
+      assert.deepEqual(
+        traceWithWasmModule(source, wasmModule, layout),
+        traceSnippet(source, layout, { frontend: nativeFrontend })
+      );
+    }
 
     const badSnippets = [
       'int a = ;',

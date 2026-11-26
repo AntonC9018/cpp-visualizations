@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { Unsupported } from '../src/core/errors.ts';
+import { NeedsFlag, Unsupported } from '../src/core/errors.ts';
 import {
   hasLargerPointerAccess,
+  hasUninitializedRead,
   punningMinEndAddress,
   simulatePunningTrace,
 } from '../src/core/punning.ts';
@@ -607,4 +608,130 @@ test('punning handles 64-bit BE values above MAX_SAFE_INTEGER, all-poisoned read
   const secondWrite = simulatePunningTrace(repeated, writeIndices[1], true);
   assert.equal(secondWrite.punPointers[0].ubTriggeredNow, false);
   assert.equal(secondWrite.bytes[1].corruptedBefore, true);
+});
+
+test('punning traces direct and same-type pointer uninitialized reads, conversions, and cout', () => {
+  // Direct read + copy + same-type pointer deref + overwrite clearing UB
+  const direct = traceSource(
+    `
+      int a;
+      int b = a;
+      int* p = &a;
+      int c = *p;
+      a = 7;
+    `,
+    { punning: true }
+  );
+  assert.equal(hasUninitializedRead(direct), true);
+  assert.equal(hasLargerPointerAccess(direct), false);
+  const readIdx = direct.steps.findIndex(s => s.op?.kind === 'read' && s.op.name === 'a');
+  assert.ok(readIdx > 0);
+  assert.equal(direct.steps[readIdx].op?.kind === 'read' ? direct.steps[readIdx].op.value : null, '0x????????');
+  assert.equal(direct.steps[readIdx].op?.kind === 'read' ? direct.steps[readIdx].op.pun : 'x', undefined);
+
+  const onRead = simulatePunningTrace(direct, readIdx, true);
+  assert.equal(onRead.activePoisonRead?.varName, 'a');
+  assert.equal(onRead.activePoisonRead?.readResult.text, '0x????????');
+  assert.ok(onRead.uninitUbVars.has('a'));
+  assert.ok(onRead.uninitUbTriggeredNow.has('a'));
+  assert.equal(onRead.paneReadReplacement, null);
+
+  const afterWriteB = simulatePunningTrace(direct, readIdx + 1, true);
+  assert.equal(afterWriteB.varAfter.get('b')?.text, '0x????????');
+  assert.equal(afterWriteB.varAfter.get('b')?.poisoned, true);
+  assert.equal(afterWriteB.storeAfterPoisonRead?.destVar.name, 'b');
+
+  const atEnd = simulatePunningTrace(direct, direct.steps.length - 1, true);
+  assert.equal(atEnd.varAfter.get('a')?.text, '7');
+  assert.equal(atEnd.uninitUbVars.has('a'), false);
+  assert.equal(atEnd.varAfter.get('b')?.text, '0x????????');
+  assert.equal(atEnd.varAfter.get('c')?.text, '0x????????');
+
+  // Printing an uninitialized int (endian-independent 0x????????)
+  const printed = traceSource('int a;\nstd::cout << a << std::endl;', { punning: true });
+  assert.equal(printed.steps.at(-1)!.stdout, '0x????????\n');
+
+  // Unsigned widening (`uint8_t` -> `int` = `0x000000??`), signed widening (`int8_t` -> `int` = `0x????????`), narrowing (`int` -> `uint8_t` = `0x??`)
+  for (const typed of [false, true]) {
+    const conv = traceSource(
+      `
+        uint8_t u;
+        int w = u;
+        int8_t s;
+        int sw = s;
+        uint8_t n = static_cast<uint8_t>(sw);
+      `,
+      { punning: true, types: typed }
+    );
+    const last = conv.steps.at(-1)!;
+    assert.equal(last.values.w, '0x000000??');
+    assert.equal(last.values.sw, '0x????????');
+    assert.equal(last.values.n, '0x??');
+    const leEnd = simulatePunningTrace(conv, conv.steps.length - 1, true);
+    const beEnd = simulatePunningTrace(conv, conv.steps.length - 1, false);
+    assert.equal(leEnd.varAfter.get('w')?.text, '0x000000??');
+    assert.equal(beEnd.varAfter.get('w')?.text, '0x000000??');
+    assert.equal(beEnd.varAfter.get('sw')?.text, '0x????????');
+    assert.equal(beEnd.varAfter.get('n')?.text, '0x??');
+  }
+
+  // Copying an uninitialized pointer works; dereferencing it is still rejected
+  const uninitPtr = traceSource('int* p;\nint* q = p;', { punning: true });
+  assert.equal(uninitPtr.steps.at(-1)!.values.q, '0x????????????????');
+  assert.throws(() => traceSource('int* p;\nint x = *p;', { punning: true }), Unsupported);
+});
+
+test('punning supports std::byte as a 1-byte unsigned type', () => {
+  const trace = traceSource(
+    `
+      int a{ 261 };
+      std::byte* p = reinterpret_cast<std::byte*>(&a);
+      std::byte low = *p;
+      *p = std::byte{ 9 };
+    `,
+    { punning: true }
+  );
+  assert.equal(trace.steps.at(-1)!.values.low, 5);
+  assert.equal(trace.steps.at(-1)!.values.a, 265);
+  const be = simulatePunningTrace(trace, trace.steps.length - 1, false);
+  assert.equal(be.varAfter.get('low')?.text, '0');
+  // In BE, 261 is 00 00 01 05; writing 0x09 to byte 0 gives 0x09000105 = 150995205
+  assert.equal(be.varAfter.get('a')?.text, '150995205');
+});
+
+test('regular tracing raises NeedsFlag(punning) when punning mode would succeed', () => {
+  for (const source of [
+    'uint8_t a{ 5 }; int* b = reinterpret_cast<int*>(&a); *b = 300;',
+    'uint8_t a{ 5 }; int* b = (int*)&a; *b = 300;',
+    'uint8_t a{ 5 }; void* vp = &a; int* b = static_cast<int*>(vp); *b = 300;',
+    'int a; int b = a;',
+    'int a; std::cout << a << std::endl;',
+  ]) {
+    assert.throws(
+      () => traceSource(source),
+      (err: unknown) =>
+        err instanceof NeedsFlag &&
+        err.flag === 'punning' &&
+        err.causeName === 'Unsupported' &&
+        /\(--punning\)/.test(err.message),
+      source
+    );
+  }
+
+  // Respects accept() callback: if caller refuses the punning trace, do not raise NeedsFlag
+  assert.throws(
+    () =>
+      traceSource('int a; int b = a;', {
+        accept: () => {
+          throw new Unsupported('rejected by caller');
+        },
+      }),
+    (err: unknown) => err instanceof Unsupported && !(err instanceof NeedsFlag)
+  );
+
+  // Snippets that also fail in punning mode do not suggest punning
+  assert.throws(
+    () => traceSource('struct S { int x; }; S a; int b = a.x;'),
+    (err: unknown) => err instanceof Unsupported && !(err instanceof NeedsFlag)
+  );
 });

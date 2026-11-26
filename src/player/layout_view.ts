@@ -41,6 +41,14 @@ const paddingBytes = (record: LayoutRecord): number =>
 
 const colour = (index: number): string => `cv-field-${index % FIELD_COLOURS}`;
 
+const fieldAlign = (field: LayoutField): number => field.alignment ?? field.size;
+
+function formatFieldDecl(type: string, name: string): string {
+  const arr = /^(.+?)\s*((?:\[\d+\])+)$/.exec(type.trim());
+  if (arr) return `${esc(arr[1])} <b>${esc(name)}</b>${esc(arr[2])};`;
+  return `${esc(type)} <b>${esc(name)}</b>;`;
+}
+
 class RecordView {
   readonly record: LayoutRecord;
   readonly index: number;
@@ -55,7 +63,7 @@ class RecordView {
     this.words = words;
     this.spans = spansOf(record);
     this.padded = paddingBytes(record) > 0;
-    this.widest = Math.max(...record.fields.map(field => field.size));
+    this.widest = Math.max(...record.fields.map(fieldAlign));
   }
 
   key(span: Span): string {
@@ -68,7 +76,7 @@ class RecordView {
   }
 
   isWidest(field: LayoutField): boolean {
-    return this.padded && field.size === this.widest;
+    return this.padded && fieldAlign(field) === this.widest;
   }
 
   /** Attributes that link an element: its key and the groups it belongs to. */
@@ -101,7 +109,7 @@ class RecordView {
       return this.button(
         this.key(span),
         `cv-layout-row ${colour(span.field)}`,
-        `<i class="cv-layout-swatch"></i><span>${esc(field.type)} <b>${esc(field.name)}</b>;</span>`,
+        `<i class="cv-layout-swatch"></i><span>${formatFieldDecl(field.type, field.name)}</span>`,
         this.groups(span),
         `${field.type} ${field.name}: ${field.size} B, +${field.offset}`
       );
@@ -121,7 +129,7 @@ class RecordView {
     const sizes = record.fields
       .map((field, index) => {
         const widest = this.isWidest(field) ? ' cv-layout-widest' : '';
-        return `<b class="${colour(index)}${widest}">${field.size}</b>`;
+        return `<b class="${colour(index)}${widest}">${fieldAlign(field)}</b>`;
       })
       .join(', ');
     const alignment = this.button(
@@ -158,19 +166,22 @@ class RecordView {
         span =>
           `<span class="cv-layout-gap cv-hatch"${this.link(this.key(span), PADDING)} style="${columns(span)}"></span>`
       );
-    const bytes = this.spans.flatMap(span =>
-      Array.from({ length: span.size }, (_, i) => {
+    const bytes = this.spans.flatMap(span => {
+      const field = span.field !== undefined ? record.fields[span.field] : null;
+      const elemSize = field?.count && field.count > 1 && field.alignment ? field.alignment : 0;
+      return Array.from({ length: span.size }, (_, i) => {
         const offset = span.offset + i;
         const classes = [
           'cv-byte',
           span.field === undefined ? 'cv-byte-padding' : colour(span.field),
           i === 0 ? 'cv-byte-start' : '',
+          elemSize > 0 && i > 0 && i % elemSize === 0 ? 'cv-byte-elem' : '',
           this.padded && offset % record.alignment === 0 ? 'cv-byte-slot' : '',
           offset === record.size - 1 ? 'cv-byte-last' : '',
         ].filter(Boolean);
         return `<span class="${classes.join(' ')}"${this.link(this.key(span), this.groups(span))} style="grid-column:${offset + 1}"></span>`;
-      })
-    );
+      });
+    });
     // Offsets at slot edges when alignment matters, otherwise where each field starts.
     const marks = this.padded
       ? Array.from({ length: record.size / record.alignment }, (_, i) => i * record.alignment)

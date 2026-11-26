@@ -5,7 +5,7 @@
 // metadata.
 import { type ByteValue, type DecodedBytes, encodeBytes, formatByteSlice } from './bytes.ts';
 import { type Integer, bareSpelling, integerLiteral, integerName, integerSpelled } from './integers.ts';
-import type { ExecutionTrace, PunningAccess, ScalarVariable, Span } from './trace_format.ts';
+import { type ExecutionTrace, POISONED_HEX, type PunningAccess, type ScalarVariable, type Span } from './trace_format.ts';
 
 /** A pointer's integer pointee metadata parsed from its declared type (`int*`, `uint8_t*`). */
 export interface PointeeInfo {
@@ -86,6 +86,10 @@ export interface PunningSimState {
   varBefore: Map<string, DecodedBytes | null>;
   varAfter: Map<string, DecodedBytes | null>;
   corruptedVars: Set<string>;
+  /** Variables that have had a direct/same-type uninitialized read (cleared when cleanly overwritten). */
+  uninitUbVars: Set<string>;
+  /** Variables whose uninitialized read UB first triggers on the current step. */
+  uninitUbTriggeredNow: Set<string>;
   /** Foreign variables overlapped by the current step's punning read (empty on other steps). */
   readForeignVars: Set<string>;
   /** All currently live punned pointers (canonical pointee type differs from target type). */
@@ -101,6 +105,14 @@ export interface PunningSimState {
     bytes: ByteValue[];
     readResult: DecodedBytes | null;
   } | null;
+  /** Non-punned read of a variable containing indeterminate (`?`) bytes on this step, if any. */
+  activePoisonRead: {
+    varName: string;
+    address: number;
+    size: number;
+    bytes: ByteValue[];
+    readResult: DecodedBytes;
+  } | null;
   /** Set on a normal write that stores the result of an earlier punning read in the same statement. */
   storeAfterPunRead: {
     destVar: ScalarVariable;
@@ -110,6 +122,14 @@ export interface PunningSimState {
     direction: 'larger' | 'smaller' | 'same';
     pun: PunningAccess;
     targetAddress: number;
+  } | null;
+  /** Set on a normal write that stores poisoned bytes from a non-punned uninitialized read. */
+  storeAfterPoisonRead: {
+    destVar: ScalarVariable;
+    bytes: ByteValue[];
+    readResult: DecodedBytes;
+    sourceAddress: number;
+    sourceSize: number;
   } | null;
   /** Endian-resolved replacement for the current/previous pane when a read value differs in BE. */
   paneReadReplacement: PaneReadReplacement | null;
@@ -172,6 +192,24 @@ export function hasLargerPointerAccess(trace: ExecutionTrace): boolean {
   return false;
 }
 
+/** Whether a punning trace ever has a direct/same-type uninitialized read that shows a UB badge. */
+export function hasUninitializedRead(trace: ExecutionTrace): boolean {
+  return trace.steps.some(
+    step => step.op?.kind === 'read' && !step.op.pun && POISONED_HEX.test(step.op.value)
+  );
+}
+
+/** Parse a `POISONED_HEX` literal (MSB-first) into memory-order bytes for `littleEndian`. */
+function parsePoisonedBytes(hex: string, littleEndian: boolean): ByteValue[] {
+  const count = (hex.length - 2) / 2;
+  const msb: ByteValue[] = [];
+  for (let k = 0; k < count; k++) {
+    const pair = hex.slice(2 + k * 2, 4 + k * 2);
+    msb.push(pair === '??' ? '?' : Number.parseInt(pair, 16));
+  }
+  return littleEndian ? msb.reverse() : msb;
+}
+
 function directionOf(pointeeSize: number, targetSize: number): 'larger' | 'smaller' | 'same' {
   return pointeeSize > targetSize ? 'larger' : pointeeSize < targetSize ? 'smaller' : 'same';
 }
@@ -227,6 +265,8 @@ export function simulatePunningTrace(
   const poisonedVars = new Set<string>();
   const corruptedAddrs = new Set<number>();
   const corruptedVars = new Set<string>();
+  const uninitUbVars = new Set<string>();
+  let uninitUbTriggeredNow = new Set<string>();
   let readForeignVars = new Set<string>();
   const ptrUbKind = new Map<string, 'none' | 'write' | 'read'>();
   let ubTriggeredNowPtrs = new Set<string>();
@@ -238,7 +278,9 @@ export function simulatePunningTrace(
   // Per-statement direct-read state (cleared whenever arithmetic/unrelated eval intervenes or a new statement opens)
   let directRead: DirectReadState | null = null;
   let activePun: PunningSimState['activePun'] = null;
+  let activePoisonRead: PunningSimState['activePoisonRead'] = null;
   let storeAfterPunRead: PunningSimState['storeAfterPunRead'] = null;
+  let storeAfterPoisonRead: PunningSimState['storeAfterPoisonRead'] = null;
   let paneReadReplacement: PaneReadReplacement | null = null;
   let prevPaneReadReplacement: PaneReadReplacement | null = null;
 
@@ -288,12 +330,15 @@ export function simulatePunningTrace(
       corruptedBeforeSet = new Set(corruptedAddrs);
       corruptedNow = new Set();
       ubTriggeredNowPtrs = new Set();
+      uninitUbTriggeredNow = new Set();
       prevPaneReadReplacement = paneReadReplacement;
     }
 
     const op = step.op;
     activePun = null;
+    activePoisonRead = null;
     storeAfterPunRead = null;
+    storeAfterPoisonRead = null;
     readForeignVars = new Set();
 
     if (!op) {
@@ -305,6 +350,7 @@ export function simulatePunningTrace(
           liveVars.add(v.name);
           poisonedVars.delete(v.name);
           corruptedVars.delete(v.name);
+          uninitUbVars.delete(v.name);
           for (let k = 0; k < v.size; k++) {
             const addr = v.address + k;
             mem[addr - baseAddress] = '?';
@@ -374,6 +420,40 @@ export function simulatePunningTrace(
               : null;
           continue;
         }
+      } else if (
+        cur &&
+        cur.readResult.poisoned &&
+        cur.bytes.every(b => b === '?') &&
+        op.span[0] <= cur.paneSpan[0] &&
+        op.span[1] >= cur.paneSpan[1]
+      ) {
+        const from = integerSpelled(op.from, aliases);
+        const to = integerSpelled(op.to, aliases);
+        if (from && to) {
+          const encoded: ByteValue[] =
+            to.size > from.size && !from.signed
+              ? littleEndian
+                ? [...Array<ByteValue>(from.size).fill('?'), ...Array<ByteValue>(to.size - from.size).fill(0)]
+                : [...Array<ByteValue>(to.size - from.size).fill(0), ...Array<ByteValue>(from.size).fill('?')]
+              : Array<ByteValue>(to.size).fill('?');
+          const readResult = formatByteSlice(encoded, to.signed, littleEndian)!;
+          const span = valueSpanInPane(step.pane, op.span[0], op.value);
+          directRead = {
+            ...cur,
+            kind: 'normal',
+            pun: undefined,
+            direction: undefined,
+            bytes: encoded,
+            readResult,
+            originalValue: op.value,
+            paneSpan: span,
+          };
+          paneReadReplacement =
+            readResult.text !== op.value
+              ? { stepIndex: i, span, originalValue: op.value, resolvedValue: readResult.text }
+              : null;
+          continue;
+        }
       }
       directRead = null;
       paneReadReplacement = null;
@@ -399,6 +479,30 @@ export function simulatePunningTrace(
                 originalValue: op.value,
                 resolvedValue: cur.readResult.text,
               }
+            : null;
+      } else if (
+        cur &&
+        cur.readResult.poisoned &&
+        POISONED_HEX.test(op.value) &&
+        op.span[0] <= cur.paneSpan[0] &&
+        op.span[1] >= cur.paneSpan[1]
+      ) {
+        const encoded = parsePoisonedBytes(op.value, littleEndian);
+        const readResult = formatByteSlice(encoded, false, littleEndian)!;
+        const span = valueSpanInPane(step.pane, op.span[0], op.value);
+        directRead = {
+          ...cur,
+          kind: 'normal',
+          pun: undefined,
+          direction: undefined,
+          bytes: encoded,
+          readResult,
+          originalValue: op.value,
+          paneSpan: span,
+        };
+        paneReadReplacement =
+          readResult.text !== op.value
+            ? { stepIndex: i, span, originalValue: op.value, resolvedValue: readResult.text }
             : null;
       } else {
         directRead = null;
@@ -462,29 +566,48 @@ export function simulatePunningTrace(
         }
       } else {
         const src = byName.get(op.name);
-        if (src?.kind === 'ptr') {
-          // Reading a pointer (e.g. LHS `q` in `*q = *b`) must not clobber RHS `directRead`.
-          shiftDirectSpan(op.span[1], paneDelta);
-        } else if (src) {
+        if (src) {
           const start = src.address - baseAddress;
           const slice = mem.slice(start, start + src.size);
-          const decoded = decodeAll(mem).get(src.name);
-          if (decoded) {
-            const span = valueSpanInPane(step.pane, op.span[0], op.value);
-            directRead = {
-              kind: 'normal',
-              bytes: slice,
-              readResult: decoded,
-              originalValue: op.value,
-              paneSpan: span,
-              targetName: src.name,
-              targetAddress: src.address,
-              targetSize: src.size,
-            };
-            paneReadReplacement =
-              decoded.text !== op.value
-                ? { stepIndex: i, span, originalValue: op.value, resolvedValue: decoded.text }
-                : null;
+          const hasUnknown = slice.some(b => b === '?');
+          if (src.kind === 'ptr' && !hasUnknown) {
+            // Reading a pointer (e.g. LHS `q` in `*q = *b`) must not clobber RHS `directRead`.
+            shiftDirectSpan(op.span[1], paneDelta);
+          } else {
+            const info = integerOfVar(src, aliases);
+            const decoded = hasUnknown
+              ? formatByteSlice(slice, info?.signed ?? false, littleEndian)
+              : decodeAll(mem).get(src.name);
+            if (decoded) {
+              if (hasUnknown) {
+                if (!uninitUbVars.has(src.name) && i === clampedIndex) {
+                  uninitUbTriggeredNow.add(src.name);
+                }
+                uninitUbVars.add(src.name);
+                activePoisonRead = {
+                  varName: src.name,
+                  address: src.address,
+                  size: src.size,
+                  bytes: slice,
+                  readResult: decoded,
+                };
+              }
+              const span = valueSpanInPane(step.pane, op.span[0], op.value);
+              directRead = {
+                kind: 'normal',
+                bytes: slice,
+                readResult: decoded,
+                originalValue: op.value,
+                paneSpan: span,
+                targetName: src.name,
+                targetAddress: src.address,
+                targetSize: src.size,
+              };
+              paneReadReplacement =
+                decoded.text !== op.value
+                  ? { stepIndex: i, span, originalValue: op.value, resolvedValue: decoded.text }
+                  : null;
+            }
           }
         }
       }
@@ -564,8 +687,12 @@ export function simulatePunningTrace(
             for (let k = 0; k < dest.size; k++) {
               mem[dstStart + k] = cur.bytes[k];
             }
-            if (cur.readResult.poisoned) poisonedVars.add(dest.name);
-            else poisonedVars.delete(dest.name);
+            if (cur.readResult.poisoned) {
+              poisonedVars.add(dest.name);
+            } else {
+              poisonedVars.delete(dest.name);
+              uninitUbVars.delete(dest.name);
+            }
             if (cur.kind === 'pun' && cur.pun && cur.direction) {
               storeAfterPunRead = {
                 destVar: dest,
@@ -576,15 +703,31 @@ export function simulatePunningTrace(
                 pun: cur.pun,
                 targetAddress: cur.targetAddress,
               };
+            } else if (cur.readResult.poisoned) {
+              storeAfterPoisonRead = {
+                destVar: dest,
+                bytes: cur.bytes,
+                readResult: cur.readResult,
+                sourceAddress: cur.targetAddress,
+                sourceSize: cur.targetSize,
+              };
             }
           } else if (cur && !cur.readResult.poisoned && cur.readResult.exact !== null) {
             poisonedVars.delete(dest.name);
+            uninitUbVars.delete(dest.name);
             const encoded = encodeBytes(cur.readResult.exact, dest.size, littleEndian);
+            for (let k = 0; k < dest.size; k++) {
+              mem[dstStart + k] = encoded[k];
+            }
+          } else if (POISONED_HEX.test(op.value) && op.value.length === 2 + dest.size * 2) {
+            poisonedVars.add(dest.name);
+            const encoded = parsePoisonedBytes(op.value, littleEndian);
             for (let k = 0; k < dest.size; k++) {
               mem[dstStart + k] = encoded[k];
             }
           } else {
             poisonedVars.delete(dest.name);
+            uninitUbVars.delete(dest.name);
             const numeric = op.value === 'nullptr' ? 0n : integerLiteral(op.value);
             if (numeric !== null) {
               const encoded = encodeBytes(numeric, dest.size, littleEndian);
@@ -676,10 +819,14 @@ export function simulatePunningTrace(
     varBefore,
     varAfter: decodeAll(mem),
     corruptedVars,
+    uninitUbVars,
+    uninitUbTriggeredNow,
     readForeignVars,
     punPointers,
     activePun,
+    activePoisonRead,
     storeAfterPunRead,
+    storeAfterPoisonRead,
     paneReadReplacement,
     prevPaneReadReplacement,
   };

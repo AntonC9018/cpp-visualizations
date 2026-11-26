@@ -2,7 +2,7 @@
 import { type AstNode, Unsupported } from './errors.ts';
 
 export function arrayType(spelling: string): { name: string; element: string; count: number } | null {
-  const type = spelling.replace(/\b(?:struct|class) /g, '').replace(/^const /, '');
+  const type = spelling.replace(/\b(?:struct|class|enum) /g, '').replace(/^const /, '');
   const match = /^(?:std::)?array<(.+), (\d+)>$/.exec(type);
   if (!match) return null;
   const element = arrayType(match[1])?.name ?? match[1];

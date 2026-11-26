@@ -177,6 +177,35 @@ test('unqualified array pointers normalize before dereference checks', () => {
   assert.equal(result.steps.at(-1)?.values.x, 2);
 });
 
+test('std::byte works across variables, pointers, structs, std::array, bits, and conversions', () => {
+  const result = trace(`
+    #include <cstddef>
+    struct Box { std::byte tag; std::array<std::byte, 2> data; };
+    std::byte a{ 5 };
+    std::byte b = std::byte{ 7 };
+    std::byte* p = &a;
+    *p = static_cast<std::byte>(260);
+    Box box{ a, { b, std::byte{} } };
+    int v = std::to_integer<int>(box.data[0]);
+    int sz = sizeof(std::byte);
+    std::cout << v << ' ';
+  `);
+  const last = result.steps.at(-1)!;
+  assert.equal(last.values.a, 4);
+  assert.equal(last.values.b, 7);
+  assert.equal(last.values['box.tag'], 4);
+  assert.equal(last.values['box.data.[0]'], 7);
+  assert.equal(last.values['box.data.[1]'], 0);
+  assert.equal(last.values.v, 7);
+  assert.equal(last.values.sz, 1);
+  assert.equal(last.stdout, '7 ');
+
+  const bitsTrace = trace('std::byte a{ 200 }; int b = std::to_integer<int>(a);', { bits: true });
+  assert.equal(bitsTrace.bits, true);
+  assert.equal(bitsTrace.variables.find(v => v.name === 'a')?.type, 'std::byte');
+  assert.equal(bitsTrace.steps.at(-1)!.values.b, 200);
+});
+
 test('the tracer rejects invalid array operations before execution', () => {
   for (const [source, reason] of [
     ['std::array<int, 2> a{}; a[2] = 1;', /index 2 is out of bounds/],
