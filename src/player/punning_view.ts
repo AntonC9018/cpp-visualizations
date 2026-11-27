@@ -19,6 +19,7 @@ import {
   byteCellMetrics,
   colorPoisonHexInSvg,
   flushAddrPos,
+  flushAddressSegments,
   hatchDefs,
   renderByteMemory,
   scaledAt,
@@ -26,7 +27,7 @@ import {
   transientWriteHighlight,
 } from './byte_memory.ts';
 import { CHAR, EASE, LABEL, T } from './constants.ts';
-import { type Geometry, type PointerLink, links } from './geometry.ts';
+import { type PointerLink, links } from './geometry.ts';
 import { type PreparedModel, arrival, copies, departure, stepSeconds } from './model.ts';
 import { type SceneContext, code, dim, output, pane, tether, transfers } from './scene.ts';
 import { fade, hide, rect, round, show, text } from './svg.ts';
@@ -202,55 +203,6 @@ function punningStepSeconds(m: PreparedModel, index: number): number {
 // FULL-HEIGHT OPEN HUD CORNER RETICLE (APPROVED OPTION A)
 // ============================================================================================
 
-interface FlushSegment {
-  start: number;
-  size: number;
-  x: number;
-  y: number;
-  w: number;
-  isFirst: boolean;
-  isLast: boolean;
-}
-
-/** Split a contiguous byte range `[start, start + size)` across wrapped `g.flushRows`. */
-function flushAddressSegments(g: Geometry, start: number, size: number): FlushSegment[] {
-  if (size <= 0) return [];
-  const end = start + size;
-  const rows = g.flushRows;
-  if (rows.length <= 1) {
-    const pos = flushAddrPos(g, start);
-    return [{ start, size, x: pos.x, y: pos.y, w: size * g.byteWidth, isFirst: true, isLast: true }];
-  }
-  const raw: Array<{ start: number; size: number; x: number; y: number; w: number }> = [];
-  let cur = start;
-  for (const row of rows) {
-    if (cur >= end) break;
-    if (row.endAddress <= cur) continue;
-    if (row.startAddress >= end) break;
-    const segStart = Math.max(cur, row.startAddress);
-    const segEnd = Math.min(end, row.endAddress);
-    if (segEnd > segStart) {
-      raw.push({
-        start: segStart,
-        size: segEnd - segStart,
-        x: g.memX + (segStart - row.startAddress) * g.byteWidth,
-        y: row.y,
-        w: (segEnd - segStart) * g.byteWidth,
-      });
-    }
-    cur = segEnd;
-  }
-  if (cur < end) {
-    const pos = flushAddrPos(g, cur);
-    raw.push({ start: cur, size: end - cur, x: pos.x, y: pos.y, w: (end - cur) * g.byteWidth });
-  }
-  return raw.map((seg, i) => ({
-    ...seg,
-    isFirst: i === 0,
-    isLast: i === raw.length - 1,
-  }));
-}
-
 function drawHudReticle(
   bx: number,
   by: number,
@@ -386,7 +338,20 @@ function punningArrows(
   const punNames = new Set(sim.punPointers.map(p => p.ptrName));
   const at = op ? arrival(op) : 0;
 
-  const arcGeom = (l: PointerLink, isPun: boolean): { d: string; hx: number; hy: number } => {
+  const assignCrossTracks = (list: PointerLink[]): Map<PointerLink, number> => {
+    const cross = list
+      .filter(l => Math.abs(l.from.y - posOf(l.to.address).y) >= 1)
+      .sort((a, b) => a.from.address - b.from.address || a.to.address - b.to.address);
+    const tracks = new Map<PointerLink, number>();
+    cross.forEach((l, i) => tracks.set(l, i));
+    return tracks;
+  };
+
+  const arcGeom = (
+    l: PointerLink,
+    isPun: boolean,
+    crossTrack: number
+  ): { d: string; hx: number; hy: number } => {
     const toPos = posOf(l.to.address);
     const ex = isPun ? toPos.x + byteW * 0.5 : l.head[0];
     const ey = toPos.y - 26;
@@ -400,22 +365,23 @@ function punningArrows(
         hy: ey,
       };
     }
-    // Cross-row pointer: route via the left margin outside memory cells, and clear any
-    // source-row sibling cells by exiting upward into the inter-row lane first.
-    const gx = Math.max(10, g.memX - 28 - l.level * 10);
-    const targetTopRow = Math.abs(toPos.y - g.memY) < 1;
-    const topY = targetTopRow ? toPos.y - 54 - l.level * 22 : toPos.y - 38 - l.level * 8;
+    // Cross-row pointer: each cross-row link gets its own left-margin track and overhead lane,
+    // clearing any source-row siblings by exiting upward into the inter-row channel first.
+    const gx = Math.max(10, g.memX - 24 - crossTrack * 14);
+    const topY = toPos.y - 54 - crossTrack * 18;
     const hasLeftSibling = l.from.x > g.memX + 1;
     if (!hasLeftSibling && l.from.y > toPos.y) {
       const sx = l.from.x;
       const sy = l.from.y + l.from.h * 0.5;
+      const r = Math.min(18, Math.max(6, sx - gx), Math.max(6, (sy - topY) / 2));
+      const er = Math.min(16, Math.max(6, (ex - gx) / 2));
       return {
         d:
           `M ${round(sx)} ${round(sy)} ` +
-          `Q ${round(gx)} ${round(sy)}, ${round(gx)} ${round(sy - 20)} ` +
-          `L ${round(gx)} ${round(topY + 20)} ` +
-          `Q ${round(gx)} ${round(topY)}, ${round(gx + 20)} ${round(topY)} ` +
-          `L ${round(ex - 16)} ${round(topY)} ` +
+          `Q ${round(gx)} ${round(sy)}, ${round(gx)} ${round(sy - r)} ` +
+          `L ${round(gx)} ${round(topY + r)} ` +
+          `Q ${round(gx)} ${round(topY)}, ${round(gx + r)} ${round(topY)} ` +
+          `L ${round(ex - er)} ${round(topY)} ` +
           `Q ${round(ex)} ${round(topY)}, ${round(ex)} ${round(ey - 8)}`,
         hx: ex,
         hy: ey,
@@ -423,10 +389,10 @@ function punningArrows(
     }
     const sx = l.from.x + l.from.w / 2;
     const sy = l.from.y - 2;
-    const laneY = l.from.y - 30 - l.level * 8;
+    const laneY = l.from.y - 34 - crossTrack * 14;
     const dir = topY < laneY ? -1 : 1;
     const r = Math.min(12, Math.abs(topY - laneY) / 2, Math.max(4, (sx - gx) / 2));
-    const er = Math.min(14, Math.max(4, (ex - gx) / 2));
+    const er = Math.min(16, Math.max(6, (ex - gx) / 2));
     return {
       d:
         `M ${round(sx)} ${round(sy)} ` +
@@ -446,10 +412,11 @@ function punningArrows(
   const arcFor = (
     l: PointerLink,
     isPun: boolean,
+    crossTrack: number,
     opts: { grow?: number | null; fadeOut?: number | null; keepBright?: boolean } = {}
   ): string => {
     const col = l.from.color;
-    const { d, hx, hy } = arcGeom(l, isPun);
+    const { d, hx, hy } = arcGeom(l, isPun, crossTrack);
     const grow = opts.grow != null ? ` data-grow="${round(opts.grow)}"` : '';
     const head = `<path d="M -10 -6 L 0 0 L -10 6 Z" fill="${col}" transform="translate(${round(hx)} ${round(hy)}) rotate(90)"/>`;
     const body =
@@ -469,6 +436,7 @@ function punningArrows(
   if (op?.kind === 'deref' && punNames.has(op.via)) activeArcPtrs.add(op.via);
 
   const now = links(g, step);
+  const nowTracks = assignCrossTracks(now);
   const writesPtr =
     animate && op?.kind === 'write' && g.cellsOf(op.name).some(l => l.kind === 'ptr');
   if (writesPtr && prev) {
@@ -476,29 +444,36 @@ function punningArrows(
       simulatePunningTrace(c.m.trace, Math.max(0, c.index - 1), c.littleEndian).punPointers.map(p => p.ptrName)
     );
     const changed = new Set(g.cellsOf(op.name).map(l => l.name));
+    const prevLinks = links(g, prev);
+    const prevTracks = assignCrossTracks(prevLinks);
     let out = '';
-    for (const l of links(g, prev)) {
+    for (const l of prevLinks) {
       const isOutgoing = changed.has(l.from.name);
       const isPun = isOutgoing ? prevPunNames.has(l.from.name) : punNames.has(l.from.name);
-      out += arcFor(l, isPun, {
+      out += arcFor(l, isPun, prevTracks.get(l) ?? 0, {
         ...(isOutgoing ? { fadeOut: at } : {}),
         keepBright: activeArcPtrs.has(l.from.name),
       });
     }
     for (const l of now) {
       if (changed.has(l.from.name)) {
-        out += arcFor(l, punNames.has(l.from.name), { grow: at + 0.08, keepBright: activeArcPtrs.has(l.from.name) });
+        out += arcFor(l, punNames.has(l.from.name), nowTracks.get(l) ?? 0, {
+          grow: at + 0.08,
+          keepBright: activeArcPtrs.has(l.from.name),
+        });
       }
     }
     return out;
   }
 
-  let out = now.map(l => arcFor(l, punNames.has(l.from.name), { keepBright: activeArcPtrs.has(l.from.name) })).join('');
+  let out = now
+    .map(l => arcFor(l, punNames.has(l.from.name), nowTracks.get(l) ?? 0, { keepBright: activeArcPtrs.has(l.from.name) }))
+    .join('');
   if (animate && op?.kind === 'deref') {
     const l = now.find(link => link.from.name === op.via);
     if (l) {
       const isPun = punNames.has(l.from.name);
-      const { d } = arcGeom(l, isPun);
+      const { d } = arcGeom(l, isPun, nowTracks.get(l) ?? 0);
       const pulsePath = `<path d="${d}" fill="none" stroke="${l.from.color}" stroke-width="7" stroke-linecap="round" data-follow="${T.prepare}"/>`;
       out += isPun ? pulsePath : dim(c, l.from.name, pulsePath);
     }

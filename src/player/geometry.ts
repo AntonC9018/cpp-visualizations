@@ -562,7 +562,7 @@ export function geometry(
     stacked || !Number.isFinite(canvasBudget) ? 0 : canvasBudget - unwrapped.width - COLUMN_GAP - 2 * MARGIN;
 
   const widest = flush
-    ? Math.max(minByteWidth, FLUSH_MAX_BYTE)
+    ? Math.max(minByteWidth, stacked ? FLUSH_MAX_BYTE : FLUSH_BASE_BYTE)
     : Math.max(minByteWidth, m.leaves.some(leaf => leaf.size < 4) ? NARROW_BYTE : MAX_BYTE);
   const rise = m.rise;
   const structs = m.groups.length > 0;
@@ -691,19 +691,35 @@ export function geometry(
     const singleSpan = flushRowBounds(single.rows)[0];
     const totalBytes = singleSpan.end - singleSpan.start;
     if (totalBytes > 10) {
-      const rowCount = totalBytes > 24 ? Math.min(3, m.tops.length) : 2;
-      let bestRows: number[][] | null = null;
-      let bestMax = Infinity;
-      for (const rows of partitions(m.tops.length, rowCount)) {
-        const maxRowBytes = Math.max(...flushRowBounds(rows).map(b => b.end - b.start));
-        if (maxRowBytes < bestMax) {
-          bestMax = maxRowBytes;
-          bestRows = rows;
+      const counts = totalBytes > 24 && m.tops.length >= 3 ? [3, 2] : [2];
+      let bestCandidate: typeof single | null = null;
+      let bestScore = Infinity;
+      for (const rowCount of counts) {
+        let bestRows: number[][] | null = null;
+        let bestMax = Infinity;
+        let bestSpread = Infinity;
+        for (const rows of partitions(m.tops.length, rowCount)) {
+          const lens = flushRowBounds(rows).map(b => b.end - b.start);
+          const maxRowBytes = Math.max(...lens);
+          const spread = maxRowBytes - Math.min(...lens);
+          if (maxRowBytes < bestMax || (maxRowBytes === bestMax && spread < bestSpread)) {
+            bestMax = maxRowBytes;
+            bestSpread = spread;
+            bestRows = rows;
+          }
+        }
+        // Only wrap when the widest row shrinks meaningfully (avoid lopsided 15+1 splits).
+        if (bestRows && bestMax <= totalBytes * 0.75) {
+          const candidate = plan(bestRows);
+          const singleScale = single.byte / single.columnW;
+          const candidateScale = candidate.byte / candidate.columnW;
+          if (candidateScale >= singleScale * 1.15 && bestMax < bestScore) {
+            bestScore = bestMax;
+            bestCandidate = candidate;
+          }
         }
       }
-      if (bestRows && bestMax < totalBytes) {
-        chosen = plan(bestRows);
-      }
+      if (bestCandidate) chosen = bestCandidate;
     }
   }
   const { labelExtent } = chosen;
@@ -715,31 +731,31 @@ export function geometry(
   let columnW = chosen.columnW;
   if (stacked) codeW = columnW = Math.max(codeW, columnW);
   const cellH =
-    flush && options.maxCellHeight && options.maxCellHeight > baseCellH
+    stacked && flush && options.maxCellHeight && options.maxCellHeight > baseCellH
       ? Math.min(
           options.maxCellHeight,
           Math.max(baseCellH, Math.round(baseCellH + (chosen.byte - FLUSH_BASE_BYTE) * 0.25))
         )
       : baseCellH;
 
-  const atLeaf = (memX: number, memY: number, c: ModelLeaf, rowPitch: number): PlacedLeaf => {
+  const atLeaf = (memX: number, memY: number, c: ModelLeaf, rowOffset: (name: string) => number): PlacedLeaf => {
     const span = placed.spans.get(c.name)!;
     return {
       ...c,
       x: memX + span[0],
-      y: memY + (rowOf.get(c.name.split('.')[0]) ?? 0) * rowPitch,
+      y: memY + rowOffset(c.name),
       w: span[1],
       h: cellH,
       color: '',
       fieldColor: null,
     };
   };
-  const atGroup = (memX: number, memY: number, c: ModelGroup, rowPitch: number): PlacedGroup => {
+  const atGroup = (memX: number, memY: number, c: ModelGroup, rowOffset: (name: string) => number): PlacedGroup => {
     const span = placed.spans.get(c.name)!;
     return {
       ...c,
       x: memX + span[0],
-      y: memY + (rowOf.get(c.name.split('.')[0]) ?? 0) * rowPitch,
+      y: memY + rowOffset(c.name),
       w: span[1],
       h: cellH,
       color: '',
@@ -747,8 +763,9 @@ export function geometry(
     };
   };
 
-  const probeLeaves = m.leaves.map(l => atLeaf(0, 0, l, pitch));
-  const probeGroups = m.groups.map(s => atGroup(0, 0, s, pitch));
+  const probeRowY = (name: string): number => (rowOf.get(name.split('.')[0]) ?? 0) * pitch;
+  const probeLeaves = m.leaves.map(l => atLeaf(0, 0, l, probeRowY));
+  const probeGroups = m.groups.map(s => atGroup(0, 0, s, probeRowY));
   const probe: LinkProbe = {
     memY: 0,
     rise,
@@ -757,20 +774,41 @@ export function geometry(
     box: name => probeGroups.find(s => s.name === name) || probeLeaves.find(l => l.name === name),
   };
   let level = -1;
-  let sameRowLink = false;
+  const sameRowMaxLevel = new Map<number, number>();
+  let maxCrossLinks = 0;
+  const maxCrossToRow = new Map<number, number>();
+  const maxCrossFromRow = new Map<number, number>();
   for (const step of m.steps) {
+    let stepCross = 0;
+    const stepTo = new Map<number, number>();
+    const stepFrom = new Map<number, number>();
     for (const l of links(probe, step)) {
       level = Math.max(level, l.level);
-      if (l.from.y === l.to.y) sameRowLink = true;
+      const fromRow = rowOf.get(l.from.name.split('.')[0]) ?? 0;
+      const toRow = rowOf.get(l.to.name.split('.')[0]) ?? 0;
+      if (fromRow === toRow) {
+        sameRowMaxLevel.set(fromRow, Math.max(sameRowMaxLevel.get(fromRow) ?? -1, l.level));
+      } else {
+        stepCross++;
+        stepTo.set(toRow, (stepTo.get(toRow) ?? 0) + 1);
+        stepFrom.set(fromRow, (stepFrom.get(fromRow) ?? 0) + 1);
+      }
     }
+    maxCrossLinks = Math.max(maxCrossLinks, stepCross);
+    for (const [r, count] of stepTo) maxCrossToRow.set(r, Math.max(maxCrossToRow.get(r) ?? 0, count));
+    for (const [r, count] of stepFrom) maxCrossFromRow.set(r, Math.max(maxCrossFromRow.get(r) ?? 0, count));
   }
-  const room =
-    (level >= 0
-      ? flush && extraRows > 0 && !sameRowLink
-        ? 46
-        : FRAME.top + 84 + level * 40 + 10
-      : (structs ? FRAME.top : 0) + 30) +
-    rise * RISE.top;
+  const baseRoom = (structs ? FRAME.top : 0) + 30 + rise * RISE.top;
+  let room: number;
+  if (flush && extraRows > 0) {
+    const row0Same = sameRowMaxLevel.get(0) ?? -1;
+    const row0SameRoom = row0Same >= 0 ? FRAME.top + 84 + row0Same * 40 + 10 : 0;
+    const row0HasCross = (maxCrossToRow.get(0) ?? 0) > 0 || (maxCrossFromRow.get(0) ?? 0) > 0;
+    const row0CrossRoom = row0HasCross ? 64 + Math.max(0, maxCrossLinks - 1) * 18 : 0;
+    room = Math.max(baseRoom, row0SameRoom, row0CrossRoom);
+  } else {
+    room = level >= 0 ? FRAME.top + 84 + level * 40 + 10 + rise * RISE.top : baseRoom;
+  }
   const tagged = tagRows(m, probe.box);
   const typeRow = typeRows(m, probe.box, rowOf);
   // A typed pane has room above its text for every row of labels.
@@ -779,10 +817,22 @@ export function geometry(
   const named =
     (structs ? cellH + FRAME.bottom + 32 : cellH + 34) + rise * RISE.bottom + tagged.height;
   const names = named + typeRow.height + extraMemBottom;
-  const effectivePitch = flush && extraRows > 0 ? names + (level >= 0 ? 36 : 22) : pitch;
-  const rowY = (name: string): number => (rowOf.get(name.split('.')[0]) ?? 0) * effectivePitch;
-  const paneGap = extraMemBottom > 0 ? 18 : stacked && flush ? 36 : 56;
-  const paneTop = room + names + extraRows * effectivePitch + paneGap;
+  const rowOffsets: number[] = [0];
+  for (let r = 1; r <= extraRows; r++) {
+    if (flush) {
+      const baseGap = extraMemBottom > 0 ? 34 : 38;
+      const rSame = sameRowMaxLevel.get(r) ?? -1;
+      const sameGap = rSame >= 0 ? 96 + rSame * 32 : 0;
+      const rHasCross = (maxCrossToRow.get(r) ?? 0) > 0 || (maxCrossFromRow.get(r) ?? 0) > 0;
+      const crossGap = rHasCross ? 64 + Math.max(0, maxCrossLinks - 1) * 18 : 0;
+      rowOffsets.push(rowOffsets[r - 1] + names + Math.max(baseGap, sameGap, crossGap));
+    } else {
+      rowOffsets.push(r * pitch);
+    }
+  }
+  const rowY = (name: string): number => rowOffsets[rowOf.get(name.split('.')[0]) ?? 0] ?? 0;
+  const paneGap = stacked ? (extraMemBottom > 0 ? 18 : flush ? 36 : 56) : 56;
+  const paneTop = room + rowOffsets[extraRows] + names + paneGap;
   const paneH = 76 + labelRise + extraPaneHeight;
   const outputTop = paneTop + paneH + (stacked && flush ? 46 : 60);
   const columnH = outputLines.length
@@ -795,10 +845,20 @@ export function geometry(
   let columnY: number;
   let width: number;
   let height: number;
+  const minMemLeft =
+    stacked && flush && extraRows > 0 && maxCrossLinks > 0
+      ? 36 + Math.max(0, maxCrossLinks - 1) * 14
+      : 0;
   if (stacked) {
     codeY = MARGIN;
     columnX = MARGIN;
     columnY = codeY + codeH + 24;
+    if (minMemLeft > 0) {
+      const minLeftPad = Math.max(24, minMemLeft - columnX);
+      if (minLeftPad + placed.width + 24 > columnW) {
+        codeW = columnW = minLeftPad + placed.width + 24;
+      }
+    }
     width = MARGIN + columnW + STACK_TETHER_WIDTH + MARGIN;
     height = columnY + columnH + MARGIN;
   } else {
@@ -811,7 +871,7 @@ export function geometry(
   }
 
   const memX = stacked
-    ? round(columnX + 24 + Math.max(0, (columnW - 48 - placed.width) / 2))
+    ? round(Math.max(minMemLeft, columnX + 24 + Math.max(0, (columnW - 48 - placed.width) / 2)))
     : columnX + 24;
   const memY = columnY + room;
   const pane: PlacedRect = { x: columnX, y: columnY + paneTop, w: columnW, h: paneH };
@@ -825,17 +885,17 @@ export function geometry(
   const gaps: Array<[number, number, number]> = placed.gaps.map(([x, w, row]) => [
     memX + x,
     w,
-    memY + row * effectivePitch,
+    memY + (rowOffsets[row] ?? row * pitch),
   ]);
   const colour = (list: string[], i: number, count: number): string => list[i % count];
 
   const leaves: PlacedLeaf[] = m.leaves.map(l => ({
-    ...atLeaf(memX, memY, l, effectivePitch),
+    ...atLeaf(memX, memY, l, rowY),
     color: colour(P.vars, l.color, VARIABLE_COLOURS),
     fieldColor: l.group ? colour(P.fields, l.fieldColor ?? 0, FIELD_COLOURS) : null,
   }));
   const groups: PlacedGroup[] = m.groups.map(s => ({
-    ...atGroup(memX, memY, s, effectivePitch),
+    ...atGroup(memX, memY, s, rowY),
     color: colour(P.vars, s.color, VARIABLE_COLOURS),
     fieldColor: s.parent ? colour(P.fields, s.fieldColor ?? 0, FIELD_COLOURS) : null,
     drop: tagged.drop.get(s.name),
@@ -845,7 +905,7 @@ export function geometry(
       ? flushRowBounds(chosen.rows).map((b, r) => ({
           startAddress: b.start,
           endAddress: b.end,
-          y: memY + r * effectivePitch,
+          y: memY + (rowOffsets[r] ?? 0),
         }))
       : [];
   const box = (name: string): PlacedBox | undefined =>

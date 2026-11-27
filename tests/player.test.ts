@@ -1152,18 +1152,29 @@ test('stacked bits view expands small memory, wraps long lines, and centers the 
               }
             }
           }
-          // Verify workbench card is horizontally centered inside the pane on a 1-byte step.
-          const oneByteStep = p.m.steps.findIndex(s => {
-            p.settle(p.m.steps.indexOf(s));
-            return p.svg.querySelectorAll('.cv-bit-byte').length === 1;
-          });
+          // Verify workbench card is horizontally centered and fits vertically inside the pane.
+          let oneByteStep = -1;
+          let cardFitsVertically = true;
+          for (let step = 0; step < p.m.steps.length; step++) {
+            p.settle(step);
+            const paneRect = p.svg.querySelector('.cv-pane rect')!;
+            const cardRect = p.svg.querySelector('.cv-bits-workbench rect[rx="8"]');
+            if (cardRect) {
+              const py = Number(paneRect.getAttribute('y'));
+              const ph = Number(paneRect.getAttribute('height'));
+              const cy = Number(cardRect.getAttribute('y'));
+              const ch = Number(cardRect.getAttribute('height'));
+              if (cy < py || cy + ch > py + ph) cardFitsVertically = false;
+            }
+            if (oneByteStep < 0 && p.svg.querySelectorAll('.cv-bit-byte').length === 1) {
+              oneByteStep = step;
+            }
+          }
           let cardCenterDelta: number | null = null;
           if (oneByteStep >= 0) {
             p.settle(oneByteStep);
             const paneRect = p.svg.querySelector('.cv-pane rect')!;
-            const cardRect = [...p.svg.querySelectorAll('rect')].find(
-              r => r.getAttribute('rx') === '8' && Number(r.getAttribute('y')) > g.ty
-            );
+            const cardRect = p.svg.querySelector('.cv-bits-workbench rect[rx="8"]');
             if (cardRect) {
               const px = Number(paneRect.getAttribute('x'));
               const pw = Number(paneRect.getAttribute('width'));
@@ -1180,6 +1191,7 @@ test('stacked bits view expands small memory, wraps long lines, and centers the 
             outOfPane,
             checkedSteps,
             cardCenterDelta,
+            cardFitsVertically,
           };
         });
         assert.equal(report.stacked, true, `${label}@${width}`);
@@ -1187,6 +1199,7 @@ test('stacked bits view expands small memory, wraps long lines, and centers the 
         assert.ok(report.cellH > 88, `${label}@${width}: cellH=${report.cellH}`);
         assert.ok(report.checkedSteps > 0, `${label}@${width}: checked workbench steps`);
         assert.deepEqual(report.outOfPane, [], `${label}@${width}: bytes stay inside pane`);
+        assert.equal(report.cardFitsVertically, true, `${label}@${width}: card fits vertically in pane`);
         assert.ok(
           report.cardCenterDelta !== null && report.cardCenterDelta < 1,
           `${label}@${width}: card centered (delta=${report.cardCenterDelta})`
@@ -1214,12 +1227,20 @@ test('wrapped stacked punning splits cross-row access overlays and routes arrows
     `,
     { punning: true }
   );
-  const siblingPtrs = traceSource(
+  const twoTargets = traceSource(
     `
       int a{ 1 };
       int b{ 2 };
-      int* p1 = &a;
-      int* p2 = &a;
+      int* p = &a;
+      int* q = &b;
+    `,
+    { punning: true }
+  );
+  const lowerSameRow = traceSource(
+    `
+      int64_t big{ 1 };
+      int y{ 2 };
+      int* p = &y;
     `,
     { punning: true }
   );
@@ -1229,7 +1250,7 @@ test('wrapped stacked punning splits cross-row access overlays and routes arrows
   try {
     await page.setViewportSize({ width: 496, height: 900 });
 
-    // 1. Cross-row access `[68, 76)` wraps across row 0 `[64, 72)` and row 1 `[72, 80)`.
+    // 1. Cross-row access `[72, 80)` wraps across row 0 `[64, 76)` and row 1 `[76, 88)`.
     await page.setContent(PAGE.replace(trace, JSON.stringify(crossRowAccess).replace(/</g, '\\u003c')));
     await page.evaluate(() => window.CourseVisualization!.scan());
     await page.waitForSelector('.cv-player');
@@ -1243,6 +1264,10 @@ test('wrapped stacked punning splits cross-row access overlays and routes arrows
         y: Number(r.getAttribute('y')),
         w: Number(r.getAttribute('width')),
       }));
+      const ubPaths = [...p.svg.querySelectorAll('.cv-ub-badge[data-ptr="p"] path')].map(el => {
+        const b = (el as SVGGeometryElement).getBBox();
+        return { x: b.x, y: b.y, width: b.width, height: b.height };
+      });
       const row0Right = g.memX + (g.flushRows[0].endAddress - g.flushRows[0].startAddress) * g.byteWidth + 4;
       return {
         rowCount: g.flushRows.length,
@@ -1251,6 +1276,8 @@ test('wrapped stacked punning splits cross-row access overlays and routes arrows
         maxRight: Math.max(...rects.map(r => r.x + r.w)),
         row0Right,
         ubBadges: p.svg.querySelectorAll('.cv-ub-badge').length,
+        ubPathCount: ubPaths.length,
+        ubPathRows: new Set(ubPaths.map(b => Math.round(b.y / 80))).size,
       };
     });
     assert.equal(accessReport.rowCount, 2);
@@ -1258,27 +1285,80 @@ test('wrapped stacked punning splits cross-row access overlays and routes arrows
     assert.ok(accessReport.rowYs[1] > accessReport.rowYs[0] + 80, 'second reticle segment sits on row 1');
     assert.ok(accessReport.maxRight <= accessReport.row0Right + 1, 'reticle stays inside row bounds');
     assert.equal(accessReport.ubBadges, 1);
+    assert.equal(accessReport.ubPathCount, 2, 'UB bracket splits across both rows');
+    assert.equal(accessReport.ubPathRows, 2, 'UB bracket segments sit on separate rows');
 
-    // 2. Second pointer on row 1 (`p2`, right of `p1`) exits upward instead of cutting across `p1`.
-    await page.setContent(PAGE.replace(trace, JSON.stringify(siblingPtrs).replace(/</g, '\\u003c')));
+    // 2. Two cross-row pointers to distinct targets get distinct tracks and clear the code panel.
+    await page.setViewportSize({ width: 400, height: 900 });
+    await page.setContent(PAGE.replace(trace, JSON.stringify(twoTargets).replace(/</g, '\\u003c')));
     await page.evaluate(() => window.CourseVisualization!.scan());
     await page.waitForSelector('.cv-player');
-    const arrowReport = await page.evaluate(() => {
+    const twoTargetReport = await page.evaluate(() => {
       const p = (document.querySelector('.course-visualization') as PlayerElement).cvPlayer;
       p.end();
       const g = p.g;
-      const p2 = g.leaves.find(l => l.name === 'p2')!;
-      const paths = [...p.svg.querySelectorAll('path[stroke-width="2.6"]')].map(el => el.getAttribute('d') ?? '');
-      const starts = paths.map(d => {
-        const m = /^M\s+([-\d.]+)\s+([-\d.]+)/.exec(d);
+      const q = g.leaves.find(l => l.name === 'q')!;
+      const paths = [...p.svg.querySelectorAll<SVGGeometryElement>('path[stroke-width="2.6"]')];
+      const boxes = paths.map(el => {
+        const b = el.getBBox();
+        return { x: b.x, y: b.y, width: b.width, height: b.height };
+      });
+      const starts = paths.map(el => {
+        const m = /^M\s+([-\d.]+)\s+([-\d.]+)/.exec(el.getAttribute('d') ?? '');
         return m ? { x: Number(m[1]), y: Number(m[2]) } : null;
       });
-      return { p2Top: p2.y, p2CenterX: p2.x + p2.w / 2, starts };
+      return {
+        codeBottom: g.code.y + g.code.h,
+        qTop: q.y,
+        qCenterX: q.x + q.w / 2,
+        boxes,
+        starts,
+      };
     });
-    const p2Start = arrowReport.starts.find(
-      s => s && Math.abs(s.x - arrowReport.p2CenterX) < 1 && Math.abs(s.y - (arrowReport.p2Top - 2)) < 1
+    assert.equal(twoTargetReport.boxes.length, 2);
+    assert.ok(
+      Math.abs(twoTargetReport.boxes[0].x - twoTargetReport.boxes[1].x) >= 10,
+      `distinct left gutters: ${JSON.stringify(twoTargetReport.boxes)}`
     );
-    assert.ok(p2Start, `expected p2 arrow to exit from top center, got ${JSON.stringify(arrowReport.starts)}`);
+    assert.ok(
+      Math.abs(twoTargetReport.boxes[0].y - twoTargetReport.boxes[1].y) >= 10,
+      `distinct top lanes: ${JSON.stringify(twoTargetReport.boxes)}`
+    );
+    assert.ok(
+      twoTargetReport.boxes.every(b => b.y > twoTargetReport.codeBottom),
+      `arrows stay below code panel (${twoTargetReport.codeBottom}): ${JSON.stringify(twoTargetReport.boxes)}`
+    );
+    const qStart = twoTargetReport.starts.find(
+      s => s && Math.abs(s.x - twoTargetReport.qCenterX) < 1 && Math.abs(s.y - (twoTargetReport.qTop - 2)) < 1
+    );
+    assert.ok(qStart, `expected q arrow to exit from top center, got ${JSON.stringify(twoTargetReport.starts)}`);
+
+    // 3. Same-row pointer on lower wrapped row clears row 0's type labels without wasting row 0 headroom.
+    await page.setContent(PAGE.replace(trace, JSON.stringify(lowerSameRow).replace(/</g, '\\u003c')));
+    await page.evaluate(() => window.CourseVisualization!.scan());
+    await page.waitForSelector('.cv-player');
+    const lowerSameReport = await page.evaluate(() => {
+      const p = (document.querySelector('.course-visualization') as PlayerElement).cvPlayer;
+      p.end();
+      const g = p.g;
+      const arcBox = p.svg.querySelector<SVGGeometryElement>('path[stroke-width="2.6"]')!.getBBox();
+      const row0LabelBottom = Math.max(...g.typeLabels.filter(l => l.name === 'big').map(l => l.top + 25));
+      return {
+        rowCount: g.flushRows.length,
+        arcTop: arcBox.y,
+        row0LabelBottom,
+        row0Headroom: g.memY - (g.code.y + g.code.h),
+      };
+    });
+    assert.equal(lowerSameReport.rowCount, 2);
+    assert.ok(
+      lowerSameReport.arcTop > lowerSameReport.row0LabelBottom + 4,
+      `lower-row arc (${lowerSameReport.arcTop}) clears row 0 label (${lowerSameReport.row0LabelBottom})`
+    );
+    assert.ok(
+      lowerSameReport.row0Headroom < 80,
+      `row 0 does not reserve unused arc headroom (${lowerSameReport.row0Headroom})`
+    );
     assert.deepEqual(errors, []);
   } finally {
     page.off('pageerror', onError);

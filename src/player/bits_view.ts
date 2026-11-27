@@ -289,6 +289,11 @@ function arrowheadAt(tipX: number, tipY: number, dx: number, dy: number, color: 
 }
 
 function workbench(c: SceneContext): string {
+  const inner = workbenchInner(c);
+  return inner ? `<g class="cv-bits-workbench">${inner}</g>` : '';
+}
+
+function workbenchInner(c: SceneContext): string {
   const act = activeBitAction(c);
   if (!act) return '';
   const { g, P, animate, op } = c;

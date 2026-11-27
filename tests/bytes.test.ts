@@ -245,5 +245,58 @@ describe('flush geometry', () => {
     });
     assert.equal(wide.flushRows.length, 2);
     assert.equal(wide.leaves[0].h, BYTE_CELL_HEIGHT);
+
+    // Desktop (!stacked) keeps base byte cap and cell height so desktop scale does not regress.
+    const desktopTiny = geometry(prepare(tinyTrace), STUB_PALETTE, false, 1100, {
+      flush: true,
+      minByteWidth: 66,
+      cellHeight: BYTE_CELL_HEIGHT,
+      maxCellHeight: BYTE_CELL_MAX_HEIGHT,
+    });
+    assert.ok(desktopTiny.byteWidth <= 84, `desktop byteWidth=${desktopTiny.byteWidth}`);
+    assert.equal(desktopTiny.leaves[0].h, BYTE_CELL_HEIGHT);
+
+    // Lopsided splits (15 + 1 bytes) do not wrap when the widest row barely shrinks.
+    const lopsidedTrace: ExecutionTrace = {
+      format: 1,
+      bits: true,
+      source: ['int8_t t{ -5 };', 'int64_t f = t;'],
+      variables: [
+        { name: 'f', type: 'int64_t', address: 64, size: 8, kind: 'int', color: 1 },
+        { name: 't', type: 'int8_t', address: 79, size: 1, kind: 'int', color: 0 },
+      ],
+      steps: [
+        { line: 0, pane: 'int8_t t = -5', values: { t: -5, f: null }, targets: {}, stdout: '', hold: 1, op: null },
+      ],
+    };
+    const lopsided = geometry(prepare(lopsidedTrace), STUB_PALETTE, true, 390, {
+      flush: true,
+      minByteWidth: 46,
+      cellHeight: BYTE_CELL_HEIGHT,
+      maxCellHeight: BYTE_CELL_MAX_HEIGHT,
+    });
+    assert.equal(lopsided.flushRows.length, 1);
+
+    // Strips wider than 24 bytes wrap onto 3 balanced rows in stacked mode.
+    const threeRowTrace: ExecutionTrace = {
+      format: 1,
+      source: ['int64_t a{ 1 };', 'int64_t b{ 2 };', 'int64_t c{ 3 };', 'int64_t d{ 4 };'],
+      variables: [
+        { name: 'a', address: 64, size: 8, kind: 'int', color: 0 },
+        { name: 'b', address: 72, size: 8, kind: 'int', color: 1 },
+        { name: 'c', address: 80, size: 8, kind: 'int', color: 2 },
+        { name: 'd', address: 88, size: 8, kind: 'int', color: 3 },
+      ],
+      steps: [
+        { line: 0, pane: 'int64_t a = 1', values: { a: 1, b: 2, c: 3, d: 4 }, targets: {}, stdout: '', hold: 1, op: null },
+      ],
+    };
+    const threeRow = geometry(prepare(threeRowTrace), STUB_PALETTE, true, 496, {
+      flush: true,
+      minByteWidth: 46,
+      cellHeight: BYTE_CELL_HEIGHT,
+      maxCellHeight: BYTE_CELL_MAX_HEIGHT,
+    });
+    assert.equal(threeRow.flushRows.length, 3);
   });
 });

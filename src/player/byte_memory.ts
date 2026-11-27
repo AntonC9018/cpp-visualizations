@@ -269,6 +269,61 @@ export function flushAddrPos(g: Geometry, addr: number): { x: number; y: number;
   };
 }
 
+export interface FlushSegment {
+  start: number;
+  size: number;
+  x: number;
+  y: number;
+  w: number;
+  isFirst: boolean;
+  isLast: boolean;
+}
+
+/** Split a contiguous byte range `[start, start + size)` across wrapped `g.flushRows`. */
+export function flushAddressSegments(g: Geometry, start: number, size: number): FlushSegment[] {
+  if (size <= 0) return [];
+  const end = start + size;
+  const rows = g.flushRows;
+  if (rows.length <= 1) {
+    const pos = flushAddrPos(g, start);
+    return [{ start, size, x: pos.x, y: pos.y, w: size * g.byteWidth, isFirst: true, isLast: true }];
+  }
+  const raw: Array<{ start: number; size: number; x: number; y: number; w: number }> = [];
+  let cur = start;
+  if (cur < rows[0].startAddress) {
+    const segEnd = Math.min(end, rows[0].startAddress);
+    const pos = flushAddrPos(g, cur);
+    raw.push({ start: cur, size: segEnd - cur, x: pos.x, y: pos.y, w: (segEnd - cur) * g.byteWidth });
+    cur = segEnd;
+  }
+  for (const row of rows) {
+    if (cur >= end) break;
+    if (row.endAddress <= cur) continue;
+    if (row.startAddress >= end) break;
+    const segStart = Math.max(cur, row.startAddress);
+    const segEnd = Math.min(end, row.endAddress);
+    if (segEnd > segStart) {
+      raw.push({
+        start: segStart,
+        size: segEnd - segStart,
+        x: g.memX + (segStart - row.startAddress) * g.byteWidth,
+        y: row.y,
+        w: (segEnd - segStart) * g.byteWidth,
+      });
+    }
+    cur = segEnd;
+  }
+  if (cur < end) {
+    const pos = flushAddrPos(g, cur);
+    raw.push({ start: cur, size: end - cur, x: pos.x, y: pos.y, w: (end - cur) * g.byteWidth });
+  }
+  return raw.map((seg, i) => ({
+    ...seg,
+    isFirst: i === 0,
+    isLast: i === raw.length - 1,
+  }));
+}
+
 /**
  * Render the flush byte-accurate memory strip: address ruler, hatched padding, variable cells with
  * centered headers and hex bytes, per-byte pulse, byte-order arrows, names and type labels.
@@ -306,27 +361,13 @@ export function renderByteMemory(c: SceneContext, opts: ByteMemoryOptions): stri
   }
 
   // 2. Hatched alignment-padding runs (split across wrapped flush rows; collapsed for sparse spans)
-  const splitPaddingRuns = paddingRuns(g.leaves, opts.minEndAddress).flatMap(run => {
-    if (g.flushRows.length <= 1) return [run];
-    const pieces: Array<{ start: number; size: number }> = [];
-    let cur = run.start;
-    const runEnd = run.start + run.size;
-    for (const row of g.flushRows) {
-      if (cur >= runEnd) break;
-      if (row.endAddress <= cur) continue;
-      if (row.startAddress >= runEnd) break;
-      const segStart = Math.max(cur, row.startAddress);
-      const segEnd = Math.min(runEnd, row.endAddress);
-      if (segEnd > segStart) pieces.push({ start: segStart, size: segEnd - segStart });
-      cur = segEnd;
-    }
-    return pieces.length ? pieces : [run];
-  });
+  const splitPaddingRuns = paddingRuns(g.leaves, opts.minEndAddress).flatMap(run =>
+    flushAddressSegments(g, run.start, run.size)
+  );
   for (const run of splitPaddingRuns) {
-    const pos = flushAddrPos(g, run.start);
-    const rx = pos.x;
-    const ry = pos.y;
-    const rw = run.size * byteW;
+    const rx = run.x;
+    const ry = run.y;
+    const rw = run.w;
     out +=
       `<g class="cv-byte-padding" data-address="${run.start}" data-size="${run.size}">` +
       rect(rx + 1, ry + 1, rw - 2, cellH - 2, `url(#${opts.padId})`, P.gapStroke, 0, 1.5);

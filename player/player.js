@@ -810,7 +810,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const stackedCodeBudget = canvasBudget - 2 * MARGIN - STACK_TETHER_WIDTH;
     const initialCode = stacked ? fitCode(stackedCodeBudget) : unwrapped;
     const besideCode = stacked || !Number.isFinite(canvasBudget) ? 0 : canvasBudget - unwrapped.width - COLUMN_GAP - 2 * MARGIN;
-    const widest = flush ? Math.max(minByteWidth, FLUSH_MAX_BYTE) : Math.max(minByteWidth, m.leaves.some((leaf) => leaf.size < 4) ? NARROW_BYTE : MAX_BYTE);
+    const widest = flush ? Math.max(minByteWidth, stacked ? FLUSH_MAX_BYTE : FLUSH_BASE_BYTE) : Math.max(minByteWidth, m.leaves.some((leaf) => leaf.size < 4) ? NARROW_BYTE : MAX_BYTE);
     const rise = m.rise;
     const structs = m.groups.length > 0;
     const paneChars = Math.max(...m.steps.map((step) => step.pane.length));
@@ -900,19 +900,34 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const singleSpan = flushRowBounds(single.rows)[0];
       const totalBytes = singleSpan.end - singleSpan.start;
       if (totalBytes > 10) {
-        const rowCount = totalBytes > 24 ? Math.min(3, m.tops.length) : 2;
-        let bestRows = null;
-        let bestMax = Infinity;
-        for (const rows2 of partitions(m.tops.length, rowCount)) {
-          const maxRowBytes = Math.max(...flushRowBounds(rows2).map((b) => b.end - b.start));
-          if (maxRowBytes < bestMax) {
-            bestMax = maxRowBytes;
-            bestRows = rows2;
+        const counts = totalBytes > 24 && m.tops.length >= 3 ? [3, 2] : [2];
+        let bestCandidate = null;
+        let bestScore = Infinity;
+        for (const rowCount of counts) {
+          let bestRows = null;
+          let bestMax = Infinity;
+          let bestSpread = Infinity;
+          for (const rows2 of partitions(m.tops.length, rowCount)) {
+            const lens = flushRowBounds(rows2).map((b) => b.end - b.start);
+            const maxRowBytes = Math.max(...lens);
+            const spread = maxRowBytes - Math.min(...lens);
+            if (maxRowBytes < bestMax || maxRowBytes === bestMax && spread < bestSpread) {
+              bestMax = maxRowBytes;
+              bestSpread = spread;
+              bestRows = rows2;
+            }
+          }
+          if (bestRows && bestMax <= totalBytes * 0.75) {
+            const candidate = plan(bestRows);
+            const singleScale = single.byte / single.columnW;
+            const candidateScale = candidate.byte / candidate.columnW;
+            if (candidateScale >= singleScale * 1.15 && bestMax < bestScore) {
+              bestScore = bestMax;
+              bestCandidate = candidate;
+            }
           }
         }
-        if (bestRows && bestMax < totalBytes) {
-          chosen = plan(bestRows);
-        }
+        if (bestCandidate) chosen = bestCandidate;
       }
     }
     const { labelExtent } = chosen;
@@ -923,36 +938,37 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     let codeW = chosen.code.width;
     let columnW = chosen.columnW;
     if (stacked) codeW = columnW = Math.max(codeW, columnW);
-    const cellH = flush && options.maxCellHeight && options.maxCellHeight > baseCellH ? Math.min(
+    const cellH = stacked && flush && options.maxCellHeight && options.maxCellHeight > baseCellH ? Math.min(
       options.maxCellHeight,
       Math.max(baseCellH, Math.round(baseCellH + (chosen.byte - FLUSH_BASE_BYTE) * 0.25))
     ) : baseCellH;
-    const atLeaf = (memX2, memY2, c, rowPitch) => {
+    const atLeaf = (memX2, memY2, c, rowOffset) => {
       const span = placed.spans.get(c.name);
       return {
         ...c,
         x: memX2 + span[0],
-        y: memY2 + (rowOf.get(c.name.split(".")[0]) ?? 0) * rowPitch,
+        y: memY2 + rowOffset(c.name),
         w: span[1],
         h: cellH,
         color: "",
         fieldColor: null
       };
     };
-    const atGroup = (memX2, memY2, c, rowPitch) => {
+    const atGroup = (memX2, memY2, c, rowOffset) => {
       const span = placed.spans.get(c.name);
       return {
         ...c,
         x: memX2 + span[0],
-        y: memY2 + (rowOf.get(c.name.split(".")[0]) ?? 0) * rowPitch,
+        y: memY2 + rowOffset(c.name),
         w: span[1],
         h: cellH,
         color: "",
         fieldColor: null
       };
     };
-    const probeLeaves = m.leaves.map((l) => atLeaf(0, 0, l, pitch));
-    const probeGroups = m.groups.map((s) => atGroup(0, 0, s, pitch));
+    const probeRowY = (name) => (rowOf.get(name.split(".")[0]) ?? 0) * pitch;
+    const probeLeaves = m.leaves.map((l) => atLeaf(0, 0, l, probeRowY));
+    const probeGroups = m.groups.map((s) => atGroup(0, 0, s, probeRowY));
     const probe = {
       memY: 0,
       rise,
@@ -961,24 +977,63 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       box: (name) => probeGroups.find((s) => s.name === name) || probeLeaves.find((l) => l.name === name)
     };
     let level = -1;
-    let sameRowLink = false;
+    const sameRowMaxLevel = /* @__PURE__ */ new Map();
+    let maxCrossLinks = 0;
+    const maxCrossToRow = /* @__PURE__ */ new Map();
+    const maxCrossFromRow = /* @__PURE__ */ new Map();
     for (const step of m.steps) {
+      let stepCross = 0;
+      const stepTo = /* @__PURE__ */ new Map();
+      const stepFrom = /* @__PURE__ */ new Map();
       for (const l of links(probe, step)) {
         level = Math.max(level, l.level);
-        if (l.from.y === l.to.y) sameRowLink = true;
+        const fromRow = rowOf.get(l.from.name.split(".")[0]) ?? 0;
+        const toRow = rowOf.get(l.to.name.split(".")[0]) ?? 0;
+        if (fromRow === toRow) {
+          sameRowMaxLevel.set(fromRow, Math.max(sameRowMaxLevel.get(fromRow) ?? -1, l.level));
+        } else {
+          stepCross++;
+          stepTo.set(toRow, (stepTo.get(toRow) ?? 0) + 1);
+          stepFrom.set(fromRow, (stepFrom.get(fromRow) ?? 0) + 1);
+        }
       }
+      maxCrossLinks = Math.max(maxCrossLinks, stepCross);
+      for (const [r, count] of stepTo) maxCrossToRow.set(r, Math.max(maxCrossToRow.get(r) ?? 0, count));
+      for (const [r, count] of stepFrom) maxCrossFromRow.set(r, Math.max(maxCrossFromRow.get(r) ?? 0, count));
     }
-    const room = (level >= 0 ? flush && extraRows > 0 && !sameRowLink ? 46 : FRAME.top + 84 + level * 40 + 10 : (structs ? FRAME.top : 0) + 30) + rise * RISE.top;
+    const baseRoom = (structs ? FRAME.top : 0) + 30 + rise * RISE.top;
+    let room;
+    if (flush && extraRows > 0) {
+      const row0Same = sameRowMaxLevel.get(0) ?? -1;
+      const row0SameRoom = row0Same >= 0 ? FRAME.top + 84 + row0Same * 40 + 10 : 0;
+      const row0HasCross = (maxCrossToRow.get(0) ?? 0) > 0 || (maxCrossFromRow.get(0) ?? 0) > 0;
+      const row0CrossRoom = row0HasCross ? 64 + Math.max(0, maxCrossLinks - 1) * 18 : 0;
+      room = Math.max(baseRoom, row0SameRoom, row0CrossRoom);
+    } else {
+      room = level >= 0 ? FRAME.top + 84 + level * 40 + 10 + rise * RISE.top : baseRoom;
+    }
     const tagged = tagRows(m, probe.box);
     const typeRow = typeRows(m, probe.box, rowOf);
     const labelHeight = m.typed ? LABEL.rise + Math.max(0, labelExtent.rows - 1) * LABEL.row : 0;
     const labelRise = m.typed ? labelHeight + 6 : 0;
     const named = (structs ? cellH + FRAME.bottom + 32 : cellH + 34) + rise * RISE.bottom + tagged.height;
     const names = named + typeRow.height + extraMemBottom;
-    const effectivePitch = flush && extraRows > 0 ? names + (level >= 0 ? 36 : 22) : pitch;
-    const rowY = (name) => (rowOf.get(name.split(".")[0]) ?? 0) * effectivePitch;
-    const paneGap = extraMemBottom > 0 ? 18 : stacked && flush ? 36 : 56;
-    const paneTop = room + names + extraRows * effectivePitch + paneGap;
+    const rowOffsets = [0];
+    for (let r = 1; r <= extraRows; r++) {
+      if (flush) {
+        const baseGap = extraMemBottom > 0 ? 34 : 38;
+        const rSame = sameRowMaxLevel.get(r) ?? -1;
+        const sameGap = rSame >= 0 ? 96 + rSame * 32 : 0;
+        const rHasCross = (maxCrossToRow.get(r) ?? 0) > 0 || (maxCrossFromRow.get(r) ?? 0) > 0;
+        const crossGap = rHasCross ? 64 + Math.max(0, maxCrossLinks - 1) * 18 : 0;
+        rowOffsets.push(rowOffsets[r - 1] + names + Math.max(baseGap, sameGap, crossGap));
+      } else {
+        rowOffsets.push(r * pitch);
+      }
+    }
+    const rowY = (name) => rowOffsets[rowOf.get(name.split(".")[0]) ?? 0] ?? 0;
+    const paneGap = stacked ? extraMemBottom > 0 ? 18 : flush ? 36 : 56 : 56;
+    const paneTop = room + rowOffsets[extraRows] + names + paneGap;
     const paneH = 76 + labelRise + extraPaneHeight;
     const outputTop = paneTop + paneH + (stacked && flush ? 46 : 60);
     const columnH = outputLines.length ? outputTop + (outputLines.length - 1) * 36 + 14 : paneTop + paneH;
@@ -988,10 +1043,17 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     let columnY;
     let width;
     let height;
+    const minMemLeft = stacked && flush && extraRows > 0 && maxCrossLinks > 0 ? 36 + Math.max(0, maxCrossLinks - 1) * 14 : 0;
     if (stacked) {
       codeY = MARGIN;
       columnX = MARGIN;
       columnY = codeY + codeH + 24;
+      if (minMemLeft > 0) {
+        const minLeftPad = Math.max(24, minMemLeft - columnX);
+        if (minLeftPad + placed.width + 24 > columnW) {
+          codeW = columnW = minLeftPad + placed.width + 24;
+        }
+      }
       width = MARGIN + columnW + STACK_TETHER_WIDTH + MARGIN;
       height = columnY + columnH + MARGIN;
     } else {
@@ -1002,7 +1064,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       width = columnX + columnW + MARGIN;
       height = MARGIN + content + MARGIN;
     }
-    const memX = stacked ? round(columnX + 24 + Math.max(0, (columnW - 48 - placed.width) / 2)) : columnX + 24;
+    const memX = stacked ? round(Math.max(minMemLeft, columnX + 24 + Math.max(0, (columnW - 48 - placed.width) / 2))) : columnX + 24;
     const memY = columnY + room;
     const pane2 = { x: columnX, y: columnY + paneTop, w: columnW, h: paneH };
     const tx = columnX + 24;
@@ -1015,16 +1077,16 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const gaps2 = placed.gaps.map(([x, w, row]) => [
       memX + x,
       w,
-      memY + row * effectivePitch
+      memY + (rowOffsets[row] ?? row * pitch)
     ]);
     const colour2 = (list, i, count) => list[i % count];
     const leaves = m.leaves.map((l) => ({
-      ...atLeaf(memX, memY, l, effectivePitch),
+      ...atLeaf(memX, memY, l, rowY),
       color: colour2(P.vars, l.color, VARIABLE_COLOURS),
       fieldColor: l.group ? colour2(P.fields, l.fieldColor ?? 0, FIELD_COLOURS) : null
     }));
     const groups = m.groups.map((s) => ({
-      ...atGroup(memX, memY, s, effectivePitch),
+      ...atGroup(memX, memY, s, rowY),
       color: colour2(P.vars, s.color, VARIABLE_COLOURS),
       fieldColor: s.parent ? colour2(P.fields, s.fieldColor ?? 0, FIELD_COLOURS) : null,
       drop: tagged.drop.get(s.name)
@@ -1032,7 +1094,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const flushRows = flush && m.tops.length > 0 ? flushRowBounds(chosen.rows).map((b, r) => ({
       startAddress: b.start,
       endAddress: b.end,
-      y: memY + r * effectivePitch
+      y: memY + (rowOffsets[r] ?? 0)
     })) : [];
     const box = (name) => groups.find((s) => s.name === name) || leaves.find((l) => l.name === name);
     const cellsOf = (name) => leaves.filter((l) => l.name === name || l.name.startsWith(name + "."));
@@ -2392,6 +2454,49 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       row: { startAddress: baseAddress, endAddress: baseAddress, y }
     };
   }
+  function flushAddressSegments(g, start, size) {
+    if (size <= 0) return [];
+    const end = start + size;
+    const rows = g.flushRows;
+    if (rows.length <= 1) {
+      const pos = flushAddrPos(g, start);
+      return [{ start, size, x: pos.x, y: pos.y, w: size * g.byteWidth, isFirst: true, isLast: true }];
+    }
+    const raw = [];
+    let cur = start;
+    if (cur < rows[0].startAddress) {
+      const segEnd = Math.min(end, rows[0].startAddress);
+      const pos = flushAddrPos(g, cur);
+      raw.push({ start: cur, size: segEnd - cur, x: pos.x, y: pos.y, w: (segEnd - cur) * g.byteWidth });
+      cur = segEnd;
+    }
+    for (const row of rows) {
+      if (cur >= end) break;
+      if (row.endAddress <= cur) continue;
+      if (row.startAddress >= end) break;
+      const segStart = Math.max(cur, row.startAddress);
+      const segEnd = Math.min(end, row.endAddress);
+      if (segEnd > segStart) {
+        raw.push({
+          start: segStart,
+          size: segEnd - segStart,
+          x: g.memX + (segStart - row.startAddress) * g.byteWidth,
+          y: row.y,
+          w: (segEnd - segStart) * g.byteWidth
+        });
+      }
+      cur = segEnd;
+    }
+    if (cur < end) {
+      const pos = flushAddrPos(g, cur);
+      raw.push({ start: cur, size: end - cur, x: pos.x, y: pos.y, w: (end - cur) * g.byteWidth });
+    }
+    return raw.map((seg, i) => ({
+      ...seg,
+      isFirst: i === 0,
+      isLast: i === raw.length - 1
+    }));
+  }
   function renderByteMemory(c, opts) {
     var _a;
     const { g, P, animate, op } = c;
@@ -2420,27 +2525,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         );
       }
     }
-    const splitPaddingRuns = paddingRuns(g.leaves, opts.minEndAddress).flatMap((run) => {
-      if (g.flushRows.length <= 1) return [run];
-      const pieces = [];
-      let cur = run.start;
-      const runEnd = run.start + run.size;
-      for (const row of g.flushRows) {
-        if (cur >= runEnd) break;
-        if (row.endAddress <= cur) continue;
-        if (row.startAddress >= runEnd) break;
-        const segStart = Math.max(cur, row.startAddress);
-        const segEnd = Math.min(runEnd, row.endAddress);
-        if (segEnd > segStart) pieces.push({ start: segStart, size: segEnd - segStart });
-        cur = segEnd;
-      }
-      return pieces.length ? pieces : [run];
-    });
+    const splitPaddingRuns = paddingRuns(g.leaves, opts.minEndAddress).flatMap(
+      (run) => flushAddressSegments(g, run.start, run.size)
+    );
     for (const run of splitPaddingRuns) {
-      const pos = flushAddrPos(g, run.start);
-      const rx = pos.x;
-      const ry = pos.y;
-      const rw = run.size * byteW;
+      const rx = run.x;
+      const ry = run.y;
+      const rw = run.w;
       out += `<g class="cv-byte-padding" data-address="${run.start}" data-size="${run.size}">` + rect(rx + 1, ry + 1, rw - 2, cellH - 2, `url(#${opts.padId})`, P.gapStroke, 0, 1.5);
       if (run.size <= MAX_DETAIL_GAP) {
         const hexY = ry + metrics.hexY;
@@ -2804,6 +2895,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return `<path d="M -10 -5 L 0 0 L -10 5 Z" fill="${color}" transform="translate(${round(tipX)} ${round(tipY)}) rotate(${deg})"/>`;
   }
   function workbench(c) {
+    const inner = workbenchInner(c);
+    return inner ? `<g class="cv-bits-workbench">${inner}</g>` : "";
+  }
+  function workbenchInner(c) {
     const act = activeBitAction(c);
     if (!act) return "";
     const { g, P, animate, op } = c;
@@ -3663,43 +3758,6 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return stepSeconds(m.steps, index);
   }
-  function flushAddressSegments(g, start, size) {
-    if (size <= 0) return [];
-    const end = start + size;
-    const rows = g.flushRows;
-    if (rows.length <= 1) {
-      const pos = flushAddrPos(g, start);
-      return [{ start, size, x: pos.x, y: pos.y, w: size * g.byteWidth, isFirst: true, isLast: true }];
-    }
-    const raw = [];
-    let cur = start;
-    for (const row of rows) {
-      if (cur >= end) break;
-      if (row.endAddress <= cur) continue;
-      if (row.startAddress >= end) break;
-      const segStart = Math.max(cur, row.startAddress);
-      const segEnd = Math.min(end, row.endAddress);
-      if (segEnd > segStart) {
-        raw.push({
-          start: segStart,
-          size: segEnd - segStart,
-          x: g.memX + (segStart - row.startAddress) * g.byteWidth,
-          y: row.y,
-          w: (segEnd - segStart) * g.byteWidth
-        });
-      }
-      cur = segEnd;
-    }
-    if (cur < end) {
-      const pos = flushAddrPos(g, cur);
-      raw.push({ start: cur, size: end - cur, x: pos.x, y: pos.y, w: (end - cur) * g.byteWidth });
-    }
-    return raw.map((seg, i) => ({
-      ...seg,
-      isFirst: i === 0,
-      isLast: i === raw.length - 1
-    }));
-  }
   function drawHudReticle(bx, by, bw, bh, leftCol, rightCol, splitX, openLeft = false, openRight = false) {
     const arm = Math.min(14, bw * 0.28);
     const tick = 5;
@@ -3781,7 +3839,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const { g, P, step, prev, op, animate } = c;
     const punNames = new Set(sim.punPointers.map((p) => p.ptrName));
     const at = op ? arrival(op) : 0;
-    const arcGeom = (l, isPun) => {
+    const assignCrossTracks = (list) => {
+      const cross = list.filter((l) => Math.abs(l.from.y - posOf(l.to.address).y) >= 1).sort((a, b) => a.from.address - b.from.address || a.to.address - b.to.address);
+      const tracks = /* @__PURE__ */ new Map();
+      cross.forEach((l, i) => tracks.set(l, i));
+      return tracks;
+    };
+    const arcGeom = (l, isPun, crossTrack) => {
       const toPos = posOf(l.to.address);
       const ex = isPun ? toPos.x + byteW * 0.5 : l.head[0];
       const ey = toPos.y - 26;
@@ -3795,34 +3859,35 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           hy: ey
         };
       }
-      const gx = Math.max(10, g.memX - 28 - l.level * 10);
-      const targetTopRow = Math.abs(toPos.y - g.memY) < 1;
-      const topY = targetTopRow ? toPos.y - 54 - l.level * 22 : toPos.y - 38 - l.level * 8;
+      const gx = Math.max(10, g.memX - 24 - crossTrack * 14);
+      const topY = toPos.y - 54 - crossTrack * 18;
       const hasLeftSibling = l.from.x > g.memX + 1;
       if (!hasLeftSibling && l.from.y > toPos.y) {
         const sx2 = l.from.x;
         const sy2 = l.from.y + l.from.h * 0.5;
+        const r2 = Math.min(18, Math.max(6, sx2 - gx), Math.max(6, (sy2 - topY) / 2));
+        const er2 = Math.min(16, Math.max(6, (ex - gx) / 2));
         return {
-          d: `M ${round(sx2)} ${round(sy2)} Q ${round(gx)} ${round(sy2)}, ${round(gx)} ${round(sy2 - 20)} L ${round(gx)} ${round(topY + 20)} Q ${round(gx)} ${round(topY)}, ${round(gx + 20)} ${round(topY)} L ${round(ex - 16)} ${round(topY)} Q ${round(ex)} ${round(topY)}, ${round(ex)} ${round(ey - 8)}`,
+          d: `M ${round(sx2)} ${round(sy2)} Q ${round(gx)} ${round(sy2)}, ${round(gx)} ${round(sy2 - r2)} L ${round(gx)} ${round(topY + r2)} Q ${round(gx)} ${round(topY)}, ${round(gx + r2)} ${round(topY)} L ${round(ex - er2)} ${round(topY)} Q ${round(ex)} ${round(topY)}, ${round(ex)} ${round(ey - 8)}`,
           hx: ex,
           hy: ey
         };
       }
       const sx = l.from.x + l.from.w / 2;
       const sy = l.from.y - 2;
-      const laneY = l.from.y - 30 - l.level * 8;
+      const laneY = l.from.y - 34 - crossTrack * 14;
       const dir = topY < laneY ? -1 : 1;
       const r = Math.min(12, Math.abs(topY - laneY) / 2, Math.max(4, (sx - gx) / 2));
-      const er = Math.min(14, Math.max(4, (ex - gx) / 2));
+      const er = Math.min(16, Math.max(6, (ex - gx) / 2));
       return {
         d: `M ${round(sx)} ${round(sy)} L ${round(sx)} ${round(laneY + 8)} Q ${round(sx)} ${round(laneY)}, ${round(sx - 8)} ${round(laneY)} L ${round(gx + r)} ${round(laneY)} Q ${round(gx)} ${round(laneY)}, ${round(gx)} ${round(laneY + dir * r)} L ${round(gx)} ${round(topY - dir * r)} Q ${round(gx)} ${round(topY)}, ${round(gx + r)} ${round(topY)} L ${round(ex - er)} ${round(topY)} Q ${round(ex)} ${round(topY)}, ${round(ex)} ${round(ey - 8)}`,
         hx: ex,
         hy: ey
       };
     };
-    const arcFor = (l, isPun, opts = {}) => {
+    const arcFor = (l, isPun, crossTrack, opts = {}) => {
       const col = l.from.color;
-      const { d, hx, hy } = arcGeom(l, isPun);
+      const { d, hx, hy } = arcGeom(l, isPun, crossTrack);
       const grow = opts.grow != null ? ` data-grow="${round(opts.grow)}"` : "";
       const head = `<path d="M -10 -6 L 0 0 L -10 6 Z" fill="${col}" transform="translate(${round(hx)} ${round(hy)}) rotate(90)"/>`;
       const body = "<g>" + (opts.fadeOut != null ? fade(1, 0, 0.3, opts.fadeOut) : "") + `<path d="${d}" fill="none" stroke="${P.bg}" stroke-width="9"${grow}/><path d="${d}" fill="none" stroke="${col}" stroke-width="2.6"${grow}/>` + (opts.grow != null ? `<g opacity="0">${fade(0, 1, 0.15, opts.grow + 0.47)}${head}</g>` : head) + "</g>";
@@ -3834,34 +3899,40 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     if ((op == null ? void 0 : op.kind) === "write" && punNames.has(op.name)) activeArcPtrs.add(op.name);
     if ((op == null ? void 0 : op.kind) === "deref" && punNames.has(op.via)) activeArcPtrs.add(op.via);
     const now = links(g, step);
+    const nowTracks = assignCrossTracks(now);
     const writesPtr = animate && (op == null ? void 0 : op.kind) === "write" && g.cellsOf(op.name).some((l) => l.kind === "ptr");
     if (writesPtr && prev) {
       const prevPunNames = new Set(
         simulatePunningTrace(c.m.trace, Math.max(0, c.index - 1), c.littleEndian).punPointers.map((p) => p.ptrName)
       );
       const changed = new Set(g.cellsOf(op.name).map((l) => l.name));
+      const prevLinks = links(g, prev);
+      const prevTracks = assignCrossTracks(prevLinks);
       let out2 = "";
-      for (const l of links(g, prev)) {
+      for (const l of prevLinks) {
         const isOutgoing = changed.has(l.from.name);
         const isPun = isOutgoing ? prevPunNames.has(l.from.name) : punNames.has(l.from.name);
-        out2 += arcFor(l, isPun, {
+        out2 += arcFor(l, isPun, prevTracks.get(l) ?? 0, {
           ...isOutgoing ? { fadeOut: at } : {},
           keepBright: activeArcPtrs.has(l.from.name)
         });
       }
       for (const l of now) {
         if (changed.has(l.from.name)) {
-          out2 += arcFor(l, punNames.has(l.from.name), { grow: at + 0.08, keepBright: activeArcPtrs.has(l.from.name) });
+          out2 += arcFor(l, punNames.has(l.from.name), nowTracks.get(l) ?? 0, {
+            grow: at + 0.08,
+            keepBright: activeArcPtrs.has(l.from.name)
+          });
         }
       }
       return out2;
     }
-    let out = now.map((l) => arcFor(l, punNames.has(l.from.name), { keepBright: activeArcPtrs.has(l.from.name) })).join("");
+    let out = now.map((l) => arcFor(l, punNames.has(l.from.name), nowTracks.get(l) ?? 0, { keepBright: activeArcPtrs.has(l.from.name) })).join("");
     if (animate && (op == null ? void 0 : op.kind) === "deref") {
       const l = now.find((link) => link.from.name === op.via);
       if (l) {
         const isPun = punNames.has(l.from.name);
-        const { d } = arcGeom(l, isPun);
+        const { d } = arcGeom(l, isPun, nowTracks.get(l) ?? 0);
         const pulsePath = `<path d="${d}" fill="none" stroke="${l.from.color}" stroke-width="7" stroke-linecap="round" data-follow="${T.prepare}"/>`;
         out += isPun ? pulsePath : dim(c, l.from.name, pulsePath);
       }
