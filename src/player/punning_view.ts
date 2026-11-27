@@ -748,11 +748,11 @@ function punningScene(c: SceneContext): string {
         const flyCol = isOobSlot || bval === '?' ? P.error : P.read;
         wb += `<g opacity="0">${show(end)}${tileMarkup}</g>`;
         flight +=
-          `<g opacity="0">${fade(0, 0.5, 0.2, begin)}${fade(0.5, 0, 0.25, end)}<path d="${path}" fill="none" stroke="${flyCol}" stroke-width="2.4"/></g>` +
+          `<g opacity="0">${fade(0, 0.5, 0.2, begin)}${fade(0.5, 0, 0.25, end)}<path data-mem-end="start" d="${path}" fill="none" stroke="${flyCol}" stroke-width="2.4"/></g>` +
           `<g opacity="0">${fade(0, 1, 0.1, begin)}${hide(end + 0.05)}` +
           rect(-20, -14, 40, 28, P.panel, flyCol, 6, 2) +
           text(0, 6, label, 15, flyCol, 'middle') +
-          `<animateMotion begin="${round(begin)}s" dur="${round(readDur)}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
+          `<animateMotion data-mem-end="start" begin="${round(begin)}s" dur="${round(readDur)}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
       } else {
         wb += tileMarkup;
         if (animate && stripSource.mode === 'write') {
@@ -768,11 +768,11 @@ function punningScene(c: SceneContext): string {
           const begin = Math.max(0.2, end - dur);
           const flyCol = isOobSlot ? P.error : P.write;
           flight +=
-            `<g opacity="0">${fade(0, 0.5, 0.2, begin)}${fade(0.5, 0, 0.25, end)}<path d="${path}" fill="none" stroke="${flyCol}" stroke-width="2.4"/></g>` +
+            `<g opacity="0">${fade(0, 0.5, 0.2, begin)}${fade(0.5, 0, 0.25, end)}<path data-mem-end="end" d="${path}" fill="none" stroke="${flyCol}" stroke-width="2.4"/></g>` +
             `<g opacity="0">${fade(0, 1, 0.1, begin)}${hide(end + 0.05)}` +
             rect(-20, -14, 40, 28, P.panel, flyCol, 6, 2) +
             text(0, 6, label, 15, flyCol, 'middle') +
-            `<animateMotion begin="${round(begin)}s" dur="${dur}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
+            `<animateMotion data-mem-end="end" begin="${round(begin)}s" dur="${dur}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
         } else if (animate && stripSource.mode === 'store' && stripSource.destVar) {
           const ep = posOf(stripSource.destVar.address + k);
           const sx = tx + tileW / 2;
@@ -785,11 +785,11 @@ function punningScene(c: SceneContext): string {
           const end = at + k * 0.08;
           const begin = Math.max(0.2, end - dur);
           flight +=
-            `<g opacity="0">${fade(0, 0.5, 0.2, begin)}${fade(0.5, 0, 0.25, end)}<path d="${path}" fill="none" stroke="${stroke}" stroke-width="2.4"/></g>` +
+            `<g opacity="0">${fade(0, 0.5, 0.2, begin)}${fade(0.5, 0, 0.25, end)}<path data-mem-end="end" d="${path}" fill="none" stroke="${stroke}" stroke-width="2.4"/></g>` +
             `<g opacity="0">${fade(0, 1, 0.1, begin)}${hide(end + 0.05)}` +
             rect(-20, -14, 40, 28, P.panel, stroke, 6, 2) +
             text(0, 6, label, 15, stroke, 'middle') +
-            `<animateMotion begin="${round(begin)}s" dur="${dur}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
+            `<animateMotion data-mem-end="end" begin="${round(begin)}s" dur="${dur}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
         }
       }
     }

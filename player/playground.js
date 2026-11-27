@@ -1038,21 +1038,24 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       box: (name) => probeGroups.find((s) => s.name === name) || probeLeaves.find((l) => l.name === name)
     };
     let level = -1;
+    let sameRowLink = false;
     for (const step of m.steps) {
       for (const l of links(probe, step)) {
         level = Math.max(level, l.level);
+        if (l.from.y === l.to.y) sameRowLink = true;
       }
     }
-    const room = (level >= 0 ? FRAME.top + 84 + level * 40 + 10 : (structs ? FRAME.top : 0) + 30) + rise * RISE.top;
+    const room = (level >= 0 ? flush && extraRows > 0 && !sameRowLink ? 46 : FRAME.top + 84 + level * 40 + 10 : (structs ? FRAME.top : 0) + 30) + rise * RISE.top;
     const tagged = tagRows(m, probe.box);
     const typeRow = typeRows(m, probe.box, rowOf);
     const labelHeight = m.typed ? LABEL.rise + Math.max(0, labelExtent.rows - 1) * LABEL.row : 0;
     const labelRise = m.typed ? labelHeight + 6 : 0;
     const named = (structs ? cellH + FRAME.bottom + 32 : cellH + 34) + rise * RISE.bottom + tagged.height;
     const names = named + typeRow.height + extraMemBottom;
-    const effectivePitch = flush && extraRows > 0 ? names + 38 : pitch;
+    const effectivePitch = flush && extraRows > 0 ? names + 22 : pitch;
     const rowY = (name) => (rowOf.get(name.split(".")[0]) ?? 0) * effectivePitch;
-    const paneTop = room + names + extraRows * effectivePitch + 56;
+    const paneGap = extraMemBottom > 0 ? 18 : 56;
+    const paneTop = room + names + extraRows * effectivePitch + paneGap;
     const paneH = 76 + labelRise + extraPaneHeight;
     const outputTop = paneTop + paneH + 60;
     const columnH = outputLines.length ? outputTop + (outputLines.length - 1) * 36 + 14 : paneTop + paneH;
@@ -1076,12 +1079,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       width = columnX + columnW + MARGIN;
       height = MARGIN + content + MARGIN;
     }
-    const memX = columnX + 24;
+    const memX = stacked ? round(columnX + 24 + Math.max(0, (columnW - 48 - placed.width) / 2)) : columnX + 24;
     const memY = columnY + room;
     const pane2 = { x: columnX, y: columnY + paneTop, w: columnW, h: paneH };
     const tx = columnX + 24;
     const ty = pane2.y + 38 + 11 + labelHeight;
-    const below = pane2.y - 56;
+    const below = pane2.y - paneGap;
     const out = [columnX + 24, columnY + outputTop];
     const code2 = { x: codeX, y: codeY, w: codeW, h: codeH };
     const codeRows = placeCodeRows(rows, code2.y + 50);
@@ -4074,7 +4077,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           const end = begin + readDur;
           const flyCol = isOobSlot || bval === "?" ? P.error : P.read;
           wb += `<g opacity="0">${show(end)}${tileMarkup}</g>`;
-          flight += `<g opacity="0">${fade(0, 0.5, 0.2, begin)}${fade(0.5, 0, 0.25, end)}<path d="${path}" fill="none" stroke="${flyCol}" stroke-width="2.4"/></g><g opacity="0">${fade(0, 1, 0.1, begin)}${hide(end + 0.05)}` + rect(-20, -14, 40, 28, P.panel, flyCol, 6, 2) + text(0, 6, label, 15, flyCol, "middle") + `<animateMotion begin="${round(begin)}s" dur="${round(readDur)}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
+          flight += `<g opacity="0">${fade(0, 0.5, 0.2, begin)}${fade(0.5, 0, 0.25, end)}<path data-mem-end="start" d="${path}" fill="none" stroke="${flyCol}" stroke-width="2.4"/></g><g opacity="0">${fade(0, 1, 0.1, begin)}${hide(end + 0.05)}` + rect(-20, -14, 40, 28, P.panel, flyCol, 6, 2) + text(0, 6, label, 15, flyCol, "middle") + `<animateMotion data-mem-end="start" begin="${round(begin)}s" dur="${round(readDur)}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
         } else {
           wb += tileMarkup;
           if (animate && stripSource.mode === "write") {
@@ -4089,7 +4092,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
             const end = at + k * 0.08;
             const begin = Math.max(0.2, end - dur);
             const flyCol = isOobSlot ? P.error : P.write;
-            flight += `<g opacity="0">${fade(0, 0.5, 0.2, begin)}${fade(0.5, 0, 0.25, end)}<path d="${path}" fill="none" stroke="${flyCol}" stroke-width="2.4"/></g><g opacity="0">${fade(0, 1, 0.1, begin)}${hide(end + 0.05)}` + rect(-20, -14, 40, 28, P.panel, flyCol, 6, 2) + text(0, 6, label, 15, flyCol, "middle") + `<animateMotion begin="${round(begin)}s" dur="${dur}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
+            flight += `<g opacity="0">${fade(0, 0.5, 0.2, begin)}${fade(0.5, 0, 0.25, end)}<path data-mem-end="end" d="${path}" fill="none" stroke="${flyCol}" stroke-width="2.4"/></g><g opacity="0">${fade(0, 1, 0.1, begin)}${hide(end + 0.05)}` + rect(-20, -14, 40, 28, P.panel, flyCol, 6, 2) + text(0, 6, label, 15, flyCol, "middle") + `<animateMotion data-mem-end="end" begin="${round(begin)}s" dur="${dur}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
           } else if (animate && stripSource.mode === "store" && stripSource.destVar) {
             const ep = posOf(stripSource.destVar.address + k);
             const sx = tx + tileW / 2;
@@ -4101,7 +4104,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
             const dur = 0.85;
             const end = at + k * 0.08;
             const begin = Math.max(0.2, end - dur);
-            flight += `<g opacity="0">${fade(0, 0.5, 0.2, begin)}${fade(0.5, 0, 0.25, end)}<path d="${path}" fill="none" stroke="${stroke}" stroke-width="2.4"/></g><g opacity="0">${fade(0, 1, 0.1, begin)}${hide(end + 0.05)}` + rect(-20, -14, 40, 28, P.panel, stroke, 6, 2) + text(0, 6, label, 15, stroke, "middle") + `<animateMotion begin="${round(begin)}s" dur="${dur}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
+            flight += `<g opacity="0">${fade(0, 0.5, 0.2, begin)}${fade(0.5, 0, 0.25, end)}<path data-mem-end="end" d="${path}" fill="none" stroke="${stroke}" stroke-width="2.4"/></g><g opacity="0">${fade(0, 1, 0.1, begin)}${hide(end + 0.05)}` + rect(-20, -14, 40, 28, P.panel, stroke, 6, 2) + text(0, 6, label, 15, stroke, "middle") + `<animateMotion data-mem-end="end" begin="${round(begin)}s" dur="${dur}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
           }
         }
       }

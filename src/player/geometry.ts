@@ -746,13 +746,19 @@ export function geometry(
     box: name => probeGroups.find(s => s.name === name) || probeLeaves.find(l => l.name === name),
   };
   let level = -1;
+  let sameRowLink = false;
   for (const step of m.steps) {
     for (const l of links(probe, step)) {
       level = Math.max(level, l.level);
+      if (l.from.y === l.to.y) sameRowLink = true;
     }
   }
   const room =
-    (level >= 0 ? FRAME.top + 84 + level * 40 + 10 : (structs ? FRAME.top : 0) + 30) +
+    (level >= 0
+      ? flush && extraRows > 0 && !sameRowLink
+        ? 46
+        : FRAME.top + 84 + level * 40 + 10
+      : (structs ? FRAME.top : 0) + 30) +
     rise * RISE.top;
   const tagged = tagRows(m, probe.box);
   const typeRow = typeRows(m, probe.box, rowOf);
@@ -762,9 +768,10 @@ export function geometry(
   const named =
     (structs ? cellH + FRAME.bottom + 32 : cellH + 34) + rise * RISE.bottom + tagged.height;
   const names = named + typeRow.height + extraMemBottom;
-  const effectivePitch = flush && extraRows > 0 ? names + 38 : pitch;
+  const effectivePitch = flush && extraRows > 0 ? names + 22 : pitch;
   const rowY = (name: string): number => (rowOf.get(name.split('.')[0]) ?? 0) * effectivePitch;
-  const paneTop = room + names + extraRows * effectivePitch + 56;
+  const paneGap = extraMemBottom > 0 ? 18 : 56;
+  const paneTop = room + names + extraRows * effectivePitch + paneGap;
   const paneH = 76 + labelRise + extraPaneHeight;
   const outputTop = paneTop + paneH + 60;
   const columnH = outputLines.length
@@ -792,12 +799,14 @@ export function geometry(
     height = MARGIN + content + MARGIN;
   }
 
-  const memX = columnX + 24;
+  const memX = stacked
+    ? round(columnX + 24 + Math.max(0, (columnW - 48 - placed.width) / 2))
+    : columnX + 24;
   const memY = columnY + room;
   const pane: PlacedRect = { x: columnX, y: columnY + paneTop, w: columnW, h: paneH };
   const tx = columnX + 24;
   const ty = pane.y + 38 + 11 + labelHeight;
-  const below = pane.y - 56;
+  const below = pane.y - paneGap;
   const out: [number, number] = [columnX + 24, columnY + outputTop];
   const code: PlacedRect = { x: codeX, y: codeY, w: codeW, h: codeH };
   const codeRows = placeCodeRows(rows, code.y + 50);
