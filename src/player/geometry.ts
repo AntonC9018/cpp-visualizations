@@ -779,7 +779,7 @@ export function geometry(
   const named =
     (structs ? cellH + FRAME.bottom + 32 : cellH + 34) + rise * RISE.bottom + tagged.height;
   const names = named + typeRow.height + extraMemBottom;
-  const effectivePitch = flush && extraRows > 0 ? names + 22 : pitch;
+  const effectivePitch = flush && extraRows > 0 ? names + (level >= 0 ? 36 : 22) : pitch;
   const rowY = (name: string): number => (rowOf.get(name.split('.')[0]) ?? 0) * effectivePitch;
   const paneGap = extraMemBottom > 0 ? 18 : stacked && flush ? 36 : 56;
   const paneTop = room + names + extraRows * effectivePitch + paneGap;

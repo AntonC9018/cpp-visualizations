@@ -1202,4 +1202,87 @@ test('stacked bits view expands small memory, wraps long lines, and centers the 
   }
 });
 
+test('wrapped stacked punning splits cross-row access overlays and routes arrows around siblings', async () => {
+  const crossRowAccess = traceSource(
+    `
+      int a{ 1 };
+      int b{ 2 };
+      int c{ 3 };
+      int d{ 4 };
+      int64_t* p = reinterpret_cast<int64_t*>(&c);
+      *p = 300;
+    `,
+    { punning: true }
+  );
+  const siblingPtrs = traceSource(
+    `
+      int a{ 1 };
+      int b{ 2 };
+      int* p1 = &a;
+      int* p2 = &a;
+    `,
+    { punning: true }
+  );
+  const errors: string[] = [];
+  const onError = (error: Error) => errors.push(error.message);
+  page.on('pageerror', onError);
+  try {
+    await page.setViewportSize({ width: 496, height: 900 });
+
+    // 1. Cross-row access `[68, 76)` wraps across row 0 `[64, 72)` and row 1 `[72, 80)`.
+    await page.setContent(PAGE.replace(trace, JSON.stringify(crossRowAccess).replace(/</g, '\\u003c')));
+    await page.evaluate(() => window.CourseVisualization!.scan());
+    await page.waitForSelector('.cv-player');
+    const accessReport = await page.evaluate(() => {
+      const p = (document.querySelector('.course-visualization') as PlayerElement).cvPlayer;
+      p.end();
+      const g = p.g;
+      const reticle = p.svg.querySelector('.cv-pun-reticle[data-ptr="p"]')!;
+      const rects = [...reticle.querySelectorAll('rect')].map(r => ({
+        x: Number(r.getAttribute('x')),
+        y: Number(r.getAttribute('y')),
+        w: Number(r.getAttribute('width')),
+      }));
+      const row0Right = g.memX + (g.flushRows[0].endAddress - g.flushRows[0].startAddress) * g.byteWidth + 4;
+      return {
+        rowCount: g.flushRows.length,
+        rectCount: rects.length,
+        rowYs: rects.map(r => Math.round(r.y)),
+        maxRight: Math.max(...rects.map(r => r.x + r.w)),
+        row0Right,
+        ubBadges: p.svg.querySelectorAll('.cv-ub-badge').length,
+      };
+    });
+    assert.equal(accessReport.rowCount, 2);
+    assert.equal(accessReport.rectCount, 2, 'reticle splits into one segment per flush row');
+    assert.ok(accessReport.rowYs[1] > accessReport.rowYs[0] + 80, 'second reticle segment sits on row 1');
+    assert.ok(accessReport.maxRight <= accessReport.row0Right + 1, 'reticle stays inside row bounds');
+    assert.equal(accessReport.ubBadges, 1);
+
+    // 2. Second pointer on row 1 (`p2`, right of `p1`) exits upward instead of cutting across `p1`.
+    await page.setContent(PAGE.replace(trace, JSON.stringify(siblingPtrs).replace(/</g, '\\u003c')));
+    await page.evaluate(() => window.CourseVisualization!.scan());
+    await page.waitForSelector('.cv-player');
+    const arrowReport = await page.evaluate(() => {
+      const p = (document.querySelector('.course-visualization') as PlayerElement).cvPlayer;
+      p.end();
+      const g = p.g;
+      const p2 = g.leaves.find(l => l.name === 'p2')!;
+      const paths = [...p.svg.querySelectorAll('path[stroke-width="2.6"]')].map(el => el.getAttribute('d') ?? '');
+      const starts = paths.map(d => {
+        const m = /^M\s+([-\d.]+)\s+([-\d.]+)/.exec(d);
+        return m ? { x: Number(m[1]), y: Number(m[2]) } : null;
+      });
+      return { p2Top: p2.y, p2CenterX: p2.x + p2.w / 2, starts };
+    });
+    const p2Start = arrowReport.starts.find(
+      s => s && Math.abs(s.x - arrowReport.p2CenterX) < 1 && Math.abs(s.y - (arrowReport.p2Top - 2)) < 1
+    );
+    assert.ok(p2Start, `expected p2 arrow to exit from top center, got ${JSON.stringify(arrowReport.starts)}`);
+    assert.deepEqual(errors, []);
+  } finally {
+    page.off('pageerror', onError);
+  }
+});
+
 

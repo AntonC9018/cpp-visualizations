@@ -26,7 +26,7 @@ import {
   transientWriteHighlight,
 } from './byte_memory.ts';
 import { CHAR, EASE, LABEL, T } from './constants.ts';
-import { type PointerLink, links } from './geometry.ts';
+import { type Geometry, type PointerLink, links } from './geometry.ts';
 import { type PreparedModel, arrival, copies, departure, stepSeconds } from './model.ts';
 import { type SceneContext, code, dim, output, pane, tether, transfers } from './scene.ts';
 import { fade, hide, rect, round, show, text } from './svg.ts';
@@ -202,6 +202,55 @@ function punningStepSeconds(m: PreparedModel, index: number): number {
 // FULL-HEIGHT OPEN HUD CORNER RETICLE (APPROVED OPTION A)
 // ============================================================================================
 
+interface FlushSegment {
+  start: number;
+  size: number;
+  x: number;
+  y: number;
+  w: number;
+  isFirst: boolean;
+  isLast: boolean;
+}
+
+/** Split a contiguous byte range `[start, start + size)` across wrapped `g.flushRows`. */
+function flushAddressSegments(g: Geometry, start: number, size: number): FlushSegment[] {
+  if (size <= 0) return [];
+  const end = start + size;
+  const rows = g.flushRows;
+  if (rows.length <= 1) {
+    const pos = flushAddrPos(g, start);
+    return [{ start, size, x: pos.x, y: pos.y, w: size * g.byteWidth, isFirst: true, isLast: true }];
+  }
+  const raw: Array<{ start: number; size: number; x: number; y: number; w: number }> = [];
+  let cur = start;
+  for (const row of rows) {
+    if (cur >= end) break;
+    if (row.endAddress <= cur) continue;
+    if (row.startAddress >= end) break;
+    const segStart = Math.max(cur, row.startAddress);
+    const segEnd = Math.min(end, row.endAddress);
+    if (segEnd > segStart) {
+      raw.push({
+        start: segStart,
+        size: segEnd - segStart,
+        x: g.memX + (segStart - row.startAddress) * g.byteWidth,
+        y: row.y,
+        w: (segEnd - segStart) * g.byteWidth,
+      });
+    }
+    cur = segEnd;
+  }
+  if (cur < end) {
+    const pos = flushAddrPos(g, cur);
+    raw.push({ start: cur, size: end - cur, x: pos.x, y: pos.y, w: (end - cur) * g.byteWidth });
+  }
+  return raw.map((seg, i) => ({
+    ...seg,
+    isFirst: i === 0,
+    isLast: i === raw.length - 1,
+  }));
+}
+
 function drawHudReticle(
   bx: number,
   by: number,
@@ -209,7 +258,9 @@ function drawHudReticle(
   bh: number,
   leftCol: string,
   rightCol: string,
-  splitX: number | null
+  splitX: number | null,
+  openLeft = false,
+  openRight = false
 ): string {
   const arm = Math.min(14, bw * 0.28);
   const tick = 5;
@@ -228,15 +279,21 @@ function drawHudReticle(
   } else {
     out += `<rect x="${round(bx)}" y="${round(by)}" width="${round(bw)}" height="${round(bh)}" fill="none" stroke="${leftCol}" stroke-opacity="0.32" stroke-dasharray="3 3" stroke-width="1.3"/>`;
   }
+  if (!openLeft) {
+    out +=
+      `<path d="M ${round(bx)} ${round(by + arm)} V ${round(by)} H ${round(bx + arm)}" fill="none" stroke="${leftCol}" stroke-width="3.2" stroke-linecap="square"/>` +
+      `<path d="M ${round(bx)} ${round(ry - arm)} V ${round(ry)} H ${round(bx + arm)}" fill="none" stroke="${leftCol}" stroke-width="3.2" stroke-linecap="square"/>` +
+      `<line x1="${round(bx)}" y1="${round(my)}" x2="${round(bx + tick)}" y2="${round(my)}" stroke="${leftCol}" stroke-width="2.2"/>`;
+  }
+  if (!openRight) {
+    out +=
+      `<path d="M ${round(rx - arm)} ${round(by)} H ${round(rx)} V ${round(by + arm)}" fill="none" stroke="${rightTopCol}" stroke-width="3.2" stroke-linecap="square"/>` +
+      `<path d="M ${round(rx - arm)} ${round(ry)} H ${round(rx)} V ${round(ry - arm)}" fill="none" stroke="${rightTopCol}" stroke-width="3.2" stroke-linecap="square"/>` +
+      `<line x1="${round(rx)}" y1="${round(my)}" x2="${round(rx - tick)}" y2="${round(my)}" stroke="${rightTopCol}" stroke-width="2.2"/>`;
+  }
   out +=
-    `<path d="M ${round(bx)} ${round(by + arm)} V ${round(by)} H ${round(bx + arm)}" fill="none" stroke="${leftCol}" stroke-width="3.2" stroke-linecap="square"/>` +
-    `<path d="M ${round(bx)} ${round(ry - arm)} V ${round(ry)} H ${round(bx + arm)}" fill="none" stroke="${leftCol}" stroke-width="3.2" stroke-linecap="square"/>` +
-    `<path d="M ${round(rx - arm)} ${round(by)} H ${round(rx)} V ${round(by + arm)}" fill="none" stroke="${rightTopCol}" stroke-width="3.2" stroke-linecap="square"/>` +
-    `<path d="M ${round(rx - arm)} ${round(ry)} H ${round(rx)} V ${round(ry - arm)}" fill="none" stroke="${rightTopCol}" stroke-width="3.2" stroke-linecap="square"/>` +
     `<line x1="${round(mx)}" y1="${round(by)}" x2="${round(mx)}" y2="${round(by + tick)}" stroke="${topTickCol}" stroke-width="2.2"/>` +
-    `<line x1="${round(mx)}" y1="${round(ry)}" x2="${round(mx)}" y2="${round(ry - tick)}" stroke="${topTickCol}" stroke-width="2.2"/>` +
-    `<line x1="${round(bx)}" y1="${round(my)}" x2="${round(bx + tick)}" y2="${round(my)}" stroke="${leftCol}" stroke-width="2.2"/>` +
-    `<line x1="${round(rx)}" y1="${round(my)}" x2="${round(rx - tick)}" y2="${round(my)}" stroke="${rightTopCol}" stroke-width="2.2"/>`;
+    `<line x1="${round(mx)}" y1="${round(ry)}" x2="${round(mx)}" y2="${round(ry - tick)}" stroke="${topTickCol}" stroke-width="2.2"/>`;
   return out;
 }
 
@@ -244,27 +301,15 @@ function punReticle(
   c: SceneContext,
   sim: PunningSimState,
   ptr: ActivePunPointer,
-  posOf: (addr: number) => { x: number; y: number },
   byteW: number,
   cellH: number,
   pCol: string
 ): string {
-  const { P, animate, op } = c;
+  const { g, P, animate, op } = c;
   const at = op ? arrival(op) : 0;
   const dep = op ? departure(op) : 0;
-  const startPos = posOf(ptr.targetAddress);
-  const wLeft = startPos.x;
-  const rowY = startPos.y;
-  const wWidth = ptr.pointeeSize * byteW;
-  const ownEnd = wLeft + ptr.targetSize * byteW;
-
   const pad = 3.5;
-  const bx = wLeft - pad;
-  const by = rowY - pad;
-  const bw = wWidth + 2 * pad;
-  const bh = cellH + 2 * pad;
-  const cx = bx + bw / 2;
-  const cy = by + bh / 2;
+  const ownEndAddr = ptr.targetAddress + ptr.targetSize;
 
   const isWritingPtr = animate && op?.kind === 'write' && op.name === ptr.ptrName;
   const isDeref = animate && op?.kind === 'deref' && op.via === ptr.ptrName;
@@ -275,33 +320,56 @@ function punReticle(
       ? P.read
       : P.write;
 
-  let inner = '';
-  if (ptr.direction === 'larger' && ptr.ubKind !== 'none') {
-    const calm = drawHudReticle(bx, by, bw, bh, pCol, pCol, null);
-    const breached = drawHudReticle(bx, by, bw, bh, opCol, P.error, ownEnd);
-    const triggerAt = isPunRead ? dep : at;
-    inner =
-      animate && ptr.ubTriggeredNow && (isPunWrite || isPunRead)
-        ? `<g>${hide(triggerAt)}${calm}</g><g opacity="0">${show(triggerAt)}${breached}</g>`
-        : breached;
-  } else {
-    const col = ptr.windowActive ? opCol : pCol;
-    inner = drawHudReticle(bx, by, bw, bh, col, col, null);
-  }
+  const segs = flushAddressSegments(g, ptr.targetAddress, ptr.pointeeSize);
+  let out = '';
+  for (const seg of segs) {
+    const bx = seg.x - pad;
+    const by = seg.y - pad;
+    const bw = seg.w + 2 * pad;
+    const bh = cellH + 2 * pad;
+    const cx = bx + bw / 2;
+    const cy = by + bh / 2;
+    const openLeft = !seg.isFirst;
+    const openRight = !seg.isLast;
+    const segEnd = seg.start + seg.size;
 
-  let wrapped = inner;
-  if (isWritingPtr) {
-    const lockBegin = at + 0.52;
-    wrapped =
-      `<g opacity="0">${fade(0, 1, 0.14, lockBegin)}` +
-      `<g transform="translate(${round(cx)} ${round(cy)})"><g>` +
-      `<animateTransform attributeName="transform" type="scale" values="1.28;0.96;1" keyTimes="0;0.74;1" ` +
-      `calcMode="spline" keySplines="0.2 0 0.2 1;0.4 0 0.2 1" begin="${round(lockBegin)}s" dur="0.46s" fill="freeze"/>` +
-      `<g transform="translate(${round(-cx)} ${round(-cy)})">${inner}</g></g></g></g>`;
-  } else if (isDeref) {
-    wrapped = scaledAt(cx, cy, inner, at - 0.18);
+    let inner = '';
+    if (ptr.direction === 'larger' && ptr.ubKind !== 'none') {
+      const calm = drawHudReticle(bx, by, bw, bh, pCol, pCol, null, openLeft, openRight);
+      let breached: string;
+      if (seg.start >= ownEndAddr) {
+        breached = drawHudReticle(bx, by, bw, bh, P.error, P.error, null, openLeft, openRight);
+      } else if (segEnd <= ownEndAddr) {
+        breached = drawHudReticle(bx, by, bw, bh, opCol, opCol, null, openLeft, openRight);
+      } else {
+        const splitX = seg.x + (ownEndAddr - seg.start) * byteW;
+        breached = drawHudReticle(bx, by, bw, bh, opCol, P.error, splitX, openLeft, openRight);
+      }
+      const triggerAt = isPunRead ? dep : at;
+      inner =
+        animate && ptr.ubTriggeredNow && (isPunWrite || isPunRead)
+          ? `<g>${hide(triggerAt)}${calm}</g><g opacity="0">${show(triggerAt)}${breached}</g>`
+          : breached;
+    } else {
+      const col = ptr.windowActive ? opCol : pCol;
+      inner = drawHudReticle(bx, by, bw, bh, col, col, null, openLeft, openRight);
+    }
+
+    let wrapped = inner;
+    if (isWritingPtr) {
+      const lockBegin = at + 0.52;
+      wrapped =
+        `<g opacity="0">${fade(0, 1, 0.14, lockBegin)}` +
+        `<g transform="translate(${round(cx)} ${round(cy)})"><g>` +
+        `<animateTransform attributeName="transform" type="scale" values="1.28;0.96;1" keyTimes="0;0.74;1" ` +
+        `calcMode="spline" keySplines="0.2 0 0.2 1;0.4 0 0.2 1" begin="${round(lockBegin)}s" dur="0.46s" fill="freeze"/>` +
+        `<g transform="translate(${round(-cx)} ${round(-cy)})">${inner}</g></g></g></g>`;
+    } else if (isDeref) {
+      wrapped = scaledAt(cx, cy, inner, at - 0.18);
+    }
+    out += wrapped;
   }
-  return `<g class="cv-pun-reticle" data-ptr="${ptr.ptrName}">${wrapped}</g>`;
+  return `<g class="cv-pun-reticle" data-ptr="${ptr.ptrName}">${out}</g>`;
 }
 
 // ============================================================================================
@@ -332,19 +400,43 @@ function punningArrows(
         hy: ey,
       };
     }
-    // Cross-row pointer: exit the left edge of the pointer cell, travel cleanly up the left
-    // margin outside the memory cells, and arch into the target byte from above.
-    const sx = l.from.x;
-    const sy = l.from.y + l.from.h * 0.5;
-    const gx = g.memX - 28 - l.level * 10;
-    const topY = toPos.y - 54 - l.level * 22;
+    // Cross-row pointer: route via the left margin outside memory cells, and clear any
+    // source-row sibling cells by exiting upward into the inter-row lane first.
+    const gx = Math.max(10, g.memX - 28 - l.level * 10);
+    const targetTopRow = Math.abs(toPos.y - g.memY) < 1;
+    const topY = targetTopRow ? toPos.y - 54 - l.level * 22 : toPos.y - 38 - l.level * 8;
+    const hasLeftSibling = l.from.x > g.memX + 1;
+    if (!hasLeftSibling && l.from.y > toPos.y) {
+      const sx = l.from.x;
+      const sy = l.from.y + l.from.h * 0.5;
+      return {
+        d:
+          `M ${round(sx)} ${round(sy)} ` +
+          `Q ${round(gx)} ${round(sy)}, ${round(gx)} ${round(sy - 20)} ` +
+          `L ${round(gx)} ${round(topY + 20)} ` +
+          `Q ${round(gx)} ${round(topY)}, ${round(gx + 20)} ${round(topY)} ` +
+          `L ${round(ex - 16)} ${round(topY)} ` +
+          `Q ${round(ex)} ${round(topY)}, ${round(ex)} ${round(ey - 8)}`,
+        hx: ex,
+        hy: ey,
+      };
+    }
+    const sx = l.from.x + l.from.w / 2;
+    const sy = l.from.y - 2;
+    const laneY = l.from.y - 30 - l.level * 8;
+    const dir = topY < laneY ? -1 : 1;
+    const r = Math.min(12, Math.abs(topY - laneY) / 2, Math.max(4, (sx - gx) / 2));
+    const er = Math.min(14, Math.max(4, (ex - gx) / 2));
     return {
       d:
         `M ${round(sx)} ${round(sy)} ` +
-        `Q ${round(gx)} ${round(sy)}, ${round(gx)} ${round(sy - 20)} ` +
-        `L ${round(gx)} ${round(topY + 20)} ` +
-        `Q ${round(gx)} ${round(topY)}, ${round(gx + 20)} ${round(topY)} ` +
-        `L ${round(ex - 16)} ${round(topY)} ` +
+        `L ${round(sx)} ${round(laneY + 8)} ` +
+        `Q ${round(sx)} ${round(laneY)}, ${round(sx - 8)} ${round(laneY)} ` +
+        `L ${round(gx + r)} ${round(laneY)} ` +
+        `Q ${round(gx)} ${round(laneY)}, ${round(gx)} ${round(laneY + dir * r)} ` +
+        `L ${round(gx)} ${round(topY - dir * r)} ` +
+        `Q ${round(gx)} ${round(topY)}, ${round(gx + r)} ${round(topY)} ` +
+        `L ${round(ex - er)} ${round(topY)} ` +
         `Q ${round(ex)} ${round(topY)}, ${round(ex)} ${round(ey - 8)}`,
       hx: ex,
       hy: ey,
@@ -555,32 +647,30 @@ function punningScene(c: SceneContext): string {
   let accessFlash = '';
   if (animate && sim.activePun && (isPunWrite || isPunRead)) {
     const { targetAddress, targetSize, pun, direction } = sim.activePun;
-    const startPos = posOf(targetAddress);
-    const wLeft = startPos.x;
-    const rowY = startPos.y;
-    const wWidth = pun.size * byteW;
-    const ownW = targetSize * byteW;
-    const spillW = wWidth - ownW;
-    if (isPunWrite) {
-      if (direction === 'larger') {
-        accessFlash += transientWriteHighlight(wLeft, rowY, ownW, cellH, P.write, at);
-        if (spillW > 0) accessFlash += transientWriteHighlight(wLeft + ownW, rowY, spillW, cellH, P.error, at + 0.08);
-      } else {
-        accessFlash += transientWriteHighlight(wLeft, rowY, wWidth, cellH, P.write, at);
+    const highlight = isPunWrite ? transientWriteHighlight : transientReadHighlight;
+    const okCol = isPunWrite ? P.write : P.read;
+    if (direction === 'larger') {
+      const ownBytes = Math.min(targetSize, pun.size);
+      for (const seg of flushAddressSegments(g, targetAddress, ownBytes)) {
+        accessFlash += highlight(seg.x, seg.y, seg.w, cellH, okCol, at);
       }
-    } else if (isPunRead) {
-      if (direction === 'larger') {
-        accessFlash += transientReadHighlight(wLeft, rowY, ownW, cellH, P.read, at);
-        if (spillW > 0) accessFlash += transientReadHighlight(wLeft + ownW, rowY, spillW, cellH, P.error, at);
-      } else {
-        accessFlash += transientReadHighlight(wLeft, rowY, wWidth, cellH, P.read, at);
+      const spillBytes = pun.size - ownBytes;
+      if (spillBytes > 0) {
+        for (const seg of flushAddressSegments(g, targetAddress + ownBytes, spillBytes)) {
+          accessFlash += highlight(seg.x, seg.y, seg.w, cellH, P.error, isPunWrite ? at + 0.08 : at);
+        }
+      }
+    } else {
+      for (const seg of flushAddressSegments(g, targetAddress, pun.size)) {
+        accessFlash += highlight(seg.x, seg.y, seg.w, cellH, okCol, at);
       }
     }
   } else if (animate && sim.activePoisonRead) {
     const { address, size, bytes } = sim.activePoisonRead;
     if (bytes.every(b => b === '?')) {
-      const p = posOf(address);
-      accessFlash += transientReadHighlight(p.x, p.y, size * byteW, cellH, P.error, at);
+      for (const seg of flushAddressSegments(g, address, size)) {
+        accessFlash += transientReadHighlight(seg.x, seg.y, seg.w, cellH, P.error, at);
+      }
     } else {
       for (let k = 0; k < size; k++) {
         const col = bytes[k] === '?' ? P.error : P.read;
@@ -598,7 +688,7 @@ function punningScene(c: SceneContext): string {
   for (const ptr of sim.punPointers) {
     const ptrLeaf = g.leaves.find(l => l.name === ptr.ptrName);
     if (!ptrLeaf) continue;
-    scopeReticles += punReticle(c, sim, ptr, posOf, byteW, cellH, ptrLeaf.color);
+    scopeReticles += punReticle(c, sim, ptr, byteW, cellH, ptrLeaf.color);
   }
 
   // 5. UB bracket & `⚠ UB` badge below memory — on larger-pointer access or uninitialized read
@@ -614,19 +704,39 @@ function punningScene(c: SceneContext): string {
   for (const ptr of sim.punPointers) {
     if (ptr.direction !== 'larger' || ptr.ubKind === 'none') continue;
     punUbCovered.add(ptr.targetName);
-    const startPos = posOf(ptr.targetAddress);
-    const wLeft = startPos.x;
-    const wRight = wLeft + ptr.pointeeSize * byteW;
-    const ownEnd = wLeft + ptr.targetSize * byteW;
-    const brY = rowTypeBottom(startPos.y) + 16;
-    const tickTop = brY - 10;
+    const ownEndAddr = ptr.targetAddress + ptr.targetSize;
     const ownCol = ptr.ubKind === 'read' ? P.read : P.write;
-    const cal =
-      `<g class="cv-ub-badge" data-ptr="${ptr.ptrName}">` +
-      `<path d="M ${round(wLeft + 2)} ${tickTop} V ${brY} H ${round(ownEnd)}" fill="none" stroke="${ownCol}" stroke-width="2.2"/>` +
-      `<path d="M ${round(ownEnd)} ${brY} H ${round(wRight - 2)} V ${tickTop}" fill="none" stroke="${P.error}" stroke-width="2.8"/>` +
-      pill((ownEnd + wRight) / 2, brY + 18, '⚠ UB', 13.5, P.error, P.error, P.bg) +
-      '</g>';
+    const segs = flushAddressSegments(g, ptr.targetAddress, ptr.pointeeSize);
+    let badgePlaced = false;
+    let calInner = '';
+    for (const seg of segs) {
+      const segLeft = seg.x;
+      const segRight = seg.x + seg.w;
+      const segEnd = seg.start + seg.size;
+      const brY = rowTypeBottom(seg.y) + 16;
+      const tickTop = brY - 10;
+      const leftTick = seg.isFirst ? `M ${round(segLeft + 2)} ${tickTop} V ${brY}` : `M ${round(segLeft)} ${brY}`;
+      const rightTick = seg.isLast ? `H ${round(segRight - 2)} V ${tickTop}` : `H ${round(segRight)}`;
+      if (segEnd <= ownEndAddr) {
+        calInner += `<path d="${leftTick} ${rightTick}" fill="none" stroke="${ownCol}" stroke-width="2.2"/>`;
+      } else if (seg.start >= ownEndAddr) {
+        calInner += `<path d="${leftTick} ${rightTick}" fill="none" stroke="${P.error}" stroke-width="2.8"/>`;
+        if (!badgePlaced) {
+          calInner += pill((segLeft + segRight) / 2, brY + 18, '⚠ UB', 13.5, P.error, P.error, P.bg);
+          badgePlaced = true;
+        }
+      } else {
+        const ownEndX = seg.x + (ownEndAddr - seg.start) * byteW;
+        calInner +=
+          `<path d="${leftTick} H ${round(ownEndX)}" fill="none" stroke="${ownCol}" stroke-width="2.2"/>` +
+          `<path d="M ${round(ownEndX)} ${brY} ${rightTick}" fill="none" stroke="${P.error}" stroke-width="2.8"/>`;
+        if (!badgePlaced) {
+          calInner += pill((ownEndX + segRight) / 2, brY + 18, '⚠ UB', 13.5, P.error, P.error, P.bg);
+          badgePlaced = true;
+        }
+      }
+    }
+    const cal = `<g class="cv-ub-badge" data-ptr="${ptr.ptrName}">${calInner}</g>`;
     const triggersNow =
       animate &&
       ptr.ubTriggeredNow &&
