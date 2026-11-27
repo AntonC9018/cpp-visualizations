@@ -11,6 +11,7 @@ import {
   toBytesMSB,
 } from '../src/core/bytes.ts';
 import type { ExecutionTrace } from '../src/core/trace_format.ts';
+import { BYTE_CELL_HEIGHT, BYTE_CELL_MAX_HEIGHT, byteCellMetrics } from '../src/player/byte_memory.ts';
 import type { Palette } from '../src/player/constants.ts';
 import { geometry } from '../src/player/geometry.ts';
 import { prepare } from '../src/player/model.ts';
@@ -190,5 +191,59 @@ describe('flush geometry', () => {
     assert.equal(g.flush, true);
     assert.ok(g.leaves.every(l => l.y === g.memY));
     assert.ok(g.leaves.every(l => Math.abs(l.x - (g.memX + (l.address - 64) * g.byteWidth)) < 0.01));
+  });
+
+  test('expands small flush traces to wider and taller byte cells and wraps wide stacked strips', () => {
+    const tinyTrace: ExecutionTrace = {
+      format: 1,
+      bits: true,
+      source: ['int8_t a{ -1 };', 'uint8_t b = static_cast<uint8_t>(a);'],
+      variables: [
+        { name: 'b', type: 'uint8_t', address: 66, size: 1, kind: 'int', color: 1 },
+        { name: 'a', type: 'int8_t', address: 67, size: 1, kind: 'int', color: 0 },
+      ],
+      steps: [
+        { line: 0, pane: 'int8_t a = -1', values: { a: -1, b: null }, targets: {}, stdout: '', hold: 1, op: null },
+      ],
+    };
+    const tiny = geometry(prepare(tinyTrace), STUB_PALETTE, true, 496, {
+      flush: true,
+      minByteWidth: 66,
+      cellHeight: BYTE_CELL_HEIGHT,
+      maxCellHeight: BYTE_CELL_MAX_HEIGHT,
+    });
+    assert.equal(tiny.byteWidth, 170);
+    assert.equal(tiny.leaves[0].h, BYTE_CELL_MAX_HEIGHT);
+
+    const baseMetrics = byteCellMetrics(BYTE_CELL_HEIGHT, 66);
+    assert.equal(baseMetrics.splitOffset, 48);
+    assert.equal(baseMetrics.hexY, 74);
+    assert.equal(baseMetrics.hexSize, 17);
+    const maxMetrics = byteCellMetrics(BYTE_CELL_MAX_HEIGHT, 170);
+    assert.equal(maxMetrics.splitOffset, 58);
+    assert.equal(maxMetrics.hexY, 92);
+    assert.equal(maxMetrics.hexSize, 22);
+
+    const wideTrace: ExecutionTrace = {
+      format: 1,
+      source: ['int a{ 1 };', 'int b{ 2 };', 'int c{ 3 };', 'int d{ 4 };'],
+      variables: [
+        { name: 'a', address: 64, size: 4, kind: 'int', color: 0 },
+        { name: 'b', address: 68, size: 4, kind: 'int', color: 1 },
+        { name: 'c', address: 72, size: 4, kind: 'int', color: 2 },
+        { name: 'd', address: 76, size: 4, kind: 'int', color: 3 },
+      ],
+      steps: [
+        { line: 0, pane: 'int a = 1', values: { a: 1, b: 2, c: 3, d: 4 }, targets: {}, stdout: '', hold: 1, op: null },
+      ],
+    };
+    const wide = geometry(prepare(wideTrace), STUB_PALETTE, true, 496, {
+      flush: true,
+      minByteWidth: 46,
+      cellHeight: BYTE_CELL_HEIGHT,
+      maxCellHeight: BYTE_CELL_MAX_HEIGHT,
+    });
+    assert.equal(wide.flushRows.length, 2);
+    assert.equal(wide.leaves[0].h, BYTE_CELL_HEIGHT);
   });
 });

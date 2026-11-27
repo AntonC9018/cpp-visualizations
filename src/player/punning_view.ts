@@ -13,8 +13,10 @@ import {
 import type { Span, TraceStep, TypedPart } from '../core/trace_format.ts';
 import {
   BYTE_CELL_HEIGHT,
+  BYTE_CELL_MAX_HEIGHT,
   type ByteCellState,
   type ByteVariableState,
+  byteCellMetrics,
   colorPoisonHexInSvg,
   flushAddrPos,
   hatchDefs,
@@ -425,6 +427,7 @@ function punningScene(c: SceneContext): string {
 
   const byteW = g.byteWidth;
   const cellH = g.leaves[0]?.h ?? BYTE_CELL_HEIGHT;
+  const byteRowOffset = byteCellMetrics(cellH, byteW).hexCenterY + 2;
   const posOf = (addr: number) => flushAddrPos(g, addr);
   const at = op ? arrival(op) : 0;
   const dep = op ? departure(op) : 0;
@@ -738,7 +741,7 @@ function punningScene(c: SceneContext): string {
       if (animate && stripSource.mode === 'read') {
         const sp = posOf(addr);
         const sx = sp.x + byteW / 2;
-        const sy = sp.y + 70;
+        const sy = sp.y + byteRowOffset;
         const ex = tx + tileW / 2;
         const ey = stripY + tileH / 2;
         const midY = (sy + ey) / 2;
@@ -760,7 +763,7 @@ function punningScene(c: SceneContext): string {
           const sx = tx + tileW / 2;
           const sy = stripY;
           const ex = ep.x + byteW / 2;
-          const ey = ep.y + 70;
+          const ey = ep.y + byteRowOffset;
           const midY = (sy + ey) / 2;
           const path = `M ${round(sx)} ${round(sy)} C ${round(sx)} ${round(midY)}, ${round(ex)} ${round(midY)}, ${round(ex)} ${round(ey)}`;
           const dur = 0.85;
@@ -778,7 +781,7 @@ function punningScene(c: SceneContext): string {
           const sx = tx + tileW / 2;
           const sy = stripY;
           const ex = ep.x + byteW / 2;
-          const ey = ep.y + 70;
+          const ey = ep.y + byteRowOffset;
           const midY = (sy + ey) / 2;
           const path = `M ${round(sx)} ${round(sy)} C ${round(sx)} ${round(midY)}, ${round(ex)} ${round(midY)}, ${round(ex)} ${round(ey)}`;
           const dur = 0.85;
@@ -837,6 +840,7 @@ export const PUNNING_VIEW: TraceView = {
       minByteWidth: 46,
       minColumnWidth: 540,
       cellHeight: BYTE_CELL_HEIGHT,
+      maxCellHeight: BYTE_CELL_MAX_HEIGHT,
       extraMemBottom: hasLargerPointerAccess(m.trace) || hasUninitializedRead(m.trace) ? 58 : 12,
       extraPaneHeight: 46,
       flush: true,

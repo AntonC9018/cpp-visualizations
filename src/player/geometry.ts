@@ -95,6 +95,8 @@ export interface GeometryOptions {
   /** Width of the code's neighbouring column at least. */
   minColumnWidth?: number;
   cellHeight?: number;
+  /** Maximum cell height when flush bytes expand onto wide cells. */
+  maxCellHeight?: number;
   /** Room under the pane's text, for the view's own drawing. */
   extraPaneHeight?: number;
   /** Extra room under memory's names and type labels before the pane (e.g. UB bracket). */
@@ -518,6 +520,8 @@ function labelSize<T extends PlacedRect>(
 
 const COLUMN_GAP = 56;
 const STACK_TETHER_WIDTH = 30;
+const FLUSH_BASE_BYTE = 84;
+const FLUSH_MAX_BYTE = 170;
 
 export function geometry(
   m: PreparedModel,
@@ -526,7 +530,7 @@ export function geometry(
   viewport: number,
   options: GeometryOptions = {}
 ): Geometry {
-  const cellH = options.cellHeight ?? CELL;
+  const baseCellH = options.cellHeight ?? CELL;
   const extraPaneHeight = options.extraPaneHeight ?? 0;
   const extraMemBottom = options.extraMemBottom ?? 0;
   const flush = Boolean(options.flush);
@@ -539,7 +543,7 @@ export function geometry(
   const isStruct = (c: { fields?: unknown }): c is PlacedGroup => Boolean(c.fields);
   const unwrapped = codeLayout(m.source);
   // Preserve the natural line when it fits near the target size in CSS pixels.
-  const targetCodeSize = stacked ? 12 : 13;
+  const targetCodeSize = stacked ? 15 : 13;
   const canvasBudget = viewport > 0 ? viewport * CODE_SIZE / targetCodeSize : Infinity;
   const codeByColumns = new Map<number, ReturnType<typeof codeLayout>>();
   const fitCode = (budget: number) => {
@@ -558,7 +562,7 @@ export function geometry(
     stacked || !Number.isFinite(canvasBudget) ? 0 : canvasBudget - unwrapped.width - COLUMN_GAP - 2 * MARGIN;
 
   const widest = flush
-    ? Math.max(minByteWidth, 84)
+    ? Math.max(minByteWidth, FLUSH_MAX_BYTE)
     : Math.max(minByteWidth, m.leaves.some(leaf => leaf.size < 4) ? NARROW_BYTE : MAX_BYTE);
   const rise = m.rise;
   const structs = m.groups.length > 0;
@@ -579,7 +583,7 @@ export function geometry(
     m.references.length === 0 &&
     m.steps.every(step => Object.keys(step.targets).length === 0);
   const pitch =
-    (structs ? cellH + FRAME.bottom + 32 : cellH + 34) +
+    (structs ? baseCellH + FRAME.bottom + 32 : baseCellH + 34) +
     rise * RISE.bottom +
     (structs ? FRAME.top : 0) +
     30 +
@@ -710,6 +714,13 @@ export function geometry(
   let codeW = chosen.code.width;
   let columnW = chosen.columnW;
   if (stacked) codeW = columnW = Math.max(codeW, columnW);
+  const cellH =
+    flush && options.maxCellHeight && options.maxCellHeight > baseCellH
+      ? Math.min(
+          options.maxCellHeight,
+          Math.max(baseCellH, Math.round(baseCellH + (chosen.byte - FLUSH_BASE_BYTE) * 0.25))
+        )
+      : baseCellH;
 
   const atLeaf = (memX: number, memY: number, c: ModelLeaf, rowPitch: number): PlacedLeaf => {
     const span = placed.spans.get(c.name)!;
@@ -770,10 +781,10 @@ export function geometry(
   const names = named + typeRow.height + extraMemBottom;
   const effectivePitch = flush && extraRows > 0 ? names + 22 : pitch;
   const rowY = (name: string): number => (rowOf.get(name.split('.')[0]) ?? 0) * effectivePitch;
-  const paneGap = extraMemBottom > 0 ? 18 : 56;
+  const paneGap = extraMemBottom > 0 ? 18 : stacked && flush ? 36 : 56;
   const paneTop = room + names + extraRows * effectivePitch + paneGap;
   const paneH = 76 + labelRise + extraPaneHeight;
-  const outputTop = paneTop + paneH + 60;
+  const outputTop = paneTop + paneH + (stacked && flush ? 46 : 60);
   const columnH = outputLines.length
     ? outputTop + (outputLines.length - 1) * 36 + 14
     : paneTop + paneH;

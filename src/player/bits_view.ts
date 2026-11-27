@@ -10,6 +10,7 @@ import { type ExecutionTrace, convertOperand } from '../core/trace_format.ts';
 import { type Integer, integerLiteral, integerSpelled } from '../core/integers.ts';
 import {
   BYTE_CELL_HEIGHT,
+  BYTE_CELL_MAX_HEIGHT,
   type ByteCellState,
   type ByteVariableState,
   hatchDefs,
@@ -188,27 +189,30 @@ function memory(c: SceneContext, padId: string): string {
 // PANE: the workbench, bits above hex, most significant bit left
 // ============================================================================================
 
-const BIT_FONT = 22;
+const BIT_FONT = 24;
 const HEX_FONT = 21;
-const RESULT_FONT = 24;
+const RESULT_FONT = 25;
 const BIT_STEP = BIT_FONT * CHAR;
 const NIBBLE_W = 4 * BIT_STEP;
-const NIB_GAP = 8;
+const NIB_GAP = 7;
 const BYTE_W = 2 * NIBBLE_W + NIB_GAP;
-const BYTE_GAP = 26;
-const CARD_PAD = 12;
+const BYTE_GAP = 14;
+const CARD_PAD_X = 16;
+const CARD_PAD_Y = 12;
 
 /** Each farther sign-bit arc peaks this much higher than the one before. */
 const ARC_RISE = 9;
-/** Arcs that fit between the expression and the card without moving it. */
-const ROOMY_ARCS = 3;
+/** Card offset below `g.ty` when there are no sign-extension arcs. */
+const BASE_CARD_OFFSET = 24;
+/** Card offset below `g.ty` for a single sign-extension arc (keeps flying circle below type underline). */
+const ARC_CARD_OFFSET = 35;
 
-/** What the workbench must hold for a trace: its widest integer, longest result, most arcs. */
+/** What the workbench must hold for a trace: its widest integer, longest result, card drop for arcs. */
 interface WorkbenchExtent {
   bytes: number;
   labelChars: number;
-  /** How far the card moves down so the tallest arc stays under the expression. */
-  drop: number;
+  /** Vertical offset from `g.ty` to the top of the workbench card. */
+  cardOffset: number;
 }
 
 const extents = new WeakMap<PreparedModel, WorkbenchExtent>();
@@ -224,16 +228,25 @@ function workbenchExtent(m: PreparedModel): WorkbenchExtent {
     for (const part of step.types ?? []) sizes.push(integerOf(m, part.type).size);
     const { op } = step;
     if (op?.kind === 'convert') sizes.push(integerOf(m, op.from).size, integerOf(m, op.to).size);
-    if (op && 'value' in op) labelChars = Math.max(labelChars, op.value.length + 2);
+    if (op && 'value' in op) {
+      labelChars = Math.max(labelChars, op.value.length + 2);
+    } else if (op === null) {
+      const literals = (step.types ?? []).filter(t => !t.slot);
+      if (literals.length === 1) {
+        const value = integerLiteral(step.pane.slice(...literals[0].span));
+        if (value !== null) labelChars = Math.max(labelChars, String(value).length + 2);
+      }
+    }
   }
-  extent = { bytes: Math.max(1, ...sizes), labelChars, drop: Math.max(0, arcs - ROOMY_ARCS) * ARC_RISE };
+  const cardOffset = arcs > 0 ? ARC_CARD_OFFSET + (arcs - 1) * ARC_RISE : BASE_CARD_OFFSET;
+  extent = { bytes: Math.max(1, ...sizes), labelChars, cardOffset };
   extents.set(m, extent);
   return extent;
 }
 
 /** Width of `bytes` byte slots side by side. */
-const slotsWidth = (bytes: number): number => bytes * BYTE_W + (bytes - 1) * BYTE_GAP;
-const RESULT_GAP = 20;
+const slotsWidth = (bytes: number): number => bytes * BYTE_W + Math.max(0, bytes - 1) * BYTE_GAP;
+const RESULT_GAP = 16;
 const labelWidth = (label: string | number): number =>
   (typeof label === 'number' ? label : label.length) * RESULT_FONT * CHAR;
 
@@ -262,6 +275,7 @@ function drawByte(x: number, yBits: number, yHex: number, byte: number, ink: Byt
 }
 
 const BOX_TOP = BIT_FONT * 0.78 + 4;
+const CARD_HEIGHT = Math.ceil(CARD_PAD_Y + BOX_TOP + 34 + CARD_PAD_Y + 2);
 
 /** Frame around the sign bit of the byte drawn at `x`. */
 function signFrame(x: number, yBits: number, stroke: string, fill = 'none'): string {
@@ -278,28 +292,37 @@ function workbench(c: SceneContext): string {
   const act = activeBitAction(c);
   if (!act) return '';
   const { g, P, animate, op } = c;
-  // Bytes sit in fixed right-aligned slots; the card hugs the bytes and the result beside them.
-  // The space above the card is left for the sign-extension arcs.
-  const cardTop = g.ty + 56 + workbenchExtent(c.m).drop;
-  const yBits = cardTop + CARD_PAD + BOX_TOP;
+  // Center the workbench card inside the pane; space above it clears any sign-extension arcs.
+  const cardTop = g.ty + workbenchExtent(c.m).cardOffset;
+  const yBits = cardTop + CARD_PAD_Y + BOX_TOP;
   const yHex = yBits + 34;
-  const yRes = yBits + 16;
-  const cardBottom = yHex + CARD_PAD;
-  const rightAnchor = g.tx + 12 + slotsWidth(workbenchExtent(c.m).bytes);
+  const cardBottom = cardTop + CARD_HEIGHT;
+  const yRes = cardTop + CARD_HEIGHT / 2 + RESULT_FONT * 0.34;
+  const paneInnerW = g.pane.w - 48;
+
+  const byteCount =
+    act.kind === 'value' || act.kind === 'invert'
+      ? act.info.size
+      : Math.max(act.fromInfo.size, act.toInfo.size);
+  const label =
+    act.kind === 'value' ? `= ${act.value}` : `→ ${act.afterVal}`;
+  const slotsW = slotsWidth(byteCount);
+  const contentW = slotsW + RESULT_GAP + labelWidth(label);
+  const cardW = Math.min(paneInnerW, contentW + 2 * CARD_PAD_X);
+  const cardX = g.tx + (paneInnerW - cardW) / 2;
+  const startX = cardX + (cardW - contentW) / 2;
+  const rightAnchor = startX + slotsW;
   const slotX = (bytesFromLSB: number): number =>
     rightAnchor - (bytesFromLSB + 1) * BYTE_W - bytesFromLSB * BYTE_GAP;
-  const card = (bytes: number, resultLabel: string): string => {
-    const left = slotX(bytes - 1) - CARD_PAD - 4;
-    const right = rightAnchor + RESULT_GAP + labelWidth(resultLabel) + CARD_PAD + 4;
-    return rect(left, cardTop, right - left, cardBottom - cardTop, P.panel, P.gapStroke, 8, 1.5);
-  };
+  const card = (): string =>
+    rect(cardX, cardTop, cardW, CARD_HEIGHT, P.panel, P.gapStroke, 8, 1.5);
 
   const reveal = (at: number, markup: string): string =>
     animate && at > 0 ? `<g opacity="0">${fade(0, 1, 0.22, at)}${markup}</g>` : markup;
   const swap = (at: number, before: string, after: string): string =>
     animate ? `<g>${hide(at)}${before}</g><g opacity="0">${show(at)}${after}</g>` : after;
-  const result = (at: number, label: string, color: string): string =>
-    reveal(at, text(rightAnchor + RESULT_GAP, yRes, label, RESULT_FONT, color));
+  const result = (at: number, textLabel: string, color: string): string =>
+    reveal(at, text(rightAnchor + RESULT_GAP, yRes, textLabel, RESULT_FONT, color));
   /** Bytes of `value` (MSB first) laid out right-aligned. */
   const plainValue = (value: bigint, info: Integer, hexInk: string): string => {
     const bytes = toBytesMSB(value, info.size);
@@ -319,10 +342,9 @@ function workbench(c: SceneContext): string {
     } else if (animate && op?.kind === 'read') {
       appearAt = arrival(op);
     }
-    const label = `= ${act.value}`;
     return reveal(
       appearAt,
-      card(act.info.size, label) +
+      card() +
         plainValue(act.value, act.info, col) +
         text(rightAnchor + RESULT_GAP, yRes, label, RESULT_FONT, col)
     );
@@ -335,8 +357,7 @@ function workbench(c: SceneContext): string {
     after.forEach((b, idx) => {
       inverted += drawByte(slotX(after.length - 1 - idx), yBits, yHex, b, { bits: P.write, hex: P.write });
     });
-    const label = `→ ${act.afterVal}`;
-    return card(act.info.size, label) + swap(at, plainValue(act.beforeVal, act.info, P.fg), inverted) + result(at + 0.18, label, P.write);
+    return card() + swap(at, plainValue(act.beforeVal, act.info, P.fg), inverted) + result(at + 0.18, label, P.write);
   }
 
   const fromBytes = toBytesMSB(act.beforeVal, act.fromInfo.size);
@@ -344,8 +365,7 @@ function workbench(c: SceneContext): string {
   const fromCol = typeColour(c, act.fromType);
   const toCol = typeColour(c, act.toType);
   const at = op ? arrival(op) : T.evaluate;
-  const label = `→ ${act.afterVal}`;
-  let out = card(Math.max(fromBytes.length, toBytes.length), label);
+  let out = card();
 
   if (act.kind === 'narrow') {
     // The high bytes are struck out and dropped; what stays is reread as the new type.
@@ -360,7 +380,7 @@ function workbench(c: SceneContext): string {
       const dropped =
         `<g opacity="0.48">` +
         drawByte(bx, yBits, yHex, b, { bits: P.error, hex: P.error }) +
-        `<line x1="${round(bx + 4)}" y1="${round(yBits - 20)}" x2="${round(bx + BYTE_W - 4)}" y2="${round(yHex + 6)}" stroke="${P.error}" stroke-width="2"/>` +
+        `<line x1="${round(bx + 4)}" y1="${round(yBits - BIT_FONT * 0.85)}" x2="${round(bx + BYTE_W - 4)}" y2="${round(yHex + 4)}" stroke="${P.error}" stroke-width="2"/>` +
         '</g>';
       out += animate
         ? `<g>${hide(at)}${drawByte(bx, yBits, yHex, b, { bits: P.fg, hex: fromCol })}</g>` +
@@ -478,14 +498,15 @@ function bitsScene(c: SceneContext): string {
 
 export const BITS_VIEW: TraceView = {
   geometry(m) {
-    // The memory column also holds the workbench: its slots, the result and the card.
-    const { bytes, labelChars, drop } = workbenchExtent(m);
-    const workbench = 12 + slotsWidth(bytes) + RESULT_GAP + labelWidth(labelChars) + CARD_PAD + 28;
+    // The memory column also holds the centered workbench card and result.
+    const { bytes, labelChars, cardOffset } = workbenchExtent(m);
+    const cardW = slotsWidth(bytes) + RESULT_GAP + labelWidth(labelChars) + 2 * CARD_PAD_X;
     return {
       minByteWidth: 66,
-      minColumnWidth: Math.max(680, Math.ceil(workbench)),
+      minColumnWidth: Math.max(480, Math.ceil(48 + cardW)),
       cellHeight: BYTE_CELL_HEIGHT,
-      extraPaneHeight: 120 + drop,
+      maxCellHeight: BYTE_CELL_MAX_HEIGHT,
+      extraPaneHeight: cardOffset + CARD_HEIGHT + 16 - 33,
       flush: true,
     };
   },

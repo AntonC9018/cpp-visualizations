@@ -1106,4 +1106,100 @@ test('static layout renders array fields with element alignment and C-array synt
   assert.equal(await linkedBytes(), 8);
 });
 
+test('stacked bits view expands small memory, wraps long lines, and centers the workbench card', async () => {
+  const narrowBits = traceSource(
+    [
+      'int8_t peace{ -1 };',
+      'uint8_t rage = static_cast<uint8_t>(peace);',
+      'std::cout << static_cast<int>(rage) << std::endl;',
+    ].join('\n'),
+    { bits: true }
+  );
+  const signExtBits = traceSource(
+    ['int8_t temp{ -5 };', 'int16_t forecast = temp;', 'std::cout << forecast << std::endl;'].join('\n'),
+    { bits: true }
+  );
+  const errors: string[] = [];
+  const onError = (error: Error) => errors.push(error.message);
+  page.on('pageerror', onError);
+  try {
+    for (const width of [496, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      for (const [label, bitsTrace] of [
+        ['narrow', narrowBits],
+        ['sign-ext', signExtBits],
+      ] as const) {
+        await page.setContent(PAGE.replace(trace, JSON.stringify(bitsTrace).replace(/</g, '\\u003c')));
+        await page.evaluate(() => window.CourseVisualization!.scan());
+        await page.waitForSelector('.cv-player');
+        const report = await page.evaluate(() => {
+          const p = (document.querySelector('.course-visualization') as PlayerElement).cvPlayer;
+          const g = p.g;
+          const outOfPane: string[] = [];
+          let checkedSteps = 0;
+          for (let step = 0; step < p.m.steps.length; step++) {
+            p.settle(step);
+            if (/NaN|undefined/.test(p.svg.innerHTML)) throw new Error(`invalid SVG at step ${step}`);
+            const bytes = [...p.svg.querySelectorAll('.cv-bit-byte')];
+            if (bytes.length > 0) {
+              checkedSteps++;
+              const paneBox = p.svg.querySelector('.cv-pane rect')!.getBoundingClientRect();
+              for (const b of bytes) {
+                const box = b.getBoundingClientRect();
+                if (box.left < paneBox.left - 0.5 || box.right > paneBox.right + 0.5) {
+                  outOfPane.push(`step ${step}`);
+                }
+              }
+            }
+          }
+          // Verify workbench card is horizontally centered inside the pane on a 1-byte step.
+          const oneByteStep = p.m.steps.findIndex(s => {
+            p.settle(p.m.steps.indexOf(s));
+            return p.svg.querySelectorAll('.cv-bit-byte').length === 1;
+          });
+          let cardCenterDelta: number | null = null;
+          if (oneByteStep >= 0) {
+            p.settle(oneByteStep);
+            const paneRect = p.svg.querySelector('.cv-pane rect')!;
+            const cardRect = [...p.svg.querySelectorAll('rect')].find(
+              r => r.getAttribute('rx') === '8' && Number(r.getAttribute('y')) > g.ty
+            );
+            if (cardRect) {
+              const px = Number(paneRect.getAttribute('x'));
+              const pw = Number(paneRect.getAttribute('width'));
+              const cx = Number(cardRect.getAttribute('x'));
+              const cw = Number(cardRect.getAttribute('width'));
+              cardCenterDelta = Math.abs(cx + cw / 2 - (px + pw / 2));
+            }
+          }
+          return {
+            stacked: g.stacked,
+            byteWidth: g.byteWidth,
+            cellH: g.leaves[0].h,
+            lastLineRows: g.codeRows.at(-1)!.length,
+            outOfPane,
+            checkedSteps,
+            cardCenterDelta,
+          };
+        });
+        assert.equal(report.stacked, true, `${label}@${width}`);
+        assert.ok(report.byteWidth > 100, `${label}@${width}: byteWidth=${report.byteWidth}`);
+        assert.ok(report.cellH > 88, `${label}@${width}: cellH=${report.cellH}`);
+        assert.ok(report.checkedSteps > 0, `${label}@${width}: checked workbench steps`);
+        assert.deepEqual(report.outOfPane, [], `${label}@${width}: bytes stay inside pane`);
+        assert.ok(
+          report.cardCenterDelta !== null && report.cardCenterDelta < 1,
+          `${label}@${width}: card centered (delta=${report.cardCenterDelta})`
+        );
+        if (label === 'narrow') {
+          assert.ok(report.lastLineRows > 1, `long std::cout line wraps at width=${width}`);
+        }
+      }
+    }
+    assert.deepEqual(errors, []);
+  } finally {
+    page.off('pageerror', onError);
+  }
+});
+
 

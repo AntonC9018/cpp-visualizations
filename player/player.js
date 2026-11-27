@@ -779,8 +779,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }
   const COLUMN_GAP = 56;
   const STACK_TETHER_WIDTH = 30;
+  const FLUSH_BASE_BYTE = 84;
+  const FLUSH_MAX_BYTE = 170;
   function geometry(m, P, stacked, viewport, options = {}) {
-    const cellH = options.cellHeight ?? CELL;
+    const baseCellH = options.cellHeight ?? CELL;
     const extraPaneHeight = options.extraPaneHeight ?? 0;
     const extraMemBottom = options.extraMemBottom ?? 0;
     const flush = Boolean(options.flush);
@@ -792,7 +794,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const minByteWidth = options.minByteWidth ?? 0;
     const isStruct = (c) => Boolean(c.fields);
     const unwrapped = codeLayout(m.source);
-    const targetCodeSize = stacked ? 12 : 13;
+    const targetCodeSize = stacked ? 15 : 13;
     const canvasBudget = viewport > 0 ? viewport * CODE_SIZE / targetCodeSize : Infinity;
     const codeByColumns = /* @__PURE__ */ new Map();
     const fitCode = (budget) => {
@@ -808,7 +810,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const stackedCodeBudget = canvasBudget - 2 * MARGIN - STACK_TETHER_WIDTH;
     const initialCode = stacked ? fitCode(stackedCodeBudget) : unwrapped;
     const besideCode = stacked || !Number.isFinite(canvasBudget) ? 0 : canvasBudget - unwrapped.width - COLUMN_GAP - 2 * MARGIN;
-    const widest = flush ? Math.max(minByteWidth, 84) : Math.max(minByteWidth, m.leaves.some((leaf) => leaf.size < 4) ? NARROW_BYTE : MAX_BYTE);
+    const widest = flush ? Math.max(minByteWidth, FLUSH_MAX_BYTE) : Math.max(minByteWidth, m.leaves.some((leaf) => leaf.size < 4) ? NARROW_BYTE : MAX_BYTE);
     const rise = m.rise;
     const structs = m.groups.length > 0;
     const paneChars = Math.max(...m.steps.map((step) => step.pane.length));
@@ -816,7 +818,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const outputLines = finalStdout ? finalStdout.replace(/\n$/, "").split("\n") : [];
     const outputChars = Math.max(0, ...outputLines.map((line) => line.length));
     const canWrap = !stacked && !options.skipWrap && !flush && m.tops.length > 1 && !m.typed && m.references.length === 0 && m.steps.every((step) => Object.keys(step.targets).length === 0);
-    const pitch = (structs ? cellH + FRAME.bottom + 32 : cellH + 34) + rise * RISE.bottom + (structs ? FRAME.top : 0) + 30 + rise * RISE.top;
+    const pitch = (structs ? baseCellH + FRAME.bottom + 32 : baseCellH + 34) + rise * RISE.bottom + (structs ? FRAME.top : 0) + 30 + rise * RISE.top;
     const flushRowBounds = (rows2) => rows2.map((row, r) => {
       const items = row.map((i) => m.tops[i]);
       const start = items[0].address;
@@ -921,6 +923,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     let codeW = chosen.code.width;
     let columnW = chosen.columnW;
     if (stacked) codeW = columnW = Math.max(codeW, columnW);
+    const cellH = flush && options.maxCellHeight && options.maxCellHeight > baseCellH ? Math.min(
+      options.maxCellHeight,
+      Math.max(baseCellH, Math.round(baseCellH + (chosen.byte - FLUSH_BASE_BYTE) * 0.25))
+    ) : baseCellH;
     const atLeaf = (memX2, memY2, c, rowPitch) => {
       const span = placed.spans.get(c.name);
       return {
@@ -971,10 +977,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const names = named + typeRow.height + extraMemBottom;
     const effectivePitch = flush && extraRows > 0 ? names + 22 : pitch;
     const rowY = (name) => (rowOf.get(name.split(".")[0]) ?? 0) * effectivePitch;
-    const paneGap = extraMemBottom > 0 ? 18 : 56;
+    const paneGap = extraMemBottom > 0 ? 18 : stacked && flush ? 36 : 56;
     const paneTop = room + names + extraRows * effectivePitch + paneGap;
     const paneH = 76 + labelRise + extraPaneHeight;
-    const outputTop = paneTop + paneH + 60;
+    const outputTop = paneTop + paneH + (stacked && flush ? 46 : 60);
     const columnH = outputLines.length ? outputTop + (outputLines.length - 1) * 36 + 14 : paneTop + paneH;
     const codeX = MARGIN;
     let codeY;
@@ -2296,8 +2302,33 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return integerLiteral(previous.pane.slice(...(part == null ? void 0 : part.span) ?? op.span).replace(/^\((.*)\)$/, "$1"));
   }
   const BYTE_CELL_HEIGHT = 88;
+  const BYTE_CELL_MAX_HEIGHT = 108;
   const BYTE_SPLIT_OFFSET = 48;
   const MAX_DETAIL_GAP = 16;
+  function byteCellMetrics(cellH, byteW) {
+    const t = Math.max(0, Math.min(1, (cellH - BYTE_CELL_HEIGHT) / (BYTE_CELL_MAX_HEIGHT - BYTE_CELL_HEIGHT)));
+    const lerp = (a, b) => round(a + (b - a) * t);
+    const baseHex = byteW >= 54 ? 17 : 15.5;
+    const basePtrHex = byteW >= 54 ? 14.5 : 13;
+    return {
+      splitOffset: lerp(BYTE_SPLIT_OFFSET, 58),
+      headerY: lerp(33, 40),
+      headerCenterY: lerp(26, 30),
+      headerMaxFont: lerp(25, 34),
+      headerBadgeTop: lerp(12, 14),
+      headerBadgeH: lerp(26, 34),
+      hexY: lerp(74, 92),
+      hexCenterY: lerp(68, 84),
+      hexSize: lerp(baseHex, 22),
+      ptrHexSize: lerp(basePtrHex, 19),
+      unknownHexSize: lerp(13.5, 17.5),
+      hexBadgeW: lerp(30, 38),
+      hexBadgeH: lerp(20, 26),
+      hexBadgeTopOff: lerp(15, 19),
+      addrStartSize: byteW >= 54 ? 16 : 15,
+      addrSize: byteW >= 54 ? 14.5 : 13
+    };
+  }
   let patternSeq = 0;
   function hatchDefs(P) {
     const uid = ++patternSeq;
@@ -2371,10 +2402,8 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const byteW = g.byteWidth;
     const cellH = g.leaves[0].h;
     const at = op ? arrival(op) : 0;
-    const addrStartSize = byteW >= 54 ? 16 : 15;
-    const addrSize = byteW >= 54 ? 14.5 : 13;
-    const hexSize = byteW >= 54 ? 17 : 15.5;
-    const ptrHexSize = byteW >= 54 ? 14.5 : 13;
+    const metrics = byteCellMetrics(cellH, byteW);
+    const { addrStartSize, addrSize, hexSize, ptrHexSize, unknownHexSize } = metrics;
     const readCells = new Set((op == null ? void 0 : op.kind) === "read" ? g.cellsOf(op.name).map((l) => l.name) : []);
     const writeCells = new Set((op == null ? void 0 : op.kind) === "write" ? g.cellsOf(op.name).map((l) => l.name) : []);
     let out = "";
@@ -2414,7 +2443,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const rw = run.size * byteW;
       out += `<g class="cv-byte-padding" data-address="${run.start}" data-size="${run.size}">` + rect(rx + 1, ry + 1, rw - 2, cellH - 2, `url(#${opts.padId})`, P.gapStroke, 0, 1.5);
       if (run.size <= MAX_DETAIL_GAP) {
-        const hexY = ry + 74;
+        const hexY = ry + metrics.hexY;
         for (let k = 0; k < run.size; k++) {
           const addr = run.start + k;
           const bx = rx + k * byteW;
@@ -2426,25 +2455,33 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           if ((padState == null ? void 0 : padState.corrupted) && opts.ubId) {
             const makeHazard = (val) => {
               const hexText = typeof val === "number" ? hexByte(val) : "??";
-              const badgeBg = rect(bx + byteW / 2 - 15, hexY - 15, 30, 20, P.panel, "none", 3);
+              const badgeBg = rect(
+                bx + byteW / 2 - metrics.hexBadgeW / 2,
+                hexY - metrics.hexBadgeTopOff,
+                metrics.hexBadgeW,
+                metrics.hexBadgeH,
+                P.panel,
+                "none",
+                3
+              );
               return rect(bx + 1.5, ry + 1.5, byteW - 3, cellH - 3, `url(#${opts.ubId})`, P.error, 0, 1.6) + badgeBg + text(bx + byteW / 2, hexY, hexText, hexSize, P.error, "middle");
             };
             const hazard = makeHazard(padState.value);
             if (animate && padState.corruptedNow) {
               const rev = padState.revealAt ?? at;
-              const beforeMarkup = padState.corruptedBefore ? makeHazard(padState.beforeValue ?? "?") : text(bx + byteW / 2, hexY, "??", 13.5, P.grey, "middle");
+              const beforeMarkup = padState.corruptedBefore ? makeHazard(padState.beforeValue ?? "?") : text(bx + byteW / 2, hexY, "??", unknownHexSize, P.grey, "middle");
               const changed = !padState.corruptedBefore || padState.beforeValue !== padState.value;
-              out += `<g>${hide(rev)}${beforeMarkup}</g><g opacity="0">${show(rev)}${changed ? scaledAt(bx + byteW / 2, ry + 68, hazard, rev - 0.1) : hazard}</g>`;
+              out += `<g>${hide(rev)}${beforeMarkup}</g><g opacity="0">${show(rev)}${changed ? scaledAt(bx + byteW / 2, ry + metrics.hexCenterY, hazard, rev - 0.1) : hazard}</g>`;
             } else {
               out += hazard;
             }
           } else {
-            out += text(bx + byteW / 2, hexY, "??", 13.5, P.grey, "middle");
+            out += text(bx + byteW / 2, hexY, "??", unknownHexSize, P.grey, "middle");
           }
         }
       } else {
         out += text(rx + rw / 2, ry - 12, `${run.start}..${run.start + run.size - 1}`, addrSize, P.grey, "middle");
-        out += text(rx + rw / 2, ry + 74, "…", 15, P.grey, "middle");
+        out += text(rx + rw / 2, ry + metrics.hexY, "…", unknownHexSize + 1.5, P.grey, "middle");
       }
       out += "</g>";
     }
@@ -2458,7 +2495,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const vy = leaf.y;
       const vw = leaf.w;
       const vh = leaf.h;
-      const splitY = vy + BYTE_SPLIT_OFFSET;
+      const splitY = vy + metrics.splitOffset;
       const col = leaf.fieldColor || leaf.color;
       const on = afterH !== null;
       const isCorrupted = Boolean(st.corrupted);
@@ -2497,23 +2534,23 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const renderHeader = (h, useBefore) => {
         if (h === null) return "";
         const inset = Math.min(12, vw / 5);
-        const decSize = Math.min(25, (vw - inset) / (Math.max(1, h.text.length) * CHAR));
+        const decSize = Math.min(metrics.headerMaxFont, (vw - inset) / (Math.max(1, h.text.length) * CHAR));
         const errNow = isCorrupted && !useBefore;
         const decCol = errNow ? P.error : !h.poisoned && h.text === "?" ? P.grey : P.fg;
         const badgeW = Math.min(vw - 8, Math.max(28, h.text.length * decSize * CHAR + 8));
-        const bg = errNow ? rect(headCx - badgeW / 2, vy + 12, badgeW, 26, P.panel, "none", 4) : "";
-        return bg + (h.poisoned ? poisonText(headCx, vy + 33, h.text, round(decSize), decCol, P.error, "middle") : text(headCx, vy + 33, h.text, round(decSize), decCol, "middle"));
+        const bg = errNow ? rect(headCx - badgeW / 2, vy + metrics.headerBadgeTop, badgeW, metrics.headerBadgeH, P.panel, "none", 4) : "";
+        return bg + (h.poisoned ? poisonText(headCx, vy + metrics.headerY, h.text, round(decSize), decCol, P.error, "middle") : text(headCx, vy + metrics.headerY, h.text, round(decSize), decCol, "middle"));
       };
       const headerChanged = animate && st.changing && (beforeH == null ? void 0 : beforeH.text) !== (afterH == null ? void 0 : afterH.text);
       if (headerChanged) {
         const swapped = (beforeH !== null ? `<g>${hide(at)}${renderHeader(beforeH, true)}</g>` : "") + `<g opacity="0">${show(at)}${renderHeader(afterH, false)}</g>`;
-        markup += scaledAt(headCx, vy + 26, swapped, at - 0.15);
+        markup += scaledAt(headCx, vy + metrics.headerCenterY, swapped, at - 0.15);
       } else if (animate && st.corruptedNow) {
         markup += (beforeH !== null ? `<g>${hide(at)}${renderHeader(beforeH, true)}</g>` : "") + `<g opacity="0">${show(at)}${renderHeader(afterH, false)}</g>`;
       } else {
         markup += renderHeader(afterH, false);
       }
-      const hexY = vy + 74;
+      const hexY = vy + metrics.hexY;
       let hexGroup = `<g class="cv-byte-hex" data-name="${esc(leaf.name)}">`;
       for (let k = 0; k < leaf.size; k++) {
         const bs = st.bytes[k];
@@ -2524,13 +2561,29 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           if (bval === null) return "";
           if (bval === "?") {
             if (bs.poisoned && !useBefore) {
-              const badgeBg = rect(bx + byteW / 2 - 15, hexY - 15, 30, 20, P.panel, "none", 3);
+              const badgeBg = rect(
+                bx + byteW / 2 - metrics.hexBadgeW / 2,
+                hexY - metrics.hexBadgeTopOff,
+                metrics.hexBadgeW,
+                metrics.hexBadgeH,
+                P.panel,
+                "none",
+                3
+              );
               return badgeBg + text(bx + byteW / 2, hexY, "??", hexSize, P.error, "middle");
             }
-            return text(bx + byteW / 2, hexY, "??", 13.5, P.grey, "middle");
+            return text(bx + byteW / 2, hexY, "??", unknownHexSize, P.grey, "middle");
           }
           const errNow = Boolean(bs.corrupted && !useBefore);
-          const bg = errNow ? rect(bx + byteW / 2 - 15, hexY - 15, 30, 20, P.panel, "none", 3) : "";
+          const bg = errNow ? rect(
+            bx + byteW / 2 - metrics.hexBadgeW / 2,
+            hexY - metrics.hexBadgeTopOff,
+            metrics.hexBadgeW,
+            metrics.hexBadgeH,
+            P.panel,
+            "none",
+            3
+          ) : "";
           const byteInk = errNow ? P.error : leaf.kind === "ptr" ? P.muted : P.fg;
           const size = !errNow && leaf.kind === "ptr" ? ptrHexSize : hexSize;
           const glyph = text(bx + byteW / 2, hexY, hexByte(bval), size, byteInk, "middle");
@@ -2539,7 +2592,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         const byteChanged = animate && st.changing && bs.before !== bs.after;
         if (byteChanged) {
           const swapped = (bs.before !== null ? `<g>${hide(rev)}${renderByte(bs.before, true)}</g>` : "") + `<g opacity="0">${show(rev)}${renderByte(bs.after, false)}</g>`;
-          hexGroup += scaledAt(bx + byteW / 2, vy + 68, swapped, rev - 0.15);
+          hexGroup += scaledAt(bx + byteW / 2, vy + metrics.hexCenterY, swapped, rev - 0.15);
         } else if (animate && bs.corruptedNow) {
           hexGroup += (bs.before !== null ? `<g>${hide(rev)}${renderByte(bs.before, true)}</g>` : "") + `<g opacity="0">${show(rev)}${renderByte(bs.after, false)}</g>`;
         } else {
@@ -2685,17 +2738,19 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
     });
   }
-  const BIT_FONT = 22;
+  const BIT_FONT = 24;
   const HEX_FONT = 21;
-  const RESULT_FONT = 24;
+  const RESULT_FONT = 25;
   const BIT_STEP = BIT_FONT * CHAR;
   const NIBBLE_W = 4 * BIT_STEP;
-  const NIB_GAP = 8;
+  const NIB_GAP = 7;
   const BYTE_W = 2 * NIBBLE_W + NIB_GAP;
-  const BYTE_GAP = 26;
-  const CARD_PAD = 12;
+  const BYTE_GAP = 14;
+  const CARD_PAD_X = 16;
+  const CARD_PAD_Y = 12;
   const ARC_RISE = 9;
-  const ROOMY_ARCS = 3;
+  const BASE_CARD_OFFSET = 24;
+  const ARC_CARD_OFFSET = 35;
   const extents = /* @__PURE__ */ new WeakMap();
   function workbenchExtent(m) {
     let extent = extents.get(m);
@@ -2708,14 +2763,23 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       for (const part of step.types ?? []) sizes.push(integerOf(m, part.type).size);
       const { op } = step;
       if ((op == null ? void 0 : op.kind) === "convert") sizes.push(integerOf(m, op.from).size, integerOf(m, op.to).size);
-      if (op && "value" in op) labelChars = Math.max(labelChars, op.value.length + 2);
+      if (op && "value" in op) {
+        labelChars = Math.max(labelChars, op.value.length + 2);
+      } else if (op === null) {
+        const literals = (step.types ?? []).filter((t) => !t.slot);
+        if (literals.length === 1) {
+          const value = integerLiteral(step.pane.slice(...literals[0].span));
+          if (value !== null) labelChars = Math.max(labelChars, String(value).length + 2);
+        }
+      }
     }
-    extent = { bytes: Math.max(1, ...sizes), labelChars, drop: Math.max(0, arcs - ROOMY_ARCS) * ARC_RISE };
+    const cardOffset = arcs > 0 ? ARC_CARD_OFFSET + (arcs - 1) * ARC_RISE : BASE_CARD_OFFSET;
+    extent = { bytes: Math.max(1, ...sizes), labelChars, cardOffset };
     extents.set(m, extent);
     return extent;
   }
-  const slotsWidth = (bytes) => bytes * BYTE_W + (bytes - 1) * BYTE_GAP;
-  const RESULT_GAP = 20;
+  const slotsWidth = (bytes) => bytes * BYTE_W + Math.max(0, bytes - 1) * BYTE_GAP;
+  const RESULT_GAP = 16;
   const labelWidth = (label) => (typeof label === "number" ? label : label.length) * RESULT_FONT * CHAR;
   const bitCx = (x, i) => x + (i < 4 ? 0 : NIBBLE_W + NIB_GAP) + (i % 4 + 0.5) * BIT_STEP;
   function drawByte(x, yBits, yHex, byte, ink) {
@@ -2731,6 +2795,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return out + "</g>";
   }
   const BOX_TOP = BIT_FONT * 0.78 + 4;
+  const CARD_HEIGHT = Math.ceil(CARD_PAD_Y + BOX_TOP + 34 + CARD_PAD_Y + 2);
   function signFrame(x, yBits, stroke, fill = "none") {
     return rect(bitCx(x, 0) - BIT_STEP / 2 - 3, yBits - BOX_TOP, BIT_STEP + 6, BOX_TOP + 6, fill, stroke, 4, 1.8);
   }
@@ -2742,21 +2807,25 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const act = activeBitAction(c);
     if (!act) return "";
     const { g, P, animate, op } = c;
-    const cardTop = g.ty + 56 + workbenchExtent(c.m).drop;
-    const yBits = cardTop + CARD_PAD + BOX_TOP;
+    const cardTop = g.ty + workbenchExtent(c.m).cardOffset;
+    const yBits = cardTop + CARD_PAD_Y + BOX_TOP;
     const yHex = yBits + 34;
-    const yRes = yBits + 16;
-    const cardBottom = yHex + CARD_PAD;
-    const rightAnchor = g.tx + 12 + slotsWidth(workbenchExtent(c.m).bytes);
+    const cardBottom = cardTop + CARD_HEIGHT;
+    const yRes = cardTop + CARD_HEIGHT / 2 + RESULT_FONT * 0.34;
+    const paneInnerW = g.pane.w - 48;
+    const byteCount = act.kind === "value" || act.kind === "invert" ? act.info.size : Math.max(act.fromInfo.size, act.toInfo.size);
+    const label = act.kind === "value" ? `= ${act.value}` : `→ ${act.afterVal}`;
+    const slotsW = slotsWidth(byteCount);
+    const contentW = slotsW + RESULT_GAP + labelWidth(label);
+    const cardW = Math.min(paneInnerW, contentW + 2 * CARD_PAD_X);
+    const cardX = g.tx + (paneInnerW - cardW) / 2;
+    const startX = cardX + (cardW - contentW) / 2;
+    const rightAnchor = startX + slotsW;
     const slotX = (bytesFromLSB) => rightAnchor - (bytesFromLSB + 1) * BYTE_W - bytesFromLSB * BYTE_GAP;
-    const card = (bytes, resultLabel) => {
-      const left = slotX(bytes - 1) - CARD_PAD - 4;
-      const right = rightAnchor + RESULT_GAP + labelWidth(resultLabel) + CARD_PAD + 4;
-      return rect(left, cardTop, right - left, cardBottom - cardTop, P.panel, P.gapStroke, 8, 1.5);
-    };
+    const card = () => rect(cardX, cardTop, cardW, CARD_HEIGHT, P.panel, P.gapStroke, 8, 1.5);
     const reveal = (at2, markup) => animate && at2 > 0 ? `<g opacity="0">${fade(0, 1, 0.22, at2)}${markup}</g>` : markup;
     const swap = (at2, before, after) => animate ? `<g>${hide(at2)}${before}</g><g opacity="0">${show(at2)}${after}</g>` : after;
-    const result = (at2, label2, color) => reveal(at2, text(rightAnchor + RESULT_GAP, yRes, label2, RESULT_FONT, color));
+    const result = (at2, textLabel, color) => reveal(at2, text(rightAnchor + RESULT_GAP, yRes, textLabel, RESULT_FONT, color));
     const plainValue = (value, info, hexInk) => {
       const bytes = toBytesMSB(value, info.size);
       let out2 = "";
@@ -2773,10 +2842,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       } else if (animate && (op == null ? void 0 : op.kind) === "read") {
         appearAt = arrival(op);
       }
-      const label2 = `= ${act.value}`;
       return reveal(
         appearAt,
-        card(act.info.size, label2) + plainValue(act.value, act.info, col) + text(rightAnchor + RESULT_GAP, yRes, label2, RESULT_FONT, col)
+        card() + plainValue(act.value, act.info, col) + text(rightAnchor + RESULT_GAP, yRes, label, RESULT_FONT, col)
       );
     }
     if (act.kind === "invert") {
@@ -2786,16 +2854,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       after.forEach((b, idx) => {
         inverted += drawByte(slotX(after.length - 1 - idx), yBits, yHex, b, { bits: P.write, hex: P.write });
       });
-      const label2 = `→ ${act.afterVal}`;
-      return card(act.info.size, label2) + swap(at2, plainValue(act.beforeVal, act.info, P.fg), inverted) + result(at2 + 0.18, label2, P.write);
+      return card() + swap(at2, plainValue(act.beforeVal, act.info, P.fg), inverted) + result(at2 + 0.18, label, P.write);
     }
     const fromBytes = toBytesMSB(act.beforeVal, act.fromInfo.size);
     const toBytes = toBytesMSB(act.afterVal, act.toInfo.size);
     const fromCol = typeColour(c, act.fromType);
     const toCol = typeColour(c, act.toType);
     const at = op ? arrival(op) : T.evaluate;
-    const label = `→ ${act.afterVal}`;
-    let out = card(Math.max(fromBytes.length, toBytes.length), label);
+    let out = card();
     if (act.kind === "narrow") {
       const keep = toBytes.length;
       fromBytes.forEach((b, idx) => {
@@ -2805,7 +2871,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           out += drawByte(bx, yBits, yHex, b, { bits: P.fg, hex: toCol });
           return;
         }
-        const dropped = `<g opacity="0.48">` + drawByte(bx, yBits, yHex, b, { bits: P.error, hex: P.error }) + `<line x1="${round(bx + 4)}" y1="${round(yBits - 20)}" x2="${round(bx + BYTE_W - 4)}" y2="${round(yHex + 6)}" stroke="${P.error}" stroke-width="2"/></g>`;
+        const dropped = `<g opacity="0.48">` + drawByte(bx, yBits, yHex, b, { bits: P.error, hex: P.error }) + `<line x1="${round(bx + 4)}" y1="${round(yBits - BIT_FONT * 0.85)}" x2="${round(bx + BYTE_W - 4)}" y2="${round(yHex + 4)}" stroke="${P.error}" stroke-width="2"/></g>`;
         out += animate ? `<g>${hide(at)}${drawByte(bx, yBits, yHex, b, { bits: P.fg, hex: fromCol })}</g><g opacity="0">${show(at)}<animateTransform attributeName="transform" type="translate" from="0 -6" to="0 0" begin="${round(at)}s" dur="0.32s" fill="freeze"/>${dropped}</g>` : dropped;
       });
       const cutX = slotX(keep - 1) - BYTE_GAP / 2;
@@ -2890,13 +2956,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }
   const BITS_VIEW = {
     geometry(m) {
-      const { bytes, labelChars, drop } = workbenchExtent(m);
-      const workbench2 = 12 + slotsWidth(bytes) + RESULT_GAP + labelWidth(labelChars) + CARD_PAD + 28;
+      const { bytes, labelChars, cardOffset } = workbenchExtent(m);
+      const cardW = slotsWidth(bytes) + RESULT_GAP + labelWidth(labelChars) + 2 * CARD_PAD_X;
       return {
         minByteWidth: 66,
-        minColumnWidth: Math.max(680, Math.ceil(workbench2)),
+        minColumnWidth: Math.max(480, Math.ceil(48 + cardW)),
         cellHeight: BYTE_CELL_HEIGHT,
-        extraPaneHeight: 120 + drop,
+        maxCellHeight: BYTE_CELL_MAX_HEIGHT,
+        extraPaneHeight: cardOffset + CARD_HEIGHT + 16 - 33,
         flush: true
       };
     },
@@ -3740,6 +3807,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const oldLine = lineChanged && prev ? prev.line : null;
     const byteW = g.byteWidth;
     const cellH = ((_a = g.leaves[0]) == null ? void 0 : _a.h) ?? BYTE_CELL_HEIGHT;
+    const byteRowOffset = byteCellMetrics(cellH, byteW).hexCenterY + 2;
     const posOf = (addr) => flushAddrPos(g, addr);
     const at = op ? arrival(op) : 0;
     const dep = op ? departure(op) : 0;
@@ -3985,7 +4053,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         if (animate && stripSource.mode === "read") {
           const sp = posOf(addr);
           const sx = sp.x + byteW / 2;
-          const sy = sp.y + 70;
+          const sy = sp.y + byteRowOffset;
           const ex = tx + tileW / 2;
           const ey = stripY + tileH / 2;
           const midY = (sy + ey) / 2;
@@ -4002,7 +4070,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
             const sx = tx + tileW / 2;
             const sy = stripY;
             const ex = ep.x + byteW / 2;
-            const ey = ep.y + 70;
+            const ey = ep.y + byteRowOffset;
             const midY = (sy + ey) / 2;
             const path = `M ${round(sx)} ${round(sy)} C ${round(sx)} ${round(midY)}, ${round(ex)} ${round(midY)}, ${round(ex)} ${round(ey)}`;
             const dur = 0.85;
@@ -4015,7 +4083,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
             const sx = tx + tileW / 2;
             const sy = stripY;
             const ex = ep.x + byteW / 2;
-            const ey = ep.y + 70;
+            const ey = ep.y + byteRowOffset;
             const midY = (sy + ey) / 2;
             const path = `M ${round(sx)} ${round(sy)} C ${round(sx)} ${round(midY)}, ${round(ex)} ${round(midY)}, ${round(ex)} ${round(ey)}`;
             const dur = 0.85;
@@ -4045,6 +4113,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         minByteWidth: 46,
         minColumnWidth: 540,
         cellHeight: BYTE_CELL_HEIGHT,
+        maxCellHeight: BYTE_CELL_MAX_HEIGHT,
         extraMemBottom: hasLargerPointerAccess(m.trace) || hasUninitializedRead(m.trace) ? 58 : 12,
         extraPaneHeight: 46,
         flush: true,
