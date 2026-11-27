@@ -16,6 +16,7 @@ import {
   type ByteCellState,
   type ByteVariableState,
   colorPoisonHexInSvg,
+  flushAddrPos,
   hatchDefs,
   renderByteMemory,
   scaledAt,
@@ -241,22 +242,23 @@ function punReticle(
   c: SceneContext,
   sim: PunningSimState,
   ptr: ActivePunPointer,
-  xOf: (addr: number) => number,
+  posOf: (addr: number) => { x: number; y: number },
   byteW: number,
-  gridY: number,
   cellH: number,
   pCol: string
 ): string {
   const { P, animate, op } = c;
   const at = op ? arrival(op) : 0;
   const dep = op ? departure(op) : 0;
-  const wLeft = xOf(ptr.targetAddress);
+  const startPos = posOf(ptr.targetAddress);
+  const wLeft = startPos.x;
+  const rowY = startPos.y;
   const wWidth = ptr.pointeeSize * byteW;
-  const ownEnd = xOf(ptr.targetAddress + ptr.targetSize);
+  const ownEnd = wLeft + ptr.targetSize * byteW;
 
   const pad = 3.5;
   const bx = wLeft - pad;
-  const by = gridY - pad;
+  const by = rowY - pad;
   const bw = wWidth + 2 * pad;
   const bh = cellH + 2 * pad;
   const cx = bx + bw / 2;
@@ -307,22 +309,41 @@ function punReticle(
 function punningArrows(
   c: SceneContext,
   sim: PunningSimState,
-  xOf: (addr: number) => number,
-  byteW: number,
-  gridY: number
+  posOf: (addr: number) => { x: number; y: number },
+  byteW: number
 ): string {
   const { g, P, step, prev, op, animate } = c;
   const punNames = new Set(sim.punPointers.map(p => p.ptrName));
   const at = op ? arrival(op) : 0;
 
   const arcGeom = (l: PointerLink, isPun: boolean): { d: string; hx: number; hy: number } => {
-    const sx = l.from.x + l.from.w / 2;
-    const ex = isPun ? xOf(l.to.address) + byteW * 0.5 : l.head[0];
-    const sy = gridY - 2;
-    const ey = gridY - 26;
-    const apex = gridY - 92 - l.level * 36;
+    const toPos = posOf(l.to.address);
+    const ex = isPun ? toPos.x + byteW * 0.5 : l.head[0];
+    const ey = toPos.y - 26;
+    if (Math.abs(l.from.y - toPos.y) < 1) {
+      const sx = l.from.x + l.from.w / 2;
+      const sy = l.from.y - 2;
+      const apex = toPos.y - 92 - l.level * 36;
+      return {
+        d: `M ${round(sx)} ${round(sy)} C ${round(sx)} ${round(apex)}, ${round(ex)} ${round(apex)}, ${round(ex)} ${round(ey - 8)}`,
+        hx: ex,
+        hy: ey,
+      };
+    }
+    // Cross-row pointer: exit the left edge of the pointer cell, travel cleanly up the left
+    // margin outside the memory cells, and arch into the target byte from above.
+    const sx = l.from.x;
+    const sy = l.from.y + l.from.h * 0.5;
+    const gx = g.memX - 28 - l.level * 10;
+    const topY = toPos.y - 54 - l.level * 22;
     return {
-      d: `M ${round(sx)} ${round(sy)} C ${round(sx)} ${round(apex)}, ${round(ex)} ${round(apex)}, ${round(ex)} ${round(ey - 8)}`,
+      d:
+        `M ${round(sx)} ${round(sy)} ` +
+        `Q ${round(gx)} ${round(sy)}, ${round(gx)} ${round(sy - 20)} ` +
+        `L ${round(gx)} ${round(topY + 20)} ` +
+        `Q ${round(gx)} ${round(topY)}, ${round(gx + 20)} ${round(topY)} ` +
+        `L ${round(ex - 16)} ${round(topY)} ` +
+        `Q ${round(ex)} ${round(topY)}, ${round(ex)} ${round(ey - 8)}`,
       hx: ex,
       hy: ey,
     };
@@ -403,9 +424,8 @@ function punningScene(c: SceneContext): string {
   const oldLine = lineChanged && prev ? prev.line : null;
 
   const byteW = g.byteWidth;
-  const gridY = g.leaves[0]?.y ?? g.memY;
   const cellH = g.leaves[0]?.h ?? BYTE_CELL_HEIGHT;
-  const xOf = (addr: number): number => g.memX + (addr - sim.baseAddress) * byteW;
+  const posOf = (addr: number) => flushAddrPos(g, addr);
   const at = op ? arrival(op) : 0;
   const dep = op ? departure(op) : 0;
 
@@ -532,62 +552,71 @@ function punningScene(c: SceneContext): string {
   let accessFlash = '';
   if (animate && sim.activePun && (isPunWrite || isPunRead)) {
     const { targetAddress, targetSize, pun, direction } = sim.activePun;
-    const wLeft = xOf(targetAddress);
+    const startPos = posOf(targetAddress);
+    const wLeft = startPos.x;
+    const rowY = startPos.y;
     const wWidth = pun.size * byteW;
     const ownW = targetSize * byteW;
     const spillW = wWidth - ownW;
     if (isPunWrite) {
       if (direction === 'larger') {
-        accessFlash += transientWriteHighlight(wLeft, gridY, ownW, cellH, P.write, at);
-        if (spillW > 0) accessFlash += transientWriteHighlight(wLeft + ownW, gridY, spillW, cellH, P.error, at + 0.08);
+        accessFlash += transientWriteHighlight(wLeft, rowY, ownW, cellH, P.write, at);
+        if (spillW > 0) accessFlash += transientWriteHighlight(wLeft + ownW, rowY, spillW, cellH, P.error, at + 0.08);
       } else {
-        accessFlash += transientWriteHighlight(wLeft, gridY, wWidth, cellH, P.write, at);
+        accessFlash += transientWriteHighlight(wLeft, rowY, wWidth, cellH, P.write, at);
       }
     } else if (isPunRead) {
       if (direction === 'larger') {
-        accessFlash += transientReadHighlight(wLeft, gridY, ownW, cellH, P.read, at);
-        if (spillW > 0) accessFlash += transientReadHighlight(wLeft + ownW, gridY, spillW, cellH, P.error, at);
+        accessFlash += transientReadHighlight(wLeft, rowY, ownW, cellH, P.read, at);
+        if (spillW > 0) accessFlash += transientReadHighlight(wLeft + ownW, rowY, spillW, cellH, P.error, at);
       } else {
-        accessFlash += transientReadHighlight(wLeft, gridY, wWidth, cellH, P.read, at);
+        accessFlash += transientReadHighlight(wLeft, rowY, wWidth, cellH, P.read, at);
       }
     }
   } else if (animate && sim.activePoisonRead) {
     const { address, size, bytes } = sim.activePoisonRead;
     if (bytes.every(b => b === '?')) {
-      accessFlash += transientReadHighlight(xOf(address), gridY, size * byteW, cellH, P.error, at);
+      const p = posOf(address);
+      accessFlash += transientReadHighlight(p.x, p.y, size * byteW, cellH, P.error, at);
     } else {
       for (let k = 0; k < size; k++) {
         const col = bytes[k] === '?' ? P.error : P.read;
-        accessFlash += transientReadHighlight(xOf(address + k), gridY, byteW, cellH, col, at);
+        const p = posOf(address + k);
+        accessFlash += transientReadHighlight(p.x, p.y, byteW, cellH, col, at);
       }
     }
   }
 
   // 3. Clean overhead pointer arcs
-  const arcMarkup = punningArrows(c, sim, xOf, byteW, gridY);
+  const arcMarkup = punningArrows(c, sim, posOf, byteW);
 
   // 4. Full-height open HUD corner reticles
   let scopeReticles = '';
   for (const ptr of sim.punPointers) {
     const ptrLeaf = g.leaves.find(l => l.name === ptr.ptrName);
     if (!ptrLeaf) continue;
-    scopeReticles += punReticle(c, sim, ptr, xOf, byteW, gridY, cellH, ptrLeaf.color);
+    scopeReticles += punReticle(c, sim, ptr, posOf, byteW, cellH, ptrLeaf.color);
   }
 
   // 5. UB bracket & `⚠ UB` badge below memory — on larger-pointer access or uninitialized read
   let belowOverlay = '';
-  const typeBottom = g.typeLabels.length
-    ? Math.max(...g.typeLabels.map(l => l.top + LABEL.memory + 7))
-    : gridY + cellH + 40;
-  const brY = typeBottom + 16;
-  const tickTop = brY - 10;
+  const rowTypeBottom = (rowY: number): number => {
+    const rowNames = new Set(g.leaves.filter(l => Math.abs(l.y - rowY) < 1).map(l => l.name));
+    const rowLabels = g.typeLabels.filter(l => rowNames.has(l.name));
+    return rowLabels.length
+      ? Math.max(...rowLabels.map(l => l.top + LABEL.memory + 7))
+      : rowY + cellH + 40;
+  };
   const punUbCovered = new Set<string>();
   for (const ptr of sim.punPointers) {
     if (ptr.direction !== 'larger' || ptr.ubKind === 'none') continue;
     punUbCovered.add(ptr.targetName);
-    const wLeft = xOf(ptr.targetAddress);
-    const wRight = xOf(ptr.targetAddress + ptr.pointeeSize);
-    const ownEnd = xOf(ptr.targetAddress + ptr.targetSize);
+    const startPos = posOf(ptr.targetAddress);
+    const wLeft = startPos.x;
+    const wRight = wLeft + ptr.pointeeSize * byteW;
+    const ownEnd = wLeft + ptr.targetSize * byteW;
+    const brY = rowTypeBottom(startPos.y) + 16;
+    const tickTop = brY - 10;
     const ownCol = ptr.ubKind === 'read' ? P.read : P.write;
     const cal =
       `<g class="cv-ub-badge" data-ptr="${ptr.ptrName}">` +
@@ -607,8 +636,11 @@ function punningScene(c: SceneContext): string {
     if (punUbCovered.has(varName)) continue;
     const leaf = g.leaves.find(l => l.name === varName);
     if (!leaf) continue;
-    const wLeft = xOf(leaf.address);
-    const wRight = xOf(leaf.address + leaf.size);
+    const startPos = posOf(leaf.address);
+    const wLeft = startPos.x;
+    const wRight = wLeft + leaf.size * byteW;
+    const brY = rowTypeBottom(startPos.y) + 16;
+    const tickTop = brY - 10;
     const cal =
       `<g class="cv-ub-badge" data-var="${leaf.name}">` +
       `<path d="M ${round(wLeft + 2)} ${tickTop} V ${brY} H ${round(wRight - 2)} V ${tickTop}" fill="none" stroke="${P.error}" stroke-width="2.8"/>` +
@@ -704,8 +736,9 @@ function punningScene(c: SceneContext): string {
         text(tx + tileW / 2, stripY + 20, label, 15.5, stroke, 'middle');
 
       if (animate && stripSource.mode === 'read') {
-        const sx = xOf(addr) + byteW / 2;
-        const sy = gridY + 70;
+        const sp = posOf(addr);
+        const sx = sp.x + byteW / 2;
+        const sy = sp.y + 70;
         const ex = tx + tileW / 2;
         const ey = stripY + tileH / 2;
         const midY = (sy + ey) / 2;
@@ -723,10 +756,11 @@ function punningScene(c: SceneContext): string {
       } else {
         wb += tileMarkup;
         if (animate && stripSource.mode === 'write') {
+          const ep = posOf(addr);
           const sx = tx + tileW / 2;
           const sy = stripY;
-          const ex = xOf(addr) + byteW / 2;
-          const ey = gridY + 70;
+          const ex = ep.x + byteW / 2;
+          const ey = ep.y + 70;
           const midY = (sy + ey) / 2;
           const path = `M ${round(sx)} ${round(sy)} C ${round(sx)} ${round(midY)}, ${round(ex)} ${round(midY)}, ${round(ex)} ${round(ey)}`;
           const dur = 0.85;
@@ -740,10 +774,11 @@ function punningScene(c: SceneContext): string {
             text(0, 6, label, 15, flyCol, 'middle') +
             `<animateMotion begin="${round(begin)}s" dur="${dur}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
         } else if (animate && stripSource.mode === 'store' && stripSource.destVar) {
+          const ep = posOf(stripSource.destVar.address + k);
           const sx = tx + tileW / 2;
           const sy = stripY;
-          const ex = xOf(stripSource.destVar.address + k) + byteW / 2;
-          const ey = gridY + 70;
+          const ex = ep.x + byteW / 2;
+          const ey = ep.y + 70;
           const midY = (sy + ey) / 2;
           const path = `M ${round(sx)} ${round(sy)} C ${round(sx)} ${round(midY)}, ${round(ex)} ${round(midY)}, ${round(ex)} ${round(ey)}`;
           const dur = 0.85;
@@ -800,7 +835,7 @@ export const PUNNING_VIEW: TraceView = {
   geometry(m) {
     return {
       minByteWidth: 46,
-      minColumnWidth: 780,
+      minColumnWidth: 540,
       cellHeight: BYTE_CELL_HEIGHT,
       extraMemBottom: hasLargerPointerAccess(m.trace) || hasUninitializedRead(m.trace) ? 58 : 12,
       extraPaneHeight: 46,

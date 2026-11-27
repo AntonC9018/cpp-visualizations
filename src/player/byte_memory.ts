@@ -6,7 +6,7 @@
 // hazard styling, and transient full-height read/write highlights.
 import { type ByteValue, hexByte, paddingRuns } from '../core/bytes.ts';
 import { CHAR, LABEL, type Palette } from './constants.ts';
-import type { PlacedLeaf } from './geometry.ts';
+import type { FlushRow, Geometry, PlacedLeaf } from './geometry.ts';
 import { arrival } from './model.ts';
 import { type SceneContext, dim, typeColour, typeLabel } from './scene.ts';
 import { esc, fade, hide, pulse, rect, round, show, text } from './svg.ts';
@@ -205,6 +205,24 @@ export interface ByteMemoryOptions {
   stateOf(leaf: PlacedLeaf): ByteVariableState;
 }
 
+/** Map a byte address to its `(x, y)` top-left coordinate in a single-row or wrapped flush layout. */
+export function flushAddrPos(g: Geometry, addr: number): { x: number; y: number; row: FlushRow } {
+  const rows = g.flushRows;
+  if (rows.length > 0) {
+    const row =
+      rows.find(r => addr >= r.startAddress && addr < r.endAddress) ??
+      (addr < rows[0].startAddress ? rows[0] : rows[rows.length - 1]);
+    return { x: g.memX + (addr - row.startAddress) * g.byteWidth, y: row.y, row };
+  }
+  const baseAddress = g.leaves.length ? Math.min(...g.leaves.map(l => l.address)) : 0;
+  const y = g.leaves[0]?.y ?? g.memY;
+  return {
+    x: g.memX + (addr - baseAddress) * g.byteWidth,
+    y,
+    row: { startAddress: baseAddress, endAddress: baseAddress, y },
+  };
+}
+
 /**
  * Render the flush byte-accurate memory strip: address ruler, hatched padding, variable cells with
  * centered headers and hex bytes, per-byte pulse, byte-order arrows, names and type labels.
@@ -217,11 +235,12 @@ export function renderByteMemory(c: SceneContext, opts: ByteMemoryOptions): stri
   if (g.leaves.length === 0) return '';
 
   const byteW = g.byteWidth;
-  const gridY = g.leaves[0].y;
   const cellH = g.leaves[0].h;
-  const baseAddress = Math.min(...g.leaves.map(l => l.address));
-  const xOf = (addr: number): number => g.memX + (addr - baseAddress) * byteW;
   const at = op ? arrival(op) : 0;
+  const addrStartSize = byteW >= 54 ? 16 : 15;
+  const addrSize = byteW >= 54 ? 14.5 : 13;
+  const hexSize = byteW >= 54 ? 17 : 15.5;
+  const ptrHexSize = byteW >= 54 ? 14.5 : 13;
 
   const readCells = new Set(op?.kind === 'read' ? g.cellsOf(op.name).map(l => l.name) : []);
   const writeCells = new Set(op?.kind === 'write' ? g.cellsOf(op.name).map(l => l.name) : []);
@@ -235,28 +254,46 @@ export function renderByteMemory(c: SceneContext, opts: ByteMemoryOptions): stri
         bx + byteW / 2,
         leaf.y - 12,
         leaf.address + k,
-        k === 0 ? 15 : 13,
+        k === 0 ? addrStartSize : addrSize,
         k === 0 ? P.muted : P.grey,
         'middle'
       );
     }
   }
 
-  // 2. Hatched alignment-padding runs (per-byte detail for small gaps, collapsed for sparse spans)
-  for (const run of paddingRuns(g.leaves, opts.minEndAddress)) {
-    const rx = xOf(run.start);
+  // 2. Hatched alignment-padding runs (split across wrapped flush rows; collapsed for sparse spans)
+  const splitPaddingRuns = paddingRuns(g.leaves, opts.minEndAddress).flatMap(run => {
+    if (g.flushRows.length <= 1) return [run];
+    const pieces: Array<{ start: number; size: number }> = [];
+    let cur = run.start;
+    const runEnd = run.start + run.size;
+    for (const row of g.flushRows) {
+      if (cur >= runEnd) break;
+      if (row.endAddress <= cur) continue;
+      if (row.startAddress >= runEnd) break;
+      const segStart = Math.max(cur, row.startAddress);
+      const segEnd = Math.min(runEnd, row.endAddress);
+      if (segEnd > segStart) pieces.push({ start: segStart, size: segEnd - segStart });
+      cur = segEnd;
+    }
+    return pieces.length ? pieces : [run];
+  });
+  for (const run of splitPaddingRuns) {
+    const pos = flushAddrPos(g, run.start);
+    const rx = pos.x;
+    const ry = pos.y;
     const rw = run.size * byteW;
     out +=
       `<g class="cv-byte-padding" data-address="${run.start}" data-size="${run.size}">` +
-      rect(rx + 1, gridY + 1, rw - 2, cellH - 2, `url(#${opts.padId})`, P.gapStroke, 0, 1.5);
+      rect(rx + 1, ry + 1, rw - 2, cellH - 2, `url(#${opts.padId})`, P.gapStroke, 0, 1.5);
     if (run.size <= MAX_DETAIL_GAP) {
-      const hexY = gridY + 74;
+      const hexY = ry + 74;
       for (let k = 0; k < run.size; k++) {
         const addr = run.start + k;
-        const bx = xOf(addr);
-        out += text(bx + byteW / 2, gridY - 12, addr, 13, P.grey, 'middle');
+        const bx = rx + k * byteW;
+        out += text(bx + byteW / 2, ry - 12, addr, addrSize, P.grey, 'middle');
         if (k > 0) {
-          out += `<line x1="${round(bx)}" y1="${gridY + 2}" x2="${round(bx)}" y2="${gridY + cellH - 2}" stroke="${P.gapStroke}" stroke-dasharray="3 3" stroke-width="1"/>`;
+          out += `<line x1="${round(bx)}" y1="${ry + 2}" x2="${round(bx)}" y2="${ry + cellH - 2}" stroke="${P.gapStroke}" stroke-dasharray="3 3" stroke-width="1"/>`;
         }
         const padState = opts.paddingByte?.(addr);
         if (padState?.corrupted && opts.ubId) {
@@ -264,9 +301,9 @@ export function renderByteMemory(c: SceneContext, opts: ByteMemoryOptions): stri
             const hexText = typeof val === 'number' ? hexByte(val) : '??';
             const badgeBg = rect(bx + byteW / 2 - 15, hexY - 15, 30, 20, P.panel, 'none', 3);
             return (
-              rect(bx + 1.5, gridY + 1.5, byteW - 3, cellH - 3, `url(#${opts.ubId})`, P.error, 0, 1.6) +
+              rect(bx + 1.5, ry + 1.5, byteW - 3, cellH - 3, `url(#${opts.ubId})`, P.error, 0, 1.6) +
               badgeBg +
-              text(bx + byteW / 2, hexY, hexText, 15.5, P.error, 'middle')
+              text(bx + byteW / 2, hexY, hexText, hexSize, P.error, 'middle')
             );
           };
           const hazard = makeHazard(padState.value);
@@ -278,7 +315,7 @@ export function renderByteMemory(c: SceneContext, opts: ByteMemoryOptions): stri
             const changed = !padState.corruptedBefore || padState.beforeValue !== padState.value;
             out +=
               `<g>${hide(rev)}${beforeMarkup}</g>` +
-              `<g opacity="0">${show(rev)}${changed ? scaledAt(bx + byteW / 2, gridY + 68, hazard, rev - 0.1) : hazard}</g>`;
+              `<g opacity="0">${show(rev)}${changed ? scaledAt(bx + byteW / 2, ry + 68, hazard, rev - 0.1) : hazard}</g>`;
           } else {
             out += hazard;
           }
@@ -287,8 +324,8 @@ export function renderByteMemory(c: SceneContext, opts: ByteMemoryOptions): stri
         }
       }
     } else {
-      out += text(rx + rw / 2, gridY - 12, `${run.start}..${run.start + run.size - 1}`, 13, P.grey, 'middle');
-      out += text(rx + rw / 2, gridY + 74, '…', 15, P.grey, 'middle');
+      out += text(rx + rw / 2, ry - 12, `${run.start}..${run.start + run.size - 1}`, addrSize, P.grey, 'middle');
+      out += text(rx + rw / 2, ry + 74, '…', 15, P.grey, 'middle');
     }
     out += '</g>';
   }
@@ -394,14 +431,14 @@ export function renderByteMemory(c: SceneContext, opts: ByteMemoryOptions): stri
         if (bval === '?') {
           if (bs.poisoned && !useBefore) {
             const badgeBg = rect(bx + byteW / 2 - 15, hexY - 15, 30, 20, P.panel, 'none', 3);
-            return badgeBg + text(bx + byteW / 2, hexY, '??', 15.5, P.error, 'middle');
+            return badgeBg + text(bx + byteW / 2, hexY, '??', hexSize, P.error, 'middle');
           }
           return text(bx + byteW / 2, hexY, '??', 13.5, P.grey, 'middle');
         }
         const errNow = Boolean(bs.corrupted && !useBefore);
         const bg = errNow ? rect(bx + byteW / 2 - 15, hexY - 15, 30, 20, P.panel, 'none', 3) : '';
         const byteInk = errNow ? P.error : leaf.kind === 'ptr' ? P.muted : P.fg;
-        const size = !errNow && leaf.kind === 'ptr' ? 13 : 15.5;
+        const size = !errNow && leaf.kind === 'ptr' ? ptrHexSize : hexSize;
         const glyph = text(bx + byteW / 2, hexY, hexByte(bval), size, byteInk, 'middle');
         return bg + (!errNow && leaf.kind === 'ptr' ? `<g opacity="0.65">${glyph}</g>` : glyph);
       };

@@ -82,6 +82,12 @@ export interface TypeTarget extends PlacedRect {
   underline?: boolean;
 }
 
+export interface FlushRow {
+  startAddress: number;
+  endAddress: number;
+  y: number;
+}
+
 /** What a view changes about the default geometry (see `views.ts`). */
 export interface GeometryOptions {
   /** Units per byte at least, so a byte has room for its hex. */
@@ -107,8 +113,10 @@ export interface Geometry {
   paneChar: number;
   /** Units per byte on the memory row. */
   byteWidth: number;
-  /** Whether top-level variables sit flush on a single contiguous byte row. */
+  /** Whether top-level variables sit flush on a single contiguous byte row (or wrapped flush rows). */
   flush: boolean;
+  /** Byte-address rows when `flush` is true (one entry per wrapped memory row). */
+  flushRows: FlushRow[];
   isStruct(c: { fields?: unknown }): c is PlacedGroup;
   rise: number;
   width: number;
@@ -240,21 +248,30 @@ function paneLabelExtent(m: PreparedModel, paneChar: number): { rows: number; ri
  */
 function typeRows(
   m: PreparedModel,
-  box: (name: string) => PlacedBox | undefined
+  box: (name: string) => PlacedBox | undefined,
+  rowOf?: Map<string, number>
 ): { labels: Array<Omit<TypeLabel, 'top'> & { row: number }>; height: number } {
   const labels: Array<Omit<TypeLabel, 'top'> & { row: number }> = [];
-  const edge: number[] = [];
+  const edgesByRow = new Map<number, number[]>();
+  let maxRows = 0;
   for (const item of m.typed || m.trace.punning ? m.tops : []) {
     if (!item.type) continue;
     const at = box(item.name)!;
     const cx = at.x + at.w / 2;
     const half = typeLabelWidth(item.type, LABEL.memory) / 2;
+    const memRow = rowOf?.get(item.name) ?? 0;
+    let edge = edgesByRow.get(memRow);
+    if (!edge) {
+      edge = [];
+      edgesByRow.set(memRow, edge);
+    }
     let row = 0;
     while (edge[row] !== undefined && cx - half < edge[row] + 6) row++;
     edge[row] = cx + half;
+    maxRows = Math.max(maxRows, edge.length);
     labels.push({ name: item.name, type: item.type, cx, row });
   }
-  return { labels, height: edge.length ? edge.length * LABEL.row + 6 : 0 };
+  return { labels, height: maxRows ? maxRows * LABEL.row + 6 : 0 };
 }
 
 export const labelWidth = (c: { address: number }): number =>
@@ -431,6 +448,10 @@ function placement(
   for (const item of m.tops) {
     const r = rowOf?.get(item.name) ?? 0;
     if (r !== row) {
+      if (flush && address !== null && item.address > address) {
+        x += unused(x, item.address - address);
+        width = Math.max(width, x);
+      }
       row = r;
       x = 0;
       address = null;
@@ -536,7 +557,9 @@ export function geometry(
   const besideCode =
     stacked || !Number.isFinite(canvasBudget) ? 0 : canvasBudget - unwrapped.width - COLUMN_GAP - 2 * MARGIN;
 
-  const widest = Math.max(minByteWidth, m.leaves.some(leaf => leaf.size < 4) ? NARROW_BYTE : MAX_BYTE);
+  const widest = flush
+    ? Math.max(minByteWidth, 84)
+    : Math.max(minByteWidth, m.leaves.some(leaf => leaf.size < 4) ? NARROW_BYTE : MAX_BYTE);
   const rise = m.rise;
   const structs = m.groups.length > 0;
   const paneChars = Math.max(...m.steps.map(step => step.pane.length));
@@ -561,19 +584,38 @@ export function geometry(
     (structs ? FRAME.top : 0) +
     30 +
     rise * RISE.top;
+  const flushRowBounds = (rows: number[][]): Array<{ start: number; end: number }> =>
+    rows.map((row, r) => {
+      const items = row.map(i => m.tops[i]);
+      const start = items[0].address;
+      const lastEnd = items[items.length - 1].address + items[items.length - 1].size;
+      const nextStart = r + 1 < rows.length ? m.tops[rows[r + 1][0]].address : undefined;
+      const end =
+        nextStart !== undefined
+          ? Math.max(lastEnd, nextStart)
+          : minEndAddress !== undefined
+            ? Math.max(lastEnd, minEndAddress)
+            : lastEnd;
+      return { start, end };
+    });
   const plan = (rows: number[][]) => {
     const rowOf = new Map<string, number>();
     rows.forEach((row, r) => row.forEach(i => rowOf.set(m.tops[i].name, r)));
+    const bounds = flush ? flushRowBounds(rows) : null;
     const byteFor = (budget: number): number =>
       Math.max(
         minByteWidth,
         Math.min(
           widest,
-          ...rows.map(row => {
+          ...rows.map((row, r) => {
             const items = row.map(i => m.tops[i]);
-            const lastEnd = items[items.length - 1].address + items[items.length - 1].size;
-            const spanEnd = minEndAddress !== undefined ? Math.max(lastEnd, minEndAddress) : lastEnd;
-            const bytes = spanEnd - items[0].address;
+            const bytes = bounds
+              ? bounds[r].end - bounds[r].start
+              : (() => {
+                  const lastEnd = items[items.length - 1].address + items[items.length - 1].size;
+                  const spanEnd = minEndAddress !== undefined ? Math.max(lastEnd, minEndAddress) : lastEnd;
+                  return spanEnd - items[0].address;
+                })();
             const nested = m.groups.filter(s => s.parent && rowOf.get(s.top) === rowOf.get(items[0].name));
             return Math.max(1, (budget - gap * (items.length - 1) - 2 * NEST * nested.length) / bytes);
           })
@@ -639,34 +681,54 @@ export function geometry(
       if (candidate.width <= single.width + 1 && candidate.cell > chosen.cell * 1.1) chosen = candidate;
     }
   }
+  // Stacked flush byte views (e.g. mobile/vertical shorts) wrap wide byte strips onto balanced rows
+  // so individual hex bytes and addresses remain readable instead of shrinking to half size.
+  if (flush && stacked && !options.skipWrap && m.tops.length > 1) {
+    const singleSpan = flushRowBounds(single.rows)[0];
+    const totalBytes = singleSpan.end - singleSpan.start;
+    if (totalBytes > 10) {
+      const rowCount = totalBytes > 24 ? Math.min(3, m.tops.length) : 2;
+      let bestRows: number[][] | null = null;
+      let bestMax = Infinity;
+      for (const rows of partitions(m.tops.length, rowCount)) {
+        const maxRowBytes = Math.max(...flushRowBounds(rows).map(b => b.end - b.start));
+        if (maxRowBytes < bestMax) {
+          bestMax = maxRowBytes;
+          bestRows = rows;
+        }
+      }
+      if (bestRows && bestMax < totalBytes) {
+        chosen = plan(bestRows);
+      }
+    }
+  }
   const { labelExtent } = chosen;
   const placed = chosen.placed;
   const rowOf = chosen.rowOf;
   const extraRows = chosen.rows.length - 1;
-  const rowY = (name: string): number => (rowOf.get(name.split('.')[0]) ?? 0) * pitch;
   const { rows, height: codeH } = chosen.code;
   let codeW = chosen.code.width;
   let columnW = chosen.columnW;
   if (stacked) codeW = columnW = Math.max(codeW, columnW);
 
-  const atLeaf = (memX: number, memY: number, c: ModelLeaf): PlacedLeaf => {
+  const atLeaf = (memX: number, memY: number, c: ModelLeaf, rowPitch: number): PlacedLeaf => {
     const span = placed.spans.get(c.name)!;
     return {
       ...c,
       x: memX + span[0],
-      y: memY + rowY(c.name),
+      y: memY + (rowOf.get(c.name.split('.')[0]) ?? 0) * rowPitch,
       w: span[1],
       h: cellH,
       color: '',
       fieldColor: null,
     };
   };
-  const atGroup = (memX: number, memY: number, c: ModelGroup): PlacedGroup => {
+  const atGroup = (memX: number, memY: number, c: ModelGroup, rowPitch: number): PlacedGroup => {
     const span = placed.spans.get(c.name)!;
     return {
       ...c,
       x: memX + span[0],
-      y: memY + rowY(c.name),
+      y: memY + (rowOf.get(c.name.split('.')[0]) ?? 0) * rowPitch,
       w: span[1],
       h: cellH,
       color: '',
@@ -674,8 +736,8 @@ export function geometry(
     };
   };
 
-  const probeLeaves = m.leaves.map(l => atLeaf(0, 0, l));
-  const probeGroups = m.groups.map(s => atGroup(0, 0, s));
+  const probeLeaves = m.leaves.map(l => atLeaf(0, 0, l, pitch));
+  const probeGroups = m.groups.map(s => atGroup(0, 0, s, pitch));
   const probe: LinkProbe = {
     memY: 0,
     rise,
@@ -693,14 +755,16 @@ export function geometry(
     (level >= 0 ? FRAME.top + 84 + level * 40 + 10 : (structs ? FRAME.top : 0) + 30) +
     rise * RISE.top;
   const tagged = tagRows(m, probe.box);
-  const typeRow = typeRows(m, probe.box);
+  const typeRow = typeRows(m, probe.box, rowOf);
   // A typed pane has room above its text for every row of labels.
   const labelHeight = m.typed ? LABEL.rise + Math.max(0, labelExtent.rows - 1) * LABEL.row : 0;
   const labelRise = m.typed ? labelHeight + 6 : 0;
   const named =
     (structs ? cellH + FRAME.bottom + 32 : cellH + 34) + rise * RISE.bottom + tagged.height;
   const names = named + typeRow.height + extraMemBottom;
-  const paneTop = room + names + extraRows * pitch + 56;
+  const effectivePitch = flush && extraRows > 0 ? names + 38 : pitch;
+  const rowY = (name: string): number => (rowOf.get(name.split('.')[0]) ?? 0) * effectivePitch;
+  const paneTop = room + names + extraRows * effectivePitch + 56;
   const paneH = 76 + labelRise + extraPaneHeight;
   const outputTop = paneTop + paneH + 60;
   const columnH = outputLines.length
@@ -741,21 +805,29 @@ export function geometry(
   const gaps: Array<[number, number, number]> = placed.gaps.map(([x, w, row]) => [
     memX + x,
     w,
-    memY + row * pitch,
+    memY + row * effectivePitch,
   ]);
   const colour = (list: string[], i: number, count: number): string => list[i % count];
 
   const leaves: PlacedLeaf[] = m.leaves.map(l => ({
-    ...atLeaf(memX, memY, l),
+    ...atLeaf(memX, memY, l, effectivePitch),
     color: colour(P.vars, l.color, VARIABLE_COLOURS),
     fieldColor: l.group ? colour(P.fields, l.fieldColor ?? 0, FIELD_COLOURS) : null,
   }));
   const groups: PlacedGroup[] = m.groups.map(s => ({
-    ...atGroup(memX, memY, s),
+    ...atGroup(memX, memY, s, effectivePitch),
     color: colour(P.vars, s.color, VARIABLE_COLOURS),
     fieldColor: s.parent ? colour(P.fields, s.fieldColor ?? 0, FIELD_COLOURS) : null,
     drop: tagged.drop.get(s.name),
   }));
+  const flushRows: FlushRow[] =
+    flush && m.tops.length > 0
+      ? flushRowBounds(chosen.rows).map((b, r) => ({
+          startAddress: b.start,
+          endAddress: b.end,
+          y: memY + r * effectivePitch,
+        }))
+      : [];
   const box = (name: string): PlacedBox | undefined =>
     groups.find(s => s.name === name) || leaves.find(l => l.name === name);
   const cellsOf = (name: string): PlacedLeaf[] =>
@@ -791,6 +863,7 @@ export function geometry(
     paneChar: chosen.paneChar,
     byteWidth: chosen.byte,
     flush,
+    flushRows,
     stacked,
     isStruct,
     rise,
@@ -818,7 +891,7 @@ export function geometry(
     typeLabels: typeRow.labels.map(({ row, ...label }) => ({
       ...label,
       cx: label.cx + memX,
-      top: memY + named + 8 + row * LABEL.row,
+      top: memY + rowY(label.name) + named + 8 + row * LABEL.row,
     })),
     nameSize: labelSize(
       [...groups.filter(s => !s.parent), ...leaves.filter(l => !l.group)],
