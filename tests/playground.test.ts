@@ -135,6 +135,30 @@ test('playground respects configurable wasmUrl and caches in Cache API across re
   }
 });
 
+test('playground controls fit a phone-width viewport without horizontal scroll', async () => {
+  const context = await browser.newContext({ viewport: { width: 390, height: 900 } });
+  const page = await context.newPage();
+
+  try {
+    await page.goto(`${baseUrl}/playground.html?wasm=./tiny.wasm`);
+    await page.waitForSelector('.pg-preset-select option', { state: 'attached' });
+    // Pick the longest example name, the widest the select gets.
+    await page.evaluate(() => {
+      const select = document.querySelector<HTMLSelectElement>('.pg-preset-select')!;
+      const longest = [...select.options].reduce((a, b) => (b.text.length > a.text.length ? b : a));
+      select.value = longest.value;
+    });
+    const overflow = await page.evaluate(() => ({
+      page: document.documentElement.scrollWidth - innerWidth,
+      select: document.querySelector('.pg-preset-select')!.getBoundingClientRect().right - innerWidth,
+    }));
+    assert.ok(overflow.page <= 0, `page scrolls sideways by ${overflow.page}px`);
+    assert.ok(overflow.select <= 0, `example select overflows by ${overflow.select}px`);
+  } finally {
+    await context.close();
+  }
+});
+
 test(
   'playground runs Clang WASM in Web Worker, persists cache across reload, and renders trace + layout',
   { skip: !HAS_REAL_WASM },
