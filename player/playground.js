@@ -655,20 +655,28 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return { rows, right };
   }
-  function typeRows(m, box) {
+  function typeRows(m, box, rowOf) {
     const labels = [];
-    const edge = [];
+    const edgesByRow = /* @__PURE__ */ new Map();
+    let maxRows = 0;
     for (const item of m.typed || m.trace.punning ? m.tops : []) {
       if (!item.type) continue;
       const at = box(item.name);
       const cx = at.x + at.w / 2;
       const half = typeLabelWidth(item.type, LABEL.memory) / 2;
+      const memRow = (rowOf == null ? void 0 : rowOf.get(item.name)) ?? 0;
+      let edge = edgesByRow.get(memRow);
+      if (!edge) {
+        edge = [];
+        edgesByRow.set(memRow, edge);
+      }
       let row = 0;
       while (edge[row] !== void 0 && cx - half < edge[row] + 6) row++;
       edge[row] = cx + half;
+      maxRows = Math.max(maxRows, edge.length);
       labels.push({ name: item.name, type: item.type, cx, row });
     }
-    return { labels, height: edge.length ? edge.length * LABEL.row + 6 : 0 };
+    return { labels, height: maxRows ? maxRows * LABEL.row + 6 : 0 };
   }
   const labelWidth$1 = (c) => String(c.address).length * 16 * CHAR;
   const labelCentre = (c) => [
@@ -795,6 +803,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     for (const item of m.tops) {
       const r = (rowOf == null ? void 0 : rowOf.get(item.name)) ?? 0;
       if (r !== row) {
+        if (flush && address !== null && item.address > address) {
+          x += unused(x, item.address - address);
+          width = Math.max(width, x);
+        }
         row = r;
         x = 0;
         address = null;
@@ -850,8 +862,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }
   const COLUMN_GAP = 56;
   const STACK_TETHER_WIDTH = 30;
+  const FLUSH_BASE_BYTE = 84;
+  const FLUSH_MAX_BYTE = 170;
   function geometry(m, P, stacked, viewport, options = {}) {
-    const cellH = options.cellHeight ?? CELL;
+    const baseCellH = options.cellHeight ?? CELL;
     const extraPaneHeight = options.extraPaneHeight ?? 0;
     const extraMemBottom = options.extraMemBottom ?? 0;
     const flush = Boolean(options.flush);
@@ -863,7 +877,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const minByteWidth = options.minByteWidth ?? 0;
     const isStruct = (c) => Boolean(c.fields);
     const unwrapped = codeLayout(m.source);
-    const targetCodeSize = stacked ? 12 : 13;
+    const targetCodeSize = stacked ? 15 : 13;
     const canvasBudget = viewport > 0 ? viewport * CODE_SIZE / targetCodeSize : Infinity;
     const codeByColumns = /* @__PURE__ */ new Map();
     const fitCode = (budget) => {
@@ -879,7 +893,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const stackedCodeBudget = canvasBudget - 2 * MARGIN - STACK_TETHER_WIDTH;
     const initialCode = stacked ? fitCode(stackedCodeBudget) : unwrapped;
     const besideCode = stacked || !Number.isFinite(canvasBudget) ? 0 : canvasBudget - unwrapped.width - COLUMN_GAP - 2 * MARGIN;
-    const widest = Math.max(minByteWidth, m.leaves.some((leaf) => leaf.size < 4) ? NARROW_BYTE : MAX_BYTE);
+    const widest = flush ? Math.max(minByteWidth, stacked ? FLUSH_MAX_BYTE : FLUSH_BASE_BYTE) : Math.max(minByteWidth, m.leaves.some((leaf) => leaf.size < 4) ? NARROW_BYTE : MAX_BYTE);
     const rise = m.rise;
     const structs = m.groups.length > 0;
     const paneChars = Math.max(...m.steps.map((step) => step.pane.length));
@@ -887,19 +901,30 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const outputLines = finalStdout ? finalStdout.replace(/\n$/, "").split("\n") : [];
     const outputChars = Math.max(0, ...outputLines.map((line) => line.length));
     const canWrap = !stacked && !options.skipWrap && !flush && m.tops.length > 1 && !m.typed && m.references.length === 0 && m.steps.every((step) => Object.keys(step.targets).length === 0);
-    const pitch = (structs ? cellH + FRAME.bottom + 32 : cellH + 34) + rise * RISE.bottom + (structs ? FRAME.top : 0) + 30 + rise * RISE.top;
+    const pitch = (structs ? baseCellH + FRAME.bottom + 32 : baseCellH + 34) + rise * RISE.bottom + (structs ? FRAME.top : 0) + 30 + rise * RISE.top;
+    const flushRowBounds = (rows2) => rows2.map((row, r) => {
+      const items = row.map((i) => m.tops[i]);
+      const start = items[0].address;
+      const lastEnd = items[items.length - 1].address + items[items.length - 1].size;
+      const nextStart = r + 1 < rows2.length ? m.tops[rows2[r + 1][0]].address : void 0;
+      const end = nextStart !== void 0 ? Math.max(lastEnd, nextStart) : minEndAddress !== void 0 ? Math.max(lastEnd, minEndAddress) : lastEnd;
+      return { start, end };
+    });
     const plan = (rows2) => {
       const rowOf2 = /* @__PURE__ */ new Map();
       rows2.forEach((row, r) => row.forEach((i) => rowOf2.set(m.tops[i].name, r)));
+      const bounds = flush ? flushRowBounds(rows2) : null;
       const byteFor = (budget) => Math.max(
         minByteWidth,
         Math.min(
           widest,
-          ...rows2.map((row) => {
+          ...rows2.map((row, r) => {
             const items = row.map((i) => m.tops[i]);
-            const lastEnd = items[items.length - 1].address + items[items.length - 1].size;
-            const spanEnd = minEndAddress !== void 0 ? Math.max(lastEnd, minEndAddress) : lastEnd;
-            const bytes = spanEnd - items[0].address;
+            const bytes = bounds ? bounds[r].end - bounds[r].start : (() => {
+              const lastEnd = items[items.length - 1].address + items[items.length - 1].size;
+              const spanEnd = minEndAddress !== void 0 ? Math.max(lastEnd, minEndAddress) : lastEnd;
+              return spanEnd - items[0].address;
+            })();
             const nested = m.groups.filter((s) => s.parent && rowOf2.get(s.top) === rowOf2.get(items[0].name));
             return Math.max(1, (budget - gap * (items.length - 1) - 2 * NEST * nested.length) / bytes);
           })
@@ -954,41 +979,79 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         if (candidate.width <= single.width + 1 && candidate.cell > chosen.cell * 1.1) chosen = candidate;
       }
     }
+    if (flush && stacked && !options.skipWrap && m.tops.length > 1) {
+      const singleSpan = flushRowBounds(single.rows)[0];
+      const totalBytes = singleSpan.end - singleSpan.start;
+      if (totalBytes > 10) {
+        const counts = totalBytes > 24 && m.tops.length >= 3 ? [3, 2] : [2];
+        let bestCandidate = null;
+        let bestScore = Infinity;
+        for (const rowCount of counts) {
+          let bestRows = null;
+          let bestMax = Infinity;
+          let bestSpread = Infinity;
+          for (const rows2 of partitions(m.tops.length, rowCount)) {
+            const lens = flushRowBounds(rows2).map((b) => b.end - b.start);
+            const maxRowBytes = Math.max(...lens);
+            const spread = maxRowBytes - Math.min(...lens);
+            if (maxRowBytes < bestMax || maxRowBytes === bestMax && spread < bestSpread) {
+              bestMax = maxRowBytes;
+              bestSpread = spread;
+              bestRows = rows2;
+            }
+          }
+          if (bestRows && bestMax <= totalBytes * 0.75) {
+            const candidate = plan(bestRows);
+            const singleScale = single.byte / single.columnW;
+            const candidateScale = candidate.byte / candidate.columnW;
+            if (candidateScale >= singleScale * 1.15 && bestMax < bestScore) {
+              bestScore = bestMax;
+              bestCandidate = candidate;
+            }
+          }
+        }
+        if (bestCandidate) chosen = bestCandidate;
+      }
+    }
     const { labelExtent } = chosen;
     const placed = chosen.placed;
     const rowOf = chosen.rowOf;
     const extraRows = chosen.rows.length - 1;
-    const rowY = (name) => (rowOf.get(name.split(".")[0]) ?? 0) * pitch;
     const { rows, height: codeH } = chosen.code;
     let codeW = chosen.code.width;
     let columnW = chosen.columnW;
     if (stacked) codeW = columnW = Math.max(codeW, columnW);
-    const atLeaf = (memX2, memY2, c) => {
+    const cellH = stacked && flush && options.maxCellHeight && options.maxCellHeight > baseCellH ? Math.min(
+      options.maxCellHeight,
+      Math.max(baseCellH, Math.round(baseCellH + (chosen.byte - FLUSH_BASE_BYTE) * 0.25))
+    ) : baseCellH;
+    const atLeaf = (memX2, memY2, c, rowOffset) => {
       const span = placed.spans.get(c.name);
       return {
         ...c,
         x: memX2 + span[0],
-        y: memY2 + rowY(c.name),
+        y: memY2 + rowOffset(c.name),
         w: span[1],
         h: cellH,
         color: "",
         fieldColor: null
       };
     };
-    const atGroup = (memX2, memY2, c) => {
+    const atGroup = (memX2, memY2, c, rowOffset) => {
       const span = placed.spans.get(c.name);
       return {
         ...c,
         x: memX2 + span[0],
-        y: memY2 + rowY(c.name),
+        y: memY2 + rowOffset(c.name),
         w: span[1],
         h: cellH,
         color: "",
         fieldColor: null
       };
     };
-    const probeLeaves = m.leaves.map((l) => atLeaf(0, 0, l));
-    const probeGroups = m.groups.map((s) => atGroup(0, 0, s));
+    const probeRowY = (name) => (rowOf.get(name.split(".")[0]) ?? 0) * pitch;
+    const probeLeaves = m.leaves.map((l) => atLeaf(0, 0, l, probeRowY));
+    const probeGroups = m.groups.map((s) => atGroup(0, 0, s, probeRowY));
     const probe = {
       memY: 0,
       rise,
@@ -997,21 +1060,65 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       box: (name) => probeGroups.find((s) => s.name === name) || probeLeaves.find((l) => l.name === name)
     };
     let level = -1;
+    const sameRowMaxLevel = /* @__PURE__ */ new Map();
+    let maxCrossLinks = 0;
+    const maxCrossToRow = /* @__PURE__ */ new Map();
+    const maxCrossFromRow = /* @__PURE__ */ new Map();
     for (const step of m.steps) {
+      let stepCross = 0;
+      const stepTo = /* @__PURE__ */ new Map();
+      const stepFrom = /* @__PURE__ */ new Map();
       for (const l of links(probe, step)) {
         level = Math.max(level, l.level);
+        const fromRow = rowOf.get(l.from.name.split(".")[0]) ?? 0;
+        const toRow = rowOf.get(l.to.name.split(".")[0]) ?? 0;
+        if (fromRow === toRow) {
+          sameRowMaxLevel.set(fromRow, Math.max(sameRowMaxLevel.get(fromRow) ?? -1, l.level));
+        } else {
+          stepCross++;
+          stepTo.set(toRow, (stepTo.get(toRow) ?? 0) + 1);
+          stepFrom.set(fromRow, (stepFrom.get(fromRow) ?? 0) + 1);
+        }
       }
+      maxCrossLinks = Math.max(maxCrossLinks, stepCross);
+      for (const [r, count] of stepTo) maxCrossToRow.set(r, Math.max(maxCrossToRow.get(r) ?? 0, count));
+      for (const [r, count] of stepFrom) maxCrossFromRow.set(r, Math.max(maxCrossFromRow.get(r) ?? 0, count));
     }
-    const room = (level >= 0 ? FRAME.top + 84 + level * 40 + 10 : (structs ? FRAME.top : 0) + 30) + rise * RISE.top;
+    const baseRoom = (structs ? FRAME.top : 0) + 30 + rise * RISE.top;
+    let room;
+    if (flush && extraRows > 0) {
+      const row0Same = sameRowMaxLevel.get(0) ?? -1;
+      const row0SameRoom = row0Same >= 0 ? FRAME.top + 84 + row0Same * 40 + 10 : 0;
+      const row0HasCross = (maxCrossToRow.get(0) ?? 0) > 0 || (maxCrossFromRow.get(0) ?? 0) > 0;
+      const row0CrossRoom = row0HasCross ? 64 + Math.max(0, maxCrossLinks - 1) * 18 : 0;
+      room = Math.max(baseRoom, row0SameRoom, row0CrossRoom);
+    } else {
+      room = level >= 0 ? FRAME.top + 84 + level * 40 + 10 + rise * RISE.top : baseRoom;
+    }
     const tagged = tagRows(m, probe.box);
-    const typeRow = typeRows(m, probe.box);
+    const typeRow = typeRows(m, probe.box, rowOf);
     const labelHeight = m.typed ? LABEL.rise + Math.max(0, labelExtent.rows - 1) * LABEL.row : 0;
     const labelRise = m.typed ? labelHeight + 6 : 0;
     const named = (structs ? cellH + FRAME.bottom + 32 : cellH + 34) + rise * RISE.bottom + tagged.height;
     const names = named + typeRow.height + extraMemBottom;
-    const paneTop = room + names + extraRows * pitch + 56;
+    const rowOffsets = [0];
+    for (let r = 1; r <= extraRows; r++) {
+      if (flush) {
+        const baseGap = extraMemBottom > 0 ? 34 : 38;
+        const rSame = sameRowMaxLevel.get(r) ?? -1;
+        const sameGap = rSame >= 0 ? 96 + rSame * 32 : 0;
+        const rHasCross = (maxCrossToRow.get(r) ?? 0) > 0 || (maxCrossFromRow.get(r) ?? 0) > 0;
+        const crossGap = rHasCross ? 64 + Math.max(0, maxCrossLinks - 1) * 18 : 0;
+        rowOffsets.push(rowOffsets[r - 1] + names + Math.max(baseGap, sameGap, crossGap));
+      } else {
+        rowOffsets.push(r * pitch);
+      }
+    }
+    const rowY = (name) => rowOffsets[rowOf.get(name.split(".")[0]) ?? 0] ?? 0;
+    const paneGap = stacked ? extraMemBottom > 0 ? 18 : flush ? 36 : 56 : 56;
+    const paneTop = room + rowOffsets[extraRows] + names + paneGap;
     const paneH = 76 + labelRise + extraPaneHeight;
-    const outputTop = paneTop + paneH + 60;
+    const outputTop = paneTop + paneH + (stacked && flush ? 46 : 60);
     const columnH = outputLines.length ? outputTop + (outputLines.length - 1) * 36 + 14 : paneTop + paneH;
     const codeX = MARGIN;
     let codeY;
@@ -1019,10 +1126,17 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     let columnY;
     let width;
     let height;
+    const minMemLeft = stacked && flush && extraRows > 0 && maxCrossLinks > 0 ? 36 + Math.max(0, maxCrossLinks - 1) * 14 : 0;
     if (stacked) {
       codeY = MARGIN;
       columnX = MARGIN;
       columnY = codeY + codeH + 24;
+      if (minMemLeft > 0) {
+        const minLeftPad = Math.max(24, minMemLeft - columnX);
+        if (minLeftPad + placed.width + 24 > columnW) {
+          codeW = columnW = minLeftPad + placed.width + 24;
+        }
+      }
       width = MARGIN + columnW + STACK_TETHER_WIDTH + MARGIN;
       height = columnY + columnH + MARGIN;
     } else {
@@ -1033,12 +1147,12 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       width = columnX + columnW + MARGIN;
       height = MARGIN + content + MARGIN;
     }
-    const memX = columnX + 24;
+    const memX = stacked ? round(Math.max(minMemLeft, columnX + 24 + Math.max(0, (columnW - 48 - placed.width) / 2))) : columnX + 24;
     const memY = columnY + room;
     const pane2 = { x: columnX, y: columnY + paneTop, w: columnW, h: paneH };
     const tx = columnX + 24;
     const ty = pane2.y + 38 + 11 + labelHeight;
-    const below = pane2.y - 56;
+    const below = pane2.y - paneGap;
     const out = [columnX + 24, columnY + outputTop];
     const code2 = { x: codeX, y: codeY, w: codeW, h: codeH };
     const codeRows = placeCodeRows(rows, code2.y + 50);
@@ -1046,20 +1160,25 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     const gaps2 = placed.gaps.map(([x, w, row]) => [
       memX + x,
       w,
-      memY + row * pitch
+      memY + (rowOffsets[row] ?? row * pitch)
     ]);
     const colour2 = (list, i, count) => list[i % count];
     const leaves = m.leaves.map((l) => ({
-      ...atLeaf(memX, memY, l),
+      ...atLeaf(memX, memY, l, rowY),
       color: colour2(P.vars, l.color, VARIABLE_COLOURS),
       fieldColor: l.group ? colour2(P.fields, l.fieldColor ?? 0, FIELD_COLOURS) : null
     }));
     const groups = m.groups.map((s) => ({
-      ...atGroup(memX, memY, s),
+      ...atGroup(memX, memY, s, rowY),
       color: colour2(P.vars, s.color, VARIABLE_COLOURS),
       fieldColor: s.parent ? colour2(P.fields, s.fieldColor ?? 0, FIELD_COLOURS) : null,
       drop: tagged.drop.get(s.name)
     }));
+    const flushRows = flush && m.tops.length > 0 ? flushRowBounds(chosen.rows).map((b, r) => ({
+      startAddress: b.start,
+      endAddress: b.end,
+      y: memY + (rowOffsets[r] ?? 0)
+    })) : [];
     const box = (name) => groups.find((s) => s.name === name) || leaves.find((l) => l.name === name);
     const cellsOf = (name) => leaves.filter((l) => l.name === name || l.name.startsWith(name + "."));
     const tags2 = tagged.tags.map((t) => {
@@ -1085,6 +1204,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       paneChar: chosen.paneChar,
       byteWidth: chosen.byte,
       flush,
+      flushRows,
       stacked,
       isStruct,
       rise,
@@ -1112,7 +1232,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       typeLabels: typeRow.labels.map(({ row, ...label }) => ({
         ...label,
         cx: label.cx + memX,
-        top: memY + named + 8 + row * LABEL.row
+        top: memY + rowY(label.name) + named + 8 + row * LABEL.row
       })),
       nameSize: labelSize(
         [...groups.filter((s) => !s.parent), ...leaves.filter((l) => !l.group)],
@@ -2327,8 +2447,33 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return integerLiteral(previous.pane.slice(...(part == null ? void 0 : part.span) ?? op.span).replace(/^\((.*)\)$/, "$1"));
   }
   const BYTE_CELL_HEIGHT = 88;
+  const BYTE_CELL_MAX_HEIGHT = 108;
   const BYTE_SPLIT_OFFSET = 48;
   const MAX_DETAIL_GAP = 16;
+  function byteCellMetrics(cellH, byteW) {
+    const t = Math.max(0, Math.min(1, (cellH - BYTE_CELL_HEIGHT) / (BYTE_CELL_MAX_HEIGHT - BYTE_CELL_HEIGHT)));
+    const lerp = (a, b) => round(a + (b - a) * t);
+    const baseHex = byteW >= 54 ? 17 : 15.5;
+    const basePtrHex = byteW >= 54 ? 14.5 : 13;
+    return {
+      splitOffset: lerp(BYTE_SPLIT_OFFSET, 58),
+      headerY: lerp(33, 40),
+      headerCenterY: lerp(26, 30),
+      headerMaxFont: lerp(25, 34),
+      headerBadgeTop: lerp(12, 14),
+      headerBadgeH: lerp(26, 34),
+      hexY: lerp(74, 92),
+      hexCenterY: lerp(68, 84),
+      hexSize: lerp(baseHex, 22),
+      ptrHexSize: lerp(basePtrHex, 19),
+      unknownHexSize: lerp(13.5, 17.5),
+      hexBadgeW: lerp(30, 38),
+      hexBadgeH: lerp(20, 26),
+      hexBadgeTopOff: lerp(15, 19),
+      addrStartSize: byteW >= 54 ? 16 : 15,
+      addrSize: byteW >= 54 ? 14.5 : 13
+    };
+  }
   let patternSeq = 0;
   function hatchDefs(P) {
     const uid = ++patternSeq;
@@ -2377,6 +2522,64 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     if (typeof h === "string") return { text: h, poisoned: false };
     return { text: h.text, poisoned: Boolean(h.poisoned) };
   }
+  function flushAddrPos(g, addr) {
+    var _a;
+    const rows = g.flushRows;
+    if (rows.length > 0) {
+      const row = rows.find((r) => addr >= r.startAddress && addr < r.endAddress) ?? (addr < rows[0].startAddress ? rows[0] : rows[rows.length - 1]);
+      return { x: g.memX + (addr - row.startAddress) * g.byteWidth, y: row.y, row };
+    }
+    const baseAddress = g.leaves.length ? Math.min(...g.leaves.map((l) => l.address)) : 0;
+    const y = ((_a = g.leaves[0]) == null ? void 0 : _a.y) ?? g.memY;
+    return {
+      x: g.memX + (addr - baseAddress) * g.byteWidth,
+      y,
+      row: { startAddress: baseAddress, endAddress: baseAddress, y }
+    };
+  }
+  function flushAddressSegments(g, start, size) {
+    if (size <= 0) return [];
+    const end = start + size;
+    const rows = g.flushRows;
+    if (rows.length <= 1) {
+      const pos = flushAddrPos(g, start);
+      return [{ start, size, x: pos.x, y: pos.y, w: size * g.byteWidth, isFirst: true, isLast: true }];
+    }
+    const raw = [];
+    let cur = start;
+    if (cur < rows[0].startAddress) {
+      const segEnd = Math.min(end, rows[0].startAddress);
+      const pos = flushAddrPos(g, cur);
+      raw.push({ start: cur, size: segEnd - cur, x: pos.x, y: pos.y, w: (segEnd - cur) * g.byteWidth });
+      cur = segEnd;
+    }
+    for (const row of rows) {
+      if (cur >= end) break;
+      if (row.endAddress <= cur) continue;
+      if (row.startAddress >= end) break;
+      const segStart = Math.max(cur, row.startAddress);
+      const segEnd = Math.min(end, row.endAddress);
+      if (segEnd > segStart) {
+        raw.push({
+          start: segStart,
+          size: segEnd - segStart,
+          x: g.memX + (segStart - row.startAddress) * g.byteWidth,
+          y: row.y,
+          w: (segEnd - segStart) * g.byteWidth
+        });
+      }
+      cur = segEnd;
+    }
+    if (cur < end) {
+      const pos = flushAddrPos(g, cur);
+      raw.push({ start: cur, size: end - cur, x: pos.x, y: pos.y, w: (end - cur) * g.byteWidth });
+    }
+    return raw.map((seg, i) => ({
+      ...seg,
+      isFirst: i === 0,
+      isLast: i === raw.length - 1
+    }));
+  }
   function renderByteMemory(c, opts) {
     var _a;
     const { g, P, animate, op } = c;
@@ -2385,11 +2588,10 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     if (g.leaves.length === 0) return "";
     const byteW = g.byteWidth;
-    const gridY = g.leaves[0].y;
     const cellH = g.leaves[0].h;
-    const baseAddress = Math.min(...g.leaves.map((l) => l.address));
-    const xOf = (addr) => g.memX + (addr - baseAddress) * byteW;
     const at = op ? arrival(op) : 0;
+    const metrics = byteCellMetrics(cellH, byteW);
+    const { addrStartSize, addrSize, hexSize, ptrHexSize, unknownHexSize } = metrics;
     const readCells = new Set((op == null ? void 0 : op.kind) === "read" ? g.cellsOf(op.name).map((l) => l.name) : []);
     const writeCells = new Set((op == null ? void 0 : op.kind) === "write" ? g.cellsOf(op.name).map((l) => l.name) : []);
     let out = "";
@@ -2400,48 +2602,60 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           bx + byteW / 2,
           leaf.y - 12,
           leaf.address + k,
-          k === 0 ? 15 : 13,
+          k === 0 ? addrStartSize : addrSize,
           k === 0 ? P.muted : P.grey,
           "middle"
         );
       }
     }
-    for (const run of paddingRuns(g.leaves, opts.minEndAddress)) {
-      const rx = xOf(run.start);
-      const rw = run.size * byteW;
-      out += `<g class="cv-byte-padding" data-address="${run.start}" data-size="${run.size}">` + rect(rx + 1, gridY + 1, rw - 2, cellH - 2, `url(#${opts.padId})`, P.gapStroke, 0, 1.5);
+    const splitPaddingRuns = paddingRuns(g.leaves, opts.minEndAddress).flatMap(
+      (run) => flushAddressSegments(g, run.start, run.size)
+    );
+    for (const run of splitPaddingRuns) {
+      const rx = run.x;
+      const ry = run.y;
+      const rw = run.w;
+      out += `<g class="cv-byte-padding" data-address="${run.start}" data-size="${run.size}">` + rect(rx + 1, ry + 1, rw - 2, cellH - 2, `url(#${opts.padId})`, P.gapStroke, 0, 1.5);
       if (run.size <= MAX_DETAIL_GAP) {
-        const hexY = gridY + 74;
+        const hexY = ry + metrics.hexY;
         for (let k = 0; k < run.size; k++) {
           const addr = run.start + k;
-          const bx = xOf(addr);
-          out += text(bx + byteW / 2, gridY - 12, addr, 13, P.grey, "middle");
+          const bx = rx + k * byteW;
+          out += text(bx + byteW / 2, ry - 12, addr, addrSize, P.grey, "middle");
           if (k > 0) {
-            out += `<line x1="${round(bx)}" y1="${gridY + 2}" x2="${round(bx)}" y2="${gridY + cellH - 2}" stroke="${P.gapStroke}" stroke-dasharray="3 3" stroke-width="1"/>`;
+            out += `<line x1="${round(bx)}" y1="${ry + 2}" x2="${round(bx)}" y2="${ry + cellH - 2}" stroke="${P.gapStroke}" stroke-dasharray="3 3" stroke-width="1"/>`;
           }
           const padState = (_a = opts.paddingByte) == null ? void 0 : _a.call(opts, addr);
           if ((padState == null ? void 0 : padState.corrupted) && opts.ubId) {
             const makeHazard = (val) => {
               const hexText = typeof val === "number" ? hexByte(val) : "??";
-              const badgeBg = rect(bx + byteW / 2 - 15, hexY - 15, 30, 20, P.panel, "none", 3);
-              return rect(bx + 1.5, gridY + 1.5, byteW - 3, cellH - 3, `url(#${opts.ubId})`, P.error, 0, 1.6) + badgeBg + text(bx + byteW / 2, hexY, hexText, 15.5, P.error, "middle");
+              const badgeBg = rect(
+                bx + byteW / 2 - metrics.hexBadgeW / 2,
+                hexY - metrics.hexBadgeTopOff,
+                metrics.hexBadgeW,
+                metrics.hexBadgeH,
+                P.panel,
+                "none",
+                3
+              );
+              return rect(bx + 1.5, ry + 1.5, byteW - 3, cellH - 3, `url(#${opts.ubId})`, P.error, 0, 1.6) + badgeBg + text(bx + byteW / 2, hexY, hexText, hexSize, P.error, "middle");
             };
             const hazard = makeHazard(padState.value);
             if (animate && padState.corruptedNow) {
               const rev = padState.revealAt ?? at;
-              const beforeMarkup = padState.corruptedBefore ? makeHazard(padState.beforeValue ?? "?") : text(bx + byteW / 2, hexY, "??", 13.5, P.grey, "middle");
+              const beforeMarkup = padState.corruptedBefore ? makeHazard(padState.beforeValue ?? "?") : text(bx + byteW / 2, hexY, "??", unknownHexSize, P.grey, "middle");
               const changed = !padState.corruptedBefore || padState.beforeValue !== padState.value;
-              out += `<g>${hide(rev)}${beforeMarkup}</g><g opacity="0">${show(rev)}${changed ? scaledAt(bx + byteW / 2, gridY + 68, hazard, rev - 0.1) : hazard}</g>`;
+              out += `<g>${hide(rev)}${beforeMarkup}</g><g opacity="0">${show(rev)}${changed ? scaledAt(bx + byteW / 2, ry + metrics.hexCenterY, hazard, rev - 0.1) : hazard}</g>`;
             } else {
               out += hazard;
             }
           } else {
-            out += text(bx + byteW / 2, hexY, "??", 13.5, P.grey, "middle");
+            out += text(bx + byteW / 2, hexY, "??", unknownHexSize, P.grey, "middle");
           }
         }
       } else {
-        out += text(rx + rw / 2, gridY - 12, `${run.start}..${run.start + run.size - 1}`, 13, P.grey, "middle");
-        out += text(rx + rw / 2, gridY + 74, "…", 15, P.grey, "middle");
+        out += text(rx + rw / 2, ry - 12, `${run.start}..${run.start + run.size - 1}`, addrSize, P.grey, "middle");
+        out += text(rx + rw / 2, ry + metrics.hexY, "…", unknownHexSize + 1.5, P.grey, "middle");
       }
       out += "</g>";
     }
@@ -2455,7 +2669,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const vy = leaf.y;
       const vw = leaf.w;
       const vh = leaf.h;
-      const splitY = vy + BYTE_SPLIT_OFFSET;
+      const splitY = vy + metrics.splitOffset;
       const col = leaf.fieldColor || leaf.color;
       const on = afterH !== null;
       const isCorrupted = Boolean(st.corrupted);
@@ -2494,23 +2708,23 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       const renderHeader = (h, useBefore) => {
         if (h === null) return "";
         const inset = Math.min(12, vw / 5);
-        const decSize = Math.min(25, (vw - inset) / (Math.max(1, h.text.length) * CHAR));
+        const decSize = Math.min(metrics.headerMaxFont, (vw - inset) / (Math.max(1, h.text.length) * CHAR));
         const errNow = isCorrupted && !useBefore;
         const decCol = errNow ? P.error : !h.poisoned && h.text === "?" ? P.grey : P.fg;
         const badgeW = Math.min(vw - 8, Math.max(28, h.text.length * decSize * CHAR + 8));
-        const bg = errNow ? rect(headCx - badgeW / 2, vy + 12, badgeW, 26, P.panel, "none", 4) : "";
-        return bg + (h.poisoned ? poisonText(headCx, vy + 33, h.text, round(decSize), decCol, P.error, "middle") : text(headCx, vy + 33, h.text, round(decSize), decCol, "middle"));
+        const bg = errNow ? rect(headCx - badgeW / 2, vy + metrics.headerBadgeTop, badgeW, metrics.headerBadgeH, P.panel, "none", 4) : "";
+        return bg + (h.poisoned ? poisonText(headCx, vy + metrics.headerY, h.text, round(decSize), decCol, P.error, "middle") : text(headCx, vy + metrics.headerY, h.text, round(decSize), decCol, "middle"));
       };
       const headerChanged = animate && st.changing && (beforeH == null ? void 0 : beforeH.text) !== (afterH == null ? void 0 : afterH.text);
       if (headerChanged) {
         const swapped = (beforeH !== null ? `<g>${hide(at)}${renderHeader(beforeH, true)}</g>` : "") + `<g opacity="0">${show(at)}${renderHeader(afterH, false)}</g>`;
-        markup += scaledAt(headCx, vy + 26, swapped, at - 0.15);
+        markup += scaledAt(headCx, vy + metrics.headerCenterY, swapped, at - 0.15);
       } else if (animate && st.corruptedNow) {
         markup += (beforeH !== null ? `<g>${hide(at)}${renderHeader(beforeH, true)}</g>` : "") + `<g opacity="0">${show(at)}${renderHeader(afterH, false)}</g>`;
       } else {
         markup += renderHeader(afterH, false);
       }
-      const hexY = vy + 74;
+      const hexY = vy + metrics.hexY;
       let hexGroup = `<g class="cv-byte-hex" data-name="${esc(leaf.name)}">`;
       for (let k = 0; k < leaf.size; k++) {
         const bs = st.bytes[k];
@@ -2521,22 +2735,38 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           if (bval === null) return "";
           if (bval === "?") {
             if (bs.poisoned && !useBefore) {
-              const badgeBg = rect(bx + byteW / 2 - 15, hexY - 15, 30, 20, P.panel, "none", 3);
-              return badgeBg + text(bx + byteW / 2, hexY, "??", 15.5, P.error, "middle");
+              const badgeBg = rect(
+                bx + byteW / 2 - metrics.hexBadgeW / 2,
+                hexY - metrics.hexBadgeTopOff,
+                metrics.hexBadgeW,
+                metrics.hexBadgeH,
+                P.panel,
+                "none",
+                3
+              );
+              return badgeBg + text(bx + byteW / 2, hexY, "??", hexSize, P.error, "middle");
             }
-            return text(bx + byteW / 2, hexY, "??", 13.5, P.grey, "middle");
+            return text(bx + byteW / 2, hexY, "??", unknownHexSize, P.grey, "middle");
           }
           const errNow = Boolean(bs.corrupted && !useBefore);
-          const bg = errNow ? rect(bx + byteW / 2 - 15, hexY - 15, 30, 20, P.panel, "none", 3) : "";
+          const bg = errNow ? rect(
+            bx + byteW / 2 - metrics.hexBadgeW / 2,
+            hexY - metrics.hexBadgeTopOff,
+            metrics.hexBadgeW,
+            metrics.hexBadgeH,
+            P.panel,
+            "none",
+            3
+          ) : "";
           const byteInk = errNow ? P.error : leaf.kind === "ptr" ? P.muted : P.fg;
-          const size = !errNow && leaf.kind === "ptr" ? 13 : 15.5;
+          const size = !errNow && leaf.kind === "ptr" ? ptrHexSize : hexSize;
           const glyph = text(bx + byteW / 2, hexY, hexByte(bval), size, byteInk, "middle");
           return bg + (!errNow && leaf.kind === "ptr" ? `<g opacity="0.65">${glyph}</g>` : glyph);
         };
         const byteChanged = animate && st.changing && bs.before !== bs.after;
         if (byteChanged) {
           const swapped = (bs.before !== null ? `<g>${hide(rev)}${renderByte(bs.before, true)}</g>` : "") + `<g opacity="0">${show(rev)}${renderByte(bs.after, false)}</g>`;
-          hexGroup += scaledAt(bx + byteW / 2, vy + 68, swapped, rev - 0.15);
+          hexGroup += scaledAt(bx + byteW / 2, vy + metrics.hexCenterY, swapped, rev - 0.15);
         } else if (animate && bs.corruptedNow) {
           hexGroup += (bs.before !== null ? `<g>${hide(rev)}${renderByte(bs.before, true)}</g>` : "") + `<g opacity="0">${show(rev)}${renderByte(bs.after, false)}</g>`;
         } else {
@@ -2682,17 +2912,19 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       }
     });
   }
-  const BIT_FONT = 22;
+  const BIT_FONT = 24;
   const HEX_FONT = 21;
-  const RESULT_FONT = 24;
+  const RESULT_FONT = 25;
   const BIT_STEP = BIT_FONT * CHAR;
   const NIBBLE_W = 4 * BIT_STEP;
-  const NIB_GAP = 8;
+  const NIB_GAP = 7;
   const BYTE_W = 2 * NIBBLE_W + NIB_GAP;
-  const BYTE_GAP = 26;
-  const CARD_PAD = 12;
+  const BYTE_GAP = 14;
+  const CARD_PAD_X = 16;
+  const CARD_PAD_Y = 12;
   const ARC_RISE = 9;
-  const ROOMY_ARCS = 3;
+  const BASE_CARD_OFFSET = 24;
+  const ARC_CARD_OFFSET = 35;
   const extents = /* @__PURE__ */ new WeakMap();
   function workbenchExtent(m) {
     let extent = extents.get(m);
@@ -2705,14 +2937,23 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       for (const part of step.types ?? []) sizes.push(integerOf(m, part.type).size);
       const { op } = step;
       if ((op == null ? void 0 : op.kind) === "convert") sizes.push(integerOf(m, op.from).size, integerOf(m, op.to).size);
-      if (op && "value" in op) labelChars = Math.max(labelChars, op.value.length + 2);
+      if (op && "value" in op) {
+        labelChars = Math.max(labelChars, op.value.length + 2);
+      } else if (op === null) {
+        const literals = (step.types ?? []).filter((t) => !t.slot);
+        if (literals.length === 1) {
+          const value = integerLiteral(step.pane.slice(...literals[0].span));
+          if (value !== null) labelChars = Math.max(labelChars, String(value).length + 2);
+        }
+      }
     }
-    extent = { bytes: Math.max(1, ...sizes), labelChars, drop: Math.max(0, arcs - ROOMY_ARCS) * ARC_RISE };
+    const cardOffset = arcs > 0 ? ARC_CARD_OFFSET + (arcs - 1) * ARC_RISE : BASE_CARD_OFFSET;
+    extent = { bytes: Math.max(1, ...sizes), labelChars, cardOffset };
     extents.set(m, extent);
     return extent;
   }
-  const slotsWidth = (bytes) => bytes * BYTE_W + (bytes - 1) * BYTE_GAP;
-  const RESULT_GAP = 20;
+  const slotsWidth = (bytes) => bytes * BYTE_W + Math.max(0, bytes - 1) * BYTE_GAP;
+  const RESULT_GAP = 16;
   const labelWidth = (label) => (typeof label === "number" ? label : label.length) * RESULT_FONT * CHAR;
   const bitCx = (x, i) => x + (i < 4 ? 0 : NIBBLE_W + NIB_GAP) + (i % 4 + 0.5) * BIT_STEP;
   function drawByte(x, yBits, yHex, byte, ink) {
@@ -2728,6 +2969,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return out + "</g>";
   }
   const BOX_TOP = BIT_FONT * 0.78 + 4;
+  const CARD_HEIGHT = Math.ceil(CARD_PAD_Y + BOX_TOP + 34 + CARD_PAD_Y + 2);
   function signFrame(x, yBits, stroke, fill = "none") {
     return rect(bitCx(x, 0) - BIT_STEP / 2 - 3, yBits - BOX_TOP, BIT_STEP + 6, BOX_TOP + 6, fill, stroke, 4, 1.8);
   }
@@ -2736,24 +2978,32 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return `<path d="M -10 -5 L 0 0 L -10 5 Z" fill="${color}" transform="translate(${round(tipX)} ${round(tipY)}) rotate(${deg})"/>`;
   }
   function workbench(c) {
+    const inner = workbenchInner(c);
+    return inner ? `<g class="cv-bits-workbench">${inner}</g>` : "";
+  }
+  function workbenchInner(c) {
     const act = activeBitAction(c);
     if (!act) return "";
     const { g, P, animate, op } = c;
-    const cardTop = g.ty + 56 + workbenchExtent(c.m).drop;
-    const yBits = cardTop + CARD_PAD + BOX_TOP;
+    const cardTop = g.ty + workbenchExtent(c.m).cardOffset;
+    const yBits = cardTop + CARD_PAD_Y + BOX_TOP;
     const yHex = yBits + 34;
-    const yRes = yBits + 16;
-    const cardBottom = yHex + CARD_PAD;
-    const rightAnchor = g.tx + 12 + slotsWidth(workbenchExtent(c.m).bytes);
+    const cardBottom = cardTop + CARD_HEIGHT;
+    const yRes = cardTop + CARD_HEIGHT / 2 + RESULT_FONT * 0.34;
+    const paneInnerW = g.pane.w - 48;
+    const byteCount = act.kind === "value" || act.kind === "invert" ? act.info.size : Math.max(act.fromInfo.size, act.toInfo.size);
+    const label = act.kind === "value" ? `= ${act.value}` : `→ ${act.afterVal}`;
+    const slotsW = slotsWidth(byteCount);
+    const contentW = slotsW + RESULT_GAP + labelWidth(label);
+    const cardW = Math.min(paneInnerW, contentW + 2 * CARD_PAD_X);
+    const cardX = g.tx + (paneInnerW - cardW) / 2;
+    const startX = cardX + (cardW - contentW) / 2;
+    const rightAnchor = startX + slotsW;
     const slotX = (bytesFromLSB) => rightAnchor - (bytesFromLSB + 1) * BYTE_W - bytesFromLSB * BYTE_GAP;
-    const card = (bytes, resultLabel) => {
-      const left = slotX(bytes - 1) - CARD_PAD - 4;
-      const right = rightAnchor + RESULT_GAP + labelWidth(resultLabel) + CARD_PAD + 4;
-      return rect(left, cardTop, right - left, cardBottom - cardTop, P.panel, P.gapStroke, 8, 1.5);
-    };
+    const card = () => rect(cardX, cardTop, cardW, CARD_HEIGHT, P.panel, P.gapStroke, 8, 1.5);
     const reveal = (at2, markup) => animate && at2 > 0 ? `<g opacity="0">${fade(0, 1, 0.22, at2)}${markup}</g>` : markup;
     const swap = (at2, before, after) => animate ? `<g>${hide(at2)}${before}</g><g opacity="0">${show(at2)}${after}</g>` : after;
-    const result = (at2, label2, color) => reveal(at2, text(rightAnchor + RESULT_GAP, yRes, label2, RESULT_FONT, color));
+    const result = (at2, textLabel, color) => reveal(at2, text(rightAnchor + RESULT_GAP, yRes, textLabel, RESULT_FONT, color));
     const plainValue = (value, info, hexInk) => {
       const bytes = toBytesMSB(value, info.size);
       let out2 = "";
@@ -2770,10 +3020,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       } else if (animate && (op == null ? void 0 : op.kind) === "read") {
         appearAt = arrival(op);
       }
-      const label2 = `= ${act.value}`;
       return reveal(
         appearAt,
-        card(act.info.size, label2) + plainValue(act.value, act.info, col) + text(rightAnchor + RESULT_GAP, yRes, label2, RESULT_FONT, col)
+        card() + plainValue(act.value, act.info, col) + text(rightAnchor + RESULT_GAP, yRes, label, RESULT_FONT, col)
       );
     }
     if (act.kind === "invert") {
@@ -2783,16 +3032,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       after.forEach((b, idx) => {
         inverted += drawByte(slotX(after.length - 1 - idx), yBits, yHex, b, { bits: P.write, hex: P.write });
       });
-      const label2 = `→ ${act.afterVal}`;
-      return card(act.info.size, label2) + swap(at2, plainValue(act.beforeVal, act.info, P.fg), inverted) + result(at2 + 0.18, label2, P.write);
+      return card() + swap(at2, plainValue(act.beforeVal, act.info, P.fg), inverted) + result(at2 + 0.18, label, P.write);
     }
     const fromBytes = toBytesMSB(act.beforeVal, act.fromInfo.size);
     const toBytes = toBytesMSB(act.afterVal, act.toInfo.size);
     const fromCol = typeColour(c, act.fromType);
     const toCol = typeColour(c, act.toType);
     const at = op ? arrival(op) : T.evaluate;
-    const label = `→ ${act.afterVal}`;
-    let out = card(Math.max(fromBytes.length, toBytes.length), label);
+    let out = card();
     if (act.kind === "narrow") {
       const keep = toBytes.length;
       fromBytes.forEach((b, idx) => {
@@ -2802,7 +3049,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           out += drawByte(bx, yBits, yHex, b, { bits: P.fg, hex: toCol });
           return;
         }
-        const dropped = `<g opacity="0.48">` + drawByte(bx, yBits, yHex, b, { bits: P.error, hex: P.error }) + `<line x1="${round(bx + 4)}" y1="${round(yBits - 20)}" x2="${round(bx + BYTE_W - 4)}" y2="${round(yHex + 6)}" stroke="${P.error}" stroke-width="2"/></g>`;
+        const dropped = `<g opacity="0.48">` + drawByte(bx, yBits, yHex, b, { bits: P.error, hex: P.error }) + `<line x1="${round(bx + 4)}" y1="${round(yBits - BIT_FONT * 0.85)}" x2="${round(bx + BYTE_W - 4)}" y2="${round(yHex + 4)}" stroke="${P.error}" stroke-width="2"/></g>`;
         out += animate ? `<g>${hide(at)}${drawByte(bx, yBits, yHex, b, { bits: P.fg, hex: fromCol })}</g><g opacity="0">${show(at)}<animateTransform attributeName="transform" type="translate" from="0 -6" to="0 0" begin="${round(at)}s" dur="0.32s" fill="freeze"/>${dropped}</g>` : dropped;
       });
       const cutX = slotX(keep - 1) - BYTE_GAP / 2;
@@ -2887,13 +3134,14 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
   }
   const BITS_VIEW = {
     geometry(m) {
-      const { bytes, labelChars, drop } = workbenchExtent(m);
-      const workbench2 = 12 + slotsWidth(bytes) + RESULT_GAP + labelWidth(labelChars) + CARD_PAD + 28;
+      const { bytes, labelChars, cardOffset } = workbenchExtent(m);
+      const cardW = slotsWidth(bytes) + RESULT_GAP + labelWidth(labelChars) + 2 * CARD_PAD_X;
       return {
         minByteWidth: 66,
-        minColumnWidth: Math.max(680, Math.ceil(workbench2)),
+        minColumnWidth: Math.max(480, Math.ceil(48 + cardW)),
         cellHeight: BYTE_CELL_HEIGHT,
-        extraPaneHeight: 120 + drop,
+        maxCellHeight: BYTE_CELL_MAX_HEIGHT,
+        extraPaneHeight: cardOffset + CARD_HEIGHT + 16 - 33,
         flush: true
       };
     },
@@ -3593,7 +3841,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     }
     return stepSeconds(m.steps, index);
   }
-  function drawHudReticle(bx, by, bw, bh, leftCol, rightCol, splitX) {
+  function drawHudReticle(bx, by, bw, bh, leftCol, rightCol, splitX, openLeft = false, openRight = false) {
     const arm = Math.min(14, bw * 0.28);
     const tick = 5;
     const rx = bx + bw;
@@ -3608,67 +3856,121 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     } else {
       out += `<rect x="${round(bx)}" y="${round(by)}" width="${round(bw)}" height="${round(bh)}" fill="none" stroke="${leftCol}" stroke-opacity="0.32" stroke-dasharray="3 3" stroke-width="1.3"/>`;
     }
-    out += `<path d="M ${round(bx)} ${round(by + arm)} V ${round(by)} H ${round(bx + arm)}" fill="none" stroke="${leftCol}" stroke-width="3.2" stroke-linecap="square"/><path d="M ${round(bx)} ${round(ry - arm)} V ${round(ry)} H ${round(bx + arm)}" fill="none" stroke="${leftCol}" stroke-width="3.2" stroke-linecap="square"/><path d="M ${round(rx - arm)} ${round(by)} H ${round(rx)} V ${round(by + arm)}" fill="none" stroke="${rightTopCol}" stroke-width="3.2" stroke-linecap="square"/><path d="M ${round(rx - arm)} ${round(ry)} H ${round(rx)} V ${round(ry - arm)}" fill="none" stroke="${rightTopCol}" stroke-width="3.2" stroke-linecap="square"/><line x1="${round(mx)}" y1="${round(by)}" x2="${round(mx)}" y2="${round(by + tick)}" stroke="${topTickCol}" stroke-width="2.2"/><line x1="${round(mx)}" y1="${round(ry)}" x2="${round(mx)}" y2="${round(ry - tick)}" stroke="${topTickCol}" stroke-width="2.2"/><line x1="${round(bx)}" y1="${round(my)}" x2="${round(bx + tick)}" y2="${round(my)}" stroke="${leftCol}" stroke-width="2.2"/><line x1="${round(rx)}" y1="${round(my)}" x2="${round(rx - tick)}" y2="${round(my)}" stroke="${rightTopCol}" stroke-width="2.2"/>`;
+    if (!openLeft) {
+      out += `<path d="M ${round(bx)} ${round(by + arm)} V ${round(by)} H ${round(bx + arm)}" fill="none" stroke="${leftCol}" stroke-width="3.2" stroke-linecap="square"/><path d="M ${round(bx)} ${round(ry - arm)} V ${round(ry)} H ${round(bx + arm)}" fill="none" stroke="${leftCol}" stroke-width="3.2" stroke-linecap="square"/><line x1="${round(bx)}" y1="${round(my)}" x2="${round(bx + tick)}" y2="${round(my)}" stroke="${leftCol}" stroke-width="2.2"/>`;
+    }
+    if (!openRight) {
+      out += `<path d="M ${round(rx - arm)} ${round(by)} H ${round(rx)} V ${round(by + arm)}" fill="none" stroke="${rightTopCol}" stroke-width="3.2" stroke-linecap="square"/><path d="M ${round(rx - arm)} ${round(ry)} H ${round(rx)} V ${round(ry - arm)}" fill="none" stroke="${rightTopCol}" stroke-width="3.2" stroke-linecap="square"/><line x1="${round(rx)}" y1="${round(my)}" x2="${round(rx - tick)}" y2="${round(my)}" stroke="${rightTopCol}" stroke-width="2.2"/>`;
+    }
+    out += `<line x1="${round(mx)}" y1="${round(by)}" x2="${round(mx)}" y2="${round(by + tick)}" stroke="${topTickCol}" stroke-width="2.2"/><line x1="${round(mx)}" y1="${round(ry)}" x2="${round(mx)}" y2="${round(ry - tick)}" stroke="${topTickCol}" stroke-width="2.2"/>`;
     return out;
   }
-  function punReticle(c, sim, ptr, xOf, byteW, gridY, cellH, pCol) {
+  function punReticle(c, sim, ptr, byteW, cellH, pCol) {
     var _a, _b, _c;
-    const { P, animate, op } = c;
+    const { g, P, animate, op } = c;
     const at = op ? arrival(op) : 0;
     const dep = op ? departure(op) : 0;
-    const wLeft = xOf(ptr.targetAddress);
-    const wWidth = ptr.pointeeSize * byteW;
-    const ownEnd = xOf(ptr.targetAddress + ptr.targetSize);
     const pad = 3.5;
-    const bx = wLeft - pad;
-    const by = gridY - pad;
-    const bw = wWidth + 2 * pad;
-    const bh = cellH + 2 * pad;
-    const cx = bx + bw / 2;
-    const cy = by + bh / 2;
+    const ownEndAddr = ptr.targetAddress + ptr.targetSize;
     const isWritingPtr = animate && (op == null ? void 0 : op.kind) === "write" && op.name === ptr.ptrName;
     const isDeref = animate && (op == null ? void 0 : op.kind) === "deref" && op.via === ptr.ptrName;
     const isPunRead = ((_a = sim.activePun) == null ? void 0 : _a.kind) === "read" && sim.activePun.pun.via === ptr.ptrName;
     const isPunWrite = ((_b = sim.activePun) == null ? void 0 : _b.kind) === "write" && sim.activePun.pun.via === ptr.ptrName;
     const opCol = ptr.ubKind === "read" || isPunRead || ((_c = sim.storeAfterPunRead) == null ? void 0 : _c.pun.via) === ptr.ptrName ? P.read : P.write;
-    let inner = "";
-    if (ptr.direction === "larger" && ptr.ubKind !== "none") {
-      const calm = drawHudReticle(bx, by, bw, bh, pCol, pCol, null);
-      const breached = drawHudReticle(bx, by, bw, bh, opCol, P.error, ownEnd);
-      const triggerAt = isPunRead ? dep : at;
-      inner = animate && ptr.ubTriggeredNow && (isPunWrite || isPunRead) ? `<g>${hide(triggerAt)}${calm}</g><g opacity="0">${show(triggerAt)}${breached}</g>` : breached;
-    } else {
-      const col = ptr.windowActive ? opCol : pCol;
-      inner = drawHudReticle(bx, by, bw, bh, col, col, null);
+    const segs = flushAddressSegments(g, ptr.targetAddress, ptr.pointeeSize);
+    let out = "";
+    for (const seg of segs) {
+      const bx = seg.x - pad;
+      const by = seg.y - pad;
+      const bw = seg.w + 2 * pad;
+      const bh = cellH + 2 * pad;
+      const cx = bx + bw / 2;
+      const cy = by + bh / 2;
+      const openLeft = !seg.isFirst;
+      const openRight = !seg.isLast;
+      const segEnd = seg.start + seg.size;
+      let inner = "";
+      if (ptr.direction === "larger" && ptr.ubKind !== "none") {
+        const calm = drawHudReticle(bx, by, bw, bh, pCol, pCol, null, openLeft, openRight);
+        let breached;
+        if (seg.start >= ownEndAddr) {
+          breached = drawHudReticle(bx, by, bw, bh, P.error, P.error, null, openLeft, openRight);
+        } else if (segEnd <= ownEndAddr) {
+          breached = drawHudReticle(bx, by, bw, bh, opCol, opCol, null, openLeft, openRight);
+        } else {
+          const splitX = seg.x + (ownEndAddr - seg.start) * byteW;
+          breached = drawHudReticle(bx, by, bw, bh, opCol, P.error, splitX, openLeft, openRight);
+        }
+        const triggerAt = isPunRead ? dep : at;
+        inner = animate && ptr.ubTriggeredNow && (isPunWrite || isPunRead) ? `<g>${hide(triggerAt)}${calm}</g><g opacity="0">${show(triggerAt)}${breached}</g>` : breached;
+      } else {
+        const col = ptr.windowActive ? opCol : pCol;
+        inner = drawHudReticle(bx, by, bw, bh, col, col, null, openLeft, openRight);
+      }
+      let wrapped = inner;
+      if (isWritingPtr) {
+        const lockBegin = at + 0.52;
+        wrapped = `<g opacity="0">${fade(0, 1, 0.14, lockBegin)}<g transform="translate(${round(cx)} ${round(cy)})"><g><animateTransform attributeName="transform" type="scale" values="1.28;0.96;1" keyTimes="0;0.74;1" calcMode="spline" keySplines="0.2 0 0.2 1;0.4 0 0.2 1" begin="${round(lockBegin)}s" dur="0.46s" fill="freeze"/><g transform="translate(${round(-cx)} ${round(-cy)})">${inner}</g></g></g></g>`;
+      } else if (isDeref) {
+        wrapped = scaledAt(cx, cy, inner, at - 0.18);
+      }
+      out += wrapped;
     }
-    let wrapped = inner;
-    if (isWritingPtr) {
-      const lockBegin = at + 0.52;
-      wrapped = `<g opacity="0">${fade(0, 1, 0.14, lockBegin)}<g transform="translate(${round(cx)} ${round(cy)})"><g><animateTransform attributeName="transform" type="scale" values="1.28;0.96;1" keyTimes="0;0.74;1" calcMode="spline" keySplines="0.2 0 0.2 1;0.4 0 0.2 1" begin="${round(lockBegin)}s" dur="0.46s" fill="freeze"/><g transform="translate(${round(-cx)} ${round(-cy)})">${inner}</g></g></g></g>`;
-    } else if (isDeref) {
-      wrapped = scaledAt(cx, cy, inner, at - 0.18);
-    }
-    return `<g class="cv-pun-reticle" data-ptr="${ptr.ptrName}">${wrapped}</g>`;
+    return `<g class="cv-pun-reticle" data-ptr="${ptr.ptrName}">${out}</g>`;
   }
-  function punningArrows(c, sim, xOf, byteW, gridY) {
+  function punningArrows(c, sim, posOf, byteW) {
     const { g, P, step, prev, op, animate } = c;
     const punNames = new Set(sim.punPointers.map((p) => p.ptrName));
     const at = op ? arrival(op) : 0;
-    const arcGeom = (l, isPun) => {
+    const assignCrossTracks = (list) => {
+      const cross = list.filter((l) => Math.abs(l.from.y - posOf(l.to.address).y) >= 1).sort((a, b) => a.from.address - b.from.address || a.to.address - b.to.address);
+      const tracks = /* @__PURE__ */ new Map();
+      cross.forEach((l, i) => tracks.set(l, i));
+      return tracks;
+    };
+    const arcGeom = (l, isPun, crossTrack) => {
+      const toPos = posOf(l.to.address);
+      const ex = isPun ? toPos.x + byteW * 0.5 : l.head[0];
+      const ey = toPos.y - 26;
+      if (Math.abs(l.from.y - toPos.y) < 1) {
+        const sx2 = l.from.x + l.from.w / 2;
+        const sy2 = l.from.y - 2;
+        const apex = toPos.y - 92 - l.level * 36;
+        return {
+          d: `M ${round(sx2)} ${round(sy2)} C ${round(sx2)} ${round(apex)}, ${round(ex)} ${round(apex)}, ${round(ex)} ${round(ey - 8)}`,
+          hx: ex,
+          hy: ey
+        };
+      }
+      const gx = Math.max(10, g.memX - 24 - crossTrack * 14);
+      const topY = toPos.y - 54 - crossTrack * 18;
+      const hasLeftSibling = l.from.x > g.memX + 1;
+      if (!hasLeftSibling && l.from.y > toPos.y) {
+        const sx2 = l.from.x;
+        const sy2 = l.from.y + l.from.h * 0.5;
+        const r2 = Math.min(18, Math.max(6, sx2 - gx), Math.max(6, (sy2 - topY) / 2));
+        const er2 = Math.min(16, Math.max(6, (ex - gx) / 2));
+        return {
+          d: `M ${round(sx2)} ${round(sy2)} Q ${round(gx)} ${round(sy2)}, ${round(gx)} ${round(sy2 - r2)} L ${round(gx)} ${round(topY + r2)} Q ${round(gx)} ${round(topY)}, ${round(gx + r2)} ${round(topY)} L ${round(ex - er2)} ${round(topY)} Q ${round(ex)} ${round(topY)}, ${round(ex)} ${round(ey - 8)}`,
+          hx: ex,
+          hy: ey
+        };
+      }
       const sx = l.from.x + l.from.w / 2;
-      const ex = isPun ? xOf(l.to.address) + byteW * 0.5 : l.head[0];
-      const sy = gridY - 2;
-      const ey = gridY - 26;
-      const apex = gridY - 92 - l.level * 36;
+      const sy = l.from.y - 2;
+      const laneY = l.from.y - 34 - crossTrack * 14;
+      const dir = topY < laneY ? -1 : 1;
+      const r = Math.min(12, Math.abs(topY - laneY) / 2, Math.max(4, (sx - gx) / 2));
+      const er = Math.min(16, Math.max(6, (ex - gx) / 2));
       return {
-        d: `M ${round(sx)} ${round(sy)} C ${round(sx)} ${round(apex)}, ${round(ex)} ${round(apex)}, ${round(ex)} ${round(ey - 8)}`,
+        d: `M ${round(sx)} ${round(sy)} L ${round(sx)} ${round(laneY + 8)} Q ${round(sx)} ${round(laneY)}, ${round(sx - 8)} ${round(laneY)} L ${round(gx + r)} ${round(laneY)} Q ${round(gx)} ${round(laneY)}, ${round(gx)} ${round(laneY + dir * r)} L ${round(gx)} ${round(topY - dir * r)} Q ${round(gx)} ${round(topY)}, ${round(gx + r)} ${round(topY)} L ${round(ex - er)} ${round(topY)} Q ${round(ex)} ${round(topY)}, ${round(ex)} ${round(ey - 8)}`,
         hx: ex,
         hy: ey
       };
     };
-    const arcFor = (l, isPun, opts = {}) => {
+    const arcFor = (l, isPun, crossTrack, opts = {}) => {
       const col = l.from.color;
-      const { d, hx, hy } = arcGeom(l, isPun);
+      const { d, hx, hy } = arcGeom(l, isPun, crossTrack);
       const grow = opts.grow != null ? ` data-grow="${round(opts.grow)}"` : "";
       const head = `<path d="M -10 -6 L 0 0 L -10 6 Z" fill="${col}" transform="translate(${round(hx)} ${round(hy)}) rotate(90)"/>`;
       const body = "<g>" + (opts.fadeOut != null ? fade(1, 0, 0.3, opts.fadeOut) : "") + `<path d="${d}" fill="none" stroke="${P.bg}" stroke-width="9"${grow}/><path d="${d}" fill="none" stroke="${col}" stroke-width="2.6"${grow}/>` + (opts.grow != null ? `<g opacity="0">${fade(0, 1, 0.15, opts.grow + 0.47)}${head}</g>` : head) + "</g>";
@@ -3680,34 +3982,40 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     if ((op == null ? void 0 : op.kind) === "write" && punNames.has(op.name)) activeArcPtrs.add(op.name);
     if ((op == null ? void 0 : op.kind) === "deref" && punNames.has(op.via)) activeArcPtrs.add(op.via);
     const now = links(g, step);
+    const nowTracks = assignCrossTracks(now);
     const writesPtr = animate && (op == null ? void 0 : op.kind) === "write" && g.cellsOf(op.name).some((l) => l.kind === "ptr");
     if (writesPtr && prev) {
       const prevPunNames = new Set(
         simulatePunningTrace(c.m.trace, Math.max(0, c.index - 1), c.littleEndian).punPointers.map((p) => p.ptrName)
       );
       const changed = new Set(g.cellsOf(op.name).map((l) => l.name));
+      const prevLinks = links(g, prev);
+      const prevTracks = assignCrossTracks(prevLinks);
       let out2 = "";
-      for (const l of links(g, prev)) {
+      for (const l of prevLinks) {
         const isOutgoing = changed.has(l.from.name);
         const isPun = isOutgoing ? prevPunNames.has(l.from.name) : punNames.has(l.from.name);
-        out2 += arcFor(l, isPun, {
+        out2 += arcFor(l, isPun, prevTracks.get(l) ?? 0, {
           ...isOutgoing ? { fadeOut: at } : {},
           keepBright: activeArcPtrs.has(l.from.name)
         });
       }
       for (const l of now) {
         if (changed.has(l.from.name)) {
-          out2 += arcFor(l, punNames.has(l.from.name), { grow: at + 0.08, keepBright: activeArcPtrs.has(l.from.name) });
+          out2 += arcFor(l, punNames.has(l.from.name), nowTracks.get(l) ?? 0, {
+            grow: at + 0.08,
+            keepBright: activeArcPtrs.has(l.from.name)
+          });
         }
       }
       return out2;
     }
-    let out = now.map((l) => arcFor(l, punNames.has(l.from.name), { keepBright: activeArcPtrs.has(l.from.name) })).join("");
+    let out = now.map((l) => arcFor(l, punNames.has(l.from.name), nowTracks.get(l) ?? 0, { keepBright: activeArcPtrs.has(l.from.name) })).join("");
     if (animate && (op == null ? void 0 : op.kind) === "deref") {
       const l = now.find((link) => link.from.name === op.via);
       if (l) {
         const isPun = punNames.has(l.from.name);
-        const { d } = arcGeom(l, isPun);
+        const { d } = arcGeom(l, isPun, nowTracks.get(l) ?? 0);
         const pulsePath = `<path d="${d}" fill="none" stroke="${l.from.color}" stroke-width="7" stroke-linecap="round" data-follow="${T.prepare}"/>`;
         out += isPun ? pulsePath : dim(c, l.from.name, pulsePath);
       }
@@ -3715,20 +4023,20 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     return out;
   }
   function punningScene(c) {
-    var _a, _b, _c, _d, _e, _f, _g, _h;
+    var _a, _b, _c, _d, _e, _f, _g;
     const sim = simulatePunningTrace(c.m.trace, c.index, c.littleEndian);
     const { g, P, animate, op, step, prev } = c;
     const { defs, padId, ubId } = hatchDefs(P);
     const lineChanged = animate && prev !== null && prev.line !== step.line;
     const oldLine = lineChanged && prev ? prev.line : null;
     const byteW = g.byteWidth;
-    const gridY = ((_a = g.leaves[0]) == null ? void 0 : _a.y) ?? g.memY;
-    const cellH = ((_b = g.leaves[0]) == null ? void 0 : _b.h) ?? BYTE_CELL_HEIGHT;
-    const xOf = (addr) => g.memX + (addr - sim.baseAddress) * byteW;
+    const cellH = ((_a = g.leaves[0]) == null ? void 0 : _a.h) ?? BYTE_CELL_HEIGHT;
+    const byteRowOffset = byteCellMetrics(cellH, byteW).hexCenterY + 2;
+    const posOf = (addr) => flushAddrPos(g, addr);
     const at = op ? arrival(op) : 0;
     const dep = op ? departure(op) : 0;
-    const isPunWrite = ((_c = sim.activePun) == null ? void 0 : _c.kind) === "write";
-    const isPunRead = ((_d = sim.activePun) == null ? void 0 : _d.kind) === "read";
+    const isPunWrite = ((_b = sim.activePun) == null ? void 0 : _b.kind) === "write";
+    const isPunRead = ((_c = sim.activePun) == null ? void 0 : _c.kind) === "read";
     const isPoisonRead = sim.activePoisonRead !== null;
     const byteTileStore = usesByteTileStore(sim);
     const involvedNames = /* @__PURE__ */ new Set();
@@ -3742,7 +4050,7 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     if (sim.storeAfterPunRead) {
       involvedNames.add(sim.storeAfterPunRead.destVar.name);
       involvedNames.add(sim.storeAfterPunRead.pun.via);
-      involvedNames.add(((_e = sim.punPointers.find((p) => p.ptrName === sim.storeAfterPunRead.pun.via)) == null ? void 0 : _e.targetName) ?? "");
+      involvedNames.add(((_d = sim.punPointers.find((p) => p.ptrName === sim.storeAfterPunRead.pun.via)) == null ? void 0 : _d.targetName) ?? "");
     }
     if (sim.storeAfterPoisonRead) {
       involvedNames.add(sim.storeAfterPoisonRead.destVar.name);
@@ -3829,57 +4137,87 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     let accessFlash = "";
     if (animate && sim.activePun && (isPunWrite || isPunRead)) {
       const { targetAddress, targetSize, pun, direction } = sim.activePun;
-      const wLeft = xOf(targetAddress);
-      const wWidth = pun.size * byteW;
-      const ownW = targetSize * byteW;
-      const spillW = wWidth - ownW;
-      if (isPunWrite) {
-        if (direction === "larger") {
-          accessFlash += transientWriteHighlight(wLeft, gridY, ownW, cellH, P.write, at);
-          if (spillW > 0) accessFlash += transientWriteHighlight(wLeft + ownW, gridY, spillW, cellH, P.error, at + 0.08);
-        } else {
-          accessFlash += transientWriteHighlight(wLeft, gridY, wWidth, cellH, P.write, at);
+      const highlight = isPunWrite ? transientWriteHighlight : transientReadHighlight;
+      const okCol = isPunWrite ? P.write : P.read;
+      if (direction === "larger") {
+        const ownBytes = Math.min(targetSize, pun.size);
+        for (const seg of flushAddressSegments(g, targetAddress, ownBytes)) {
+          accessFlash += highlight(seg.x, seg.y, seg.w, cellH, okCol, at);
         }
-      } else if (isPunRead) {
-        if (direction === "larger") {
-          accessFlash += transientReadHighlight(wLeft, gridY, ownW, cellH, P.read, at);
-          if (spillW > 0) accessFlash += transientReadHighlight(wLeft + ownW, gridY, spillW, cellH, P.error, at);
-        } else {
-          accessFlash += transientReadHighlight(wLeft, gridY, wWidth, cellH, P.read, at);
+        const spillBytes = pun.size - ownBytes;
+        if (spillBytes > 0) {
+          for (const seg of flushAddressSegments(g, targetAddress + ownBytes, spillBytes)) {
+            accessFlash += highlight(seg.x, seg.y, seg.w, cellH, P.error, isPunWrite ? at + 0.08 : at);
+          }
+        }
+      } else {
+        for (const seg of flushAddressSegments(g, targetAddress, pun.size)) {
+          accessFlash += highlight(seg.x, seg.y, seg.w, cellH, okCol, at);
         }
       }
     } else if (animate && sim.activePoisonRead) {
       const { address, size, bytes } = sim.activePoisonRead;
       if (bytes.every((b) => b === "?")) {
-        accessFlash += transientReadHighlight(xOf(address), gridY, size * byteW, cellH, P.error, at);
+        for (const seg of flushAddressSegments(g, address, size)) {
+          accessFlash += transientReadHighlight(seg.x, seg.y, seg.w, cellH, P.error, at);
+        }
       } else {
         for (let k = 0; k < size; k++) {
           const col = bytes[k] === "?" ? P.error : P.read;
-          accessFlash += transientReadHighlight(xOf(address + k), gridY, byteW, cellH, col, at);
+          const p = posOf(address + k);
+          accessFlash += transientReadHighlight(p.x, p.y, byteW, cellH, col, at);
         }
       }
     }
-    const arcMarkup = punningArrows(c, sim, xOf, byteW, gridY);
+    const arcMarkup = punningArrows(c, sim, posOf, byteW);
     let scopeReticles = "";
     for (const ptr of sim.punPointers) {
       const ptrLeaf = g.leaves.find((l) => l.name === ptr.ptrName);
       if (!ptrLeaf) continue;
-      scopeReticles += punReticle(c, sim, ptr, xOf, byteW, gridY, cellH, ptrLeaf.color);
+      scopeReticles += punReticle(c, sim, ptr, byteW, cellH, ptrLeaf.color);
     }
     let belowOverlay = "";
-    const typeBottom = g.typeLabels.length ? Math.max(...g.typeLabels.map((l) => l.top + LABEL.memory + 7)) : gridY + cellH + 40;
-    const brY = typeBottom + 16;
-    const tickTop = brY - 10;
+    const rowTypeBottom = (rowY) => {
+      const rowNames = new Set(g.leaves.filter((l) => Math.abs(l.y - rowY) < 1).map((l) => l.name));
+      const rowLabels = g.typeLabels.filter((l) => rowNames.has(l.name));
+      return rowLabels.length ? Math.max(...rowLabels.map((l) => l.top + LABEL.memory + 7)) : rowY + cellH + 40;
+    };
     const punUbCovered = /* @__PURE__ */ new Set();
     for (const ptr of sim.punPointers) {
       if (ptr.direction !== "larger" || ptr.ubKind === "none") continue;
       punUbCovered.add(ptr.targetName);
-      const wLeft = xOf(ptr.targetAddress);
-      const wRight = xOf(ptr.targetAddress + ptr.pointeeSize);
-      const ownEnd = xOf(ptr.targetAddress + ptr.targetSize);
+      const ownEndAddr = ptr.targetAddress + ptr.targetSize;
       const ownCol = ptr.ubKind === "read" ? P.read : P.write;
-      const cal = `<g class="cv-ub-badge" data-ptr="${ptr.ptrName}"><path d="M ${round(wLeft + 2)} ${tickTop} V ${brY} H ${round(ownEnd)}" fill="none" stroke="${ownCol}" stroke-width="2.2"/><path d="M ${round(ownEnd)} ${brY} H ${round(wRight - 2)} V ${tickTop}" fill="none" stroke="${P.error}" stroke-width="2.8"/>` + pill((ownEnd + wRight) / 2, brY + 18, "⚠ UB", 13.5, P.error, P.error, P.bg) + "</g>";
-      const triggersNow = animate && ptr.ubTriggeredNow && (isPunRead && ((_f = sim.activePun) == null ? void 0 : _f.pun.via) === ptr.ptrName || isPunWrite && ((_g = sim.activePun) == null ? void 0 : _g.pun.via) === ptr.ptrName);
+      const segs = flushAddressSegments(g, ptr.targetAddress, ptr.pointeeSize);
+      let badgePlaced = false;
+      let calInner = "";
+      for (const seg of segs) {
+        const segLeft = seg.x;
+        const segRight = seg.x + seg.w;
+        const segEnd = seg.start + seg.size;
+        const brY = rowTypeBottom(seg.y) + 16;
+        const tickTop = brY - 10;
+        const leftTick = seg.isFirst ? `M ${round(segLeft + 2)} ${tickTop} V ${brY}` : `M ${round(segLeft)} ${brY}`;
+        const rightTick = seg.isLast ? `H ${round(segRight - 2)} V ${tickTop}` : `H ${round(segRight)}`;
+        if (segEnd <= ownEndAddr) {
+          calInner += `<path d="${leftTick} ${rightTick}" fill="none" stroke="${ownCol}" stroke-width="2.2"/>`;
+        } else if (seg.start >= ownEndAddr) {
+          calInner += `<path d="${leftTick} ${rightTick}" fill="none" stroke="${P.error}" stroke-width="2.8"/>`;
+          if (!badgePlaced) {
+            calInner += pill((segLeft + segRight) / 2, brY + 18, "⚠ UB", 13.5, P.error, P.error, P.bg);
+            badgePlaced = true;
+          }
+        } else {
+          const ownEndX = seg.x + (ownEndAddr - seg.start) * byteW;
+          calInner += `<path d="${leftTick} H ${round(ownEndX)}" fill="none" stroke="${ownCol}" stroke-width="2.2"/><path d="M ${round(ownEndX)} ${brY} ${rightTick}" fill="none" stroke="${P.error}" stroke-width="2.8"/>`;
+          if (!badgePlaced) {
+            calInner += pill((ownEndX + segRight) / 2, brY + 18, "⚠ UB", 13.5, P.error, P.error, P.bg);
+            badgePlaced = true;
+          }
+        }
+      }
+      const cal = `<g class="cv-ub-badge" data-ptr="${ptr.ptrName}">${calInner}</g>`;
+      const triggersNow = animate && ptr.ubTriggeredNow && (isPunRead && ((_e = sim.activePun) == null ? void 0 : _e.pun.via) === ptr.ptrName || isPunWrite && ((_f = sim.activePun) == null ? void 0 : _f.pun.via) === ptr.ptrName);
       const showAt = isPunRead ? dep : at;
       belowOverlay += triggersNow ? `<g opacity="0">${fade(0, 1, 0.25, showAt)}${cal}</g>` : cal;
     }
@@ -3887,10 +4225,13 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
       if (punUbCovered.has(varName)) continue;
       const leaf = g.leaves.find((l) => l.name === varName);
       if (!leaf) continue;
-      const wLeft = xOf(leaf.address);
-      const wRight = xOf(leaf.address + leaf.size);
+      const startPos = posOf(leaf.address);
+      const wLeft = startPos.x;
+      const wRight = wLeft + leaf.size * byteW;
+      const brY = rowTypeBottom(startPos.y) + 16;
+      const tickTop = brY - 10;
       const cal = `<g class="cv-ub-badge" data-var="${leaf.name}"><path d="M ${round(wLeft + 2)} ${tickTop} V ${brY} H ${round(wRight - 2)} V ${tickTop}" fill="none" stroke="${P.error}" stroke-width="2.8"/>` + pill((wLeft + wRight) / 2, brY + 18, "⚠ UB", 13.5, P.error, P.error, P.bg) + "</g>";
-      const triggersNow = animate && sim.uninitUbTriggeredNow.has(varName) && ((_h = sim.activePoisonRead) == null ? void 0 : _h.varName) === varName;
+      const triggersNow = animate && sim.uninitUbTriggeredNow.has(varName) && ((_g = sim.activePoisonRead) == null ? void 0 : _g.varName) === varName;
       belowOverlay += triggersNow ? `<g opacity="0">${fade(0, 1, 0.25, dep)}${cal}</g>` : cal;
     }
     let wb = "";
@@ -3955,8 +4296,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
         const fill = isBad ? P.panel : baseFill;
         const tileMarkup = rect(tx, stripY, tileW, tileH, fill, stroke, 5, 2) + text(tx + tileW / 2, stripY + 20, label, 15.5, stroke, "middle");
         if (animate && stripSource.mode === "read") {
-          const sx = xOf(addr) + byteW / 2;
-          const sy = gridY + 70;
+          const sp = posOf(addr);
+          const sx = sp.x + byteW / 2;
+          const sy = sp.y + byteRowOffset;
           const ex = tx + tileW / 2;
           const ey = stripY + tileH / 2;
           const midY = (sy + ey) / 2;
@@ -3965,32 +4307,34 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
           const end = begin + readDur;
           const flyCol = isOobSlot || bval === "?" ? P.error : P.read;
           wb += `<g opacity="0">${show(end)}${tileMarkup}</g>`;
-          flight += `<g opacity="0">${fade(0, 0.5, 0.2, begin)}${fade(0.5, 0, 0.25, end)}<path d="${path}" fill="none" stroke="${flyCol}" stroke-width="2.4"/></g><g opacity="0">${fade(0, 1, 0.1, begin)}${hide(end + 0.05)}` + rect(-20, -14, 40, 28, P.panel, flyCol, 6, 2) + text(0, 6, label, 15, flyCol, "middle") + `<animateMotion begin="${round(begin)}s" dur="${round(readDur)}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
+          flight += `<g opacity="0">${fade(0, 0.5, 0.2, begin)}${fade(0.5, 0, 0.25, end)}<path data-mem-end="start" d="${path}" fill="none" stroke="${flyCol}" stroke-width="2.4"/></g><g opacity="0">${fade(0, 1, 0.1, begin)}${hide(end + 0.05)}` + rect(-20, -14, 40, 28, P.panel, flyCol, 6, 2) + text(0, 6, label, 15, flyCol, "middle") + `<animateMotion data-mem-end="start" begin="${round(begin)}s" dur="${round(readDur)}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
         } else {
           wb += tileMarkup;
           if (animate && stripSource.mode === "write") {
+            const ep = posOf(addr);
             const sx = tx + tileW / 2;
             const sy = stripY;
-            const ex = xOf(addr) + byteW / 2;
-            const ey = gridY + 70;
+            const ex = ep.x + byteW / 2;
+            const ey = ep.y + byteRowOffset;
             const midY = (sy + ey) / 2;
             const path = `M ${round(sx)} ${round(sy)} C ${round(sx)} ${round(midY)}, ${round(ex)} ${round(midY)}, ${round(ex)} ${round(ey)}`;
             const dur = 0.85;
             const end = at + k * 0.08;
             const begin = Math.max(0.2, end - dur);
             const flyCol = isOobSlot ? P.error : P.write;
-            flight += `<g opacity="0">${fade(0, 0.5, 0.2, begin)}${fade(0.5, 0, 0.25, end)}<path d="${path}" fill="none" stroke="${flyCol}" stroke-width="2.4"/></g><g opacity="0">${fade(0, 1, 0.1, begin)}${hide(end + 0.05)}` + rect(-20, -14, 40, 28, P.panel, flyCol, 6, 2) + text(0, 6, label, 15, flyCol, "middle") + `<animateMotion begin="${round(begin)}s" dur="${dur}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
+            flight += `<g opacity="0">${fade(0, 0.5, 0.2, begin)}${fade(0.5, 0, 0.25, end)}<path data-mem-end="end" d="${path}" fill="none" stroke="${flyCol}" stroke-width="2.4"/></g><g opacity="0">${fade(0, 1, 0.1, begin)}${hide(end + 0.05)}` + rect(-20, -14, 40, 28, P.panel, flyCol, 6, 2) + text(0, 6, label, 15, flyCol, "middle") + `<animateMotion data-mem-end="end" begin="${round(begin)}s" dur="${dur}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
           } else if (animate && stripSource.mode === "store" && stripSource.destVar) {
+            const ep = posOf(stripSource.destVar.address + k);
             const sx = tx + tileW / 2;
             const sy = stripY;
-            const ex = xOf(stripSource.destVar.address + k) + byteW / 2;
-            const ey = gridY + 70;
+            const ex = ep.x + byteW / 2;
+            const ey = ep.y + byteRowOffset;
             const midY = (sy + ey) / 2;
             const path = `M ${round(sx)} ${round(sy)} C ${round(sx)} ${round(midY)}, ${round(ex)} ${round(midY)}, ${round(ex)} ${round(ey)}`;
             const dur = 0.85;
             const end = at + k * 0.08;
             const begin = Math.max(0.2, end - dur);
-            flight += `<g opacity="0">${fade(0, 0.5, 0.2, begin)}${fade(0.5, 0, 0.25, end)}<path d="${path}" fill="none" stroke="${stroke}" stroke-width="2.4"/></g><g opacity="0">${fade(0, 1, 0.1, begin)}${hide(end + 0.05)}` + rect(-20, -14, 40, 28, P.panel, stroke, 6, 2) + text(0, 6, label, 15, stroke, "middle") + `<animateMotion begin="${round(begin)}s" dur="${dur}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
+            flight += `<g opacity="0">${fade(0, 0.5, 0.2, begin)}${fade(0.5, 0, 0.25, end)}<path data-mem-end="end" d="${path}" fill="none" stroke="${stroke}" stroke-width="2.4"/></g><g opacity="0">${fade(0, 1, 0.1, begin)}${hide(end + 0.05)}` + rect(-20, -14, 40, 28, P.panel, stroke, 6, 2) + text(0, 6, label, 15, stroke, "middle") + `<animateMotion data-mem-end="end" begin="${round(begin)}s" dur="${dur}s" path="${path}" keyPoints="0;1" ${EASE} fill="freeze"/></g>`;
           }
         }
       }
@@ -4012,8 +4356,9 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
     geometry(m) {
       return {
         minByteWidth: 46,
-        minColumnWidth: 780,
+        minColumnWidth: 540,
         cellHeight: BYTE_CELL_HEIGHT,
+        maxCellHeight: BYTE_CELL_MAX_HEIGHT,
         extraMemBottom: hasLargerPointerAccess(m.trace) || hasUninitializedRead(m.trace) ? 58 : 12,
         extraPaneHeight: 46,
         flush: true,
