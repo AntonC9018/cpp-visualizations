@@ -105,6 +105,7 @@ header.header ~ #playground-root .pg-theme-btn {
   flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem;
+  min-width: 0;
 }
 
 .pg-segmented {
@@ -136,8 +137,17 @@ header.header ~ #playground-root .pg-theme-btn {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
+  max-width: 100%;
+  min-width: 0;
   font-size: 0.85rem;
   color: var(--pg-muted);
+}
+
+/* Let a long example name shrink the select instead of widening the page. */
+.pg-preset-select {
+  flex: 0 1 auto;
+  min-width: 0;
+  text-overflow: ellipsis;
 }
 
 .pg-preset-select,
