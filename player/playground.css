@@ -77,6 +77,32 @@ header.header ~ #playground-root .pg-theme-btn {
   }
 }
 
+/* With no mobile menu to fold into, the theme and language selects stay in the
+ * header; shrink them to their icons so the site title keeps its room. */
+@media (max-width: 36rem) {
+  header.header :is(starlight-theme-select, starlight-lang-select) select {
+    width: 2.25rem;
+    padding-inline: 0;
+    color: transparent;
+    cursor: pointer;
+  }
+
+  header.header :is(starlight-theme-select, starlight-lang-select) option {
+    color: var(--sl-color-white);
+    background-color: var(--sl-color-bg-nav);
+  }
+
+  header.header :is(starlight-theme-select, starlight-lang-select) .caret {
+    display: none;
+  }
+
+  header.header :is(starlight-theme-select, starlight-lang-select) .label-icon {
+    inset-inline-start: 50%;
+    translate: -50%;
+    pointer-events: none;
+  }
+}
+
 .pg-header {
   display: flex;
   flex-wrap: wrap;
